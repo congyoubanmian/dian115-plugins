@@ -1,0 +1,13 @@
+services:
+  re0-agent:
+    build: /volume1/docker/re0-agent
+    container_name: re0-agent
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      - PORT=8790
+      - CONFIG_DIR=/config
+      - HTTP_PROXY=${RE0_PROXY:-}
+      - USER_AGENT=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36
+    volumes:
+      - /volume1/docker/re0-agent/config:/config
