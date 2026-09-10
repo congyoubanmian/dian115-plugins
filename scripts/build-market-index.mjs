@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -49,11 +49,15 @@ const index = {
     {
       ...entry,
       package_url: packageUrl,
+      // 相对路径会以索引最终 URL 为基准解析，因此图标放在 plugin-market/ 下。
+      icon_url: 'icon.svg',
     },
   ],
 }
 
 const outDir = join(root, 'plugin-market')
+// 市场图标与索引同目录，icon_url 用相对路径即可
+cpSync(join(root, 'frontend', 'icon.svg'), join(outDir, 'icon.svg'))
 mkdirSync(outDir, { recursive: true })
 const outPath = join(outDir, 'index.json')
 writeFileSync(outPath, `${JSON.stringify(index, null, 2)}\n`)

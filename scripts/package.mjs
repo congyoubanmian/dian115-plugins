@@ -193,6 +193,15 @@ marketEntry.permissions = manifest.permissions
 marketEntry.tags = manifest.tags || []
 writeFileSync(join(releasesRoot, 'market-entry.generated.json'), `${JSON.stringify(marketEntry, null, 2)}\n`)
 
+// 同步身份字段回市场模板：官方 conformance/project-check.mjs 默认读取
+// market-entry.template.json 并与 manifest 比对（id/version/runtime/permissions
+// 必须完全一致），模板陈旧会让发布前检查直接失败。
+const marketTemplate = parseJSON(marketTemplatePath)
+for (const key of ['id', 'name', 'version', 'description', 'author', 'homepage', 'sha256', 'runtime', 'permissions', 'tags']) {
+  marketTemplate[key] = marketEntry[key]
+}
+writeFileSync(marketTemplatePath, `${JSON.stringify(marketTemplate, null, 2)}\n`)
+
 process.stdout.write(`Package: ${outputPath}\n`)
 process.stdout.write(`SHA-256: ${packageDigest}\n`)
 process.stdout.write(`Publisher key ID: ${keyID}\n`)

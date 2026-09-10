@@ -1,17 +1,17 @@
 {
   "id": "douban.center",
   "name": "豆瓣中心",
-  "version": "0.1.0",
-  "description": "周期抓取豆瓣榜单，黑名单过滤后经观察队列自动创建 DIAN115 聚合订阅，并记录订阅历史与统计。",
-  "author": "zhangzhong",
-  "homepage": "https://github.com/zhangzhong/douban-center",
+  "version": "0.2.8",
+  "description": "周期抓取豆瓣榜单，黑名单过滤后经观察队列自动创建 DIAN115 聚合订阅，并记录订阅历史与统计。 (WASM 运行时版, 兼容无 seccomp 内核如群晖4.4)",
+  "author": "congyoubanmian",
+  "homepage": "https://github.com/congyoubanmian/douban-center-wasm",
   "package_url": "https://example.invalid/releases/douban.center-0.1.0.d115p",
-  "sha256": "REPLACED_BY_PACKAGER",
+  "sha256": "15189c7987527d9088ec9235282ac6ddaced72de188336181d1714f6d8bd8846",
   "runtime": {
-    "kind": "process",
-    "protocol": "dian115:process@1",
+    "kind": "wasm",
+    "protocol": "dian115:wasm@1",
     "autostart": true,
-    "trust_level": "isolated-process"
+    "trust_level": "wasm-sandbox"
   },
   "permissions": {
     "apis": [
@@ -64,15 +64,91 @@
     "network": [
       {
         "origin": "https://movie.douban.com",
-        "methods": ["GET"],
+        "methods": [
+          "GET"
+        ],
         "proxy_mode": "system",
-        "reason": "抓取豆瓣电影榜单（coming/chart/search_subjects）"
+        "reason": "抓取豆瓣榜单（chart、coming、search_subjects、subject_suggest）"
       },
       {
-        "origin": "https://www.douban.com",
-        "methods": ["GET"],
+        "origin": "https://m.douban.com",
+        "methods": [
+          "GET"
+        ],
         "proxy_mode": "system",
-        "reason": "抓取豆瓣榜单备用入口"
+        "reason": "豆瓣移动端 rexxar API，按 subject id 取口碑榜海报"
+      },
+      {
+        "origin": "https://img1.doubanio.com",
+        "methods": [
+          "GET"
+        ],
+        "proxy_mode": "system",
+        "reason": "抓取豆瓣海报缩略图（防盗链需带豆瓣 Referer）"
+      },
+      {
+        "origin": "https://img2.doubanio.com",
+        "methods": [
+          "GET"
+        ],
+        "proxy_mode": "system",
+        "reason": "抓取豆瓣海报缩略图"
+      },
+      {
+        "origin": "https://img3.doubanio.com",
+        "methods": [
+          "GET"
+        ],
+        "proxy_mode": "system",
+        "reason": "抓取豆瓣海报缩略图"
+      },
+      {
+        "origin": "https://img4.doubanio.com",
+        "methods": [
+          "GET"
+        ],
+        "proxy_mode": "system",
+        "reason": "抓取豆瓣海报缩略图"
+      },
+      {
+        "origin": "https://img5.doubanio.com",
+        "methods": [
+          "GET"
+        ],
+        "proxy_mode": "system",
+        "reason": "抓取豆瓣海报缩略图"
+      },
+      {
+        "origin": "https://img6.doubanio.com",
+        "methods": [
+          "GET"
+        ],
+        "proxy_mode": "system",
+        "reason": "抓取豆瓣海报缩略图"
+      },
+      {
+        "origin": "https://img7.doubanio.com",
+        "methods": [
+          "GET"
+        ],
+        "proxy_mode": "system",
+        "reason": "抓取豆瓣海报缩略图"
+      },
+      {
+        "origin": "https://img8.doubanio.com",
+        "methods": [
+          "GET"
+        ],
+        "proxy_mode": "system",
+        "reason": "抓取豆瓣海报缩略图"
+      },
+      {
+        "origin": "https://img9.doubanio.com",
+        "methods": [
+          "GET"
+        ],
+        "proxy_mode": "system",
+        "reason": "抓取豆瓣海报缩略图"
       }
     ]
   },
