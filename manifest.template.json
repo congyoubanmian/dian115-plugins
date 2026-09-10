@@ -1,0 +1,104 @@
+{
+  "$schema": "https://raw.githubusercontent.com/madbrolab/dian115/main/docs/plugin-platform/manifest.schema.json",
+  "schema_version": 1,
+  "id": "douban.center",
+  "name": "豆瓣中心",
+  "version": "0.2.7",
+  "description": "周期抓取豆瓣榜单，黑名单过滤后经观察队列自动创建 DIAN115 聚合订阅，并记录订阅历史与统计。 (WASM 运行时版, 兼容无 seccomp 内核如群晖4.4)",
+  "default_locale": "zh-CN",
+  "publisher": {
+    "name": "zhangzhong",
+    "key_id": "ed25519:REPLACED_BY_PACKAGER",
+    "url": "https://github.com/zhangzhong"
+  },
+  "compatibility": {
+    "dian115": ">=3.8.51 <5.0.0",
+    "plugin_api": "^2.0"
+  },
+  "runtime": {
+    "kind": "wasm",
+    "entry": "runtime/plugin.wasm",
+    "protocol": "dian115:wasm@1",
+    "startup_timeout_ms": 60000,
+    "shutdown_timeout_ms": 5000,
+    "timeout_ms": 60000,
+    "background_timeout_ms": 600000,
+    "memory_mb": 256,
+    "max_concurrency": 2,
+    "restart_policy": "on-failure"
+  },
+  "permissions": {
+    "apis": [
+      {
+        "method": "GET",
+        "path": "/api/tmdb/search",
+        "reason": "把豆瓣榜单条目匹配到 TMDB 元数据（tmdb_id/类型/年份/海报）以创建聚合订阅"
+      },
+      {
+        "method": "GET",
+        "path": "/api/tmdb/movie/:id",
+        "reason": "读取电影详情补充订阅信息"
+      },
+      {
+        "method": "GET",
+        "path": "/api/tmdb/tv/:id",
+        "reason": "读取剧集详情补充订阅信息"
+      },
+      {
+        "method": "POST",
+        "path": "/api/subscribe/pool/intents",
+        "reason": "为通过观察期的豆瓣条目创建聚合订阅（宿主负责检索并投递 115 离线）"
+      },
+      {
+        "method": "GET",
+        "path": "/api/subscribe/pool/intents",
+        "reason": "查询已创建聚合订阅，用于去重与状态跟踪"
+      },
+      {
+        "method": "GET",
+        "path": "/api/subscribe/records",
+        "reason": "读取订阅记录，用于订阅历史与统计"
+      },
+      {
+        "method": "POST",
+        "path": "/api/notifications/plugin",
+        "reason": "订阅成功/失败时推送 Telegram 通知"
+      },
+      {
+        "method": "GET",
+        "path": "/api/plugin-runtime/storage/:key",
+        "reason": "读取配置镜像，便于跨端同步与排查"
+      },
+      {
+        "method": "PUT",
+        "path": "/api/plugin-runtime/storage/:key",
+        "reason": "保存配置镜像"
+      }
+    ]
+  },
+  "ui": {
+    "mode": "federation",
+    "icon": "frontend/icon.svg",
+    "federation": {
+      "entry": "frontend/dist/assets/remoteEntry.js",
+      "assets_root": "frontend/dist/assets",
+      "module": "./AppPage"
+    }
+  },
+  "jobs": [
+    {
+      "id": "refresh-charts",
+      "handler": "refreshCharts",
+      "default_schedule": "0 */2 * * *",
+      "allow_overlap": false
+    }
+  ],
+  "homepage": "https://github.com/zhangzhong/douban-center",
+  "repository": "https://github.com/zhangzhong/douban-center",
+  "license": "MIT",
+  "tags": [
+    "douban",
+    "automation",
+    "subscribe"
+  ]
+}

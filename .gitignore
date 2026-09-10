@@ -1,0 +1,12 @@
+# 插件发布者的签名私钥：绝不提交（泄漏即可被伪造签名包）
+developer-ed25519-private.pem
+
+node_modules/
+build/
+releases/
+
+# 构建产物，用 npm run build:wasm 生成
+runtime/plugin.wasm
+
+*.log
+.DS_Store

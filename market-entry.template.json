@@ -1,0 +1,84 @@
+{
+  "id": "douban.center",
+  "name": "豆瓣中心",
+  "version": "0.1.0",
+  "description": "周期抓取豆瓣榜单，黑名单过滤后经观察队列自动创建 DIAN115 聚合订阅，并记录订阅历史与统计。",
+  "author": "zhangzhong",
+  "homepage": "https://github.com/zhangzhong/douban-center",
+  "package_url": "https://example.invalid/releases/douban.center-0.1.0.d115p",
+  "sha256": "REPLACED_BY_PACKAGER",
+  "runtime": {
+    "kind": "process",
+    "protocol": "dian115:process@1",
+    "autostart": true,
+    "trust_level": "isolated-process"
+  },
+  "permissions": {
+    "apis": [
+      {
+        "method": "GET",
+        "path": "/api/tmdb/search",
+        "reason": "把豆瓣榜单条目匹配到 TMDB 元数据（tmdb_id/类型/年份/海报）以创建聚合订阅"
+      },
+      {
+        "method": "GET",
+        "path": "/api/tmdb/movie/:id",
+        "reason": "读取电影详情补充订阅信息"
+      },
+      {
+        "method": "GET",
+        "path": "/api/tmdb/tv/:id",
+        "reason": "读取剧集详情补充订阅信息"
+      },
+      {
+        "method": "POST",
+        "path": "/api/subscribe/pool/intents",
+        "reason": "为通过观察期的豆瓣条目创建聚合订阅（宿主负责检索并投递 115 离线）"
+      },
+      {
+        "method": "GET",
+        "path": "/api/subscribe/pool/intents",
+        "reason": "查询已创建聚合订阅，用于去重与状态跟踪"
+      },
+      {
+        "method": "GET",
+        "path": "/api/subscribe/records",
+        "reason": "读取订阅记录，用于订阅历史与统计"
+      },
+      {
+        "method": "POST",
+        "path": "/api/notifications/plugin",
+        "reason": "订阅成功/失败时推送 Telegram 通知"
+      },
+      {
+        "method": "GET",
+        "path": "/api/plugin-runtime/storage/:key",
+        "reason": "读取配置镜像，便于跨端同步与排查"
+      },
+      {
+        "method": "PUT",
+        "path": "/api/plugin-runtime/storage/:key",
+        "reason": "保存配置镜像"
+      }
+    ],
+    "network": [
+      {
+        "origin": "https://movie.douban.com",
+        "methods": ["GET"],
+        "proxy_mode": "system",
+        "reason": "抓取豆瓣电影榜单（coming/chart/search_subjects）"
+      },
+      {
+        "origin": "https://www.douban.com",
+        "methods": ["GET"],
+        "proxy_mode": "system",
+        "reason": "抓取豆瓣榜单备用入口"
+      }
+    ]
+  },
+  "tags": [
+    "douban",
+    "automation",
+    "subscribe"
+  ]
+}
