@@ -14,7 +14,7 @@
       "author": "congyoubanmian",
       "homepage": "https://github.com/congyoubanmian/douban-center-wasm",
       "package_url": "https://github.com/congyoubanmian/dian115-plugins/releases/download/v0.2.8/douban.center-0.2.8.d115p",
-      "sha256": "2bcf4802aba58ceb016b5514e7f34d6fa28037a136a5c10af5298dcb03f3aac1",
+      "sha256": "e648fc5468fd39e4cb6948e2b8d503169a441cf6ac0fd4f4c4d7ce5788ffaf8c",
       "runtime": {
         "kind": "wasm",
         "protocol": "dian115:wasm@1",
