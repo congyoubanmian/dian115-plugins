@@ -40,6 +40,34 @@ https://github.com/congyoubanmian/dian115-plugins
 
 4. 在 DIAN115 插件中心重新添加/刷新本仓库
 
+## 自动发版（GitHub Actions）
+
+推一个 `v<版本>` 标签即自动完成：构建前端 + 编译 WASM → 打包签名 → 创建 Release 并上传
+`.d115p` → 更新 `plugin-market/index.json`。见 `.github/workflows/release.yml`。
+
+首次需要配置签名私钥：仓库 **Settings → Secrets and variables → Actions → New repository secret**
+
+| 名称 | 值 |
+| --- | --- |
+| `DIAN115_PLUGIN_SIGNING_KEY` | 签名私钥 PEM 全文（本地文件 `plugins/douban-center/developer-ed25519-private.pem`） |
+
+之后发版：
+
+```bash
+cd plugins/douban-center
+# 1. 改 manifest.template.json 里的 version 为新的 x.y.z
+# 2. 提交并推送到 main
+git commit -am "chore: 发布 x.y.z" && git push origin main
+# 3. 打标签触发自动发布
+git tag vx.y.z && git push origin vx.y.z
+```
+
+也可以在 Actions 页面手动触发（workflow_dispatch，填标签名）。
+
+> 说明：私钥只用于签名。放进 CI Secrets 意味着拥有仓库管理权限的人可以签发以本发布者
+> 名义的插件包；若不希望如此，就继续在本地跑 `npm run release`，把 `.d115p` 手动传到
+> Release 附件。
+
 ## 发布边界
 
 本仓库只提交插件索引、图标和插件源码；**不提交**签名私钥、构建产物和 `.d115p` 包

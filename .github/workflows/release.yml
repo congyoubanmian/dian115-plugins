@@ -1,0 +1,103 @@
+name: 发布插件
+
+# 推一个 v<版本> 标签即自动：构建前端 + 编译 WASM → 打包签名 →
+# 生成市场索引 → 创建 Release 并上传 .d115p → 把索引回写到 main。
+#
+# 前置：仓库 Secrets 里配置 DIAN115_PLUGIN_SIGNING_KEY（插件签名私钥的 PEM 全文）。
+# 私钥只用于签名，务必妥善保管；泄漏意味着他人可以伪造本发布者的插件包。
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '发布标签（需与插件版本一致，例如 v0.2.9）'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: plugins/douban-center
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+
+      - name: 校验标签与插件版本一致
+        env:
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          VERSION=$(node -p "require('./manifest.template.json').version")
+          echo "标签=$TAG 清单版本=$VERSION"
+          [ "$TAG" = "v$VERSION" ] || { echo "::error::标签与 manifest 版本不一致（应为 v$VERSION）"; exit 1; }
+
+      - name: 安装依赖
+        run: npm ci
+
+      - name: 构建（前端 + WASM 运行时）
+        run: npm run build
+
+      - name: 写入签名私钥
+        env:
+          SIGNING_KEY: ${{ secrets.DIAN115_PLUGIN_SIGNING_KEY }}
+        run: |
+          [ -n "$SIGNING_KEY" ] || { echo "::error::未配置 Secrets.DIAN115_PLUGIN_SIGNING_KEY"; exit 1; }
+          mkdir -p "$RUNNER_TEMP/dian115"
+          printf '%s\n' "$SIGNING_KEY" > "$RUNNER_TEMP/dian115/publisher.pem"
+          chmod 600 "$RUNNER_TEMP/dian115/publisher.pem"
+
+      - name: 打包并签名
+        env:
+          DIAN115_PLUGIN_SIGNING_KEY: ${{ runner.temp }}/dian115/publisher.pem
+        run: npm run package
+
+      - name: 清理私钥
+        if: always()
+        run: rm -f "$RUNNER_TEMP/dian115/publisher.pem"
+
+      - name: 生成市场索引
+        env:
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: npm run market -- --repo="https://github.com/${{ github.repository }}" --tag="$TAG"
+
+      - name: 创建 Release 并上传插件包
+        working-directory: .
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          gh release create "$TAG" plugins/douban-center/releases/*.d115p \
+            --title "$TAG" \
+            --notes "自动构建发布（前端 + WASM 运行时 + 签名包）。
+
+          安装：DIAN115 插件中心 → 添加插件仓库 → https://github.com/${{ github.repository }}" \
+            || gh release upload "$TAG" plugins/douban-center/releases/*.d115p --clobber
+
+      - name: 回写市场索引到 main
+        working-directory: .
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add plugin-market/index.json
+          if git diff --cached --quiet; then
+            echo "索引无变化"
+          else
+            git commit -m "chore: 更新市场索引 ${{ github.event.inputs.tag || github.ref_name }} [skip ci]"
+            git push origin HEAD:main
+          fi
