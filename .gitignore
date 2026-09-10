@@ -4,6 +4,8 @@ developer-ed25519-private.pem
 node_modules/
 build/
 releases/
+# 插件包只作为 Release 附件分发，不进仓库
+*.d115p
 
 # 构建产物，用 npm run build:wasm 生成
 runtime/plugin.wasm
