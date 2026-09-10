@@ -18,7 +18,7 @@ plugins/
 插件中心 → 添加插件仓库 → 填：
 
 ```
-https://github.com/congyoubanmian/douban-center-wasm
+https://github.com/congyoubanmian/dian115-plugins
 ```
 
 ## 收录的插件

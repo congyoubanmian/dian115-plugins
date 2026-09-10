@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
   "repository": {
-    "id": "congyoubanmian-douban-center-wasm",
-    "name": "douban-center-wasm 插件仓库",
-    "homepage": "https://github.com/congyoubanmian/douban-center-wasm"
+    "id": "congyoubanmian-dian115-plugins",
+    "name": "dian115-plugins 插件仓库",
+    "homepage": "https://github.com/congyoubanmian/dian115-plugins"
   },
   "plugins": [
     {
@@ -13,7 +13,7 @@
       "description": "周期抓取豆瓣榜单，黑名单过滤后经观察队列自动创建 DIAN115 聚合订阅，并记录订阅历史与统计。 (WASM 运行时版, 兼容无 seccomp 内核如群晖4.4)",
       "author": "congyoubanmian",
       "homepage": "https://github.com/congyoubanmian/douban-center-wasm",
-      "package_url": "https://github.com/congyoubanmian/douban-center-wasm/releases/download/v0.2.8/douban.center-0.2.8.d115p",
+      "package_url": "https://github.com/congyoubanmian/dian115-plugins/releases/download/v0.2.8/douban.center-0.2.8.d115p",
       "sha256": "2bcf4802aba58ceb016b5514e7f34d6fa28037a136a5c10af5298dcb03f3aac1",
       "runtime": {
         "kind": "wasm",
