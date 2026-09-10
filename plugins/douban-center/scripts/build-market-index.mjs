@@ -38,27 +38,44 @@ const repoParts = repoUrl.split('/')
 const owner = repoParts[repoParts.length - 2]
 const repoName = repoParts[repoParts.length - 1]
 
+const newEntry = {
+  ...entry,
+  package_url: packageUrl,
+  // 相对路径以索引最终 URL 为基准解析: 索引在 plugin-market/index.json,
+  // 图标放 plugin-market/icons/<插件id>.svg。
+  icon_url: `icons/${entry.id}.svg`,
+}
+
+const indexPath = join(join(root, '..', '..', 'plugin-market'), 'index.json')
+let existing = null
+try {
+  existing = JSON.parse(readFileSync(indexPath, 'utf8'))
+} catch {
+  existing = null
+}
+
+// 市场可收录多个插件: 按 id 增量更新, 保留其它插件的条目。
+const plugins = Array.isArray(existing?.plugins) ? existing.plugins.filter((p) => p.id !== newEntry.id) : []
+plugins.push(newEntry)
+plugins.sort((a, b) => String(a.id).localeCompare(String(b.id)))
+
 const index = {
   schema_version: 1,
   repository: {
     id: `${owner}-${repoName}`.toLowerCase(),
-    name: `${entry.name} 插件仓库`,
+    name: `${repoName} 插件仓库`,
     homepage: repoUrl,
   },
-  plugins: [
-    {
-      ...entry,
-      package_url: packageUrl,
-      // 相对路径会以索引最终 URL 为基准解析，因此图标放在 plugin-market/ 下。
-      icon_url: 'icon.svg',
-    },
-  ],
+  plugins,
 }
 
-const outDir = join(root, 'plugin-market')
-// 市场图标与索引同目录，icon_url 用相对路径即可
-cpSync(join(root, 'frontend', 'icon.svg'), join(outDir, 'icon.svg'))
+// 市场索引属于整个仓库（可收录多个插件），默认写到仓库根目录的 plugin-market/；
+// 若插件被单独克隆（没有 plugin-market/ 兄弟目录），退回插件目录内。
+const marketRoot = existsSync(join(root, '..', '..', 'plugin-market')) ? join(root, '..', '..', 'plugin-market') : join(root, 'plugin-market')
+const outDir = marketRoot
+mkdirSync(join(outDir, 'icons'), { recursive: true })
 mkdirSync(outDir, { recursive: true })
+cpSync(join(root, 'frontend', 'icon.svg'), join(outDir, 'icons', `${entry.id}.svg`))
 const outPath = join(outDir, 'index.json')
 writeFileSync(outPath, `${JSON.stringify(index, null, 2)}\n`)
 

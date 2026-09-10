@@ -1,67 +1,47 @@
-# 豆瓣中心 · DIAN115 插件
+# DIAN115 插件仓库
 
-周期抓取豆瓣榜单，经黑名单过滤与观察队列后自动创建 DIAN115 聚合订阅，并记录订阅历史与统计。
+这是 DIAN115 的**自定义插件市场仓库**，同时收录插件源码。插件中心添加本仓库地址后，
+宿主会自动读取主分支的 `plugin-market/index.json`（也可以直接填该 JSON 的 HTTPS 地址）。
 
-- 运行时：WASM（`dian115:wasm@1`，Go `wasip1` reactor），兼容无 seccomp 的内核（如群晖 DSM 4.4）
-- 界面：Vue 3 Module Federation 页面，复用宿主的 Vue / Naive UI / lucide 单例
+## 结构
 
-## 构建
-
-依赖：Node 18+、Go 1.22+（构建 WASM 运行时）。
-
-```bash
-npm install
-npm run build      # 构建前端 + WASM 运行时
-npm run package    # 生成已签名的 releases/douban.center-<version>.d115p
+```
+plugin-market/
+├── index.json              # 市场索引：DIAN115 插件中心读取这里
+└── icons/<插件id>.svg      # 插件图标（索引里用相对路径引用）
+plugins/
+└── douban-center/          # 豆瓣中心插件源码（构建与打包见该目录的 README）
 ```
 
-- `npm run build:ui` 只构建前端 Federation 产物
-- `npm run build:wasm` 只构建 `build/runtime/plugin.wasm`
-- `npm run check` 校验产物与 manifest 基本一致性
+## 在 DIAN115 里使用
 
-打包需要发布者私钥 `developer-ed25519-private.pem`（首次可用
-`npm run package -- --generate-key` 生成开发用密钥）。**该私钥不入库**。
+插件中心 → 添加插件仓库 → 填：
 
-## 安装
+```
+https://github.com/congyoubanmian/douban-center-wasm
+```
 
-在 DIAN115 的插件中心本地导入 `releases/*.d115p`。
+## 收录的插件
 
-## 发布到插件市场
+| 插件 id | 名称 | 版本 | 说明 |
+| --- | --- | --- | --- |
+| `douban.center` | 豆瓣中心 | 0.2.8 | 周期抓取豆瓣榜单，经观察队列自动创建聚合订阅 |
 
-DIAN115 的自定义插件仓库会读取主分支的 `plugin-market/index.json`
-（也可直接填 HTTPS 索引地址）。流程：
+## 新增一个插件
 
-1. `npm run package` 生成 `releases/douban.center-<version>.d115p`
-2. 在 GitHub 建 Release（标签建议 `v<version>`），把 `.d115p` 作为**附件**上传
-   （不要把包提交进仓库；市场条目指向 Release 下载地址即可）
-3. 生成市场索引：
+1. 把源码放到 `plugins/<插件目录>/`，按该目录的 README 构建
+2. 把生成的 `.d115p` 传到公开的 HTTPS 地址（建议用对应仓库的 GitHub Release 附件；
+   包不要提交进仓库）
+3. 在插件目录里执行，把条目写进市场索引（按 `id` 增量更新，不影响其它插件）：
 
    ```bash
-   npm run market -- --repo=https://github.com/<owner>/<repo>
+   npm run market -- --repo=<本仓库地址>
    ```
 
-   会写入 `plugin-market/index.json`，其中 `package_url` 指向 Release 附件，
-   `sha256`/`runtime`/`permissions` 直接取自签名包，保证与清单一致。
-4. 提交并推送 `plugin-market/index.json`
-5. 在 DIAN115 插件中心「添加插件仓库」填 `https://github.com/<owner>/<repo>`
+4. 在 DIAN115 插件中心重新添加/刷新本仓库
 
-## 目录
+## 发布边界
 
-```
-src/              前端页面（Federation 远程组件）
-runtime/          Go WASM 运行时（ABI、业务逻辑、Host API 调用）
-scripts/          构建与打包脚本
-manifest.template.json   插件清单模板（打包时写入 key_id）
-```
-
-## 与宿主交互时的注意点
-
-这些是在真实宿主上踩过的坑，改代码时留意：
-
-- **存储写入需要乐观锁**：`PUT /api/plugin-runtime/storage/:key` 对已存在的键要求
-  带 `If-Match: <ETag>`，否则返回 412。实现见 `runtime/wasm.go` 的 `wasmStoragePut`。
-- **前台动作约 10 秒会被强杀**：宿主用 wazero 解释器执行 WASM，单次动作里串行外部
-  请求的成本很高。刷新动作因此按成本排序、限制单次请求数，并有 6.5 秒预算保护
-  （见 `runtime/main.go` 的 `refreshNow`）。
-- **状态存单键**：全部状态序列化到 `state` 一个键，避免每次落盘多次往返。
-- **豆瓣页面模板会变**：解析用字节定位 + 宽松正则，且在后台任务里才做逐条海报补全。
+本仓库只提交插件索引、图标和插件源码；**不提交**签名私钥、构建产物和 `.d115p` 包
+（见 `.gitignore`）。插件包通过 HTTPS 分发地址提供，宿主安装时会校验包的完整性、
+签名、Manifest、权限与运行时披露，且要求市场条目与包内清单逐项一致。

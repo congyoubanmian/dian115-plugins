@@ -2,7 +2,7 @@
   "schema_version": 1,
   "repository": {
     "id": "congyoubanmian-douban-center-wasm",
-    "name": "豆瓣中心 插件仓库",
+    "name": "douban-center-wasm 插件仓库",
     "homepage": "https://github.com/congyoubanmian/douban-center-wasm"
   },
   "plugins": [
@@ -165,7 +165,7 @@
         "automation",
         "subscribe"
       ],
-      "icon_url": "icon.svg"
+      "icon_url": "icons/douban.center.svg"
     }
   ]
 }
