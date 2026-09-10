@@ -180,7 +180,15 @@ marketEntry.description = manifest.description
 marketEntry.author = manifest.publisher.name
 marketEntry.homepage = manifest.homepage
 marketEntry.sha256 = packageDigest
-marketEntry.runtime = { kind: 'process', protocol: manifest.runtime.protocol, autostart: true, trust_level: 'isolated-process' }
+// 市场披露必须与签名 Manifest 完全一致: 运行时类型/信任级别按 manifest 推导,
+// 不能写死（wasm 插件写成 process 会与清单不符，市场校验会拒绝）。
+const runtimeKind = manifest.runtime.kind === 'wasm' ? 'wasm' : 'process'
+marketEntry.runtime = {
+  kind: runtimeKind,
+  protocol: manifest.runtime.protocol,
+  autostart: true,
+  trust_level: runtimeKind === 'wasm' ? 'wasm-sandbox' : 'isolated-process',
+}
 marketEntry.permissions = manifest.permissions
 marketEntry.tags = manifest.tags || []
 writeFileSync(join(releasesRoot, 'market-entry.generated.json'), `${JSON.stringify(marketEntry, null, 2)}\n`)

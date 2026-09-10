@@ -26,6 +26,25 @@ npm run package    # 生成已签名的 releases/douban.center-<version>.d115p
 
 在 DIAN115 的插件中心本地导入 `releases/*.d115p`。
 
+## 发布到插件市场
+
+DIAN115 的自定义插件仓库会读取主分支的 `plugin-market/index.json`
+（也可直接填 HTTPS 索引地址）。流程：
+
+1. `npm run package` 生成 `releases/douban.center-<version>.d115p`
+2. 在 GitHub 建 Release（标签建议 `v<version>`），把 `.d115p` 作为**附件**上传
+   （不要把包提交进仓库；市场条目指向 Release 下载地址即可）
+3. 生成市场索引：
+
+   ```bash
+   npm run market -- --repo=https://github.com/<owner>/<repo>
+   ```
+
+   会写入 `plugin-market/index.json`，其中 `package_url` 指向 Release 附件，
+   `sha256`/`runtime`/`permissions` 直接取自签名包，保证与清单一致。
+4. 提交并推送 `plugin-market/index.json`
+5. 在 DIAN115 插件中心「添加插件仓库」填 `https://github.com/<owner>/<repo>`
+
 ## 目录
 
 ```
