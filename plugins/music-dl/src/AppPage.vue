@@ -22,6 +22,7 @@ const qualityLabels: Record<string, string> = { jymaster: '超清母带', jyeffe
 
 const qr = ref<{ source: string; qr_dataurl: string; key: string } | null>(null)
 const qrStatus = ref('')
+const qrMessage = ref('')
 const qrPolling = ref(false)
 
 const settings = computed<any>(() => state.value?.settings || {})
@@ -71,7 +72,9 @@ function pollQR(src: string, key: string) {
     if (!qrPolling.value) return
     try {
       const r = await invoke('agent-get', { path: `/qr/poll?source=${src}&key=${encodeURIComponent(key)}` })
-      qrStatus.value = r.status || ''
+      const d = r.data || {}
+      qrStatus.value = d.status || ''
+      qrMessage.value = d.message || ''
       if (r.status === 'success') {
         qrPolling.value = false
         message.success('登录成功')
@@ -121,7 +124,10 @@ onMounted(() => { refreshTasks() })
       </div>
       <div v-if="qr" class="qr">
         <img :src="qr.qr_dataurl" alt="二维码" width="220" />
-        <p>{{ qrStatus === 'scanned' ? '已扫码，请在手机确认' : qrStatus === 'expired' ? '二维码已过期' : '请用对应 App 扫码' }}</p>
+        <p v-if="qrStatus === 'scanned'">✓ 已扫码，请在手机上确认</p>
+        <p v-else-if="qrStatus === 'waiting'">等待扫码…（用对应音乐 App 的扫一扫）</p>
+        <p v-else-if="qrStatus === 'expired'">二维码已过期，请重新获取</p>
+        <p v-else>正在生成二维码…</p>
       </div>
       <p class="hint">下载与音质依赖对应平台会员：网易云 SVIP（母带）、QQ 绿钻（FLAC）、酷狗 VIP。</p>
     </section>

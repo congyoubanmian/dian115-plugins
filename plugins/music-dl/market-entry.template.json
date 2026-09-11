@@ -6,7 +6,7 @@
   "author": "congyoubanmian",
   "homepage": "https://github.com/congyoubanmian/dian115-plugins",
   "package_url": "https://example.invalid/music.dl-0.1.0.d115p",
-  "sha256": "99a064965a73d9d8629c1ffd63406162e58bf3b7b0334c2e4022b46b6347b11c",
+  "sha256": "22c7326ff6af0dd5a43670a9608c0e59c1b23c69f5d9d2913920eb966a534347",
   "runtime": {
     "kind": "wasm",
     "protocol": "dian115:wasm@1",
