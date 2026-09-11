@@ -34,8 +34,9 @@ const logged = computed<Record<string, boolean>>(() => {
 
 async function invoke(action: string, input: any = {}) {
   const r = await props.api.invokeAction(action, input)
-  if (r?.status === 'failed') throw new Error(r.message || '操作失败')
-  return r
+  const inner = (r as any)?.result || r  // 宿主 bridge 返回包装对象, 业务结果在 result 里
+  if (inner?.status === 'failed') throw new Error(inner.message || '操作失败')
+  return inner
 }
 
 async function doSearch() {
