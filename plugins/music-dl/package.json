@@ -10,7 +10,8 @@
     "build": "npm run build:ui && npm run build:wasm",
     "check": "node scripts/check.mjs",
     "package": "node scripts/package.mjs",
-    "release": "npm run build && npm run package"
+    "release": "npm run build && npm run package",
+    "market": "node scripts/build-market-index.mjs"
   },
   "peerDependencies": {
     "@lucide/vue": "^1.16.0",
