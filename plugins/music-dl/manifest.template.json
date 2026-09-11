@@ -32,7 +32,10 @@
     "network": [
       {
         "origin": "http://127.0.0.1:8791",
-        "methods": ["GET", "POST"],
+        "methods": [
+          "GET",
+          "POST"
+        ],
         "proxy_mode": "direct",
         "reason": "调用本机 music-agent 服务：扫码登录、音乐搜索、提交下载任务（下载在本机完成并经 CD2 写入 115）"
       }
@@ -42,5 +45,20 @@
   "homepage": "https://github.com/congyoubanmian/dian115-plugins",
   "repository": "https://github.com/congyoubanmian/dian115-plugins",
   "license": "MIT",
-  "tags": ["music", "netease", "qq", "kugou", "download"]
+  "tags": [
+    "music",
+    "netease",
+    "qq",
+    "kugou",
+    "download"
+  ],
+  "ui": {
+    "mode": "federation",
+    "icon": "frontend/icon.svg",
+    "federation": {
+      "entry": "frontend/dist/assets/remoteEntry.js",
+      "assets_root": "frontend/dist/assets",
+      "module": "./AppPage"
+    }
+  }
 }
