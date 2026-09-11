@@ -208,9 +208,8 @@ func (r *runtime) persistAll() {
 		return
 	}
 	if err := wasmStoragePut("state", data); err != nil {
-		r.mu.Lock()
+		// 注意: 不能在持锁时调用 r.log(它内部也要拿锁, Go Mutex 不可重入 → 死锁)
 		r.log("warning", "持久化失败: "+err.Error())
-		r.mu.Unlock()
 	}
 }
 
