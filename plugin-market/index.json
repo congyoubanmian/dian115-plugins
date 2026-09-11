@@ -175,7 +175,7 @@
       "author": "congyoubanmian",
       "homepage": "https://github.com/congyoubanmian/dian115-plugins",
       "package_url": "https://github.com/congyoubanmian/dian115-plugins/releases/download/music-dl-v0.1.0/music.dl-0.1.0.d115p",
-      "sha256": "b9022ddd9d92d69fbb9376893bf101c54521a310f964b0ce6b5f7dcd077cf106",
+      "sha256": "c0d9eea6c6da52f291ddea365f0575d16b94575eccd7a9dce14841540174771f",
       "runtime": {
         "kind": "wasm",
         "protocol": "dian115:wasm@1",
