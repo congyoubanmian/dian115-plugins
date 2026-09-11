@@ -272,6 +272,7 @@ func (r *runtime) action(invocationID string, raw json.RawMessage) (any, error) 
 		}
 		r.mu.Lock()
 		out["quality"] = r.settings.Quality[source]
+		out["status"] = "succeeded"
 		r.bump("succeeded", "搜索: "+query)
 		r.mu.Unlock()
 		return out, nil
@@ -317,7 +318,7 @@ func (r *runtime) action(invocationID string, raw json.RawMessage) (any, error) 
 			}
 			return nil, err
 		}
-		return out, nil
+		return map[string]any{"status": "succeeded", "data": out}, nil
 
 	case "agent-post":
 		path := get("path")
@@ -332,7 +333,7 @@ func (r *runtime) action(invocationID string, raw json.RawMessage) (any, error) 
 			}
 			return nil, err
 		}
-		return out, nil
+		return map[string]any{"status": "succeeded", "data": out}, nil
 
 	case "settings-update":
 		r.mu.Lock()

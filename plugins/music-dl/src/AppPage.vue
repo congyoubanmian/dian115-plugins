@@ -56,7 +56,8 @@ async function createQR(src: string) {
   qrStatus.value = ''
   try {
     const r = await invoke('agent-get', { path: `/qr/create?source=${src}` })
-    qr.value = { source: src, qr_dataurl: r.qr_dataurl, key: r.key }
+    const d = r.data || {}
+    qr.value = { source: src, qr_dataurl: d.qr_dataurl, key: d.key }
     qrPolling.value = true
     pollQR(src, r.key)
   } catch (e: any) { message.error(e?.message || '二维码获取失败') }
@@ -93,7 +94,7 @@ async function download(s: any) {
 async function refreshTasks() {
   try {
     const r = await invoke('agent-get', { path: '/tasks' })
-    tasks.value = r?.tasks || []
+    tasks.value = r?.data?.tasks || []
   } catch {}
 }
 
