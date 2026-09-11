@@ -23,6 +23,9 @@ const qualityLabels: Record<string, string> = { jymaster: '超清母带', jyeffe
 const qr = ref<{ source: string; qr_dataurl: string; key: string } | null>(null)
 const qrStatus = ref('')
 const qrMessage = ref('')
+const cookieInput = ref('')
+const cookieSource = ref('netease')
+const logins = ref<Record<string, boolean>>({})
 const qrPolling = ref(false)
 
 const settings = computed<any>(() => state.value?.settings || {})
@@ -44,7 +47,7 @@ async function doSearch() {
   if (!query.value.trim()) return
   searching.value = true
   try {
-    const r = await props.api.invokeAction('search', { source: source.value, query: query.value, page: 1 })
+    const r = await invoke('search', { source: source.value, query: query.value, page: 1 })
     results.value = r?.songs || []
     if (!results.value.length) message.info('没有搜索到内容')
   } catch (e: any) {
@@ -87,6 +90,33 @@ function pollQR(src: string, key: string) {
   }, 2000)
 }
 
+async function saveCookie() {
+  if (!cookieInput.value.trim()) return
+  try {
+    await invoke('agent-post', { path: '/session/save', payload: { source: cookieSource.value, cookies: parseCookie(cookieInput.value) } })
+    message.success('Cookie 已保存')
+    cookieInput.value = ''
+    await checkLogin()
+  } catch (e: any) { message.error(e?.message || '保存失败') }
+}
+
+function parseCookie(raw: string): Record<string, string> {
+  const out: Record<string, string> = {}
+  for (const part of raw.split(';')) {
+    const i = part.indexOf('=')
+    if (i > 0) out[part.slice(0, i).trim()] = part.slice(i + 1).trim()
+  }
+  return out
+}
+
+async function checkLogin() {
+  try {
+    const r = await invoke('agent-get', { path: '/session/status' })
+    const d = (r.data || {}) as Record<string, any>
+    logins.value = Object.fromEntries(Object.entries(d).map(([k, v]) => [k, typeof v === 'object' && v !== null && Object.keys(v).length > 0]))
+  } catch {}
+}
+
 async function download(s: any) {
   try {
     await invoke('download', { source: s.source || source.value, id: s.id, hash: s.hash || '', name: s.name, singers: s.singers, quality: s.quality })
@@ -102,7 +132,7 @@ async function refreshTasks() {
   } catch {}
 }
 
-onMounted(() => { refreshTasks() })
+onMounted(() => { refreshTasks(); checkLogin() })
 </script>
 
 <template>
@@ -130,6 +160,28 @@ onMounted(() => { refreshTasks() })
         <p v-else>正在生成二维码…</p>
       </div>
       <p class="hint">下载与音质依赖对应平台会员：网易云 SVIP（母带）、QQ 绿钻（FLAC）、酷狗 VIP。</p>
+
+      <n-divider style="margin: 6px 0" />
+      <h4 class="sub">Cookie 登录（网易云扫码已被官方风控停用，推荐用此方式）</h4>
+      <div class="row">
+        <select v-model="cookieSource" class="sel">
+          <option value="netease">网易云</option>
+          <option value="qq">QQ音乐</option>
+          <option value="kugou">酷狗</option>
+        </select>
+        <input v-model="cookieInput" class="input" placeholder="粘贴浏览器 Cookie（如 MUSIC_U=xxx; 或整条 cookie）" />
+        <n-button size="small" type="primary" @click="saveCookie">保存</n-button>
+        <n-button size="small" @click="checkLogin">检查登录</n-button>
+      </div>
+      <p class="hint">
+        获取方式：浏览器登录 music.163.com → F12 → Network → 任意请求的 Cookie 头，复制整段粘贴过来（关键字段 <code>MUSIC_U</code>）。
+      </p>
+      <p class="hint">
+        当前登录状态：
+        <n-tag v-for="(v, k) in logins" :key="k" size="small" :type="v ? 'success' : 'default'" style="margin-right:6px">
+          {{ k }} {{ v ? '已登录' : '未登录' }}
+        </n-tag>
+      </p>
     </section>
 
     <section class="card">
@@ -180,8 +232,8 @@ onMounted(() => { refreshTasks() })
 </template>
 
 <script lang="ts">
-import { NButton, NTag } from 'naive-ui'
-export default { components: { NButton, NTag } }
+import { NButton, NDivider, NTag } from 'naive-ui'
+export default { components: { NButton, NDivider, NTag } }
 </script>
 
 <style scoped>
@@ -197,5 +249,7 @@ p { margin: 4px 0; color: var(--dian-text-secondary); }
 .tbl th, .tbl td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--dian-divider); }
 .dim { color: var(--dian-text-muted); }
 .hint { color: var(--dian-text-muted); font-size: 12px; }
+.sub { margin: 4px 0; font-size: 14px; color: var(--dian-text-primary); }
+.sel { padding: 6px 8px; border: 1px solid var(--dian-border); border-radius: 8px; background: var(--dian-surface); color: var(--dian-text-primary); }
 .qr { display: grid; justify-items: center; gap: 4px; }
 </style>
