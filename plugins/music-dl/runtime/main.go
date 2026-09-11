@@ -273,8 +273,8 @@ func (r *runtime) action(invocationID string, raw json.RawMessage) (any, error) 
 		r.mu.Lock()
 		out["quality"] = r.settings.Quality[source]
 		out["status"] = "succeeded"
-		r.bump("succeeded", "搜索: "+query)
 		r.mu.Unlock()
+		r.bump("succeeded", "搜索: "+query)
 		return out, nil
 
 	case "download":
