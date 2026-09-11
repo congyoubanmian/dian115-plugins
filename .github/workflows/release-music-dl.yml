@@ -1,0 +1,73 @@
+name: 发布音乐下载插件
+
+on:
+  push:
+    tags:
+      - 'music-dl-v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: plugins/music-dl
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: main, fetch-depth: 0 }
+
+      - uses: actions/setup-node@v4
+        with: { node-version: '20' }
+
+      - uses: actions/setup-go@v5
+        with: { go-version: '1.24' }
+
+      - name: 安装依赖
+        run: npm ci || npm install
+
+      - name: 构建（前端 + WASM）
+        run: npm run build
+
+      - name: 写入签名私钥
+        env:
+          SIGNING_KEY: ${{ secrets.DIAN115_PLUGIN_SIGNING_KEY }}
+        run: |
+          [ -n "$SIGNING_KEY" ] || { echo "::error::未配置 Secrets.DIAN115_PLUGIN_SIGNING_KEY"; exit 1; }
+          mkdir -p "$RUNNER_TEMP/dian115"
+          printf '%s\n' "$SIGNING_KEY" > "$RUNNER_TEMP/dian115/publisher.pem"
+
+      - name: 打包并签名
+        env:
+          DIAN115_PLUGIN_SIGNING_KEY: ${{ runner.temp }}/dian115/publisher.pem
+        run: npm run package
+
+      - name: 生成市场索引
+        run: npm run market -- --repo="https://github.com/${{ github.repository }}" --tag="${{ github.ref_name }}"
+
+      - name: 创建 Release 并上传插件包
+        working-directory: .
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          gh release create "$TAG" plugins/music-dl/releases/*.d115p \
+            --title "$TAG" \
+            --notes "自动构建发布（音乐下载插件）。
+          安装：DIAN115 插件中心 → 添加插件仓库 → https://github.com/${{ github.repository }}" \
+            || gh release upload "$TAG" plugins/music-dl/releases/*.d115p --clobber
+
+      - name: 回写市场索引到 main
+        working-directory: .
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add plugin-market/index.json plugin-market/icons
+          if git diff --cached --quiet; then
+            echo "索引无变化"
+          else
+            git commit -m "chore: 更新音乐下载插件市场索引 ${{ github.ref_name }} [skip ci]"
+            git push origin HEAD:main
+          fi

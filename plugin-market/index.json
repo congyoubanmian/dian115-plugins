@@ -166,6 +166,44 @@
         "subscribe"
       ],
       "icon_url": "icons/douban.center.svg"
+    },
+    {
+      "id": "music.dl",
+      "name": "音乐下载",
+      "version": "0.1.0",
+      "description": "聚合网易云/QQ/酷狗音乐搜索下载，SVIP 音质自选，下载后经 CD2 写入 115 音乐目录自动入库。",
+      "author": "congyoubanmian",
+      "homepage": "https://github.com/congyoubanmian/dian115-plugins",
+      "package_url": "https://github.com/congyoubanmian/dian115-plugins/releases/download/music-dl-v0.1.0/music.dl-0.1.0.d115p",
+      "sha256": "CI_BUILD",
+      "runtime": {
+        "kind": "wasm",
+        "protocol": "dian115:wasm@1",
+        "autostart": true,
+        "trust_level": "wasm-sandbox"
+      },
+      "icon_url": "icons/music.dl.svg",
+      "permissions": {
+        "apis": [],
+        "network": [
+          {
+            "origin": "http://127.0.0.1:8791",
+            "methods": [
+              "GET",
+              "POST"
+            ],
+            "proxy_mode": "direct",
+            "reason": "调用本机 music-agent 服务完成扫码登录、搜索与下载任务提交"
+          }
+        ]
+      },
+      "tags": [
+        "music",
+        "netease",
+        "qq",
+        "kugou",
+        "download"
+      ]
     }
   ]
 }
