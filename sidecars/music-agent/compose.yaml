@@ -1,18 +1,17 @@
 services:
   music-agent:
-    build:
-      context: .
+    build: /volume1/docker/music-agent
     container_name: music-agent
     restart: unless-stopped
+    mem_limit: 512m
     network_mode: host
     environment:
-      HOST: 127.0.0.1
-      PORT: 8791
-      CONFIG_DIR: /config
-      MUSIC_MOUNT: /CloudNAS/115open/音乐
-      DOWNLOAD_SUBDIR: 音乐下载
-      DOWNLOAD_PROXY: ${DOWNLOAD_PROXY:-}
-      USER_AGENT: ${USER_AGENT:-Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36}
+      - PORT=8791
+      - CONFIG_DIR=/config
+      - MUSIC_MOUNT=/CloudNAS/115open/音乐
+      - DOWNLOAD_SUBDIR=音乐下载
+      - DOWNLOAD_PROXY=${DOWNLOAD_PROXY:-}
+      - USER_AGENT=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36
     volumes:
-      - ${MUSIC_AGENT_DATA:-./data}:/config
-      - ${CLOUDNAS_PATH:-/volume1/CloudNAS}:/CloudNAS:shared
+      - /volume1/docker/music-agent/config:/config
+      - /volume1/CloudNAS:/CloudNAS:shared
