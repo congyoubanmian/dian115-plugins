@@ -213,19 +213,38 @@ async function qqQRPoll(key) {
     pt_uistyle: '40', aid: '716027609', daid: '383', pt_3rd_aid: '100497308',
     has_onekey: '1', pttype: '1', service: 'ptqrlogin', nodirect: '0',
   })
-  const r = await F('https://ssl.ptlogin2.qq.com/ptqrlogin?' + params.toString(), { headers: { 'user-agent': UA, referer: 'https://xui.ptlogin2.qq.com/', cookie: 'qrsig=' + v.qrsig } })
-  const body = await r.text()
+  const r = await F('https://ssl.ptlogin2.qq.com/ptqrlogin?' + params.toString(), { headers: { 'user-agent': UA, referer: 'https://xui.ptlogin2.qq.com/', cookie: 'qrsig=' + v.qrsig }, redirect: 'manual' })
+  // ptqrlogin 302 链会下发 skey/p_skey/uin（QQ 音乐 API 凭据），逐步收集
+  const pollJar = {}
+  let hop = r
+  for (let h = 0; h < 6 && hop.status >= 300 && hop.status < 400; h++) {
+    for (const line of (hop.headers.getSetCookie ? hop.headers.getSetCookie() : [])) {
+      const kv = line.split(';')[0].split('=')
+      if (kv.length >= 2 && kv[0]) pollJar[kv[0].trim()] = kv.slice(1).join('=')
+    }
+    const loc = hop.headers.get('location')
+    if (!loc) break
+    hop = await F(loc, { headers: { 'user-agent': UA, cookie: Object.entries(pollJar).map(([k, v]) => `${k}=${v}`).join('; ') || ('qrsig=' + v.qrsig), redirect: 'manual' } })
+    for (const line of (hop.headers.getSetCookie ? hop.headers.getSetCookie() : [])) {
+      const kv = line.split(';')[0].split('=')
+      if (kv.length >= 2 && kv[0]) pollJar[kv[0].trim()] = kv.slice(1).join('=')
+    }
+  }
+  log(`[qq-poll] 链上 cookie: ${Object.keys(pollJar).join(',') || '无'}`)
+  const body = hop.status < 400 ? await hop.text() : ''
   const matches = [...body.matchAll(/'([^']*)'/g)].map((m) => m[1])
   const code = matches[0] || ''
   const redirect = matches[2] || ''
   const statusMap = { 0: 'success', 65: 'expired', 66: 'waiting', 67: 'scanned' }
   const status = statusMap[code] || 'failed'
+  log(`[qq-poll] code=${code} status=${status}`)
   if (status !== 'success') return { status, code }
-  // 跟随重定向链收集 cookie
-  const jar = {}
+  // 跟随重定向链收集 cookie：必须 redirect:manual（否则 fetch 自动跟随会丢中间 Set-Cookie）
+  const jar = { ...pollJar }
   let cur = redirect
   for (let i = 0; i < 8 && cur; i++) {
-    const rr = await F(cur, { headers: { 'user-agent': UA, referer: 'https://y.qq.com/', cookie: Object.entries(jar).map(([k, v]) => `${k}=${v}`).join('; ') || ('qrsig=' + v.qrsig), redirect: 'manual' } })
+    const rr = await F(cur, { headers: { 'user-agent': UA, referer: 'https://y.qq.com/', cookie: Object.entries(jar).map(([k, v]) => `${k}=${v}`).join('; ') || ('qrsig=' + v.qrsig) }, redirect: 'manual' })
+    log(`[qq-redirect] ${rr.status} ${String(cur).slice(0, 60)}`)
     for (const line of (rr.headers.getSetCookie ? rr.headers.getSetCookie() : [])) {
       const kv = line.split(';')[0].split('=')
       if (kv.length >= 2 && kv[0]) jar[kv[0].trim()] = kv.slice(1).join('=')
@@ -234,7 +253,7 @@ async function qqQRPoll(key) {
     if (!loc || rr.status < 300 || rr.status >= 400) break
     cur = loc
   }
-  if (!jar.uin) for (const k of ['ptui_loginuin', 'luin', 'wxuin']) if (jar[k]) { jar.uin = jar[k]; break }
+  if (!jar.uin) for (const k of ['ptui_loginuin', 'luin', 'p_uin', 'pt2gguin', 'wxuin']) if (jar[k]) { jar.uin = jar[k]; break }
   if (!jar.qqmusic_key) for (const k of ['p_skey', 'skey', 'musickey']) if (jar[k]) { jar.qqmusic_key = jar[k]; break }
   sessions.qq = { ...sessions.qq, ...jar }
   saveSessions()
