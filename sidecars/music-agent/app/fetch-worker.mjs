@@ -103,10 +103,14 @@ async function neteaseURL(songID, level, cookie) {
 
 const neteaseLevels = ['jymaster', 'jyeffect', 'sky', 'hires', 'lossless', 'dolby', 'exhigh', 'standard']
 
-async function qqURL(songmid, cookie, isVip) {
-  const ladder = isVip
-    ? [['AI00', 'flac'], ['Q001', 'flac'], ['Q000', 'flac'], ['F000', 'flac'], ['M800', 'mp3'], ['M500', 'mp3']]
-    : [['M800', 'mp3'], ['M500', 'mp3']]
+const QQ_LADDER = [['AI00', 'flac'], ['Q001', 'flac'], ['Q000', 'flac'], ['F000', 'flac'], ['O801', 'ogg'], ['M800', 'mp3'], ['M500', 'mp3']]
+async function qqURL(songmid, cookie, isVip, quality) {
+  let ladder = QQ_LADDER
+  if (!isVip) ladder = [['M800', 'mp3'], ['M500', 'mp3']]
+  else if (quality) {
+    const start = { master: 0, flac: 3, 320: 5, 128: 6 }[quality]
+    if (start !== undefined) ladder = QQ_LADDER.slice(start)
+  }
   const guid = String(Math.floor(Math.random() * 1e10))
   const filenames = ladder.map(([p, e]) => `${p}${songmid}${songmid}.${e}`)
   const uin = (cookie.match(/uin=([^;]+)/) || [])[1]?.replace(/^o0*/, '0') || '0'
@@ -179,7 +183,7 @@ async function main() {
     if (!dl.url) throw lastErr || new Error('netease 未取到链接')
   } else if (source === 'qq') {
     const vip = Boolean(task.is_vip !== false)
-    dl = { ...(await qqURL(sourceID, cookie, vip)), actual: '' }
+    dl = { ...(await qqURL(sourceID, cookie, vip, task.quality)), actual: task.quality || '' }
   } else if (source === 'kugou') {
     dl = { ...(await kugouURL(sourceID, quality === 'flac' ? 'flac' : quality, cookie)), actual: quality }
   } else {

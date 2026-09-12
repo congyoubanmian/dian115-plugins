@@ -242,6 +242,79 @@ async function qqQRPoll(key) {
   return { status: 'success', logged_in: true }
 }
 
+// ── 网易云歌单（明文 API + Cookie）──────────────────────────
+async function neteaseAccount() {
+  const r = await F('https://music.163.com/api/nuser/account/get', {
+    method: 'POST',
+    headers: { 'content-type': 'application/x-www-form-urlencoded', referer: 'https://music.163.com/', 'user-agent': UA, cookie: cookieOf('netease'), ...ipHeaders() },
+    body: '',
+  })
+  const j = await r.json()
+  const uid = j?.profile?.userId
+  if (!uid) throw new Error('未登录或登录态失效')
+  return { uid: String(uid), nickname: j?.profile?.nickname || '' }
+}
+
+async function neteasePlaylists() {
+  const { uid, nickname } = await neteaseAccount()
+  const out = []
+  for (let offset = 0; offset < 2000; offset += 100) {
+    const r = await F(`https://music.163.com/api/user/playlist?uid=${uid}&limit=100&offset=${offset}&includeVideo=true`, {
+      headers: { referer: 'https://music.163.com/', 'user-agent': UA, cookie: cookieOf('netease'), ...ipHeaders() },
+    })
+    const j = await r.json()
+    const list = j?.playlist || []
+    for (const p of list) out.push({ id: String(p.id), name: p.name, cover: p.coverImgUrl, count: p.trackCount || 0, creator: p.creator?.nickname || nickname })
+    if (list.length < 100) break
+  }
+  return { playlists: out, count: out.length }
+}
+
+const NETEASE_LEVEL_ORDER = ['standard', 'exhigh', 'lossless', 'hires', 'sky', 'jyeffect', 'dolby', 'jymaster']
+
+async function neteasePlaylistSongs(id, page, pageSize) {
+  // v6 明文接口 n=0 拿全量 trackIds（不受 1000 截断），再分批 v3 detail 换详情
+  const r = await F(`https://music.163.com/api/v6/playlist/detail?id=${encodeURIComponent(id)}&n=0`, {
+    headers: { referer: 'https://music.163.com/', 'user-agent': UA, cookie: cookieOf('netease'), ...ipHeaders() },
+  })
+  const j = await r.json()
+  const pl = j?.playlist || j?.result || {}
+  const ids = (pl.trackIds || []).map((t) => t.id)
+  const total = pl.trackCount ?? ids.length
+  const name = pl.name || ''
+  const start = (page - 1) * pageSize
+  const pageIds = ids.slice(start, start + pageSize)
+  if (!pageIds.length) return { name, total, page, pageSize, songs: [] }
+
+  const tracks = []
+  for (let i = 0; i < pageIds.length; i += 200) {
+    const chunk = pageIds.slice(i, i + 200)
+    const c = JSON.stringify(chunk.map((v) => ({ id: v })))
+    const rr = await F('https://music.163.com/api/v3/song/detail', {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded', referer: 'https://music.163.com/', 'user-agent': UA, cookie: cookieOf('netease'), ...ipHeaders() },
+      body: `c=${encodeURIComponent(c)}&ids=[${chunk.join(',')}]`,
+    })
+    const jj = await rr.json()
+    for (const t of jj?.songs || []) tracks.push(t)
+  }
+
+  const songs = tracks.map((t) => {
+    const priv = t.privilege || {}
+    const maxBr = priv.maxBrLevel || priv.downloadMaxBrLevel || ''
+    const maxIdx = NETEASE_LEVEL_ORDER.indexOf(maxBr)
+    const qualities = maxIdx >= 0 ? NETEASE_LEVEL_ORDER.slice(0, maxIdx + 1).reverse() : []
+    return {
+      id: String(t.id), name: t.name,
+      singers: (t.ar || t.artists || []).map((a) => a.name).join('/'),
+      album: (t.al || t.album)?.name || '', cover: (t.al || t.album)?.picUrl || '',
+      duration_ms: t.dt || t.duration || 0, source: 'netease',
+      max_level: maxBr, qualities,
+    }
+  })
+  return { name, total, page, pageSize, songs }
+}
+
 // ── 酷狗 ─────────────────────────────────────────────────────
 const kgSign = (params) => {
   const pairs = Object.entries(params).map(([k, v]) => `${k}=${v}`).sort()
@@ -342,6 +415,16 @@ function outPathFor(t) {
   return path.join(MUSIC_MOUNT, DL_SUBDIR, fname)
 }
 
+const MAX_CONCURRENT_DOWNLOADS = Number(process.env.MAX_CONCURRENT_DOWNLOADS || 2)
+function pumpQueue() {
+  let active = Object.values(tasks).filter((t) => t.status === 'downloading').length
+  const queued = Object.values(tasks).filter((t) => t.status === 'queued').sort((a, b) => a.created - b.created)
+  for (const t of queued) {
+    if (active >= MAX_CONCURRENT_DOWNLOADS) break
+    active++
+    startDownload(t)
+  }
+}
 function startDownload(t) {
   t.status = 'downloading'; t.progress = 0; t.message = '启动'
   saveTask(t)
@@ -372,12 +455,14 @@ function startDownload(t) {
       if (r.ok) { t.status = 'done'; t.progress = 100; t.message = `完成 ${fmtMB(r.size)} (${r.quality || ''})` }
       else { t.status = 'failed'; t.message = r.error || '失败' }
       saveTask(t)
+      pumpQueue()
     } catch {}
   })
   child.on('close', (code) => {
     if (t.status === 'downloading') { t.status = 'failed'; t.message = 'worker 异常退出 code=' + code }
     saveTask(t)
     fs.unlink(taskFile, () => {})
+    pumpQueue()
   })
 }
 
@@ -411,6 +496,41 @@ const server = http.createServer(async (req, res) => {
       const r = source === 'netease' ? await neteaseQRPoll(key) : source === 'qq' ? await qqQRPoll(key) : await kugouQRPoll(key)
       return jsonRes(res, 200, r)
     }
+    if (u.pathname === '/playlists') {
+      const source = u.searchParams.get('source') || 'netease'
+      if (source !== 'netease') return jsonRes(res, 400, { error: '该来源暂不支持歌单，先支持网易云' })
+      return jsonRes(res, 200, await neteasePlaylists())
+    }
+    if (u.pathname === '/playlist/songs') {
+      const source = u.searchParams.get('source') || 'netease'
+      const id = u.searchParams.get('id') || ''
+      const page = Number(u.searchParams.get('page')) || 1
+      const pageSize = Math.min(Number(u.searchParams.get('page_size')) || 100, 500)
+      if (!id) return jsonRes(res, 400, { error: 'id required' })
+      if (source !== 'netease') return jsonRes(res, 400, { error: '该来源暂不支持歌单，先支持网易云' })
+      return jsonRes(res, 200, await neteasePlaylistSongs(id, page, pageSize))
+    }
+    if (u.pathname === '/download/batch' && req.method === 'POST') {
+      const b = await readBody(req)
+      const songs = Array.isArray(b.songs) ? b.songs : []
+      if (!songs.length) return jsonRes(res, 400, { error: 'songs required' })
+      const quality = b.quality || 'flac'
+      const ids = []
+      for (const s of songs.slice(0, 1000)) {
+        const id = 't' + Date.now() + Math.random().toString(36).slice(2, 6)
+        const t = {
+          id, song_id: String(s.id || ''), hash: String(s.hash || ''), source: b.source,
+          name: s.name, singers: s.singers, album: s.album || '',
+          quality, ext: b.ext, created: Date.now(), status: 'queued', progress: 0, message: '排队中',
+        }
+        t.out_path = outPathFor(t)
+        tasks[id] = t
+        ids.push(id)
+      }
+      saveTasks()
+      pumpQueue()
+      return jsonRes(res, 200, { ok: true, count: ids.length, task_ids: ids })
+    }
     if (u.pathname === '/download' && req.method === 'POST') {
       const b = await readBody(req)
       const id = 't' + Date.now() + Math.random().toString(36).slice(2, 6)
@@ -427,9 +547,10 @@ const server = http.createServer(async (req, res) => {
         created: Date.now(),
       }
       t.out_path = outPathFor(t)
+      t.status = 'queued'; t.progress = 0; t.message = '排队中'
       tasks[id] = t
       saveTasks()
-      startDownload(t)
+      pumpQueue()
       return jsonRes(res, 200, { ok: true, task_id: id })
     }
     if (u.pathname === '/task' || u.pathname === '/tasks') {
