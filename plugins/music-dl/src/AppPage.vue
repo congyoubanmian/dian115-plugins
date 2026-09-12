@@ -134,8 +134,6 @@ async function checkLogin() {
 }
 
 async function loadPlaylists() {
-  await checkLogin()
-  if (!logins.value[source.value]) { playlists.value = []; return }
   playlistsLoading.value = true
   try {
     const r = await invoke('agent-get', { path: `/playlists?source=${source.value}` })
