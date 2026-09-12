@@ -284,9 +284,8 @@ onMounted(() => { refreshTasks(); checkLogin() })
         <n-button size="small" @click="loadPlaylists">刷新</n-button>
         <n-tag v-for="s in sources" :key="'lg'+s.id" size="small" :type="logins[s.id] ? 'success' : 'default'">{{ s.name }} {{ logins[s.id] ? '已登录' : '未登录' }}</n-tag>
       </div>
-      <p v-if="!logins[source]" class="hint">该来源未登录：请先在上方「扫码登录」获取二维码并用 {{ source === 'qq' ? 'QQ音乐（或微信）' : source === 'kugou' ? '酷狗音乐' : '网易云音乐' }} App 扫码。</p>
-      <p v-else-if="source === 'kugou'" class="hint">酷狗歌单接口暂未接入，可先使用搜索下载。</p>
-      <div v-else class="plgrid">
+      <p v-if="source === 'kugou'" class="hint">酷狗歌单接口暂未接入，可先使用搜索下载。</p>
+      <div class="plgrid">
         <button v-for="p in playlists" :key="p.id" class="plcard" @click="openPlaylist(p)">
           <img v-if="p.cover" :src="p.cover" referrerpolicy="no-referrer" />
           <div class="plname">{{ p.name }}</div>
