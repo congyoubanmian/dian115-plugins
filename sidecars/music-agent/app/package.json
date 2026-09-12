@@ -1,9 +1,10 @@
 {
-  "name": "re0-agent",
+  "name": "music-agent",
   "version": "1.0.0",
   "private": true,
   "type": "module",
   "dependencies": {
-    "undici": "^6.21.0"
+    "undici": "^6.21.0",
+    "qrcode": "^1.5.4"
   }
 }

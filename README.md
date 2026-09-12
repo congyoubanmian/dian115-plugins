@@ -1,80 +1,82 @@
 # DIAN115 插件仓库
 
-这是 DIAN115 的**自定义插件市场仓库**，同时收录插件源码。插件中心添加本仓库地址后，
-宿主会自动读取主分支的 `plugin-market/index.json`（也可以直接填该 JSON 的 HTTPS 地址）。
+这是 DIAN115 的自定义插件市场仓库，包含插件源码、市场索引，以及无法放入 WASM 插件的大文件处理 sidecar。
 
-## 结构
+插件中心添加本仓库地址后，宿主会读取 `main` 分支的 `plugin-market/index.json`：
 
-```
-plugin-market/
-├── index.json              # 市场索引：DIAN115 插件中心读取这里
-└── icons/<插件id>.svg      # 插件图标（索引里用相对路径引用）
-plugins/
-└── douban-center/          # 豆瓣中心插件源码（构建与打包见该目录的 README）
-```
-
-## 在 DIAN115 里使用
-
-插件中心 → 添加插件仓库 → 填：
-
-```
+```text
 https://github.com/congyoubanmian/dian115-plugins
 ```
 
-## 收录的插件
+## 仓库结构
 
-| 插件 id | 名称 | 版本 | 说明 |
-| --- | --- | --- | --- |
-| `douban.center` | 豆瓣中心 | 0.2.8 | 周期抓取豆瓣榜单，经观察队列自动创建聚合订阅 |
-
-## 新增一个插件
-
-1. 把源码放到 `plugins/<插件目录>/`，按该目录的 README 构建
-2. 把生成的 `.d115p` 传到公开的 HTTPS 地址（建议用对应仓库的 GitHub Release 附件；
-   包不要提交进仓库）
-3. 在插件目录里执行，把条目写进市场索引（按 `id` 增量更新，不影响其它插件）：
-
-   ```bash
-   npm run market -- --repo=<本仓库地址>
-   ```
-
-4. 在 DIAN115 插件中心重新添加/刷新本仓库
-
-## 自动发版（GitHub Actions）
-
-推一个 `v<版本>` 标签即自动完成：构建前端 + 编译 WASM → 打包签名 → 创建 Release 并上传
-`.d115p` → 更新 `plugin-market/index.json`。见 `.github/workflows/release.yml`。
-
-首次需要配置签名私钥：仓库 **Settings → Secrets and variables → Actions → New repository secret**
-
-| 名称 | 值 |
-| --- | --- |
-| `DIAN115_PLUGIN_SIGNING_KEY` | 签名私钥 PEM 全文（本地文件 `plugins/douban-center/developer-ed25519-private.pem`） |
-
-之后发版：
-
-```bash
-cd plugins/douban-center
-# 1. 改 manifest.template.json 里的 version 为新的 x.y.z
-# 2. 提交并推送到 main
-git commit -am "chore: 发布 x.y.z" && git push origin main
-# 3. 打标签触发自动发布
-git tag vx.y.z && git push origin vx.y.z
+```text
+plugin-market/
+├── index.json                       DIAN115 市场索引
+└── icons/<插件id>.svg               插件图标
+plugins/
+├── douban-center/                   豆瓣中心 WASM 插件
+└── music-dl/                        音乐下载 WASM 插件（UI + 调度）
+sidecars/
+└── music-agent/                     音乐下载配套服务（流式下载 + CD2 写入）
 ```
 
-也可以在 Actions 页面手动触发（workflow_dispatch，填标签名）。
+## 收录内容
 
-> 说明：私钥只用于签名。放进 CI Secrets 意味着拥有仓库管理权限的人可以签发以本发布者
-> 名义的插件包；若不希望如此，就继续在本地跑 `npm run release`，把 `.d115p` 手动传到
-> Release 附件。
+| 插件 ID | 名称 | 说明 | 额外组件 |
+| --- | --- | --- | --- |
+| `douban.center` | 豆瓣中心 | 豆瓣榜单、观察队列与聚合订阅 | 无 |
+| `music.dl` | 音乐下载 | 网易云/QQ/酷狗扫码、搜索和下载 | **必须部署 `sidecars/music-agent`** |
 
-> **重要**：索引里的 `sha256` 必须与实际分发的那份包完全一致。包的构建结果与本机/CI 的
-> Go 工具链版本有关（同一版本号在两处编出的 wasm 大小都会不同），因此**发布用的索引一律由
-> CI 生成**。如果你在本地跑 `npm run market` 后推送，索引就会指向本地构建的包，安装时会出现
-> 「插件包 SHA-256 不匹配」。本地跑该命令仅用于预览或手动发版（此时需同时上传本地那份包）。
+## 音乐下载的部署顺序
 
-## 发布边界
+1. 按 [`sidecars/music-agent/README.md`](sidecars/music-agent/README.md) 部署 `music-agent`
+2. 验证 `curl http://127.0.0.1:8791/health`
+3. 在 DIAN115 插件中心安装 `music.dl`
+4. 扫码或粘贴 Cookie 登录，搜索并下载
+5. 文件由 agent 写入 CloudDrive2 音乐挂载，再由 115 音乐中心建树/整理
 
-本仓库只提交插件索引、图标和插件源码；**不提交**签名私钥、构建产物和 `.d115p` 包
-（见 `.gitignore`）。插件包通过 HTTPS 分发地址提供，宿主安装时会校验包的完整性、
-签名、Manifest、权限与运行时披露，且要求市场条目与包内清单逐项一致。
+`music-agent` 默认仅监听 `127.0.0.1:8791`，Cookie 只存于部署机本地的 `data/sessions.json`，不会打入插件包或提交到 GitHub。
+
+## 插件开发与发版
+
+每个插件源码位于 `plugins/<目录>/`。以音乐下载为例：
+
+```bash
+cd plugins/music-dl
+npm ci
+npm run build
+npm run package
+```
+
+GitHub Actions 按标签自动构建、签名、创建 Release 并回写市场索引：
+
+```bash
+# 豆瓣中心
+git tag v0.2.9
+git push origin v0.2.9
+
+# 音乐下载
+git tag music-dl-v0.1.8
+git push origin music-dl-v0.1.8
+```
+
+发布前必须保证标签与插件 Manifest 版本一致。索引中的 `sha256` 必须由同一轮 CI 构建出的 Release 附件计算，不能混用本地包哈希。
+
+## 安全与发布边界
+
+仓库不提交：
+
+- 插件签名私钥 `*.pem` / `*.key`
+- `music-agent` 的 `data/`、`sessions.json`、`tasks.json`
+- 用户 Cookie、二维码临时状态和下载文件
+- `node_modules/`、`build/`、`releases/`
+
+平台 Cookie 等同于登录凭据。若怀疑泄漏，应在相应音乐平台退出设备并重新登录。
+
+## 文档
+
+- [豆瓣中心](plugins/douban-center/README.md)
+- [音乐下载插件](plugins/music-dl/README.md)
+- [music-agent 配套服务](sidecars/music-agent/README.md)
+- [DIAN115 官方插件平台](https://github.com/madbrolab/dian115/tree/main/docs/plugin-platform)

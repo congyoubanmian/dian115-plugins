@@ -10,5 +10,13 @@ node_modules/
 # 插件包只作为 Release 附件分发，不进仓库
 *.d115p
 
+# Sidecar 运行数据（含平台 Cookie、二维码状态和下载任务）
+**/data/
+**/sessions.json
+**/tasks.json
+**/qr-*.b64
+**/qr-*.txt
+**/task-*.json
+
 *.log
 .DS_Store

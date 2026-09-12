@@ -15,16 +15,32 @@ const tasks = ref<any[]>([])
 
 const sources = [
   { id: 'netease', name: '网易云', qualities: ['jymaster', 'jyeffect', 'sky', 'hires', 'lossless', 'exhigh', 'standard'] },
-  { id: 'qq', name: 'QQ音乐', qualities: ['flac', '320', '128'] },
+  { id: 'qq', name: 'QQ音乐', qualities: ['master', 'flac', '320', '128'] },
   { id: 'kugou', name: '酷狗', qualities: ['flac', '320', '128'] },
 ]
-const qualityLabels: Record<string, string> = { jymaster: '超清母带', jyeffect: '高清臻音', sky: '沉浸环绕', hires: 'Hi-Res', lossless: '无损', dolby: '杜比', exhigh: '极高', standard: '标准', flac: '无损 FLAC', 320: '320K', 128: '128K' }
+const qualityLabels: Record<string, string> = { jymaster: '超清母带', jyeffect: '高清臻音', sky: '沉浸环绕', hires: 'Hi-Res', lossless: '无损', dolby: '杜比', exhigh: '极高', standard: '标准', master: '母带', flac: '无损 FLAC', 320: '320K', 128: '128K' }
+function qualitiesFor(src: string, song?: any): string[] {
+  if (song?.qualities?.length) return song.qualities
+  const def = sources.find((s) => s.id === src)
+  return def ? def.qualities : ['flac', '320', '128']
+}
 
 const qr = ref<{ source: string; qr_dataurl: string; key: string } | null>(null)
 const qrStatus = ref('')
 const qrMessage = ref('')
+const tab = ref('search')
 const cookieInput = ref('')
 const cookieSource = ref('netease')
+const playlists = ref<any[]>([])
+const playlistsLoading = ref(false)
+const view = ref<{ id: string; name: string } | null>(null)
+const plSongs = ref<any[]>([])
+const plName = ref('')
+const plLoading = ref(false)
+const batchQuality = ref('')
+const songQuality = ref<Record<string, string>>({})
+const plTotal = ref(0)
+const plPage = ref(1)
 const logins = ref<Record<string, boolean>>({})
 const qrPolling = ref(false)
 
@@ -113,13 +129,61 @@ async function checkLogin() {
   try {
     const r = await invoke('agent-get', { path: '/session/status' })
     const d = (r.data || {}) as Record<string, any>
-    logins.value = Object.fromEntries(Object.entries(d).map(([k, v]) => [k, typeof v === 'object' && v !== null && Object.keys(v).length > 0]))
+    logins.value = Object.fromEntries(Object.entries(d).map(([k, v]) => [k, Boolean(v && typeof v === 'object' && (v as any).logged_in)]))
   } catch {}
+}
+
+async function loadPlaylists() {
+  playlistsLoading.value = true
+  try {
+    const r = await invoke('agent-get', { path: `/playlists?source=${source.value}` })
+    playlists.value = r?.data?.playlists || []
+  } catch (e: any) { message.error(e?.message || '歌单获取失败') } finally { playlistsLoading.value = false }
+}
+
+async function openPlaylist(p: any) {
+  view.value = { id: p.id, name: p.name }
+  plName.value = p.name
+  plLoading.value = true
+  plSongs.value = []
+  batchQuality.value = qualitiesFor(source.value)[0]
+  try {
+    const r = await invoke('agent-get', { path: `/playlist/songs?source=${source.value}&id=${p.id}&page=1&page_size=100` })
+    plSongs.value = r?.data?.songs || []
+    plTotal.value = r?.data?.total || plSongs.value.length
+  } catch (e: any) { message.error(e?.message || '歌单内容获取失败') } finally { plLoading.value = false }
+}
+
+async function loadMore() {
+  if (!view.value) return
+  plLoading.value = true
+  plPage.value += 1
+  try {
+    const r = await invoke('agent-get', { path: `/playlist/songs?source=${source.value}&id=${view.value.id}&page=${plPage.value}&page_size=100` })
+    plSongs.value = [...plSongs.value, ...(r?.data?.songs || [])]
+  } catch {} finally { plLoading.value = false }
+}
+
+function songQualityFor(song: any): string {
+  const chosen = songQuality.value[song.id]
+  if (chosen) return chosen
+  const list = qualitiesFor(source.value, song)
+  return list[0] || 'flac'
+}
+
+async function downloadBatch() {
+  if (!view.value || !plSongs.value.length) return
+  try {
+    const songs = plSongs.value.map((s) => ({ id: s.id, hash: s.hash || '', name: s.name, singers: s.singers, album: s.album }))
+    const r = await invoke('agent-post', { path: '/download/batch', payload: { source: source.value, quality: batchQuality.value, songs } })
+    message.success(`已排队 ${r?.count ?? songs.length} 首下载`)
+    refreshTasks()
+  } catch (e: any) { message.error(e?.message || '批量下载失败') }
 }
 
 async function download(s: any) {
   try {
-    await invoke('download', { source: s.source || source.value, id: s.id, hash: s.hash || '', name: s.name, singers: s.singers, quality: s.quality })
+    await invoke('download', { source: s.source || source.value, id: s.id, hash: s.hash || '', name: s.name, singers: s.singers, quality: s.quality || qualitiesFor(source.value, s)[0] })
     message.success(`已提交下载: ${s.name}`)
     setTimeout(refreshTasks, 1500)
   } catch (e: any) { message.error(e?.message || '下载失败') }
@@ -144,11 +208,16 @@ onMounted(() => { refreshTasks(); checkLogin() })
       </div>
       <n-button size="small" @click="refreshTasks">刷新任务</n-button>
     </header>
+    <nav class="tabs">
+      <button v-for="t in ['search','playlists','tasks']" :key="t" class="tabbtn" :class="{ on: tab === t }" @click="tab = t; if (t === 'playlists' && !playlists.length && !playlistsLoading) loadPlaylists()">
+        {{ t === 'search' ? '搜索' : t === 'playlists' ? '我的歌单' : '下载任务' }}
+      </button>
+    </nav>
 
     <section class="card">
       <h3>扫码登录</h3>
       <div class="row">
-        <n-button v-for="s in sources" :key="s.id" size="small" :type="source === s.id ? 'primary' : 'default'" @click="source = s.id; qr = null">{{ s.name }}</n-button>
+        <n-button v-for="s in sources" :key="s.id" size="small" :type="source === s.id ? 'primary' : 'default'" @click="source = s.id; qr = null; playlists = []; view = null">{{ s.name }}</n-button>
         <n-button v-if="source === 'qq'" size="small" @click="createQR('qq') === undefined ? createQR('qq') : createQR('qq')">微信码</n-button>
         <n-button size="small" @click="createQR(source)">获取二维码</n-button>
       </div>
@@ -184,7 +253,7 @@ onMounted(() => { refreshTasks(); checkLogin() })
       </p>
     </section>
 
-    <section class="card">
+    <section v-if="tab === 'search'" class="card">
       <h3>搜索</h3>
       <div class="row">
         <input v-model="query" class="input" placeholder="歌名 歌手" @keydown.enter="doSearch" />
@@ -197,14 +266,68 @@ onMounted(() => { refreshTasks(); checkLogin() })
             <td>{{ s.name }}</td>
             <td>{{ s.singers }}</td>
             <td class="dim">{{ s.album }}</td>
-            <td><n-tag size="small">{{ qualityLabels[s.quality] || s.quality || '自动' }}</n-tag></td>
-            <td><n-button size="tiny" type="primary" @click="download(s)">下载</n-button></td>
+            <td>
+              <select class="sel" :value="songQuality[s.id] || (qualitiesFor(source, s)[0] || 'flac')" @change="songQuality[s.id] = ($event.target as HTMLSelectElement).value">
+                <option v-for="q in qualitiesFor(source, s)" :key="q" :value="q">{{ qualityLabels[q] || q }}</option>
+              </select>
+            </td>
+            <td><n-button size="tiny" type="primary" @click="download({ ...s, quality: songQuality[s.id] || (qualitiesFor(source, s)[0] || 'flac') })">下载</n-button></td>
           </tr>
         </tbody>
       </table>
     </section>
 
-    <section class="card">
+    <section v-if="tab === 'playlists' && !view" class="card">
+      <h3>我的歌单（{{ source === 'netease' ? '网易云' : source === 'qq' ? 'QQ音乐' : '酷狗' }}）</h3>
+      <div class="row">
+        <n-button v-for="s in sources" :key="s.id" size="small" :type="source === s.id ? 'primary' : 'default'" @click="source = s.id; playlists = []; loadPlaylists()">{{ s.name }}</n-button>
+        <n-button size="small" @click="loadPlaylists">刷新</n-button>
+      </div>
+      <p v-if="source !== 'netease'" class="hint">该来源歌单接口开发中，请先用网易云。</p>
+      <div v-else class="plgrid">
+        <button v-for="p in playlists" :key="p.id" class="plcard" @click="openPlaylist(p)">
+          <img v-if="p.cover" :src="p.cover" referrerpolicy="no-referrer" />
+          <div class="plname">{{ p.name }}</div>
+          <div class="plcount">{{ p.count }} 首</div>
+        </button>
+      </div>
+    </section>
+
+    <section v-if="tab === 'playlists' && view" class="card">
+      <div class="row">
+        <n-button size="small" @click="view = null">← 返回歌单</n-button>
+        <h3 style="margin:0">{{ plName }}（{{ plTotal }} 首）</h3>
+      </div>
+      <div class="row">
+        <span class="hint">整单音质：</span>
+        <select v-model="batchQuality" class="sel">
+          <option v-for="q in qualitiesFor(source)" :key="q" :value="q">{{ qualityLabels[q] || q }}</option>
+        </select>
+        <n-button size="small" type="primary" @click="downloadBatch">下载全部（{{ plSongs.length }}）</n-button>
+      </div>
+      <table class="tbl">
+        <thead><tr><th>#</th><th>歌曲</th><th>歌手</th><th>专辑</th><th>音质</th><th></th></tr></thead>
+        <tbody>
+          <tr v-for="(s, idx) in plSongs" :key="s.id">
+            <td>{{ (plPage-1)*100 + idx + 1 }}</td>
+            <td>{{ s.name }}</td>
+            <td>{{ s.singers }}</td>
+            <td class="dim">{{ s.album }}</td>
+            <td>
+              <select class="sel" v-model="songQuality[s.id]">
+                <option v-for="q in qualitiesFor(source, s)" :key="q" :value="q">{{ qualityLabels[q] || q }}</option>
+              </select>
+            </td>
+            <td><n-button size="tiny" type="primary" @click="download({ ...s, quality: songQuality[s.id] || qualitiesFor(source, s)[0] })">下载</n-button></td>
+          </tr>
+        </tbody>
+      </table>
+      <div v-if="plSongs.length < plTotal" style="text-align:center">
+        <n-button size="small" @click="loadMore">加载更多（已载 {{ plSongs.length }}/{{ plTotal }}）</n-button>
+      </div>
+    </section>
+
+    <section v-if="tab === 'tasks'" class="card">
       <h3>下载任务</h3>
       <table v-if="tasks.length" class="tbl">
         <tbody>
@@ -252,4 +375,12 @@ p { margin: 4px 0; color: var(--dian-text-secondary); }
 .sub { margin: 4px 0; font-size: 14px; color: var(--dian-text-primary); }
 .sel { padding: 6px 8px; border: 1px solid var(--dian-border); border-radius: 8px; background: var(--dian-surface); color: var(--dian-text-primary); }
 .qr { display: grid; justify-items: center; gap: 4px; }
+.tabs { display: flex; gap: 8px; }
+.tabbtn { padding: 6px 14px; border: 1px solid var(--dian-border); border-radius: 999px; background: var(--dian-surface); color: var(--dian-text-secondary); cursor: pointer; }
+.tabbtn.on { background: var(--dian-primary); border-color: var(--dian-primary); color: var(--dian-primary-contrast); }
+.plgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
+.plcard { display: grid; gap: 4px; padding: 8px; text-align: left; border: 1px solid var(--dian-border); border-radius: 10px; background: var(--dian-surface); cursor: pointer; color: var(--dian-text-primary); }
+.plcard img { width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: 8px; }
+.plname { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.plcount { font-size: 12px; color: var(--dian-text-muted); }
 </style>
