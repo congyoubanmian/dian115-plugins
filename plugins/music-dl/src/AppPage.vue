@@ -134,6 +134,8 @@ async function checkLogin() {
 }
 
 async function loadPlaylists() {
+  await checkLogin()
+  if (!logins.value[source.value]) { playlists.value = []; return }
   playlistsLoading.value = true
   try {
     const r = await invoke('agent-get', { path: `/playlists?source=${source.value}` })
@@ -280,10 +282,12 @@ onMounted(() => { refreshTasks(); checkLogin() })
     <section v-if="tab === 'playlists' && !view" class="card">
       <h3>我的歌单（{{ source === 'netease' ? '网易云' : source === 'qq' ? 'QQ音乐' : '酷狗' }}）</h3>
       <div class="row">
-        <n-button v-for="s in sources" :key="s.id" size="small" :type="source === s.id ? 'primary' : 'default'" @click="source = s.id; playlists = []; loadPlaylists()">{{ s.name }}</n-button>
+        <n-button v-for="s in sources" :key="s.id" size="small" :type="source === s.id ? 'primary' : 'default'" @click="source = s.id; playlists = []; view = null; loadPlaylists()">{{ s.name }}</n-button>
         <n-button size="small" @click="loadPlaylists">刷新</n-button>
+        <n-tag v-for="s in sources" :key="'lg'+s.id" size="small" :type="logins[s.id] ? 'success' : 'default'">{{ s.name }} {{ logins[s.id] ? '已登录' : '未登录' }}</n-tag>
       </div>
-      <p v-if="source !== 'netease'" class="hint">该来源歌单接口开发中，请先用网易云。</p>
+      <p v-if="!logins[source]" class="hint">该来源未登录：请先在上方「扫码登录」获取二维码并用 {{ source === 'qq' ? 'QQ音乐（或微信）' : source === 'kugou' ? '酷狗音乐' : '网易云音乐' }} App 扫码。</p>
+      <p v-else-if="source === 'kugou'" class="hint">酷狗歌单接口暂未接入，可先使用搜索下载。</p>
       <div v-else class="plgrid">
         <button v-for="p in playlists" :key="p.id" class="plcard" @click="openPlaylist(p)">
           <img v-if="p.cover" :src="p.cover" referrerpolicy="no-referrer" />
