@@ -170,12 +170,12 @@
     {
       "id": "music.dl",
       "name": "音乐下载",
-      "version": "0.1.7",
+      "version": "0.1.8",
       "description": "聚合网易云/QQ/酷狗音乐搜索下载，SVIP 音质自选，下载后经 CD2 写入 115 音乐目录自动入库整理。需要本机 music-agent sidecar 服务。",
       "author": "congyoubanmian",
       "homepage": "https://github.com/congyoubanmian/dian115-plugins",
-      "package_url": "https://github.com/congyoubanmian/dian115-plugins/releases/download/music-dl-v0.1.7/music.dl-0.1.7.d115p",
-      "sha256": "4a28fcc8fb27ddc4d9e926922295cac815e4cae8c1069c88a3ff0ddd67396d04",
+      "package_url": "https://github.com/congyoubanmian/dian115-plugins/releases/download/music-dl-v0.1.8/music.dl-0.1.8.d115p",
+      "sha256": "cd748fac3b8056c36c55aa1578e5bacf034406b33ee63dd2c75086a934d36ca0",
       "runtime": {
         "kind": "wasm",
         "protocol": "dian115:wasm@1",
