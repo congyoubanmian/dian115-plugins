@@ -1,0 +1,40 @@
+/* 本地预览 (vite dev) 用的基线样式; 正式 Federation 页面由宿主提供 dian115-theme-v1 变量。 */
+:root {
+  --dian-color-scheme: light;
+  --dian-background: #f5f6f8;
+  --dian-surface: #ffffff;
+  --dian-surface-raised: #ffffff;
+  --dian-surface-soft: #f0f1f4;
+  --dian-surface-hover: #e8eaef;
+  --dian-text-primary: #1f2329;
+  --dian-text-secondary: #4e5460;
+  --dian-text-muted: #8a909c;
+  --dian-text-inverse: #ffffff;
+  --dian-border: #e2e4ea;
+  --dian-border-strong: #c9ccd6;
+  --dian-divider: #eceef2;
+  --dian-primary: #3370ff;
+  --dian-primary-hover: #2b62e3;
+  --dian-primary-pressed: #2454c7;
+  --dian-primary-contrast: #ffffff;
+  --dian-success: #34c724;
+  --dian-warning: #ff8800;
+  --dian-error: #f54a45;
+  --dian-info: #3370ff;
+  --dian-radius-sm: 8px;
+  --dian-radius-md: 12px;
+  --dian-radius-lg: 14px;
+  --dian-radius-panel: 18px;
+  --dian-radius-pill: 999px;
+  --dian-space-1: 4px;
+  --dian-space-2: 8px;
+  --dian-space-3: 12px;
+  --dian-space-4: 16px;
+  --dian-space-5: 20px;
+  --dian-space-6: 24px;
+  --dian-font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+  --dian-font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+html, body { margin: 0; padding: 0; background: var(--dian-background); }
+*, *::before, *::after { box-sizing: border-box; }

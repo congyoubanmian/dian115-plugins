@@ -176,6 +176,7 @@ rm -rf data/
 | GET | `/qr/create?source=netease` | 生成二维码 |
 | GET | `/qr/poll?source=netease&key=...` | 轮询扫码状态 |
 | POST | `/session/save` | 保存手工粘贴的 Cookie |
+| POST | `/relay` | 通知 webhook 代理中转（notify.bot 专用，仅放行通知域名） |
 | POST | `/download` | 创建本地下载任务 |
 | GET | `/task?id=...` | 查询单个任务 |
 | GET | `/tasks` | 查询最近任务 |

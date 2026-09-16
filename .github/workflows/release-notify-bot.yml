@@ -1,0 +1,103 @@
+name: 发布通知机器人插件
+
+on:
+  push:
+    tags:
+      - 'notify-bot-v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: plugins/notify-bot
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # 标签发布必须构建标签指向的提交，不能偷偷改为 main；否则先推 tag、后推 main
+          # 时会把旧 manifest 打包到新版本 Release。
+          ref: ${{ github.ref }}
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with: { node-version: '20' }
+
+      - uses: actions/setup-go@v5
+        with: { go-version: '1.24' }
+
+      - name: 校验标签与清单版本一致
+        run: |
+          VERSION=$(node -p "require('./manifest.template.json').version")
+          EXPECTED_TAG="notify-bot-v$VERSION"
+          echo "tag=${{ github.ref_name }} manifest=$VERSION expected=$EXPECTED_TAG"
+          [ "${{ github.ref_name }}" = "$EXPECTED_TAG" ] || {
+            echo "::error::标签与 manifest 版本不一致，应为 $EXPECTED_TAG"
+            exit 1
+          }
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "PACKAGE=notify.bot-$VERSION.d115p" >> "$GITHUB_ENV"
+
+      - name: 安装依赖
+        run: npm ci || npm install
+
+      - name: 构建（前端 + WASM）
+        run: npm run build
+
+      - name: 写入签名私钥
+        env:
+          SIGNING_KEY: ${{ secrets.DIAN115_PLUGIN_SIGNING_KEY }}
+        run: |
+          [ -n "$SIGNING_KEY" ] || { echo "::error::未配置 Secrets.DIAN115_PLUGIN_SIGNING_KEY"; exit 1; }
+          mkdir -p "$RUNNER_TEMP/dian115"
+          printf '%s\n' "$SIGNING_KEY" > "$RUNNER_TEMP/dian115/publisher.pem"
+
+      - name: 打包并签名
+        env:
+          DIAN115_PLUGIN_SIGNING_KEY: ${{ runner.temp }}/dian115/publisher.pem
+        run: npm run package
+
+      - name: 生成市场索引
+        run: npm run market -- --repo="https://github.com/${{ github.repository }}" --tag="${{ github.ref_name }}"
+
+      - name: 创建 Release 并上传插件包
+        working-directory: .
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          test -f "plugins/notify-bot/releases/$PACKAGE" || {
+            echo "::error::缺少预期包 $PACKAGE"
+            ls -la plugins/notify-bot/releases || true
+            exit 1
+          }
+          gh release create "$TAG" "plugins/notify-bot/releases/$PACKAGE" \
+            --title "$TAG" \
+            --notes "自动构建发布（通知机器人插件：企业微信 / 飞书 / Server酱 / QQ，多配置 + 代理中转）。
+          安装：DIAN115 插件中心 → 添加插件仓库 → https://github.com/${{ github.repository }}" \
+            || gh release upload "$TAG" "plugins/notify-bot/releases/$PACKAGE" --clobber
+
+      - name: 回写市场索引到 main
+        working-directory: .
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # 当前 checkout 在 tag 上；先保存生成文件，再切到最新 main 后覆盖，
+          # 避免 CI 运行期间 main 有新提交导致 non-fast-forward。
+          cp plugin-market/index.json "$RUNNER_TEMP/index.json"
+          mkdir -p "$RUNNER_TEMP/icons"
+          cp -a plugin-market/icons/. "$RUNNER_TEMP/icons/"
+          git fetch origin main
+          git checkout -B main origin/main
+          cp "$RUNNER_TEMP/index.json" plugin-market/index.json
+          cp -a "$RUNNER_TEMP/icons/." plugin-market/icons/
+          git add plugin-market/index.json plugin-market/icons
+          if git diff --cached --quiet; then
+            echo "索引无变化"
+          else
+            git commit -m "chore: 更新通知机器人插件市场索引 ${{ github.ref_name }} [skip ci]"
+            git push origin main
+          fi

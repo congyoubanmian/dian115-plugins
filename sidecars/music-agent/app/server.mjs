@@ -586,6 +586,26 @@ const server = http.createServer(async (req, res) => {
       }]))
       return jsonRes(res, 200, status)
     }
+    if (u.pathname === '/relay' && req.method === 'POST') {
+      // notify.bot 通知中转: 用配置里的代理出口发 webhook（如企业微信固定 IP 需求）。
+      // 只放行通知类域名，避免变成开放代理；本服务只绑 127.0.0.1。
+      const b = await readBody(req)
+      if (!b.url || !/^https?:\/\//i.test(b.url)) return jsonRes(res, 400, { error: 'url required' })
+      const host = new URL(b.url).hostname
+      const allowed = ['qyapi.weixin.qq.com', 'open.feishu.cn', 'sctapi.ftqq.com', 'qmsg.zber.com']
+      if (!allowed.includes(host)) return jsonRes(res, 403, { error: 'host not allowed: ' + host })
+      const init = {
+        method: 'POST',
+        headers: { 'content-type': b.content_type || 'application/json', 'user-agent': 'dian115-notify-bot/0.1' },
+        body: Buffer.from(b.body_base64 || '', 'base64'),
+        signal: AbortSignal.timeout(15000),
+      }
+      if (b.proxy) init.dispatcher = new ProxyAgent(b.proxy)
+      const resp = await fetch(b.url, init)
+      const buf = Buffer.from(await resp.arrayBuffer())
+      log(`relay → ${host} via ${b.proxy || 'direct'}: ${resp.status}`)
+      return jsonRes(res, 200, { status: resp.status, body_base64: buf.toString('base64') })
+    }
     if (u.pathname === '/session/save' && req.method === 'POST') {
       const b = await readBody(req)
       if (!b.source || !b.cookies) return jsonRes(res, 400, { error: 'source + cookies required' })
