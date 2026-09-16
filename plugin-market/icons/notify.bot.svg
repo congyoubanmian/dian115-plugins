@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="通知机器人">
+  <rect width="64" height="64" rx="16" fill="#3370FF"/>
+  <!-- 铃铛 -->
+  <path fill="#fff" d="M32 12c-1.7 0-3 1.3-3 3v1.6C23.6 18 19.5 23 19.5 29v8.5L16 42v2h32v-2l-3.5-4.5V29c0-6-4.1-11-9.5-12.6V15c0-1.7-1.3-3-3-3z"/>
+  <path fill="#DCE7FF" d="M27 46a5 5 0 0 0 10 0h-10z"/>
+  <!-- 电波 -->
+  <path fill="#fff" d="M47 20.5a1.8 1.8 0 0 1 2.4-2.6 15.5 15.5 0 0 1 0 24.2 1.8 1.8 0 1 1-2.4-2.6 12 12 0 0 0 0-19z" opacity="0.75"/>
+</svg>
