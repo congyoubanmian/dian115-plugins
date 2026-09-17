@@ -1,11 +1,11 @@
 {
   "id": "notify.bot",
   "name": "通知机器人",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "多平台消息通知：企业微信、飞书、Server酱、QQ。支持代理地址、多配置、自定义消息模板。",
   "author": "congyoubanmian",
   "homepage": "https://github.com/congyoubanmian/dian115-plugins",
-  "package_url": "https://example.invalid/notify.bot-0.1.1.d115p",
+  "package_url": "https://example.invalid/notify.bot-0.1.2.d115p",
   "sha256": "8f9b51d938deb0aea5e376fc0fbea326aa65acf7ed863397312edb96e0c831eb",
   "runtime": {
     "kind": "wasm",

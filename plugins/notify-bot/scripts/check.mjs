@@ -25,6 +25,18 @@ if (existsSync(manifestPath)) {
   try {
     const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'))
     if (!manifest.id || !manifest.runtime?.entry) errors.push('Manifest 缺少 id 或 runtime.entry')
+    const ui = manifest.ui
+    if (ui?.mode !== 'federation') errors.push('Manifest ui.mode 必须为 federation')
+    if (ui?.federation?.entry !== 'frontend/dist/assets/remoteEntry.js') {
+      errors.push('Manifest ui.federation.entry 必须指向打包的 remoteEntry.js')
+    }
+    if (ui?.federation?.assets_root !== 'frontend/dist/assets') {
+      errors.push('Manifest ui.federation.assets_root 与打包资源目录不一致')
+    }
+    if (ui?.federation?.module !== './AppPage') errors.push('Manifest UI 模块必须为 ./AppPage')
+    if (ui?.icon !== 'frontend/icon.svg' || !existsSync(join(root, 'frontend', 'icon.svg'))) {
+      errors.push('Manifest UI 图标声明或文件缺失')
+    }
   } catch {
     errors.push('manifest.template.json 不是合法 JSON')
   }
