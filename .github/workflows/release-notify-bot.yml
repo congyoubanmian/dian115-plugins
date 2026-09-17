@@ -42,10 +42,13 @@ jobs:
           echo "PACKAGE=notify.bot-$VERSION.d115p" >> "$GITHUB_ENV"
 
       - name: 安装依赖
-        run: npm ci || npm install
+        run: npm ci
 
       - name: 构建（前端 + WASM）
         run: npm run build
+
+      - name: 构建后一致性检查
+        run: npm run check
 
       - name: 写入签名私钥
         env:
@@ -85,19 +88,49 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          # 当前 checkout 在 tag 上；先保存生成文件，再切到最新 main 后覆盖，
-          # 避免 CI 运行期间 main 有新提交导致 non-fast-forward。
-          cp plugin-market/index.json "$RUNNER_TEMP/index.json"
-          mkdir -p "$RUNNER_TEMP/icons"
-          cp -a plugin-market/icons/. "$RUNNER_TEMP/icons/"
+          # 保留 tag 构建的签名条目和图标；不从 main 的 manifest 重新生成。
+          export SNAPSHOT="$RUNNER_TEMP/notify-bot-market"
+          export MAIN_WORKTREE="$RUNNER_TEMP/notify-bot-main"
+          mkdir -p "$SNAPSHOT"
+          node --input-type=module <<'NODE'
+          import { readFileSync, writeFileSync } from 'node:fs'
+          const index = JSON.parse(readFileSync('plugin-market/index.json', 'utf8'))
+          const entries = index.plugins.filter(p => p.id === 'notify.bot')
+          if (entries.length !== 1) throw new Error('Expected exactly one notify.bot entry')
+          writeFileSync(`${process.env.SNAPSHOT}/entry.json`, JSON.stringify(entries[0]))
+          NODE
+          cp plugin-market/icons/notify.bot.svg "$SNAPSHOT/notify.bot.svg"
+          # 独立 worktree 避免 tag 工作区生成的 tracked 文件阻止 checkout。
           git fetch origin main
-          git checkout -B main origin/main
-          cp "$RUNNER_TEMP/index.json" plugin-market/index.json
-          cp -a "$RUNNER_TEMP/icons/." plugin-market/icons/
-          git add plugin-market/index.json plugin-market/icons
-          if git diff --cached --quiet; then
-            echo "索引无变化"
-          else
-            git commit -m "chore: 更新通知机器人插件市场索引 ${{ github.ref_name }} [skip ci]"
-            git push origin main
-          fi
+          git worktree add --detach "$MAIN_WORKTREE" origin/main
+          trap 'git worktree remove --force "$MAIN_WORKTREE"' EXIT
+          for attempt in 1 2 3; do
+            git fetch origin main
+            git -C "$MAIN_WORKTREE" reset --hard origin/main
+            node --input-type=module <<'NODE'
+          import { readFileSync, writeFileSync } from 'node:fs'
+          const path = `${process.env.MAIN_WORKTREE}/plugin-market/index.json`
+          const index = JSON.parse(readFileSync(path, 'utf8'))
+          if (!Array.isArray(index.plugins)) throw new Error('Invalid main market index')
+          const entry = JSON.parse(readFileSync(`${process.env.SNAPSHOT}/entry.json`, 'utf8'))
+          const position = index.plugins.findIndex(p => p.id === 'notify.bot')
+          index.plugins = index.plugins.filter(p => p.id !== 'notify.bot')
+          index.plugins.splice(position < 0 ? index.plugins.length : position, 0, entry)
+          writeFileSync(path, `${JSON.stringify(index, null, 2)}\n`)
+          NODE
+            mkdir -p "$MAIN_WORKTREE/plugin-market/icons"
+            cp "$SNAPSHOT/notify.bot.svg" "$MAIN_WORKTREE/plugin-market/icons/notify.bot.svg"
+            git -C "$MAIN_WORKTREE" add plugin-market/index.json plugin-market/icons/notify.bot.svg
+            if git -C "$MAIN_WORKTREE" diff --cached --quiet; then
+              echo "索引无变化"
+              exit 0
+            fi
+            git -C "$MAIN_WORKTREE" commit -m "chore: 更新通知机器人插件市场索引 $VERSION [skip ci]"
+            if git -C "$MAIN_WORKTREE" push origin HEAD:main; then
+              exit 0
+            fi
+            # 并发更新 main 时重新基于最新索引合并，不重放旧的整份索引。
+            echo "推送失败，准备重试 ($attempt/3)"
+          done
+          echo "::error::三次推送均失败，市场索引尚未更新"
+          exit 1

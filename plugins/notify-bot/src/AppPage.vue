@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useMessage } from 'naive-ui'
 
 const props = defineProps<{ api: { invokeAction(a: string, i?: any): Promise<any>; refresh(): Promise<any> }; runtimeState?: any }>()
@@ -31,6 +31,9 @@ const tab = ref('wecom')
 const current = computed(() => platforms.find((p) => p.id === tab.value) || platforms[0])
 
 const hooks = ref<HookConfig[]>([])
+const savedSnapshot = ref('[]')
+// 本地草稿与已保存配置不一致即为「脏」，用于避免状态刷新覆盖未保存的编辑
+const isDirty = computed(() => JSON.stringify(hooks.value) !== savedSnapshot.value)
 const saving = ref(false)
 const testing = ref('')
 const sending = ref(false)
@@ -38,6 +41,7 @@ const sendTitle = ref('')
 const sendContent = ref('')
 
 function syncFromState() {
+  if (saving.value || isDirty.value) return // 保存期间或有未保存草稿时不覆盖
   const list = (state.value?.settings?.webhooks || []) as Partial<HookConfig>[]
   hooks.value = list.map((h) => ({
     id: h.id || '',
@@ -48,8 +52,13 @@ function syncFromState() {
     proxy: h.proxy || '',
     enabled: h.enabled !== false,
   }))
+  savedSnapshot.value = JSON.stringify(hooks.value)
 }
-onMounted(syncFromState)
+watch(
+  () => state.value?.settings?.webhooks,
+  syncFromState,
+  { immediate: true, deep: true },
+)
 
 function hooksFor(platform: string): HookConfig[] {
   return hooks.value.filter((h) => h.platform === platform)
@@ -80,15 +89,19 @@ async function invoke(action: string, input: any = {}) {
 
 async function refreshState() {
   try {
-    const s = await props.api.refresh()
-    if (s && typeof s === 'object') syncFromState()
+    await props.api.refresh()
+    syncFromState()
   } catch {}
 }
 
 async function save() {
+  if (saving.value) return false
   saving.value = true
   try {
-    await invoke('settings-update', { webhooks: hooks.value })
+    const snapshot = JSON.stringify(hooks.value)
+    const payload = JSON.parse(snapshot) // 快照提交：保存期间的继续编辑留在本地草稿
+    await invoke('settings-update', { webhooks: payload })
+    savedSnapshot.value = snapshot
     await refreshState()
     return true
   } catch (e: any) {
@@ -113,6 +126,14 @@ async function test(h: HookConfig) {
 }
 
 async function send() {
+  if (saving.value) {
+    message.warning('正在保存配置，请稍后再发送')
+    return
+  }
+  if (isDirty.value) {
+    message.warning('配置有未保存的修改，请先点「保存设置」再发送')
+    return
+  }
   if (!sendContent.value.trim()) {
     message.warning('请填写消息内容')
     return
@@ -202,6 +223,7 @@ function fmtAt(at: string): string {
         <input v-model="sendTitle" class="input name" placeholder="标题（可选）" />
       </div>
       <textarea v-model="sendContent" class="area" rows="4" placeholder="消息内容（必填）"></textarea>
+      <p v-if="isDirty" class="hint">配置有未保存的修改，发送前请先「保存设置」。</p>
       <div class="row">
         <n-button type="primary" size="small" :loading="sending" @click="send">发送</n-button>
       </div>

@@ -1,3 +1,5 @@
+//go:build wasip1 && wasm
+
 package main
 
 // WASM 适配层: hostCall 实现 + invocation 分发 + 存储替换文件系统

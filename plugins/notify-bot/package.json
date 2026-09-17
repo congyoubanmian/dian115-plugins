@@ -1,7 +1,7 @@
 {
   "name": "notify-bot-plugin",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -9,6 +9,8 @@
     "build:wasm": "node scripts/build-wasm.mjs",
     "build": "npm run build:ui && npm run build:wasm",
     "check": "node scripts/check.mjs",
+    "test:runtime": "go test runtime/notify.go runtime/main.go runtime/notify_test.go",
+    "test:wasm": "node scripts/test-runtime-wasm.mjs",
     "market": "node scripts/build-market-index.mjs",
     "package": "node scripts/package.mjs",
     "release": "npm run build && npm run package"

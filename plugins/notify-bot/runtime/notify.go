@@ -64,12 +64,39 @@ type runtime struct {
 	lastMsg    string
 }
 
+// persistedState 是落盘/恢复用的导出结构: encoding/json 无法填充 runtime 的非导出字段。
+type persistedState struct {
+	Settings   Settings       `json:"settings"`
+	Logs       []LogEntry     `json:"logs"`
+	History    []HistoryEntry `json:"history"`
+	Revision   int64          `json:"revision"`
+	LastStatus string         `json:"last_status"`
+	LastMsg    string         `json:"last_message"`
+	// 兼容旧版本落盘数据: settings 同时以 Webhooks 键冗余存储。
+	Webhooks []WebhookConfig `json:"webhooks,omitempty"`
+}
+
 var guestRT *runtime
 
 func newRuntime() *runtime {
 	rt := &runtime{}
 	if raw, ok := wasmStorageGet("state"); ok {
-		_ = safeUnmarshal(raw, rt)
+		var ps persistedState
+		if err := safeUnmarshal(raw, &ps); err == nil {
+			rt.settings = ps.Settings
+			// 旧版本只写顶层 "webhooks" 数组时从那里恢复。
+			if rt.settings.Webhooks == nil && len(ps.Webhooks) > 0 {
+				rt.settings.Webhooks = ps.Webhooks
+			}
+			if ps.Settings.MaxLogs <= 0 && len(ps.Webhooks) > 0 {
+				rt.settings.MaxLogs = 200
+			}
+			rt.logs = ps.Logs
+			rt.history = ps.History
+			rt.revision = ps.Revision
+			rt.lastStatus = ps.LastStatus
+			rt.lastMsg = ps.LastMsg
+		}
 	}
 	if rt.settings.MaxLogs <= 0 {
 		rt.settings.MaxLogs = 200
@@ -111,8 +138,8 @@ func (r *runtime) bump(status, msg string) {
 	r.mu.Unlock()
 }
 
-// persistAll 落盘; 注意不能在持有 r.mu 时调用 (内部不加锁, 单线程 WASM 下安全)。
-func (r *runtime) persistAll() {
+// persistAll 不能在持有 r.mu 时调用。
+func (r *runtime) persistAll() error {
 	r.mu.Lock()
 	logs := make([]LogEntry, len(r.logs))
 	copy(logs, r.logs)
@@ -120,18 +147,25 @@ func (r *runtime) persistAll() {
 	copy(history, r.history)
 	st := r.settings
 	revision := r.revision
+	status, message := r.lastStatus, r.lastMsg
 	r.mu.Unlock()
 	if len(logs) > persistLogLimit {
 		logs = logs[len(logs)-persistLogLimit:]
 	}
-	data, err := json.Marshal(map[string]any{
-		"settings": st, "logs": logs, "history": history,
-		"webhooks": st.Webhooks, "revision": revision,
+	data, err := json.Marshal(persistedState{
+		Settings: st, Logs: logs, History: history,
+		Revision: revision, LastStatus: status, LastMsg: message,
 	})
-	if err != nil || len(data) > maxPersistBytes {
-		return
+	if err != nil {
+		return fmt.Errorf("状态序列化失败: %w", err)
 	}
-	_ = wasmStoragePut("state", data)
+	if len(data) > maxPersistBytes {
+		return fmt.Errorf("状态超过 %d 字节, 拒绝落盘", maxPersistBytes)
+	}
+	if err := wasmStoragePut("state", data); err != nil {
+		return fmt.Errorf("状态写入存储失败: %w", err)
+	}
+	return nil
 }
 
 func (r *runtime) stateResult(payload json.RawMessage) (any, error) {
@@ -200,6 +234,7 @@ func (r *runtime) action(invocationID string, raw json.RawMessage) (any, error) 
 
 	case "settings-update":
 		r.mu.Lock()
+		previous := r.settings
 		if w, ok := input["webhooks"].([]any); ok {
 			var hooks []WebhookConfig
 			for _, item := range w {
@@ -235,17 +270,30 @@ func (r *runtime) action(invocationID string, raw json.RawMessage) (any, error) 
 			r.settings.MaxLogs = int(n)
 		}
 		r.mu.Unlock()
-		r.persistAll()
 		r.bump("succeeded", "设置已保存")
+		if err := r.persistAll(); err != nil {
+			r.mu.Lock()
+			r.settings = previous
+			r.mu.Unlock()
+			r.bump("failed", "设置保存失败: "+err.Error())
+			return map[string]any{"status": "failed", "message": "设置保存失败: " + err.Error()}, nil
+		}
 		return map[string]any{"status": "succeeded", "message": "设置已保存"}, nil
 
 	case "archive":
 		r.mu.Lock()
+		previousHistory, previousLogs := r.history, r.logs
 		r.history = nil
 		r.logs = nil
 		r.mu.Unlock()
-		r.persistAll()
 		r.bump("succeeded", "已清空")
+		if err := r.persistAll(); err != nil {
+			r.mu.Lock()
+			r.history, r.logs = previousHistory, previousLogs
+			r.mu.Unlock()
+			r.bump("failed", "清空失败: "+err.Error())
+			return map[string]any{"status": "failed", "message": "清空失败: " + err.Error()}, nil
+		}
 		return map[string]any{"status": "succeeded", "message": "已清空"}, nil
 	}
 	return nil, fmt.Errorf("未知动作: %s", payload.ID)
@@ -314,7 +362,9 @@ func (r *runtime) broadcast(action, platform, configID, title, content string) m
 		msg += "（失败: " + strings.Join(failMsgs, "; ") + "）"
 	}
 	r.bump(status, msg)
-	r.persistAll()
+	if err := r.persistAll(); err != nil {
+		r.log("error", "状态落盘失败: "+err.Error())
+	}
 	return map[string]any{"status": status, "message": msg, "sent": okCount, "total": len(hooks)}
 }
 
@@ -340,7 +390,7 @@ func (r *runtime) deliver(hook WebhookConfig, title, content string) error {
 	if err != nil {
 		return fmt.Errorf("请求失败: %w", err)
 	}
-	if status >= 400 {
+	if status < 200 || status >= 300 {
 		return fmt.Errorf("HTTP %d: %s", status, trunc(respBody))
 	}
 	return checkPlatformResult(hook.Platform, respBody)
@@ -401,10 +451,10 @@ func feishuSign(secret string, timestamp int64) string {
 // 协议: POST /relay {url, content_type, body_base64, proxy} → {status, body_base64} 。
 func relayPost(target, contentType string, body []byte, proxy string) (int, []byte, error) {
 	req, _ := json.Marshal(map[string]string{
-		"url":         target,
+		"url":          target,
 		"content_type": contentType,
-		"body_base64": base64.StdEncoding.EncodeToString(body),
-		"proxy":       proxy,
+		"body_base64":  base64.StdEncoding.EncodeToString(body),
+		"proxy":        proxy,
 	})
 	resp, err := hostCall(hostCallRequest{
 		Method: "POST", Path: relayBase + "/relay",
@@ -436,18 +486,23 @@ func relayPost(target, contentType string, body []byte, proxy string) (int, []by
 // checkPlatformResult 解析各平台业务应答 (HTTP 200 也可能业务失败)。
 func checkPlatformResult(platform string, raw []byte) error {
 	if len(raw) == 0 {
-		return nil
+		return fmt.Errorf("平台返回空响应，无法确认发送成功")
 	}
 	var m map[string]any
-	if safeUnmarshal(raw, &m) != nil {
-		return nil // 非 JSON 应答视为成功 (HTTP 层已校验)
+	if safeUnmarshal(raw, &m) != nil || m == nil {
+		return fmt.Errorf("平台响应不是有效 JSON 对象，无法确认发送成功")
 	}
+	valid := false
 	switch platform {
 	case "wecom":
+		_, valid = numField(m, "errcode")
 		if code, ok := numField(m, "errcode"); ok && code != 0 {
 			return fmt.Errorf("企业微信 errcode %d: %s", int(code), strField(m, "errmsg"))
 		}
 	case "feishu":
+		_, codeOK := numField(m, "code")
+		_, statusOK := numField(m, "StatusCode")
+		valid = codeOK || statusOK
 		if code, ok := numField(m, "code"); ok && code != 0 {
 			return fmt.Errorf("飞书 code %d: %s", int(code), strField(m, "msg"))
 		}
@@ -455,13 +510,18 @@ func checkPlatformResult(platform string, raw []byte) error {
 			return fmt.Errorf("飞书 code %d: %s", int(code), strField(m, "StatusMessage"))
 		}
 	case "serverchan":
+		_, valid = numField(m, "code")
 		if code, ok := numField(m, "code"); ok && code != 0 {
 			return fmt.Errorf("Server酱 code %d: %s", int(code), strField(m, "message"))
 		}
 	case "qq":
+		_, valid = m["success"].(bool)
 		if s, ok := m["success"].(bool); ok && !s {
 			return fmt.Errorf("Qmsg 发送失败: %s", strField(m, "info"))
 		}
+	}
+	if !valid {
+		return fmt.Errorf("%s 响应缺少有效成功标记", platform)
 	}
 	return nil
 }

@@ -11,7 +11,7 @@ import { fileURLToPath } from 'node:url'
 // 用法:
 //   node scripts/build-market-index.mjs --repo=https://github.com/<owner>/<repo>
 //   或设置环境变量 DIAN115_MARKET_REPO
-// 可选的 --tag 覆盖 GitHub Release 标签（默认 v<version>）。
+// 可选的 --tag 覆盖 GitHub Release 标签（默认 notify-bot-v<version>）。
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const entryPath = join(root, 'releases', 'market-entry.generated.json')
@@ -30,7 +30,7 @@ if (!/^https:\/\/[^/]+\/[^/]+\/[^/]+$/.test(repoUrl)) {
 }
 
 const entry = JSON.parse(readFileSync(entryPath, 'utf8'))
-const tag = argValue('tag') || `v${entry.version}`
+const tag = argValue('tag') || `notify-bot-v${entry.version}`
 const packageName = `${entry.id}-${entry.version}.d115p`
 const packageUrl = `${repoUrl}/releases/download/${tag}/${encodeURIComponent(packageName)}`
 
