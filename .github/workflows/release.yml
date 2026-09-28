@@ -28,7 +28,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: main
+          # 必须构建标签指向的提交: tag 先于 main 到达时 main 上还是旧 manifest,
+          # 版本校验会失败(v0.3.1 实际发生过)。dispatch 时用输入的 tag。
+          ref: ${{ github.event.inputs.tag || github.ref }}
           fetch-depth: 0
 
       - uses: actions/setup-node@v4
