@@ -25,8 +25,15 @@ sidecars/
 
 | 插件 ID | 名称 | 说明 | 额外组件 |
 | --- | --- | --- | --- |
-| `douban.center` | 豆瓣中心 | 豆瓣榜单、观察队列与聚合订阅 | 无 |
+| `douban.center` | 豆瓣中心 | 豆瓣榜单、观察队列与聚合订阅；CookieCloud 同步「我的想看」自动追订 | 可选：本机 CookieCloud 服务 |
 | `music.dl` | 音乐下载 | 网易云/QQ/酷狗扫码、搜索和下载 | **必须部署 `sidecars/music-agent`** |
+
+## 想看同步（可选，douban.center 0.3.0+）
+
+1. 部署本机 CookieCloud：`docker run -d --name cookiecloud --restart unless-stopped -m 128m -p 8088:8088 -v /volume1/docker/cookiecloud/data:/data/api/data easychen/cookiecloud`
+2. 浏览器安装 CookieCloud 扩展，服务器填 `http://<NAS内网IP>:8088`，随机生成 UUID 和密钥，**「需要同步的域名」强烈建议只填 `douban.com`**
+3. 豆瓣中心设置里填 UUID/密钥并开启「同步我的想看」；也可手填豆瓣 `dbcl2` cookie 兜底
+4. 每轮榜单刷新会顺带同步想看列表，新条目自动进聚合订阅
 
 ## 音乐下载的部署顺序
 

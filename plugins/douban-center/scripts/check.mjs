@@ -6,7 +6,13 @@ import { fileURLToPath } from 'node:url'
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const errors = []
 
-function checkStaticELF(buffer) {
+function checkWasmModule(buffer) {
+  if (buffer.length < 8 || buffer.subarray(0, 4).toString('hex') !== '0061736d') {
+    errors.push('runtime/plugin.wasm 不是 WASM 模块')
+  }
+}
+
+function checkStaticELFUnused(buffer) {
   if (buffer.length < 64 || buffer.subarray(0, 4).toString('hex') !== '7f454c46') {
     errors.push('runtime/plugin 不是 ELF 文件')
     return
@@ -23,12 +29,12 @@ function checkStaticELF(buffer) {
   }
 }
 
-const runtimePath = join(root, 'build', 'runtime', 'plugin')
+const runtimePath = join(root, 'build', 'runtime', 'plugin.wasm')
 const assetsRoot = join(root, 'build', 'frontend', 'dist', 'assets')
 const manifestPath = join(root, 'manifest.template.json')
 
-if (!existsSync(runtimePath)) errors.push('缺少 build/runtime/plugin（先运行 npm run build:runtime）')
-else checkStaticELF(readFileSync(runtimePath))
+if (!existsSync(runtimePath)) errors.push('缺少 build/runtime/plugin.wasm（先运行 npm run build:wasm）')
+else checkWasmModule(readFileSync(runtimePath))
 
 if (!existsSync(join(assetsRoot, 'remoteEntry.js'))) errors.push('缺少 build/frontend/dist/assets/remoteEntry.js（先运行 npm run build:ui）')
 

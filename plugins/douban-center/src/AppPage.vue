@@ -121,7 +121,14 @@ interface AppState {
     auto_subscribe?: boolean
     notify_on_subscribe?: boolean
     subscribe_source_filter?: string[]
+    cookiecloud_url?: string
+    cookiecloud_uuid?: string
+    cookiecloud_key?: string
+    manual_cookie?: string
+    wish_sync_enabled?: boolean
   }
+  wish?: Array<{ douban_ref: string; title: string; year?: string; type?: string; poster_url?: string }>
+  wish_info?: { enabled?: boolean; last_sync?: string; last_count?: number; last_new?: number; last_status?: string; last_error?: string; uid?: string; source?: string }
   [key: string]: unknown
 }
 
@@ -171,6 +178,11 @@ const settingsForm = reactive<NonNullable<AppState['settings']>>({
   auto_subscribe: true,
   notify_on_subscribe: true,
   subscribe_source_filter: [],
+  cookiecloud_url: 'http://127.0.0.1:8088',
+  cookiecloud_uuid: '',
+  cookiecloud_key: '',
+  manual_cookie: '',
+  wish_sync_enabled: false,
 })
 
 watch(
@@ -241,6 +253,17 @@ async function subscribeQueueNow(item: QueueItem) {
 
 async function removeQueue(item: QueueItem) {
   await runAction('observe-remove', { douban_ref: item.douban_ref })
+}
+
+const wishItems = computed(() => state.value.wish || [])
+const wishInfo = computed(() => state.value.wish_info || null)
+
+async function testCookieCloud() {
+  await runAction('cookiecloud-test')
+}
+
+async function syncWish() {
+  await runAction('wish-sync')
 }
 
 async function addBlacklist() {
@@ -465,6 +488,24 @@ const fullListOpen = computed({
       </div>
     </section>
 
+    <!-- 我的想看 -->
+    <section v-if="wishItems.length || wishInfo?.enabled" class="dc-card" aria-label="我的想看">
+      <div class="dc-section-head">
+        <h3>我的想看 <NTag v-if="wishItems.length" size="small" :bordered="false">{{ wishItems.length }}</NTag></h3>
+        <div class="dc-head-actions">
+          <NButton size="small" :loading="busy === 'wish-sync'" @click="syncWish">立即同步</NButton>
+        </div>
+      </div>
+      <div v-if="!wishItems.length" class="dc-empty">还没有同步到想看条目，点「立即同步」或在设置里配置豆瓣账号</div>
+      <div v-else class="dc-wish-list">
+        <div v-for="w in wishItems.slice(0, 24)" :key="w.douban_ref" class="dc-wish-row">
+          <span class="dc-wish-title">{{ w.title }}</span>
+          <span class="dc-muted">{{ w.year }} · {{ w.type === 'tv' ? '剧集' : '电影' }}</span>
+        </div>
+        <div v-if="wishItems.length > 24" class="dc-muted" style="font-size: 12px">… 共 {{ wishItems.length }} 条</div>
+      </div>
+    </section>
+
     <!-- 订阅历史 + 订阅统计 -->
     <section class="dc-grid-2">
       <div class="dc-card" aria-label="订阅历史">
@@ -583,6 +624,37 @@ const fullListOpen = computed({
             </div>
           </div>
 
+          <div class="dc-settings-section">我的想看（豆瓣账号）</div>
+          <div class="dc-settings-row">
+            <span>同步「我的想看」到订阅</span>
+            <NSwitch v-model:value="settingsForm.wish_sync_enabled" size="small" />
+          </div>
+          <div class="dc-settings-row">
+            <span>CookieCloud 地址</span>
+            <NInput v-model:value="settingsForm.cookiecloud_url" size="small" placeholder="http://127.0.0.1:8088" style="max-width: 260px" />
+          </div>
+          <div class="dc-settings-row">
+            <span>UUID</span>
+            <NInput v-model:value="settingsForm.cookiecloud_uuid" size="small" placeholder="浏览器扩展里的 UUID" style="max-width: 260px" />
+          </div>
+          <div class="dc-settings-row">
+            <span>加密密钥</span>
+            <NInput v-model:value="settingsForm.cookiecloud_key" size="small" type="password" show-password-on="click" placeholder="浏览器扩展里的密钥" style="max-width: 260px" />
+          </div>
+          <div class="dc-settings-row">
+            <span>手动 Cookie 兜底（dbcl2=...）</span>
+            <NInput v-model:value="settingsForm.manual_cookie" size="small" placeholder="CookieCloud 不可用时使用" style="max-width: 260px" />
+          </div>
+          <div class="dc-settings-row">
+            <span></span>
+            <NButton size="small" :loading="busy === 'cookiecloud-test'" @click="testCookieCloud">测试连接</NButton>
+          </div>
+          <p v-if="wishInfo" class="dc-muted" style="margin: 2px 0 8px; font-size: 12px">
+            {{ wishInfo.last_status === 'succeeded'
+              ? `上次同步 ${wishInfo.last_sync?.slice(5, 16) || ''}：共 ${wishInfo.last_count ?? 0} 条，新增 ${wishInfo.last_new ?? 0}（uid=${wishInfo.uid}，来源=${wishInfo.source === 'cookiecloud' ? 'CookieCloud' : '手动Cookie'}）`
+              : `上次同步失败：${wishInfo.last_error || '未知原因'}` }}
+          </p>
+
           <div class="dc-settings-section">订阅与观察</div>
           <div class="dc-settings-row">
             <span>观察期（小时）</span>
@@ -667,6 +739,9 @@ const fullListOpen = computed({
   color: var(--dian-primary);
 }
 
+.dc-wish-list { display: grid; gap: 4px; }
+.dc-wish-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 4px 8px; border-bottom: 1px solid var(--dian-divider, rgba(128,128,128,.15)); font-size: 13px; }
+.dc-wish-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dc-section-head h3 {
   margin: 0;
   font-size: 15px;

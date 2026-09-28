@@ -27,6 +27,8 @@ const (
 	persistLogLimit  = 40
 	logMessageLimit  = 400
 	posterCacheLimit = 64
+	// 单张海报字节上限: base64 后需保持在 256KiB 业务 JSON 限额内。
+	maxPosterBytes = 128 << 10
 	// 每次刷新最多为多少条口碑榜条目补海报(每条 1~2 次外部 host.call)。
 	posterLookupLimit = 8
 	// 前台动作/后台任务的时间预算: 宿主实测约 10 秒就会强杀 worker, 主动提前收尾。
@@ -102,6 +104,12 @@ type Settings struct {
 	SubscribeSources   []string              `json:"subscribe_source_filter"`
 	MaxHistory         int                   `json:"max_history"`
 	MaxLogs            int                   `json:"max_logs"`
+
+	CookieCloudURL  string `json:"cookiecloud_url,omitempty"`
+	CookieCloudUUID string `json:"cookiecloud_uuid,omitempty"`
+	CookieCloudKey  string `json:"cookiecloud_key,omitempty"`
+	ManualCookie    string `json:"manual_cookie,omitempty"`
+	WishSyncEnabled bool   `json:"wish_sync_enabled"`
 }
 
 type ChartItem struct {
@@ -204,6 +212,10 @@ type runtime struct {
 	deepRefresh bool
 
 	posterCache map[string]string // poster_url -> dataURL（避免重复抓取）
+
+	wish     []WishItem    // 最近一次「我的想看」列表
+	wishSeen map[string]bool // 已处理过的想看条目
+	wishInfo WishInfo      // 想看同步状态摘要
 }
 
 func (r *runtime) now() string { return time.Now().Format(time.RFC3339) }
@@ -219,6 +231,10 @@ type persistedState struct {
 	Logs       []LogEntry     `json:"logs"`
 	Stats      Stats          `json:"stats"`
 	BlackState BlackState     `json:"blackstate"`
+
+	Wish     []WishItem      `json:"wish,omitempty"`
+	WishSeen map[string]bool `json:"wish_seen,omitempty"`
+	WishInfo WishInfo        `json:"wish_info,omitempty"`
 }
 
 const stateStorageKey = "state"
@@ -234,6 +250,9 @@ func (r *runtime) loadAll() {
 			r.logs = doc.Logs
 			r.stats = doc.Stats
 			r.blackState = doc.BlackState
+			r.wish = doc.Wish
+			r.wishSeen = doc.WishSeen
+			r.wishInfo = doc.WishInfo
 		}
 	} else {
 		// 迁移旧的分键持久化格式(每个键一次读取)。
@@ -286,6 +305,7 @@ func (r *runtime) persistAll() {
 	doc := persistedState{
 		Settings: r.settings, Snapshot: r.snapshot, Queue: r.queue,
 		History: r.history, Logs: logTail, Stats: r.stats, BlackState: r.blackState,
+		Wish: r.wish, WishSeen: r.wishSeen, WishInfo: r.wishInfo,
 	}
 	r.mu.Unlock()
 
@@ -1045,6 +1065,10 @@ func (r *runtime) refreshNow(invocationID string) error {
 		summary += "；" + errMsg
 	}
 	r.log("info", summary)
+
+	// 4. 同步「我的想看」(配置了 CookieCloud/手动 cookie 且开启时)
+	r.syncWishList(invocationID)
+
 	r.bump("succeeded", summary)
 	r.persistAll()
 	return nil
@@ -1321,6 +1345,9 @@ func (r *runtime) stateResult(raw json.RawMessage) (any, error) {
 	copy(logs, r.logs)
 	stats := r.stats
 	black := r.blackState
+	wishCopy := make([]WishItem, len(r.wish))
+	copy(wishCopy, r.wish)
+	wishInfo := r.wishInfo
 	r.mu.Unlock()
 
 	if len(history) > 30 {
@@ -1343,6 +1370,8 @@ func (r *runtime) stateResult(raw json.RawMessage) (any, error) {
 		"logs":     logs,
 		"stats":    stats,
 		"settings": settings,
+		"wish":     wishCopy,
+		"wish_info": wishInfo,
 	}
 	version := fmt.Sprintf("state-v%d", revision)
 	etag := `"` + version + `"`
@@ -1488,6 +1517,10 @@ func (r *runtime) action(invocationID string, raw json.RawMessage) (any, error) 
 		return map[string]any{"status": "skipped", "message": "通知功能已停用（宿主通知通道不可用），不会发送 Telegram 消息"}, nil
 	case "get-poster":
 		return r.getPoster(input)
+	case "cookiecloud-test":
+		return r.actionCookieCloudTest()
+	case "wish-sync":
+		return r.actionWishSync(invocationID)
 	default:
 		return map[string]any{"status": "failed", "code": "unknown_action", "message": "未知动作"}, nil
 	}
@@ -1647,6 +1680,20 @@ func (r *runtime) getPoster(input map[string]any) (any, error) {
 				lastErr = fmt.Sprintf("非图片内容(mime=%s, %dB)", mime, len(body))
 				continue
 			}
+			// 宿主限制 action 业务 JSON 256KiB: data URL 经 base64 膨胀 1.33 倍,
+			// 原图超过 128KiB 时降级到小尺寸变体, 仍超限则放弃(base64 后会撑爆响应)。
+			if len(body) > maxPosterBytes && strings.Contains(u, "s_ratio_poster") {
+				small := strings.Replace(u, "s_ratio_poster", "m_ratio_poster", 1)
+				if sb, ss, serr := r.httpGet(small, "image/avif,image/webp,image/jpeg,image/*;q=0.8"); serr == nil && ss < 400 {
+					if sm := http.DetectContentType(sb); strings.HasPrefix(sm, "image/") && len(sb) <= maxPosterBytes {
+						body, mime = sb, sm
+					}
+				}
+			}
+			if len(body) > maxPosterBytes {
+				lastErr = fmt.Sprintf("海报过大 %dB (上限 %dB)", len(body), maxPosterBytes)
+				continue
+			}
 			dataURL := "data:" + mime + ";base64," + base64.StdEncoding.EncodeToString(body)
 			r.mu.Lock()
 			// 缓存上限保护: 每张海报 data URL 可达上百 KB, 上限过大会把堆顶到内存硬限额。
@@ -1682,6 +1729,17 @@ func (r *runtime) settingsUpdate(input map[string]any) (any, error) {
 		if json.Unmarshal(rawList, &bl) == nil {
 			old.Blacklist = bl
 		}
+	}
+	for key, dst := range map[string]*string{
+		"cookiecloud_url": &old.CookieCloudURL, "cookiecloud_uuid": &old.CookieCloudUUID,
+		"cookiecloud_key": &old.CookieCloudKey, "manual_cookie": &old.ManualCookie,
+	} {
+		if v, ok := patch[key].(string); ok {
+			*dst = strings.TrimSpace(v)
+		}
+	}
+	if v, ok := patch["wish_sync_enabled"].(bool); ok {
+		old.WishSyncEnabled = v
 	}
 	if v, ok := patch["observe_period_hours"]; ok {
 		if n, e := v.(float64); e {

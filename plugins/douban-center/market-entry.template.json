@@ -1,12 +1,12 @@
 {
   "id": "douban.center",
   "name": "豆瓣中心",
-  "version": "0.2.8",
-  "description": "周期抓取豆瓣榜单，黑名单过滤后经观察队列自动创建 DIAN115 聚合订阅，并记录订阅历史与统计。 (WASM 运行时版, 兼容无 seccomp 内核如群晖4.4)",
+  "version": "0.3.0",
+  "description": "豆瓣榜单抓取 + 黑名单过滤 + 观察队列 + 聚合订阅；支持 CookieCloud 同步浏览器豆瓣登录态，自动追订「我的想看」。",
   "author": "congyoubanmian",
   "homepage": "https://github.com/congyoubanmian/douban-center-wasm",
   "package_url": "https://example.invalid/releases/douban.center-0.1.0.d115p",
-  "sha256": "2bcf4802aba58ceb016b5514e7f34d6fa28037a136a5c10af5298dcb03f3aac1",
+  "sha256": "2f8bbc26b9e26de53febaed69d8c72c85968cbf70778997ecb29422e919ea82e",
   "runtime": {
     "kind": "wasm",
     "protocol": "dian115:wasm@1",
@@ -149,6 +149,14 @@
         ],
         "proxy_mode": "system",
         "reason": "抓取豆瓣海报缩略图"
+      },
+      {
+        "origin": "http://127.0.0.1:8088",
+        "methods": [
+          "GET"
+        ],
+        "proxy_mode": "direct",
+        "reason": "本机 CookieCloud 服务：拉取加密同步数据解出豆瓣登录 cookie"
       }
     ]
   },
