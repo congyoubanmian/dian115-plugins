@@ -489,7 +489,7 @@ const fullListOpen = computed({
     </section>
 
     <!-- 我的想看 -->
-    <section v-if="wishItems.length || wishInfo?.enabled" class="dc-card" aria-label="我的想看">
+    <section v-if="wishItems.length || wishInfo?.enabled || settingsForm.wish_sync_enabled" class="dc-card" aria-label="我的想看">
       <div class="dc-section-head">
         <h3>我的想看 <NTag v-if="wishItems.length" size="small" :bordered="false">{{ wishItems.length }}</NTag></h3>
         <div class="dc-head-actions">
