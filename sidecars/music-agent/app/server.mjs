@@ -36,6 +36,22 @@ const saveSessions = () => fs.writeFileSync(SESSIONS, JSON.stringify(sessions, n
 const saveTasks = () => fs.writeFileSync(TASKS, JSON.stringify(tasks, null, 2))
 function saveTask(t) { tasks[t.id] = t; saveTasks() }
 
+// 进程重启后没有子进程存活，任何 downloading 记录都是上一代的残留。
+// 不重置会一直占着并发槽位，队列再也排不动。
+function reclaimOrphanTasks() {
+  let n = 0
+  for (const t of Object.values(tasks)) {
+    if (t.status !== 'downloading') continue
+    const alive = t.pid ? (() => { try { process.kill(t.pid, 0); return true } catch { return false } })() : false
+    if (alive) continue
+    t.status = 'queued'; t.progress = 0; t.message = '进程重启后重新排队'
+    delete t.pid
+    n++
+  }
+  if (n) { log(`回收 ${n} 个残留下载任务，重新排队`); saveTasks() }
+  return n
+}
+
 // ── 出站（搜索直连；下载/登录按需）────────────────────────────
 let searchAgent = null
 function searchFetch(url, opts = {}) {
@@ -622,4 +638,9 @@ const server = http.createServer(async (req, res) => {
 // 启动: 搜索直连(国内), 下载 worker 继承进程环境
 if (process.env.DOWNLOAD_PROXY) setGlobalDispatcher(new ProxyAgent(process.env.DOWNLOAD_PROXY))
 fs.mkdirSync(CONFIG, { recursive: true })
-server.listen(PORT, HOST, () => log(`music-agent ${HOST}:${PORT} | mount=${MUSIC_MOUNT} 存在=${fs.existsSync(MUSIC_MOUNT)} | 配置=${CONFIG}`))
+server.listen(PORT, HOST, () => {
+  log(`music-agent ${HOST}:${PORT} | mount=${MUSIC_MOUNT} 存在=${fs.existsSync(MUSIC_MOUNT)} | 配置=${CONFIG}`)
+  // 启动即接管队列：清残留 + 推动已排队任务，否则重启后积压永远不动。
+  reclaimOrphanTasks()
+  pumpQueue()
+})
