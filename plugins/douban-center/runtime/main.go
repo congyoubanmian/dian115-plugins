@@ -325,32 +325,54 @@ func (r *runtime) loadAll() {
 	if r.stats.ByList == nil {
 		r.stats.ByList = map[string]int{}
 	}
-	r.loadAccountOverlay()
+	accountBytes, overlaid := r.loadAccountOverlay()
 	r.normalizeSettingsLocked()
+	r.traceDetail("load", map[string]any{
+		"state_bytes": len(raw), "state_result": loadResultName(loadResult), "restored": restored,
+		"account_bytes": accountBytes, "overlay": overlaid,
+	})
+}
+
+func loadResultName(result int) string {
+	switch result {
+	case loadStateLoaded:
+		return "loaded"
+	case loadStateFresh:
+		return "fresh"
+	default:
+		return "unavailable"
+	}
 }
 
 // loadAccountOverlay 用独立账号键覆盖 settings 的账号字段(账号键优先)。
-func (r *runtime) loadAccountOverlay() {
-	if raw, ok := wasmStorageGet(accountStorageKey); ok && len(raw) > 0 {
-		var acc Settings
-		if safeUnmarshal(raw, &acc) == nil {
-			if acc.CookieCloudURL != "" {
-				r.settings.CookieCloudURL = acc.CookieCloudURL
-			}
-			if acc.CookieCloudUUID != "" {
-				r.settings.CookieCloudUUID = acc.CookieCloudUUID
-			}
-			if acc.CookieCloudKey != "" {
-				r.settings.CookieCloudKey = acc.CookieCloudKey
-			}
-			if acc.ManualCookie != "" {
-				r.settings.ManualCookie = acc.ManualCookie
-			}
-			if acc.WishSyncEnabled {
-				r.settings.WishSyncEnabled = true
-			}
-		}
+// 返回读到的字节数与是否真的套用了覆盖(用于诊断面包屑)。
+func (r *runtime) loadAccountOverlay() (int, bool) {
+	raw, ok := wasmStorageGet(accountStorageKey)
+	if !ok || len(raw) == 0 {
+		return len(raw), false
 	}
+	var acc Settings
+	if safeUnmarshal(raw, &acc) != nil {
+		return len(raw), false
+	}
+	applied := acc.CookieCloudURL != "" || acc.CookieCloudUUID != "" || acc.CookieCloudKey != "" ||
+		acc.ManualCookie != "" || acc.WishSyncEnabled
+	if acc.CookieCloudURL != "" {
+		r.settings.CookieCloudURL = acc.CookieCloudURL
+	}
+	if acc.CookieCloudUUID != "" {
+		r.settings.CookieCloudUUID = acc.CookieCloudUUID
+	}
+	if acc.CookieCloudKey != "" {
+		r.settings.CookieCloudKey = acc.CookieCloudKey
+	}
+	if acc.ManualCookie != "" {
+		r.settings.ManualCookie = acc.ManualCookie
+	}
+	if acc.WishSyncEnabled {
+		r.settings.WishSyncEnabled = true
+	}
+	return len(raw), applied
 }
 
 // saveAccount 只在 settingsUpdate 时写账号键。
@@ -402,6 +424,15 @@ func (r *runtime) persistAll() {
 				}
 				r.storageOK = true
 				r.mu.Unlock()
+			} else {
+				// 读到了值, 但它不是本插件的状态文档(响应格式变化/值损坏)。
+				// 旧代码在这种情况下会继续落盘, 用内存里的默认值覆盖宿主里
+				// 已有数据——2026-09-28 的实际事故就是宿主信封格式变化触发了这条路径。
+				if !r.loadWarned {
+					r.loadWarned = true
+					r.log("warning", "宿主存储内容无法识别, 本次改动暂不落盘(避免覆盖已有数据)")
+				}
+				return
 			}
 		} else if lr == loadStateFresh {
 			r.mu.Lock()
@@ -1052,11 +1083,20 @@ func (r *runtime) log(level, message string) {
 // 宿主若在某次 host.call 期间直接杀掉 worker(不留 panic 输出), 事后仍可从
 // plugin_kv 的 diag 键看出最后成功执行到哪一步。
 func (r *runtime) trace(step string) {
-	payload, err := json.Marshal(map[string]string{"at": r.now(), "step": step})
+	r.traceDetail(step, nil)
+}
+
+// traceDetail 与 trace 相同, 但可附带少量结构化字段(用于复盘存储/加载问题)。
+func (r *runtime) traceDetail(step string, extra map[string]any) {
+	payload := map[string]any{"at": r.now(), "step": step}
+	for key, value := range extra {
+		payload[key] = value
+	}
+	data, err := json.Marshal(payload)
 	if err != nil {
 		return
 	}
-	_ = wasmStoragePut("diag", payload)
+	_ = wasmStoragePut("diag", data)
 }
 
 func (r *runtime) addHistory(entry HistoryEntry) {

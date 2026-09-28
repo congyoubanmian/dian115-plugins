@@ -154,13 +154,40 @@ func wasmStorageRead(key string) ([]byte, string, bool) {
 	if err != nil {
 		return nil, etag, false
 	}
-	var wrapper struct {
-		Value json.RawMessage `json:"value"`
-	}
-	if safeUnmarshal(raw, &wrapper) == nil && len(wrapper.Value) > 0 {
-		return wrapper.Value, etag, true
+	if value := unwrapStorageValue(raw); len(value) > 0 {
+		return value, etag, true
 	}
 	return raw, etag, true
+}
+
+// unwrapStorageValue 剥掉宿主存储响应的信封, 取回真正的值。
+// 宿主现行格式(OpenAPI StorageValueEnvelope):
+//
+//	{"data":{"key":"...","value":<值>,"revision":"pkv_N","updated_at":"..."},"meta":{...}}
+//
+// 早期宿主是扁平 {"value": <值>}。两种都兼容; 都不是时原样返回。
+// 之前只认顶层 "value", 于是把整个信封当成值: 状态文档被解析成空结构,
+// 每次 worker 启动都当作没有历史状态, 账号配置覆盖也读不到。
+func unwrapStorageValue(raw []byte) []byte {
+	if len(raw) == 0 {
+		return raw
+	}
+	var envelope struct {
+		Value json.RawMessage `json:"value"`
+		Data  struct {
+			Value json.RawMessage `json:"value"`
+		} `json:"data"`
+	}
+	if safeUnmarshal(raw, &envelope) != nil {
+		return raw
+	}
+	if len(envelope.Data.Value) > 0 {
+		return envelope.Data.Value
+	}
+	if len(envelope.Value) > 0 {
+		return envelope.Value
+	}
+	return raw
 }
 
 func wasmStorageGet(key string) ([]byte, bool) {
