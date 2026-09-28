@@ -216,6 +216,11 @@ type runtime struct {
 	wish     []WishItem    // 最近一次「我的想看」列表
 	wishSeen map[string]bool // 已处理过的想看条目
 	wishInfo WishInfo      // 想看同步状态摘要
+
+	// storageOK: 宿主存储是否成功加载过(或确认为全新安装)。
+	// false 期间 persistAll 不落盘, 防止默认值覆盖用户配置。
+	storageOK     bool
+	loadWarned    bool
 }
 
 func (r *runtime) now() string { return time.Now().Format(time.RFC3339) }
@@ -239,8 +244,41 @@ type persistedState struct {
 
 const stateStorageKey = "state"
 
+// loadStateWithRetry 宿主存储读取 + 3 次重试(200ms 间隔)。
+// 返回 (数据, 状态确定): 404 视为全新安装, 允许按默认值初始化并落盘;
+// 其他失败(网络/宿主未就绪)返回不确定, 调用方禁止落盘防覆盖。
+func (r *runtime) loadStateWithRetry() ([]byte, bool) {
+	for attempt := 0; attempt < 3; attempt++ {
+		if raw, ok := wasmStorageGet(stateStorageKey); ok {
+			return raw, true
+		}
+		if status := r.storageStatus(stateStorageKey); status == 404 {
+			return nil, true
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	return nil, false
+}
+
+// storageStatus 直接探测存储键的 HTTP 状态(区分 404 与瞬态错误)。
+func (r *runtime) storageStatus(key string) int {
+	resp, err := r.hostCall(hostCallRequest{
+		Method: "GET", Path: "/api/plugin-runtime/storage/" + key,
+		Headers: map[string]string{"accept": "application/json"},
+	})
+	if err != nil {
+		return 0
+	}
+	return resp.Status
+}
+
 func (r *runtime) loadAll() {
-	if raw, ok := wasmStorageGet(stateStorageKey); ok {
+	// 宿主存储读取在 worker 启动初期可能瞬时失败; 失败就落默认值并在之后 persistAll,
+	// 会把用户已保存的配置整块覆盖丢失(实测发生过: CookieCloud 配置保存后被抹掉)。
+	// 因此: 重试 3 次; 全部失败时标记 loadFailed, 禁止后续落盘, 直到某次成功加载。
+	raw, storageOK := r.loadStateWithRetry()
+	r.storageOK = storageOK
+	if storageOK {
 		var doc persistedState
 		if safeUnmarshal(raw, &doc) == nil && doc.Settings.Lists != nil {
 			r.settings = doc.Settings
@@ -254,7 +292,7 @@ func (r *runtime) loadAll() {
 			r.wishSeen = doc.WishSeen
 			r.wishInfo = doc.WishInfo
 		}
-	} else {
+	} else if r.settings.Lists == nil {
 		// 迁移旧的分键持久化格式(每个键一次读取)。
 		loadJSON(filepath.Join(r.dataDir, "settings.json"), &r.settings)
 		loadJSON(filepath.Join(r.dataDir, "snapshot.json"), &r.snapshot)
@@ -291,6 +329,31 @@ func (r *runtime) normalizeSettingsLocked() {
 }
 
 func (r *runtime) persistAll() {
+	// 加载失败期间禁止落盘: 内存里是默认值, 写出去会覆盖宿主存储里的用户配置。
+	r.mu.Lock()
+	storageOK := r.storageOK
+	r.mu.Unlock()
+	if !storageOK {
+		if raw, ok := r.loadStateWithRetry(); ok {
+			r.mu.Lock()
+			r.storageOK = true
+			r.mu.Unlock()
+			var doc persistedState
+			if safeUnmarshal(raw, &doc) == nil && doc.Settings.Lists != nil {
+				r.mu.Lock()
+				if r.settings.Lists == nil {
+					r.settings = doc.Settings
+				}
+				r.mu.Unlock()
+			}
+		} else {
+			if !r.loadWarned {
+				r.loadWarned = true
+				r.log("warning", "宿主存储持续不可读, 本次改动暂不落盘(避免覆盖已有配置)")
+			}
+			return
+		}
+	}
 	// wasip1 单线程下大对象序列化会把堆顶到宿主的内存硬限额(manifest memory_mb),
 	// 因此只保留最近少量日志; 整份状态超过 maxPersistBytes 时放弃本次落盘。
 	r.mu.Lock()
