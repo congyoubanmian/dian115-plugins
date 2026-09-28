@@ -18,6 +18,9 @@ import (
 	"strings"
 )
 
+// 密文长度上限: base64 密文 512KB(约对应几 MB 明文 cookie), 超过视为未限域的全量同步。
+const maxCookieCloudBytes = 512 << 10
+
 type cookieCloudResult struct {
 	Encrypted  string `json:"encrypted"`
 	CryptoType string `json:"crypto_type"`
@@ -43,6 +46,12 @@ func (r *runtime) cookieCloudPull(server, uuid, key string) (map[string]json.Raw
 	var res cookieCloudResult
 	if err := json.Unmarshal(body, &res); err != nil || res.Encrypted == "" {
 		return nil, fmt.Errorf("CookieCloud 响应异常（UUID 不存在或服务端版本过旧）")
+	}
+	// 全量浏览器 cookie 的密文可达数 MB, 在 WASM 解释器里解密会撞前台 10 秒强杀线
+	// (实测 1.6MB 时 worker 被杀 runtime_unavailable)。超限直接指引限域, 不再解密。
+	if len(res.Encrypted) > maxCookieCloudBytes {
+		return nil, fmt.Errorf("同步数据过大(%.1fMB, 上限 %.0fKB)：请在浏览器 CookieCloud 扩展里把「需要同步的域名」设为 douban.com 后重新同步",
+			float64(len(res.Encrypted))/1048576, float64(maxCookieCloudBytes)/1024)
 	}
 	plain, err := cookieCloudDecrypt(res.Encrypted, res.CryptoType, uuid, key)
 	if err != nil {
