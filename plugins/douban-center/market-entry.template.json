@@ -5,8 +5,8 @@
   "description": "豆瓣榜单抓取 + 黑名单过滤 + 观察队列 + 聚合订阅；支持 CookieCloud 同步浏览器豆瓣登录态，自动追订「我的想看」。",
   "author": "congyoubanmian",
   "homepage": "https://github.com/congyoubanmian/douban-center-wasm",
-  "package_url": "https://github.com/congyoubanmian/dian115-plugins/releases/download/v0.3.2/douban.center-0.3.2.d115p",
-  "sha256": "26a6e00197b9d4fec92d818d103a4ad394b1452592844248d99ad4e380ea06a1",
+  "package_url": "https://github.com/congyoubanmian/dian115-plugins/releases/download/v0.3.4/douban.center-0.3.4.d115p",
+  "sha256": "2f203bf666710107db55b7b6022ac7c06a94bfb06f0e74f4ba2ff138f1a6f43c",
   "runtime": {
     "kind": "wasm",
     "protocol": "dian115:wasm@1",
