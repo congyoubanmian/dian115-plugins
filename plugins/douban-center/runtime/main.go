@@ -244,20 +244,35 @@ type persistedState struct {
 
 const stateStorageKey = "state"
 
+// accountStorageKey: 账号配置(CookieCloud/想看开关)独立存放, 只有
+// settings-update 写这个键, 榜单刷新的 persistAll 永远不碰——大状态
+// 就是被竞态冲掉也带不走账号配置。
+const accountStorageKey = "account"
+
+// 存储加载三态: 成功读到数据 / 确认全新安装(404) / 不确定(禁止落盘)。
+const (
+	loadStateLoaded = iota
+	loadStateFresh
+	loadStateUnavailable
+)
+
 // loadStateWithRetry 宿主存储读取 + 3 次重试(200ms 间隔)。
-// 返回 (数据, 状态确定): 404 视为全新安装, 允许按默认值初始化并落盘;
-// 其他失败(网络/宿主未就绪)返回不确定, 调用方禁止落盘防覆盖。
-func (r *runtime) loadStateWithRetry() ([]byte, bool) {
+// 404 需间隔 300ms 两次确认(崩溃重启风暴中宿主存储会瞬时 404,
+// 单次就当全新安装会让默认值合法覆盖用户配置); 其他失败禁止落盘。
+func (r *runtime) loadStateWithRetry() ([]byte, int) {
 	for attempt := 0; attempt < 3; attempt++ {
-		if raw, ok := wasmStorageGet(stateStorageKey); ok {
-			return raw, true
+		if raw, ok := wasmStorageGet(stateStorageKey); ok && len(raw) > 0 {
+			return raw, loadStateLoaded
 		}
 		if status := r.storageStatus(stateStorageKey); status == 404 {
-			return nil, true
+			time.Sleep(300 * time.Millisecond)
+			if r.storageStatus(stateStorageKey) == 404 {
+				return nil, loadStateFresh
+			}
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
-	return nil, false
+	return nil, loadStateUnavailable
 }
 
 // storageStatus 直接探测存储键的 HTTP 状态(区分 404 与瞬态错误)。
@@ -276,22 +291,24 @@ func (r *runtime) loadAll() {
 	// 宿主存储读取在 worker 启动初期可能瞬时失败; 失败就落默认值并在之后 persistAll,
 	// 会把用户已保存的配置整块覆盖丢失(实测发生过: CookieCloud 配置保存后被抹掉)。
 	// 因此: 重试 3 次; 全部失败时标记 loadFailed, 禁止后续落盘, 直到某次成功加载。
-	raw, storageOK := r.loadStateWithRetry()
-	r.storageOK = storageOK
-	if storageOK {
-		var doc persistedState
-		if safeUnmarshal(raw, &doc) == nil && doc.Settings.Lists != nil {
-			r.settings = doc.Settings
-			r.snapshot = doc.Snapshot
-			r.queue = doc.Queue
-			r.history = doc.History
-			r.logs = doc.Logs
-			r.stats = doc.Stats
-			r.blackState = doc.BlackState
-			r.wish = doc.Wish
-			r.wishSeen = doc.WishSeen
-			r.wishInfo = doc.WishInfo
-		}
+	raw, loadResult := r.loadStateWithRetry()
+	// 不变量: 只有"成功解析出已有状态"或"404 两次确认的全新安装"才允许落盘。
+	var doc persistedState
+	restored := len(raw) > 0 && safeUnmarshal(raw, &doc) == nil && doc.Settings.Lists != nil
+	r.storageOK = restored || loadResult == loadStateFresh
+	if restored {
+		r.settings = doc.Settings
+		r.snapshot = doc.Snapshot
+		r.queue = doc.Queue
+		r.history = doc.History
+		r.logs = doc.Logs
+		r.stats = doc.Stats
+		r.blackState = doc.BlackState
+		r.wish = doc.Wish
+		r.wishSeen = doc.WishSeen
+		r.wishInfo = doc.WishInfo
+	} else if loadResult == loadStateUnavailable {
+		// 状态不确定: 内存默认值仅供展示, storageOK=false 挡住一切落盘。
 	} else if r.settings.Lists == nil {
 		// 迁移旧的分键持久化格式(每个键一次读取)。
 		loadJSON(filepath.Join(r.dataDir, "settings.json"), &r.settings)
@@ -308,7 +325,49 @@ func (r *runtime) loadAll() {
 	if r.stats.ByList == nil {
 		r.stats.ByList = map[string]int{}
 	}
+	r.loadAccountOverlay()
 	r.normalizeSettingsLocked()
+}
+
+// loadAccountOverlay 用独立账号键覆盖 settings 的账号字段(账号键优先)。
+func (r *runtime) loadAccountOverlay() {
+	if raw, ok := wasmStorageGet(accountStorageKey); ok && len(raw) > 0 {
+		var acc Settings
+		if safeUnmarshal(raw, &acc) == nil {
+			if acc.CookieCloudURL != "" {
+				r.settings.CookieCloudURL = acc.CookieCloudURL
+			}
+			if acc.CookieCloudUUID != "" {
+				r.settings.CookieCloudUUID = acc.CookieCloudUUID
+			}
+			if acc.CookieCloudKey != "" {
+				r.settings.CookieCloudKey = acc.CookieCloudKey
+			}
+			if acc.ManualCookie != "" {
+				r.settings.ManualCookie = acc.ManualCookie
+			}
+			if acc.WishSyncEnabled {
+				r.settings.WishSyncEnabled = true
+			}
+		}
+	}
+}
+
+// saveAccount 只在 settingsUpdate 时写账号键。
+func (r *runtime) saveAccount() {
+	r.mu.Lock()
+	acc := Settings{
+		CookieCloudURL:  r.settings.CookieCloudURL,
+		CookieCloudUUID: r.settings.CookieCloudUUID,
+		CookieCloudKey:  r.settings.CookieCloudKey,
+		ManualCookie:    r.settings.ManualCookie,
+		WishSyncEnabled: r.settings.WishSyncEnabled,
+	}
+	r.mu.Unlock()
+	raw, err := json.Marshal(acc)
+	if err == nil {
+		_ = wasmStoragePut(accountStorageKey, raw)
+	}
 }
 
 // normalizeSettingsLocked 防呆：即将上映必须用 coming_html 来源（豆瓣 /later/ 页，含海报），
@@ -334,18 +393,20 @@ func (r *runtime) persistAll() {
 	storageOK := r.storageOK
 	r.mu.Unlock()
 	if !storageOK {
-		if raw, ok := r.loadStateWithRetry(); ok {
-			r.mu.Lock()
-			r.storageOK = true
-			r.mu.Unlock()
+		if raw, lr := r.loadStateWithRetry(); lr == loadStateLoaded {
 			var doc persistedState
 			if safeUnmarshal(raw, &doc) == nil && doc.Settings.Lists != nil {
 				r.mu.Lock()
 				if r.settings.Lists == nil {
 					r.settings = doc.Settings
 				}
+				r.storageOK = true
 				r.mu.Unlock()
 			}
+		} else if lr == loadStateFresh {
+			r.mu.Lock()
+			r.storageOK = true
+			r.mu.Unlock()
 		} else {
 			if !r.loadWarned {
 				r.loadWarned = true
@@ -1831,6 +1892,7 @@ func (r *runtime) settingsUpdate(input map[string]any) (any, error) {
 	r.normalizeSettingsLocked()
 	r.mu.Unlock()
 	r.persistAll()
+	r.saveAccount()
 	r.bump("succeeded", "设置已保存")
 	return map[string]any{"status": "succeeded", "message": "设置已保存"}, nil
 }
