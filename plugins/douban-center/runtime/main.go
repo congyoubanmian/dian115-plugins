@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/http"
 	"net/url"
 	"path/filepath"
 	"regexp"
@@ -1863,7 +1862,7 @@ func (r *runtime) getPoster(input map[string]any) (any, error) {
 				lastErr = fmt.Sprintf("HTTP %d", status)
 				continue
 			}
-			mime := http.DetectContentType(body)
+			mime := sniffImage(body)
 			if !strings.HasPrefix(mime, "image/") {
 				lastErr = fmt.Sprintf("非图片内容(mime=%s, %dB)", mime, len(body))
 				continue
@@ -1873,7 +1872,7 @@ func (r *runtime) getPoster(input map[string]any) (any, error) {
 			if len(body) > maxPosterBytes && strings.Contains(u, "s_ratio_poster") {
 				small := strings.Replace(u, "s_ratio_poster", "m_ratio_poster", 1)
 				if sb, ss, serr := r.httpGet(small, "image/avif,image/webp,image/jpeg,image/*;q=0.8"); serr == nil && ss < 400 {
-					if sm := http.DetectContentType(sb); strings.HasPrefix(sm, "image/") && len(sb) <= maxPosterBytes {
+					if sm := sniffImage(sb); strings.HasPrefix(sm, "image/") && len(sb) <= maxPosterBytes {
 						body, mime = sb, sm
 					}
 				}
@@ -2169,3 +2168,19 @@ func newRuntime() *runtime {
 	return rt
 }
 func main() {}
+
+// sniffImage 轻量 MIME 嗅探: 只识别海报场景需要的图片格式。
+// 不用 http.DetectContentType 是为了不把整个 net/http 链进 wasm 二进制。
+func sniffImage(data []byte) string {
+	switch {
+	case len(data) >= 3 && data[0] == 0xFF && data[1] == 0xD8 && data[2] == 0xFF:
+		return "image/jpeg"
+	case len(data) >= 4 && data[1] == 'P' && data[2] == 'N' && data[3] == 'G':
+		return "image/png"
+	case len(data) >= 3 && data[0] == 'G' && data[1] == 'I' && data[2] == 'F':
+		return "image/gif"
+	case len(data) >= 12 && string(data[:4]) == "RIFF" && string(data[8:12]) == "WEBP":
+		return "image/webp"
+	}
+	return ""
+}

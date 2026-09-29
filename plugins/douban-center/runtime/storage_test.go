@@ -114,3 +114,19 @@ func TestNormalizeRestoresMissingLists(t *testing.T) {
 		t.Fatalf("user limit lost: %+v", r.settings.Lists[listUpcoming])
 	}
 }
+
+func TestSniffImage(t *testing.T) {
+	tests := []struct{ name string; data []byte; want string }{
+		{"jpeg", append([]byte{0xFF, 0xD8, 0xFF}, []byte("rest...")...), "image/jpeg"},
+		{"png", []byte{0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A}, "image/png"},
+		{"gif", []byte("GIF89a...."), "image/gif"},
+		{"webp", append([]byte("RIFF____WEBP"), []byte("VP8 ")...), "image/webp"},
+		{"html", []byte("<html>not image</html>"), ""},
+		{"empty", nil, ""},
+	}
+	for _, tt := range tests {
+		if got := sniffImage(tt.data); got != tt.want {
+			t.Errorf("%s: got %q want %q", tt.name, got, tt.want)
+		}
+	}
+}
