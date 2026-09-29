@@ -1,0 +1,153 @@
+name: 发布豆瓣中心 Rust 版插件
+
+# 推一个 rs-<版本> 标签即自动: rust:1-slim 容器里编译 WASM → 打包签名 →
+# 生成市场索引(新增 douban.rs 条目, 保留 douban.center / music.dl) →
+# 创建 Release 并上传 .d115p → 把索引回写到 main。
+#
+# 前置: 仓库 Secrets 里配置 DIAN115_PLUGIN_SIGNING_KEY（插件签名私钥的 PEM 全文）。
+# 私钥只用于签名，务必妥善保管；泄漏意味着他人可以伪造本发布者的插件包。
+#
+# 前端不重写: Rust 版直接复用 plugins/douban-center 的 Vue 前端源码与构建脚本
+# （Vue 前端与运行时解耦）。build/ 目录按仓库约定不入库（.gitignore 的 `**/build/`、
+# README「安全与发布边界」），所以这里先跑 douban-center 自己的 build:ui 产出
+# build/frontend/dist，再由 package.mjs 原样打包这些资产。
+
+on:
+  push:
+    tags:
+      - 'rs-v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '发布标签（需与插件版本一致，例如 rs-v0.1.0）'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: plugins/douban-rs
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # 必须构建标签指向的提交: tag 先于 main 到达时 main 上还是旧 manifest,
+          # 版本校验会失败。dispatch 时用输入的 tag。
+          ref: ${{ github.event.inputs.tag || github.ref }}
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: 校验标签与清单版本一致
+        env:
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          VERSION=$(node -p "require('./manifest.template.json').version")
+          EXPECTED_TAG="rs-v$VERSION"
+          echo "tag=$TAG manifest=$VERSION expected=$EXPECTED_TAG"
+          [ "$TAG" = "$EXPECTED_TAG" ] || {
+            echo "::error::标签与 manifest 版本不一致（应为 $EXPECTED_TAG）"
+            exit 1
+          }
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "PACKAGE=douban.rs-$VERSION.d115p" >> "$GITHUB_ENV"
+
+      - name: 构建 douban-center 前端产物（复用现有前端源码）
+        working-directory: plugins/douban-center
+        run: |
+          npm ci
+          npm run build:ui
+
+      - name: 确认前端产物存在
+        run: |
+          test -f ../douban-center/build/frontend/dist/assets/remoteEntry.js || {
+            echo "::error::缺少 douban-center 前端产物 plugins/douban-center/build/frontend/dist/assets/remoteEntry.js"
+            exit 1
+          }
+
+      - name: 构建 WASM 运行时（rust:1-slim）
+        run: |
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE/plugins/douban-rs:/src" \
+            -w /src \
+            -e CARGO_TERM_COLOR=always \
+            rust:1-slim \
+            sh -c 'set -e; rustup target list --installed | grep -qx wasm32-unknown-unknown || rustup target add wasm32-unknown-unknown; cargo build --release --target wasm32-unknown-unknown'
+
+      - name: 校验构建产物
+        run: |
+          test -s target/wasm32-unknown-unknown/release/plugin.wasm || {
+            echo "::error::缺少 target/wasm32-unknown-unknown/release/plugin.wasm"
+            exit 1
+          }
+          ls -l target/wasm32-unknown-unknown/release/plugin.wasm
+
+      - name: 写入签名私钥
+        env:
+          SIGNING_KEY: ${{ secrets.DIAN115_PLUGIN_SIGNING_KEY }}
+        run: |
+          [ -n "$SIGNING_KEY" ] || { echo "::error::未配置 Secrets.DIAN115_PLUGIN_SIGNING_KEY"; exit 1; }
+          mkdir -p "$RUNNER_TEMP/dian115"
+          printf '%s\n' "$SIGNING_KEY" > "$RUNNER_TEMP/dian115/publisher.pem"
+          chmod 600 "$RUNNER_TEMP/dian115/publisher.pem"
+
+      - name: 打包并签名
+        env:
+          DIAN115_PLUGIN_SIGNING_KEY: ${{ runner.temp }}/dian115/publisher.pem
+        run: node package.mjs
+
+      - name: 清理私钥
+        if: always()
+        run: rm -f "$RUNNER_TEMP/dian115/publisher.pem"
+
+      - name: 生成市场索引
+        env:
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: node build-market-index.mjs --repo="https://github.com/${{ github.repository }}" --tag="$TAG"
+
+      - name: 创建 Release 并上传插件包
+        working-directory: .
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          test -f "plugins/douban-rs/releases/$PACKAGE" || {
+            echo "::error::缺少预期包 $PACKAGE"
+            ls -la plugins/douban-rs/releases || true
+            exit 1
+          }
+          gh release create "$TAG" "plugins/douban-rs/releases/$PACKAGE" \
+            --title "$TAG" \
+            --notes "自动构建发布（豆瓣中心 Rust 版：rust:1-slim 编译的 WASM 运行时 + 复用 douban-center 前端 + 签名包）。
+
+          安装：DIAN115 插件中心 → 添加插件仓库 → https://github.com/${{ github.repository }}" \
+            || gh release upload "$TAG" "plugins/douban-rs/releases/$PACKAGE" --clobber
+
+      - name: 回写市场索引到 main
+        working-directory: .
+        env:
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # 当前 checkout 在 tag 上；先保存生成文件，再切到最新 main 后覆盖，
+          # 避免 CI 运行期间 main 有新提交导致 non-fast-forward。
+          cp plugin-market/index.json "$RUNNER_TEMP/index.json"
+          mkdir -p "$RUNNER_TEMP/icons"
+          cp -a plugin-market/icons/. "$RUNNER_TEMP/icons/"
+          git fetch origin main
+          git checkout -B main origin/main
+          cp "$RUNNER_TEMP/index.json" plugin-market/index.json
+          cp -a "$RUNNER_TEMP/icons/." plugin-market/icons/
+          git add plugin-market/index.json plugin-market/icons
+          if git diff --cached --quiet; then
+            echo "索引无变化"
+          else
+            git commit -m "chore: 更新豆瓣中心 Rust 版市场索引 $TAG [skip ci]"
+            git push origin main
+          fi

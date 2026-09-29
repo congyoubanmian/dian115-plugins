@@ -1,0 +1,208 @@
+{
+  "$schema": "https://raw.githubusercontent.com/madbrolab/dian115/main/docs/plugin-platform/manifest.schema.json",
+  "schema_version": 1,
+  "id": "douban.rs",
+  "name": "豆瓣中心（Rust 版）",
+  "version": "0.1.0",
+  "description": "豆瓣榜单抓取 + 黑名单过滤 + 观察队列 + 聚合订阅；支持 CookieCloud 同步浏览器豆瓣登录态，自动追订「我的想看」。",
+  "default_locale": "zh-CN",
+  "publisher": {
+    "name": "congyoubanmian",
+    "key_id": "ed25519:REPLACED_BY_PACKAGER",
+    "url": "https://github.com/congyoubanmian"
+  },
+  "compatibility": {
+    "dian115": ">=3.8.51 <5.0.0",
+    "plugin_api": "^2.0"
+  },
+  "runtime": {
+    "kind": "wasm",
+    "entry": "runtime/plugin.wasm",
+    "protocol": "dian115:wasm@1",
+    "startup_timeout_ms": 60000,
+    "shutdown_timeout_ms": 5000,
+    "timeout_ms": 60000,
+    "background_timeout_ms": 600000,
+    "memory_mb": 128,
+    "max_concurrency": 2,
+    "restart_policy": "on-failure"
+  },
+  "permissions": {
+    "apis": [
+      {
+        "method": "GET",
+        "path": "/api/tmdb/search",
+        "reason": "把豆瓣榜单条目匹配到 TMDB 元数据（tmdb_id/类型/年份/海报）以创建聚合订阅"
+      },
+      {
+        "method": "GET",
+        "path": "/api/tmdb/movie/:id",
+        "reason": "读取电影详情补充订阅信息"
+      },
+      {
+        "method": "GET",
+        "path": "/api/tmdb/tv/:id",
+        "reason": "读取剧集详情补充订阅信息"
+      },
+      {
+        "method": "POST",
+        "path": "/api/subscribe/pool/intents",
+        "reason": "为通过观察期的豆瓣条目创建聚合订阅（宿主负责检索并投递 115 离线）"
+      },
+      {
+        "method": "GET",
+        "path": "/api/subscribe/pool/intents",
+        "reason": "查询已创建聚合订阅，用于去重与状态跟踪"
+      },
+      {
+        "method": "GET",
+        "path": "/api/subscribe/records",
+        "reason": "读取订阅记录，用于订阅历史与统计"
+      },
+      {
+        "method": "POST",
+        "path": "/api/notifications/plugin",
+        "reason": "订阅成功/失败时推送 Telegram 通知"
+      },
+      {
+        "method": "GET",
+        "path": "/api/plugin-runtime/storage/:key",
+        "reason": "读取配置镜像，便于跨端同步与排查"
+      },
+      {
+        "method": "PUT",
+        "path": "/api/plugin-runtime/storage/:key",
+        "reason": "保存配置镜像"
+      }
+    ],
+    "network": [
+      {
+        "origin": "https://movie.douban.com",
+        "methods": [
+          "GET"
+        ],
+        "proxy_mode": "system",
+        "reason": "抓取豆瓣榜单（chart、coming、search_subjects、subject_suggest）"
+      },
+      {
+        "origin": "https://m.douban.com",
+        "methods": [
+          "GET"
+        ],
+        "proxy_mode": "system",
+        "reason": "豆瓣移动端 rexxar API，按 subject id 取口碑榜海报"
+      },
+      {
+        "origin": "https://img1.doubanio.com",
+        "methods": [
+          "GET"
+        ],
+        "proxy_mode": "system",
+        "reason": "抓取豆瓣海报缩略图（防盗链需带豆瓣 Referer）"
+      },
+      {
+        "origin": "https://img2.doubanio.com",
+        "methods": [
+          "GET"
+        ],
+        "proxy_mode": "system",
+        "reason": "抓取豆瓣海报缩略图"
+      },
+      {
+        "origin": "https://img3.doubanio.com",
+        "methods": [
+          "GET"
+        ],
+        "proxy_mode": "system",
+        "reason": "抓取豆瓣海报缩略图"
+      },
+      {
+        "origin": "https://img4.doubanio.com",
+        "methods": [
+          "GET"
+        ],
+        "proxy_mode": "system",
+        "reason": "抓取豆瓣海报缩略图"
+      },
+      {
+        "origin": "https://img5.doubanio.com",
+        "methods": [
+          "GET"
+        ],
+        "proxy_mode": "system",
+        "reason": "抓取豆瓣海报缩略图"
+      },
+      {
+        "origin": "https://img6.doubanio.com",
+        "methods": [
+          "GET"
+        ],
+        "proxy_mode": "system",
+        "reason": "抓取豆瓣海报缩略图"
+      },
+      {
+        "origin": "https://img7.doubanio.com",
+        "methods": [
+          "GET"
+        ],
+        "proxy_mode": "system",
+        "reason": "抓取豆瓣海报缩略图"
+      },
+      {
+        "origin": "https://img8.doubanio.com",
+        "methods": [
+          "GET"
+        ],
+        "proxy_mode": "system",
+        "reason": "抓取豆瓣海报缩略图"
+      },
+      {
+        "origin": "https://img9.doubanio.com",
+        "methods": [
+          "GET"
+        ],
+        "proxy_mode": "system",
+        "reason": "抓取豆瓣海报缩略图"
+      },
+      {
+        "origin": "http://127.0.0.1:8088",
+        "methods": [
+          "GET"
+        ],
+        "proxy_mode": "direct",
+        "reason": "本机 CookieCloud 服务：拉取加密同步数据解出豆瓣登录 cookie"
+      }
+    ]
+  },
+  "ui": {
+    "mode": "federation",
+    "icon": "frontend/icon.svg",
+    "federation": {
+      "entry": "frontend/dist/assets/remoteEntry.js",
+      "assets_root": "frontend/dist/assets",
+      "module": "./AppPage"
+    }
+  },
+  "jobs": [
+    {
+      "id": "refresh-charts",
+      "handler": "refreshCharts",
+      "default_schedule": "0 */2 * * *",
+      "allow_overlap": false
+    },
+    {
+      "id": "wish-sync",
+      "handler": "wishSync",
+      "default_schedule": "*/30 * * * *",
+      "allow_overlap": false
+    }
+  ],
+  "homepage": "https://github.com/congyoubanmian/douban-center-wasm",
+  "repository": "https://github.com/congyoubanmian/douban-center-wasm",
+  "license": "MIT",
+  "tags": [
+    "douban",
+    "automation",
+    "subscribe"
+  ]
+}

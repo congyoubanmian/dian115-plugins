@@ -1,0 +1,38 @@
+[package]
+name = "douban-plugin"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# 宿主按 runtime/plugin.wasm 装载, 产物名必须是 plugin.wasm。
+# rlib 仅供本机 `cargo test` 链接使用(wasm 产物仍只有 cdylib), 不影响体积。
+[lib]
+name = "plugin"
+crate-type = ["cdylib", "rlib"]
+# 没有 doc test: 纯 wasm 入口 crate, 避免 cargo test 为 doctest 再链一份。
+doctest = false
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+# `raw_value`: 存储信封解包只取两个 `&RawValue` 字段(Go `json.RawMessage` 的等价物),
+# 不为 4MiB 的状态文档建 serde_json::Value 树(见 store.rs 的 `unwrap_value`)。
+serde_json = { version = "1", features = ["raw_value"] }
+# 存储层: host.call 的 body_base64 编解码(Go `encoding/base64` 的 RawStd/Std 两种 padding)。
+base64 = "0.22"
+# CookieCloud 解密(cookiecloud.go): AES-256-CBC / AES-128-CBC + EVP_BytesToKey(md5)。
+# `aes` 的 `Aes128`/`Aes256` 覆盖两种模式, `cbc` 提供 CBC 模式; `aes::cipher` 就是 cipher 0.4。
+aes = "0.8"
+cbc = "0.1"
+# EVP_BytesToKey 与 ccKeyMaterial 都基于 md5(Go `crypto/md5`)。
+md-5 = "0.10"
+# Go `encoding/hex`: ccKeyMaterial 的 hex.EncodeToString 前半段。
+hex = "0.4"
+# 榜单抓取回归: Go 用 `regexp` 抓豆瓣 HTML(re_* 那一批), 这里用同族的 regex。
+regex = "1"
+
+[profile.release]
+opt-level = "z"
+lto = true
+panic = "abort"
+codegen-units = 1
+strip = true
