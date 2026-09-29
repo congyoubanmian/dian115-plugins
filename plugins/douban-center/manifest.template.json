@@ -3,7 +3,7 @@
   "schema_version": 1,
   "id": "douban.center",
   "name": "豆瓣中心",
-  "version": "0.3.11",
+  "version": "0.3.12",
   "description": "豆瓣榜单抓取 + 黑名单过滤 + 观察队列 + 聚合订阅；支持 CookieCloud 同步浏览器豆瓣登录态，自动追订「我的想看」。",
   "default_locale": "zh-CN",
   "publisher": {
@@ -23,7 +23,7 @@
     "shutdown_timeout_ms": 5000,
     "timeout_ms": 60000,
     "background_timeout_ms": 600000,
-    "memory_mb": 256,
+    "memory_mb": 512,
     "max_concurrency": 2,
     "restart_policy": "on-failure"
   },
