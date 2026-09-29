@@ -9,12 +9,12 @@
     {
       "id": "douban.center",
       "name": "豆瓣中心",
-      "version": "0.3.9",
+      "version": "0.3.10",
       "description": "豆瓣榜单抓取 + 黑名单过滤 + 观察队列 + 聚合订阅；支持 CookieCloud 同步浏览器豆瓣登录态，自动追订「我的想看」。",
       "author": "congyoubanmian",
       "homepage": "https://github.com/congyoubanmian/douban-center-wasm",
-      "package_url": "https://github.com/congyoubanmian/dian115-plugins/releases/download/v0.3.9/douban.center-0.3.9.d115p",
-      "sha256": "945229601cc39a07ec662308b2c00c2cb01a4b6283c8f2c120dcebfdaf941fba",
+      "package_url": "https://github.com/congyoubanmian/dian115-plugins/releases/download/v0.3.10/douban.center-0.3.10.d115p",
+      "sha256": "06d8aefc4c3bbbfc36c04674cc63268d1d83251db384ab38192a1fa43d35684c",
       "runtime": {
         "kind": "wasm",
         "protocol": "dian115:wasm@1",
