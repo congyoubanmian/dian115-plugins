@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"testing"
+	"time"
 )
 
 // 真实接口形态: subject.id / year 是字符串, 兴趣列表里混着 book 类型
@@ -59,5 +60,21 @@ func TestWishNumericSubjectID(t *testing.T) {
 	items := wishItemsFromInterests(parseWishInterests(t, wishResponseNumericID))
 	if len(items) != 1 || items[0].DoubanRef != "12345" || items[0].Type != "tv" {
 		t.Fatalf("numeric id handling wrong: %+v", items)
+	}
+}
+
+func TestCookieCacheFresh(t *testing.T) {
+	now := time.Now().Format(time.RFC3339)
+	fresh := CookieCache{Header: "dbcl2=x", UID: "1", Source: "cookiecloud", FetchedAt: now}
+	if !cookieCacheFresh(fresh) {
+		t.Fatal("just-fetched cache must be fresh")
+	}
+	old := CookieCache{Header: "dbcl2=x", UID: "1", Source: "cookiecloud",
+		FetchedAt: time.Now().Add(-time.Hour).Format(time.RFC3339)}
+	if cookieCacheFresh(old) {
+		t.Fatal("1h-old cache must be stale (TTL 45m)")
+	}
+	if cookieCacheFresh(CookieCache{}) {
+		t.Fatal("empty cache must be stale")
 	}
 }

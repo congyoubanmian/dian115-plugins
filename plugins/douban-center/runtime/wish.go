@@ -32,17 +32,45 @@ type WishInfo struct {
 	Source     string `json:"source,omitempty"` // cookiecloud | manual
 }
 
-// doubanCookie 解析豆瓣登录 cookie: 优先 CookieCloud, 失败回退手动粘贴。
+// CookieCache: CookieCloud 解密结果缓存。
+// 117KB 信封在 wazero 解释器里 AES 解密要数秒, 只该在后台任务做;
+// 前台「立即同步」/「刷新」直接复用缓存。
+type CookieCache struct {
+	Header    string `json:"header,omitempty"`
+	UID       string `json:"uid,omitempty"`
+	Source    string `json:"source,omitempty"`
+	FetchedAt string `json:"fetched_at,omitempty"`
+}
+
+const cookieCacheTTL = 45 * time.Minute
+
+// cookieCacheFresh 缓存是否仍可用。
+func cookieCacheFresh(c CookieCache) bool {
+	if c.Header == "" || c.UID == "" {
+		return false
+	}
+	t, err := time.Parse(time.RFC3339, c.FetchedAt)
+	return err == nil && time.Since(t) < cookieCacheTTL
+}
+
+// doubanCookie 解析豆瓣登录 cookie: 优先 CookieCloud(带 TTL 缓存), 失败回退手动粘贴。
 // 返回 cookie 头和 uid(dbcl2 冒号前段)。
 func (r *runtime) doubanCookie() (header, uid, source string, err error) {
 	r.mu.Lock()
 	s := cloneSettings(r.settings)
+	cached := r.cookie
 	r.mu.Unlock()
 	if s.CookieCloudURL != "" && s.CookieCloudUUID != "" && s.CookieCloudKey != "" {
+		if cookieCacheFresh(cached) {
+			return cached.Header, cached.UID, cached.Source, nil
+		}
 		data, perr := r.cookieCloudPull(s.CookieCloudURL, s.CookieCloudUUID, s.CookieCloudKey)
 		if perr == nil {
 			h, u, _ := doubanCookieFromCloud(data)
 			if h != "" {
+				r.mu.Lock()
+				r.cookie = CookieCache{Header: h, UID: u, Source: "cookiecloud", FetchedAt: r.now()}
+				r.mu.Unlock()
 				return h, u, "cookiecloud", nil
 			}
 			return "", "", "cookiecloud", errors.New("CookieCloud 同步数据里没有豆瓣登录 cookie（浏览器需登录 douban.com）")
@@ -181,8 +209,10 @@ func wishItemsFromInterests(interests []wishInterest) []WishItem {
 	return items
 }
 
-// syncWishList 全量同步想看: 新条目立即尝试订阅, 已处理的跳过。
-func (r *runtime) syncWishList(invocationID string) {
+// syncWishList 全量同步想看: 已处理的跳过。
+// subscribeInline=false 时(前台动作, ~10s 硬预算)只拉列表+入队,
+// 订阅交给后台任务——单次聚合订阅宿主侧就要 5s+, 前台必超时。
+func (r *runtime) syncWishList(invocationID string, subscribeInline bool) {
 	r.mu.Lock()
 	s := cloneSettings(r.settings)
 	info := r.wishInfo
@@ -248,7 +278,7 @@ func (r *runtime) syncWishList(invocationID string) {
 		}
 		newCount++
 		seen[wi.DoubanRef] = true
-		if settings.AutoSubscribe {
+		if subscribeInline && settings.AutoSubscribe {
 			q := QueueItem{
 				DoubanRef: wi.DoubanRef, Title: wi.Title, List: "wish",
 				PosterURL: wi.PosterURL, URL: "https://www.douban.com/subject/" + wi.DoubanRef + "/",
@@ -258,7 +288,8 @@ func (r *runtime) syncWishList(invocationID string) {
 			_ = msg
 			_ = status
 		} else {
-			// 未开自动订阅: 只进观察队列等人工处理
+			// 前台(或未开自动订阅): 只入观察队列, 到期时间=现在,
+			// 由后台任务(wish-sync 每30分钟)接手订阅。
 			r.mu.Lock()
 			dup := false
 			for _, e := range r.queue.Items {
@@ -269,7 +300,9 @@ func (r *runtime) syncWishList(invocationID string) {
 			}
 			if !dup {
 				due := r.now()
-				if t, err := time.Parse(time.RFC3339, due); err == nil {
+				if settings.AutoSubscribe {
+					// 自动订阅开着: 到期立即订(后台接手), 不再等观察期
+				} else if t, err := time.Parse(time.RFC3339, due); err == nil {
 					due = t.Add(time.Duration(settings.ObservePeriodHours) * time.Hour).Format(time.RFC3339)
 				}
 				r.queue.Items = append(r.queue.Items, QueueItem{
@@ -338,6 +371,11 @@ func (r *runtime) actionCookieCloudTest() (any, error) {
 	if header == "" {
 		return map[string]any{"status": "failed", "message": fmt.Sprintf("解密成功(同步 %d 个域名, 豆瓣 cookie %d 个)，但没有 dbcl2——浏览器需要登录 douban.com", len(data), n)}, nil
 	}
+	// 测试成功顺便热身解密缓存, 后续前台同步直接复用
+	r.mu.Lock()
+	r.cookie = CookieCache{Header: header, UID: uid, Source: "cookiecloud", FetchedAt: r.now()}
+	r.mu.Unlock()
+	r.persistAll()
 	return map[string]any{
 		"status":  "succeeded",
 		"message": fmt.Sprintf("连接成功：同步 %d 个域名，豆瓣登录有效 (uid=%s)", len(data), uid),
@@ -346,19 +384,28 @@ func (r *runtime) actionCookieCloudTest() (any, error) {
 }
 
 // actionWishSync 手动触发想看同步。
+// 前台动作只有 ~10s 预算(宿主实测强杀), 因此只做拉取+入队;
+// 订阅由后台 wish-sync 任务(每30分钟)完成。
 func (r *runtime) actionWishSync(invocationID string) (any, error) {
 	r.mu.Lock()
 	enabled := r.settings.WishSyncEnabled
+	background := r.deepRefresh
 	r.mu.Unlock()
 	if !enabled {
 		return map[string]any{"status": "failed", "message": "请先在设置中开启「同步我的想看」"}, nil
 	}
-	r.syncWishList(invocationID)
+	r.syncWishList(invocationID, background)
 	r.mu.Lock()
 	info := r.wishInfo
 	r.mu.Unlock()
 	if info.LastStatus != "succeeded" {
 		return map[string]any{"status": "failed", "message": info.LastError}, nil
 	}
-	return map[string]any{"status": "succeeded", "message": fmt.Sprintf("想看同步完成：共 %d 条，新增 %d", info.LastCount, info.LastNew)}, nil
+	if background {
+		return map[string]any{"status": "succeeded", "message": fmt.Sprintf("想看同步完成：共 %d 条，新增 %d", info.LastCount, info.LastNew)}, nil
+	}
+	return map[string]any{
+		"status":  "succeeded",
+		"message": fmt.Sprintf("想看已同步：共 %d 条，新增 %d 条已入队；订阅由后台任务自动完成（每 30 分钟检查）", info.LastCount, info.LastNew),
+	}, nil
 }

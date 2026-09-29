@@ -216,6 +216,7 @@ type runtime struct {
 	wish     []WishItem    // 最近一次「我的想看」列表
 	wishSeen map[string]bool // 已处理过的想看条目
 	wishInfo WishInfo      // 想看同步状态摘要
+	cookie   CookieCache   // CookieCloud 解密缓存(前台动作复用, 避免重复解密)
 
 	// storageOK: 宿主存储是否成功加载过(或确认为全新安装)。
 	// false 期间 persistAll 不落盘, 防止默认值覆盖用户配置。
@@ -240,6 +241,8 @@ type persistedState struct {
 	Wish     []WishItem      `json:"wish,omitempty"`
 	WishSeen map[string]bool `json:"wish_seen,omitempty"`
 	WishInfo WishInfo        `json:"wish_info,omitempty"`
+
+	Cookie CookieCache `json:"cookie,omitempty"`
 }
 
 const stateStorageKey = "state"
@@ -307,6 +310,7 @@ func (r *runtime) loadAll() {
 		r.wish = doc.Wish
 		r.wishSeen = doc.WishSeen
 		r.wishInfo = doc.WishInfo
+		r.cookie = doc.Cookie
 	} else if loadResult == loadStateUnavailable {
 		// 状态不确定: 内存默认值仅供展示, storageOK=false 挡住一切落盘。
 	} else if r.settings.Lists == nil {
@@ -461,6 +465,7 @@ func (r *runtime) persistAll() {
 		Settings: r.settings, Snapshot: r.snapshot, Queue: r.queue,
 		History: r.history, Logs: logTail, Stats: r.stats, BlackState: r.blackState,
 		Wish: r.wish, WishSeen: r.wishSeen, WishInfo: r.wishInfo,
+		Cookie: r.cookie,
 	}
 	r.mu.Unlock()
 
@@ -1218,10 +1223,19 @@ func (r *runtime) refreshNow(invocationID string) error {
 	// 2. 黑名单过滤 + 入观察队列
 	r.filterAndEnqueue(snapshot, settings)
 
-	// 3. 处理到期观察条目 -> 订阅
-	subscribed, needsReview, errMsg := r.processDue(invocationID, settings)
+	// 3. 处理到期观察条目 -> 订阅。
+	// 单次聚合订阅宿主侧要 5s+, 前台 ~10s 预算塞不下, 只在后台任务做;
+	// 前台刷新只负责榜单与入队, 订阅由 wish-sync 任务(每30分钟)接手。
+	subscribed, needsReview := 0, 0
+	errMsg := ""
+	if r.deepRefresh {
+		subscribed, needsReview, errMsg = r.processDue(invocationID, settings)
+	}
 
 	summary := fmt.Sprintf("榜单刷新完成：%d 榜，新增订阅 %d，待人工确认 %d", len(snapshot.Lists), subscribed, needsReview)
+	if !r.deepRefresh {
+		summary += "；订阅由后台任务处理"
+	}
 	if len(failures) > 0 {
 		summary += "；失败榜：" + strings.Join(failures, "；")
 	}
@@ -1230,8 +1244,9 @@ func (r *runtime) refreshNow(invocationID string) error {
 	}
 	r.log("info", summary)
 
-	// 4. 同步「我的想看」(配置了 CookieCloud/手动 cookie 且开启时)
-	r.syncWishList(invocationID)
+	// 4. 同步「我的想看」(配置了 CookieCloud/手动 cookie 且开启时)。
+	// 同样受前台预算约束: 前台只入队, 订阅在后台。
+	r.syncWishList(invocationID, r.deepRefresh)
 
 	r.bump("succeeded", summary)
 	r.persistAll()
@@ -1900,6 +1915,10 @@ func (r *runtime) settingsUpdate(input map[string]any) (any, error) {
 	} {
 		if v, ok := patch[key].(string); ok {
 			*dst = strings.TrimSpace(v)
+			// 账号配置变了, 解密缓存必须作废
+			r.mu.Lock()
+			r.cookie = CookieCache{}
+			r.mu.Unlock()
 		}
 	}
 	if v, ok := patch["wish_sync_enabled"].(bool); ok {
@@ -1979,15 +1998,32 @@ func (r *runtime) job(invocationID string, raw json.RawMessage) (any, error) {
 	var payload struct {
 		ID string `json:"id"`
 	}
-	if json.Unmarshal(raw, &payload) != nil || payload.ID != "refresh-charts" {
+	if json.Unmarshal(raw, &payload) != nil {
+		return map[string]any{"status": "skipped", "message": "任务参数无效"}, nil
+	}
+	switch payload.ID {
+	case "refresh-charts":
+		if err := r.refreshNow(invocationID); err != nil {
+			r.log("error", "定时刷新失败: "+err.Error())
+			r.bump("failed", "定时刷新失败: "+err.Error())
+			return map[string]any{"status": "skipped", "message": "定时刷新失败: " + err.Error()}, nil
+		}
+		return map[string]any{"status": "accepted", "message": "榜单定时刷新完成"}, nil
+	case "wish-sync":
+		// 轻量后台任务: 刷 cookie 缓存 + 想看同步(含订阅) + 到期观察条目订阅。
+		// 订阅类操作(单次 5s+)只能活在后台预算里。
+		r.mu.Lock()
+		settings := cloneSettings(r.settings)
+		r.mu.Unlock()
+		if settings.WishSyncEnabled {
+			r.syncWishList(invocationID, true)
+		}
+		r.processDue(invocationID, settings)
+		r.persistAll()
+		return map[string]any{"status": "accepted", "message": "想看与到期订阅已处理"}, nil
+	default:
 		return map[string]any{"status": "skipped", "message": "未声明的任务"}, nil
 	}
-	if err := r.refreshNow(invocationID); err != nil {
-		r.log("error", "定时刷新失败: "+err.Error())
-		r.bump("failed", "定时刷新失败: "+err.Error())
-		return map[string]any{"status": "skipped", "message": "定时刷新失败: " + err.Error()}, nil
-	}
-	return map[string]any{"status": "accepted", "message": "榜单定时刷新完成"}, nil
 }
 
 func (r *runtime) event(raw json.RawMessage) (any, error) {
