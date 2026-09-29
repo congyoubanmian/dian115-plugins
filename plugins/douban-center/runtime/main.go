@@ -2134,9 +2134,16 @@ func (r *runtime) hostCall(request hostCallRequest) (hostCallResponse, error) {
 var guestRT *runtime
 
 func newRuntime() *runtime {
-	// GC 软目标压在线性内存硬限额(manifest memory_mb = 256MiB)之下,
-	// 让运行时在撞到 wasm 内存天花板之前就主动回收。
-	debug.SetMemoryLimit(192 << 20)
+	// 内存策略(2026-09-29 实测调优):
+	// - wazero 解释器仅加载 4.35MB 模块就要 ~109MB RSS(本机同款解释器实测),
+	//   剩余增长几乎全是 guest Go 堆: UI 每 5s 轮询 state, 每次全量深拷贝+
+	//   序列化, GOGC=100 时堆会虚胖到 2 倍活数据才回收。
+	// - GOGC=50: 堆目标改为 1.5 倍活数据, 代价是更频繁 GC(解释器里单次
+	//   百毫秒级, 前台动作已瘦身, 预算余量充足)。
+	// - 软上限 128MB: 活数据峰值约 40-60MB, 留 2 倍余量, 撞线前强制回收;
+	//   wasm 线性内存涨了不回落, 压住峰值 RSS(宿主按 RSS 执行 memory_mb)。
+	debug.SetGCPercent(50)
+	debug.SetMemoryLimit(128 << 20)
 	rt := &runtime{dataDir: ".data", posterCache: map[string]string{}}
 	rt.loadAll()
 	// 首次安装: 无保存配置时初始化默认榜单设置
