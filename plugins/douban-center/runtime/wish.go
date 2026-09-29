@@ -4,6 +4,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -93,12 +94,34 @@ func parseManualCookie(raw string) (header, uid string) {
 	return raw, uid
 }
 
+// wishFlexString: 豆瓣 rexxar 接口对 subject.id 时而给字符串时而给数字
+// (实测想看接口给的是 "36808876" 字符串), 统一收成字符串。
+type wishFlexString string
+
+func (f *wishFlexString) UnmarshalJSON(b []byte) error {
+	b = bytes.TrimSpace(b)
+	if len(b) == 0 || string(b) == "null" {
+		*f = ""
+		return nil
+	}
+	if b[0] == '"' {
+		var s string
+		if err := json.Unmarshal(b, &s); err != nil {
+			return err
+		}
+		*f = wishFlexString(s)
+		return nil
+	}
+	*f = wishFlexString(string(b))
+	return nil
+}
+
 type wishInterest struct {
 	Subject struct {
-		ID     int    `json:"id"`
-		Title  string `json:"title"`
-		Year   string `json:"year"`
-		Type   string `json:"type"` // movie | tv
+		ID     wishFlexString `json:"id"`
+		Title  string         `json:"title"`
+		Year   string         `json:"year"`
+		Type   string         `json:"type"` // movie | tv | book | music ... 只收影视
 		Pic    struct {
 			Large string `json:"large"`
 		} `json:"pic"`
@@ -124,29 +147,38 @@ func (r *runtime) fetchWish(header, uid, wantType string) ([]WishItem, error) {
 		if err := json.Unmarshal(body, &res); err != nil {
 			return nil, fmt.Errorf("响应解析失败: %v", err)
 		}
-		for _, it := range res.Interests {
-			if it.Subject.ID == 0 {
-				continue
-			}
-			wi := WishItem{
-				DoubanRef: fmt.Sprintf("%d", it.Subject.ID),
-				Title:     it.Subject.Title,
-				Year:      it.Subject.Year,
-				PosterURL: it.Subject.Pic.Large,
-				AddedAt:   r.now(),
-			}
-			if it.Subject.Type != "" {
-				wi.Type = it.Subject.Type
-			} else {
-				wi.Type = wantType
-			}
-			items = append(items, wi)
-		}
+		items = append(items, wishItemsFromInterests(res.Interests)...)
 		if len(res.Interests) < pageSize || len(items) >= res.Total {
 			break
 		}
 	}
 	return items, nil
+}
+
+// wishItemsFromInterests 把 rexxar 兴趣条目映射成 WishItem。
+// 纯函数, 便于用真实响应样本做回归。
+func wishItemsFromInterests(interests []wishInterest) []WishItem {
+	items := []WishItem{}
+	for _, it := range interests {
+		id := strings.TrimSpace(string(it.Subject.ID))
+		if id == "" {
+			continue
+		}
+		// 只收影视条目: 豆瓣"想看"混着书/音乐(实测 type=tv 的响应里混进了
+		// movie 和 book), 书目拿去 TMDB 匹配会订阅到同名电影。
+		kind := it.Subject.Type
+		if kind != "movie" && kind != "tv" {
+			continue
+		}
+		items = append(items, WishItem{
+			DoubanRef: id,
+			Title:     it.Subject.Title,
+			Year:      it.Subject.Year,
+			PosterURL: it.Subject.Pic.Large,
+			Type:      kind,
+		})
+	}
+	return items
 }
 
 // syncWishList 全量同步想看: 新条目立即尝试订阅, 已处理的跳过。
@@ -180,6 +212,7 @@ func (r *runtime) syncWishList(invocationID string) {
 	info.LastError = ""
 
 	all := []WishItem{}
+	merged := map[string]bool{}
 	for _, t := range []string{"movie", "tv"} {
 		items, ferr := r.fetchWish(header, uid, t)
 		if ferr != nil {
@@ -188,7 +221,15 @@ func (r *runtime) syncWishList(invocationID string) {
 			r.log("warning", "想看("+t+")拉取失败: "+ferr.Error())
 			continue
 		}
-		all = append(all, items...)
+		// movie/tv 两个查询的响应会重叠(豆瓣对 type 过滤不严格), 按条目去重。
+		for _, wi := range items {
+			if merged[wi.DoubanRef] {
+				continue
+			}
+			merged[wi.DoubanRef] = true
+			wi.AddedAt = r.now()
+			all = append(all, wi)
+		}
 	}
 	if len(all) == 0 && info.LastStatus == "failed" {
 		info.LastSync = r.now()

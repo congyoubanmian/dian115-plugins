@@ -2105,7 +2105,6 @@ func newRuntime() *runtime {
 			MaxLogs:            500,
 		}
 		rt.normalizeSettingsLocked()
-		rt.settings = rt.settings // no-op keep
 		rt.mu.Unlock()
 		rt.persistAll()
 		rt.bump("succeeded", "初始化默认配置，点击「刷新」开始抓取豆瓣榜单")
