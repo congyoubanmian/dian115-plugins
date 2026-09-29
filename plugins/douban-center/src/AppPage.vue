@@ -185,10 +185,29 @@ const settingsForm = reactive<NonNullable<AppState['settings']>>({
   wish_sync_enabled: false,
 })
 
+// 状态可能迟到或失败(宿主重启/更新窗口里 runtime/state 会 502),
+// 表单必须始终可渲染: lists 深合并, 并为每个榜单定义补默认行,
+// 否则设置抽屉读 settingsForm.lists[key].enabled 会直接崩掉整页(Vue 卸载组件树)。
+const defaultListRow = (): ListConfig => ({
+  source: 'subjects_json', type: 'movie', tag: '', sort: '', limit: 20, enabled: false,
+})
+
 watch(
   () => state.value.settings,
   (s) => {
-    if (s) Object.assign(settingsForm, JSON.parse(JSON.stringify(s)))
+    if (!s) return
+    const incoming = JSON.parse(JSON.stringify(s)) as NonNullable<AppState['settings']>
+    const lists: Record<string, ListConfig> = { ...(settingsForm.lists || {}) }
+    if (incoming.lists && typeof incoming.lists === 'object') {
+      for (const [key, value] of Object.entries(incoming.lists)) {
+        if (value) lists[key] = value
+      }
+    }
+    for (const def of listDefs) {
+      if (!lists[def.key]) lists[def.key] = defaultListRow()
+    }
+    const { lists: _drop, ...rest } = incoming
+    Object.assign(settingsForm, rest, { lists })
   },
   { immediate: true, deep: true },
 )
@@ -297,6 +316,13 @@ const queuePending = computed(() => (state.value.observe_queue?.items || []).fil
 const historyRecent = computed(() => state.value.history || [])
 const logsRecent = computed(() => state.value.logs || [])
 const snapshotLists = computed(() => state.value.snapshot?.lists || {})
+
+// 设置抽屉的榜单行: 只渲染真实存在的行对象, 状态未加载时显示提示而不是崩溃。
+const settingsListRows = computed(() =>
+  listDefs
+    .map((def) => ({ def, row: settingsForm.lists?.[def.key] }))
+    .filter((r): r is { def: (typeof listDefs)[number]; row: ListConfig } => Boolean(r.row)),
+)
 
 // 完整榜单抽屉
 const fullListKey = ref<string | null>(null)
@@ -600,26 +626,29 @@ const fullListOpen = computed({
       <NDrawerContent title="豆瓣中心 · 设置" closable>
         <NForm label-placement="top">
           <div class="dc-settings-section">榜单配置</div>
-          <div v-for="def in listDefs" :key="def.key" class="dc-settings-list">
+          <div v-if="!settingsListRows.length" class="dc-empty">
+            <NEmpty description="配置尚未加载（插件状态不可用），稍后重试" size="small" />
+          </div>
+          <div v-for="{ def, row } in settingsListRows" :key="def.key" class="dc-settings-list">
             <div class="dc-settings-list-head">
               <strong>{{ def.label }}</strong>
-              <NSwitch v-model:value="settingsForm.lists![def.key]!.enabled" size="small" />
+              <NSwitch v-model:value="row.enabled" size="small" />
             </div>
             <div class="dc-settings-grid">
               <NFormItem label="来源">
-                <NSelect v-model:value="settingsForm.lists![def.key]!.source" :options="sourceOptions" size="small" />
+                <NSelect v-model:value="row.source" :options="sourceOptions" size="small" />
               </NFormItem>
-              <NFormItem v-if="settingsForm.lists![def.key]!.source === 'subjects_json'" label="类型">
-                <NSelect v-model:value="settingsForm.lists![def.key]!.type" :options="typeOptions" size="small" />
+              <NFormItem v-if="row.source === 'subjects_json'" label="类型">
+                <NSelect v-model:value="row.type" :options="typeOptions" size="small" />
               </NFormItem>
-              <NFormItem v-if="settingsForm.lists![def.key]!.source === 'subjects_json'" label="Tag">
-                <NInput v-model:value="settingsForm.lists![def.key]!.tag" size="small" placeholder="热门 / 华语 / 欧美" />
+              <NFormItem v-if="row.source === 'subjects_json'" label="Tag">
+                <NInput v-model:value="row.tag" size="small" placeholder="热门 / 华语 / 欧美" />
               </NFormItem>
-              <NFormItem v-if="settingsForm.lists![def.key]!.source === 'subjects_json'" label="排序">
-                <NInput v-model:value="settingsForm.lists![def.key]!.sort" size="small" placeholder="recommend" />
+              <NFormItem v-if="row.source === 'subjects_json'" label="排序">
+                <NInput v-model:value="row.sort" size="small" placeholder="recommend" />
               </NFormItem>
               <NFormItem label="条数">
-                <NInputNumber v-model:value="settingsForm.lists![def.key]!.limit" size="small" :min="1" :max="20" />
+                <NInputNumber v-model:value="row.limit" size="small" :min="1" :max="20" />
               </NFormItem>
             </div>
           </div>
