@@ -304,6 +304,10 @@ function openSettings() {
 }
 
 async function saveSettings() {
+  if (!settingsListRows.value.length) {
+    message.warning('插件状态尚未加载（可能正在重启），请稍后再保存，以免配置被清空')
+    return
+  }
   await runAction('settings-update', { ...settingsForm })
   settingsOpen.value = false
 }

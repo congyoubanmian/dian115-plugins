@@ -89,3 +89,28 @@ func TestStoragePutBodyShape(t *testing.T) {
 		t.Fatalf("put body value = %s", parsed["value"])
 	}
 }
+
+// 回归: 缺失的榜单键必须从默认配置补回(状态未加载时保存会丢键,
+// 2026-09-29 实际丢过 4 个榜单), 已有键的用户配置不受影响。
+func TestNormalizeRestoresMissingLists(t *testing.T) {
+	r := &runtime{}
+	r.settings = Settings{Lists: map[string]ListConfig{
+		"upcoming": {Source: "wrong", Limit: 5, Enabled: true},
+	}}
+	r.normalizeSettingsLocked()
+	for _, key := range []string{listUpcoming, listHot, listCNWom, listGlobalWom, listMovieWom} {
+		if _, ok := r.settings.Lists[key]; !ok {
+			t.Fatalf("list %s not restored", key)
+		}
+	}
+	if r.settings.Lists[listHot].Tag != "热门" || !r.settings.Lists[listHot].Enabled {
+		t.Fatalf("restored hot list wrong: %+v", r.settings.Lists[listHot])
+	}
+	// upcoming 被强制回 coming_html 来源, 但 limit 等用户值保留
+	if r.settings.Lists[listUpcoming].Source != "coming_html" {
+		t.Fatalf("upcoming source not normalized: %+v", r.settings.Lists[listUpcoming])
+	}
+	if r.settings.Lists[listUpcoming].Limit != 5 {
+		t.Fatalf("user limit lost: %+v", r.settings.Lists[listUpcoming])
+	}
+}

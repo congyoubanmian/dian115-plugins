@@ -398,7 +398,16 @@ func (r *runtime) saveAccount() {
 
 // normalizeSettingsLocked 防呆：即将上映必须用 coming_html 来源（豆瓣 /later/ 页，含海报），
 // 防止持久化 settings 里被误配成 subjects_json 导致抓取为空。
+// 同时自愈缺失的榜单键(状态未加载时保存会丢键), 从默认配置补回。
 func (r *runtime) normalizeSettingsLocked() {
+	if r.settings.Lists == nil {
+		r.settings.Lists = map[string]ListConfig{}
+	}
+	for key, cfg := range defaultSettings().Lists {
+		if _, ok := r.settings.Lists[key]; !ok {
+			r.settings.Lists[key] = cfg
+		}
+	}
 	up := r.settings.Lists[listUpcoming]
 	if up.Source != "coming_html" || up.Type != "movie" {
 		up.Source = "coming_html"
@@ -1898,8 +1907,18 @@ func (r *runtime) settingsUpdate(input map[string]any) (any, error) {
 	if v, ok := patch["lists"]; ok {
 		rawList, _ := json.Marshal(v)
 		var lists map[string]ListConfig
-		if json.Unmarshal(rawList, &lists) == nil && lists != nil {
-			old.Lists = lists
+		if json.Unmarshal(rawList, &lists) == nil && len(lists) > 0 {
+			// 合并而不是整块替换: UI 在插件状态未加载时保存, 会送来缺键甚至
+			// 空的 lists, 整块替换会静默清掉用户的榜单配置(2026-09-29 实际发生,
+			// 4 个榜单只剩 upcoming)。空对象直接忽略。
+			merged := old.Lists
+			if merged == nil {
+				merged = map[string]ListConfig{}
+			}
+			for key, cfg := range lists {
+				merged[key] = cfg
+			}
+			old.Lists = merged
 		}
 	}
 	if v, ok := patch["blacklist"]; ok {
