@@ -85,18 +85,37 @@ watch(
 .dc-poster-img {
   display: block;
   object-fit: cover;
-  border-radius: var(--dian-radius-sm, 6px);
+  border-radius: var(--dian-radius-sm);
   flex: none;
 }
 .dc-poster-ph {
-  background: linear-gradient(135deg, var(--dian-surface-hover, rgba(120, 120, 120, 0.2)), var(--dian-surface-soft, rgba(120, 120, 120, 0.08)));
+  background: linear-gradient(135deg, var(--dian-surface-hover), var(--dian-surface-soft));
   display: flex;
   align-items: center;
   justify-content: center;
-  color: var(--dian-text-secondary, rgba(120, 120, 120, 0.55));
+  color: var(--dian-text-secondary);
+  position: relative;
+  overflow: hidden;
+}
+.dc-poster-ph::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(100deg, transparent 30%, var(--dian-surface-raised) 50%, transparent 70%);
+  background-size: 200% 100%;
+  animation: dc-poster-shimmer 1.4s ease infinite;
+}
+@keyframes dc-poster-shimmer {
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -200% 0;
+  }
 }
 .dc-poster-icon {
   width: 40%;
   height: 40%;
+  opacity: 0.7;
 }
 </style>

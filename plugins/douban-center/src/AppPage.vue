@@ -14,10 +14,8 @@ import {
   NIcon,
   NInput,
   NInputNumber,
-  NModal,
   NPopover,
   NSelect,
-  NSpin,
   NSwitch,
   NTag,
   useDialog,
@@ -29,11 +27,12 @@ import {
   CheckCircle2,
   Eye,
   ExternalLink,
+  Flame,
   ListChecks,
   RefreshCw,
   Settings,
+  Star,
   Trash2,
-  XCircle,
   Zap,
 } from '@lucide/vue'
 
@@ -397,6 +396,34 @@ const historyRecent = computed(() => state.value.history || [])
 const logsRecent = computed(() => state.value.logs || [])
 const snapshotLists = computed(() => state.value.snapshot?.lists || {})
 
+// 纯展示层辅助: 榜单总数 / 榜单区是否完全无数据(骨架切换用, 不改任何数据流)
+const snapshotListCount = computed(() => Object.keys(snapshotLists.value).length)
+const snapshotEmpty = computed(() =>
+  !listDefs.some((def) => (snapshotLists.value[def.key] || []).length > 0),
+)
+
+// 相对时间展示(仅格式化, 不改数据): 输入形如 2026-09-30T15:04:05(+08:00) 的 ISO 串
+function relativeTime(iso?: string | null): string {
+  if (!iso || iso.length < 16) return ''
+  const s = String(iso)
+  // 统一成 Date 可解析的形式; 没有时区后缀按本地时间处理
+  let t = s.replace(' ', 'T')
+  if (!/[zZ]$|[+-]\d{2}:?\d{2}$/.test(t)) t += 'Z'
+  const ts = Date.parse(t)
+  if (Number.isNaN(ts)) return s.slice(5, 16)
+  const diff = ts - Date.now()
+  const abs = Math.abs(diff)
+  const fmt = (v: number, unit: string) => (diff >= 0 ? `${v}${unit}后` : `${v}${unit}前`)
+  if (abs < 60 * 1000) return '刚刚'
+  if (abs < 3600 * 1000) return fmt(Math.round(abs / 60000), '分钟')
+  if (abs < 86400 * 1000) return fmt(Math.round(abs / 3600000), '小时')
+  return fmt(Math.round(abs / 86400000), '天')
+}
+
+// 榜单卡片 meta: 评分与热度分开成徽章数据(无则回退原 displayHot 文案)
+const hasRate = (item: ChartItem): boolean => Boolean(item.rate && parseFloat(item.rate) > 0)
+const hasHot = (item: ChartItem): boolean => Boolean(item.hotness && item.hotness > 0)
+
 // 设置抽屉的榜单行: 只渲染真实存在的行对象, 状态未加载时显示提示而不是崩溃。
 const settingsListRows = computed(() =>
   listDefs
@@ -455,40 +482,76 @@ const fullListOpen = computed({
       {{ state.last_message }}
     </NAlert>
 
-    <!-- 榜单快照 -->
-    <section class="dc-card" aria-label="榜单快照">
+    <!-- 榜单快照: 海报卡片媒体区 -->
+    <section class="dc-card dc-hero" aria-label="榜单快照">
       <div class="dc-section-head">
         <h3>榜单快照</h3>
-        <span class="dc-muted">最近抓取 {{ state.snapshot?.fetched_at || '—' }}</span>
-      </div>
-      <div class="dc-lists">
-        <div v-for="def in listDefs" :key="def.key" class="dc-list-col">
-          <button type="button" class="dc-list-head dc-list-head-btn" @click="openFullList(def.key)">
+        <span class="dc-muted">
+          <template v-if="state.snapshot?.fetched_at">更新于 {{ relativeTime(state.snapshot.fetched_at) }}</template>
+          <template v-else>最近抓取 —</template>
+        </span>
+        <div class="dc-hero-tabs">
+          <button
+            v-for="def in listDefs"
+            :key="def.key"
+            type="button"
+            class="dc-hero-tab"
+            :class="{ 'is-active': fullListKey === def.key }"
+            @click="openFullList(def.key)"
+          >
             <span>{{ def.label }}</span>
-            <span class="dc-list-count">{{ (snapshotLists[def.key] || []).length }}</span>
-            <span class="dc-list-more">查看全部 ›</span>
+            <span class="dc-hero-tab-count">{{ (snapshotLists[def.key] || []).length }}</span>
           </button>
-          <div v-if="!(snapshotLists[def.key] && snapshotLists[def.key].length)" class="dc-empty">
-            <NEmpty description="暂无数据" size="small" />
-          </div>
+        </div>
+      </div>
+
+      <!-- 加载/空态骨架: 榜单完全无数据时以节奏一致的骨架填充 -->
+      <div v-if="snapshotEmpty" class="dc-hero-skeleton" aria-hidden="true">
+        <div v-for="n in 6" :key="n" class="dc-sk-card">
+          <div class="dc-sk dc-sk-poster" />
+          <div class="dc-sk dc-sk-line" />
+          <div class="dc-sk dc-sk-line dc-sk-line-sm" />
+        </div>
+      </div>
+
+      <div v-else class="dc-hero-strip">
+        <template v-for="def in listDefs" :key="def.key">
           <NPopover
             v-for="item in (snapshotLists[def.key] || []).slice(0, 5)"
             :key="item.douban_ref"
             trigger="click"
-            placement="right"
+            placement="bottom"
             :show="itemMenuOpen && targetItem?.douban_ref === item.douban_ref"
             @update:show="(v: boolean) => { itemMenuOpen = v; if (v) targetItem = item }"
           >
             <template #trigger>
-              <div class="dc-item" :title="item.title">
-                <PosterImg :poster-url="item.poster_url" :api="props.api" class="dc-item-poster" />
-                <div class="dc-item-main">
-                  <div class="dc-item-title">{{ item.title }}</div>
-                  <div class="dc-item-meta">
-                    <NTag size="tiny" :bordered="false" type="info">{{ displayHot(item) }}</NTag>
+              <article class="dc-hero-card" :title="item.title">
+                <div class="dc-hero-poster">
+                  <PosterImg :poster-url="item.poster_url" :api="props.api" :alt="item.title" class="dc-hero-poster-img" />
+                  <span v-if="hasRate(item)" class="dc-rate-badge">
+                    <NIcon :component="Star" :size="11" />{{ item.rate }}
+                  </span>
+                  <span v-else-if="hasHot(item)" class="dc-hot-badge">
+                    <NIcon :component="Flame" :size="11" />{{ item.hotness }}
+                  </span>
+                  <div class="dc-hero-overlay">
+                    <NButton size="tiny" type="primary" :loading="busy === 'subscribe'" @click.stop="subscribeItem(item)">
+                      <template #icon><NIcon :component="Zap" /></template>
+                      订阅
+                    </NButton>
+                    <NButton size="tiny" quaternary class="dc-hero-overlay-btn" @click.stop="openSource(item)">
+                      <template #icon><NIcon :component="ExternalLink" /></template>
+                    </NButton>
                   </div>
                 </div>
-              </div>
+                <div class="dc-hero-info">
+                  <div class="dc-hero-title">{{ item.title }}</div>
+                  <div class="dc-hero-meta">
+                    <span class="dc-chip">{{ listLabel(def.key) }}</span>
+                    <span v-if="item.year" class="dc-chip dc-chip-muted">{{ item.year }}</span>
+                  </div>
+                </div>
+              </article>
             </template>
             <div class="dc-item-menu">
               <NButton size="tiny" type="primary" :loading="busy === 'subscribe'" @click="subscribeItem(item)">
@@ -501,7 +564,7 @@ const fullListOpen = computed({
               </NButton>
             </div>
           </NPopover>
-        </div>
+        </template>
       </div>
     </section>
 
@@ -509,7 +572,10 @@ const fullListOpen = computed({
     <NDrawer v-model:show="fullListOpen" :width="520" placement="right">
       <NDrawerContent :title="`${fullListLabel} · 完整榜单`" closable>
         <div class="dc-full-head">
-          <span class="dc-muted">最近抓取 {{ state.snapshot?.fetched_at || '—' }}</span>
+          <span class="dc-muted">
+            <template v-if="state.snapshot?.fetched_at">更新于 {{ relativeTime(state.snapshot.fetched_at) }}</template>
+            <template v-else>最近抓取 —</template>
+          </span>
           <NTag size="small" type="info" :bordered="false">共 {{ fullListItems.length }} 条</NTag>
         </div>
         <div v-if="!fullListItems.length" class="dc-empty">
@@ -518,12 +584,16 @@ const fullListOpen = computed({
         <div v-else class="dc-full-list">
           <div v-for="(item, i) in fullListItems" :key="item.douban_ref" class="dc-full-row">
             <span class="dc-full-rank">{{ i + 1 }}</span>
-            <PosterImg :poster-url="item.poster_url" :api="props.api" class="dc-full-poster" />
+            <PosterImg :poster-url="item.poster_url" :api="props.api" :alt="item.title" class="dc-full-poster" />
             <div class="dc-full-main">
               <div class="dc-full-title" :title="item.title">{{ item.title }}</div>
               <div class="dc-full-meta">
-                <NTag size="tiny" :bordered="false" type="info">{{ displayHot(item) }}</NTag>
-                <span v-if="item.year" class="dc-muted">{{ item.year }}</span>
+                <span v-if="hasRate(item)" class="dc-rate-badge dc-rate-badge-inline">
+                  <NIcon :component="Star" :size="11" />{{ item.rate }}
+                </span>
+                <span v-else-if="hasHot(item)" class="dc-chip dc-chip-hot">{{ displayHot(item) }}</span>
+                <span v-else class="dc-chip">—</span>
+                <span v-if="item.year" class="dc-chip dc-chip-muted">{{ item.year }}</span>
               </div>
             </div>
             <div class="dc-full-actions">
@@ -575,8 +645,8 @@ const fullListOpen = computed({
             <div class="dc-queue-main">
               <div class="dc-queue-title">{{ item.title }}</div>
               <div class="dc-queue-meta">
-                <NTag size="tiny" :bordered="false">{{ listLabel(item.list) }}</NTag>
-                <span class="dc-muted">{{ item.due_at ? '到期 ' + item.due_at.slice(5, 16) : '' }}</span>
+                <span class="dc-chip">{{ listLabel(item.list) }}</span>
+                <span v-if="item.due_at" class="dc-muted">{{ relativeTime(item.due_at) }}到期</span>
                 <NTag v-if="item.state === 'needs_review'" size="tiny" type="error" :bordered="false">匹配待确认</NTag>
               </div>
             </div>
@@ -595,7 +665,7 @@ const fullListOpen = computed({
             <div class="dc-queue-main">
               <div class="dc-queue-title" :title="item.last_error">{{ item.title }}</div>
               <div class="dc-queue-meta">
-                <NTag size="tiny" :bordered="false">{{ listLabel(item.list) }}</NTag>
+                <span class="dc-chip">{{ listLabel(item.list) }}</span>
                 <NTag v-if="item.state === 'filtered'" size="tiny" type="warning" :bordered="false" :title="item.last_error">已过滤</NTag>
                 <NTag v-else-if="item.state === 'no_resub'" size="tiny" :bordered="false">已删除不重订</NTag>
               </div>
@@ -630,10 +700,14 @@ const fullListOpen = computed({
           <NButton size="tiny" :loading="busy === 'no-resub-clear'" @click="clearNoResub">清除重订限制</NButton>
         </div>
         <div v-for="w in wishItems.slice(0, 24)" :key="w.douban_ref" class="dc-wish-row">
-          <span class="dc-wish-title">{{ w.title }}</span>
-          <span class="dc-muted">{{ w.year }} · {{ w.type === 'tv' ? '剧集' : '电影' }}</span>
+          <PosterImg :poster-url="w.poster_url" :api="props.api" :alt="w.title" class="dc-wish-poster" />
+          <span class="dc-wish-title" :title="w.title">{{ w.title }}</span>
+          <span class="dc-wish-meta">
+            <span v-if="w.year" class="dc-chip dc-chip-muted">{{ w.year }}</span>
+            <span class="dc-chip">{{ w.type === 'tv' ? '剧集' : '电影' }}</span>
+          </span>
         </div>
-        <div v-if="wishItems.length > 24" class="dc-muted" style="font-size: 12px">… 共 {{ wishItems.length }} 条</div>
+        <div v-if="wishItems.length > 24" class="dc-muted dc-wish-more">… 共 {{ wishItems.length }} 条</div>
       </div>
     </section>
 
@@ -651,11 +725,12 @@ const fullListOpen = computed({
             <div class="dc-history-main">
               <div class="dc-history-title">{{ h.title }}</div>
               <div class="dc-history-meta">
-                <NTag size="tiny" :bordered="false">{{ listLabel(h.list) }}</NTag>
-                <NTag size="tiny" :type="h.result === 'succeeded' ? 'success' : 'error'" :bordered="false">
+                <span class="dc-chip">{{ listLabel(h.list) }}</span>
+                <span class="dc-status-dot" :class="h.result === 'succeeded' ? 'is-ok' : 'is-fail'" aria-hidden="true" />
+                <span class="dc-history-result" :class="h.result === 'succeeded' ? 'is-ok' : 'is-fail'">
                   {{ h.result === 'succeeded' ? '订阅成功' : '订阅失败' }}
-                </NTag>
-                <span class="dc-muted">{{ h.created_at?.slice(5, 16) }}</span>
+                </span>
+                <span class="dc-muted">{{ relativeTime(h.created_at) || h.created_at?.slice(5, 16) }}</span>
               </div>
             </div>
           </div>
@@ -666,14 +741,14 @@ const fullListOpen = computed({
         <div class="dc-section-head">
           <h3><NIcon :component="ListChecks" :size="15" /> 订阅统计</h3>
         </div>
-        <NGrid cols="2 s:3" responsive="screen" :x-gap="10" :y-gap="10">
-          <NGridItem>
-            <div class="dc-stat-box">
+        <NGrid cols="2" :x-gap="10" :y-gap="10">
+          <NGridItem span="2">
+            <div class="dc-stat-box dc-stat-hero">
               <div class="dc-stat-num">{{ state.stats?.total || 0 }}</div>
               <div class="dc-stat-label">总订阅数</div>
             </div>
           </NGridItem>
-          <NGridItem>
+          <NGridItem span="2">
             <div class="dc-stat-box">
               <div class="dc-stat-num dc-stat-accent">{{ state.stats?.month_new || 0 }}</div>
               <div class="dc-stat-label">本月新增</div>
@@ -707,7 +782,7 @@ const fullListOpen = computed({
       </div>
     </section>
 
-    <!-- 观察日志 -->
+    <!-- 观察日志: 等宽时间线 -->
     <section class="dc-card" aria-label="观察日志">
       <div class="dc-section-head">
         <h3>观察日志</h3>
@@ -717,10 +792,8 @@ const fullListOpen = computed({
       </div>
       <div v-else class="dc-log-list">
         <div v-for="(log, i) in logsRecent.slice(0, 12)" :key="i" class="dc-log-row">
+          <span class="dc-log-dot" :class="'is-' + log.level" aria-hidden="true" />
           <span class="dc-log-time">{{ log.at.slice(5, 19) }}</span>
-          <NTag size="tiny" :type="log.level === 'error' ? 'error' : log.level === 'warning' ? 'warning' : 'info'" :bordered="false">
-            {{ log.level }}
-          </NTag>
           <span class="dc-log-msg">{{ log.message }}</span>
         </div>
       </div>
@@ -830,10 +903,16 @@ const fullListOpen = computed({
 </template>
 
 <style scoped>
+/* ---- 根容器: 媒体优先仪表盘的统一节奏 ---- */
+
 .dc-page {
   display: grid;
   gap: var(--dian-space-4);
   padding: var(--dian-space-1);
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  color: var(--dian-text-primary);
 }
 
 .dc-header {
@@ -879,6 +958,12 @@ const fullListOpen = computed({
   background: var(--dian-surface-raised);
   padding: var(--dian-space-4);
   min-width: 0;
+  box-shadow: var(--dian-shadow-sm);
+  transition: border-color 0.18s ease;
+}
+
+.dc-card:hover {
+  border-color: var(--dian-border-strong);
 }
 
 .dc-section-head {
@@ -887,11 +972,11 @@ const fullListOpen = computed({
   gap: var(--dian-space-2);
   margin-bottom: var(--dian-space-3);
   color: var(--dian-primary);
+  flex-wrap: wrap;
+  padding-bottom: var(--dian-space-2);
+  border-bottom: 1px solid var(--dian-divider);
 }
 
-.dc-wish-list { display: grid; gap: 4px; }
-.dc-wish-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 4px 8px; border-bottom: 1px solid var(--dian-divider, rgba(128,128,128,.15)); font-size: 13px; }
-.dc-wish-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dc-section-head h3 {
   margin: 0;
   font-size: 15px;
@@ -907,68 +992,298 @@ const fullListOpen = computed({
   overflow-wrap: anywhere;
 }
 
-.dc-grid-2 {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
-  gap: var(--dian-space-4);
-}
+/* ---- 通用徽标: 评分 / 次级标签 chip / 状态点 ---- */
 
-.dc-lists {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-  gap: var(--dian-space-3);
-}
-
-.dc-list-col {
-  border: 1px solid var(--dian-border);
-  border-radius: var(--dian-radius-md);
-  background: var(--dian-surface-soft);
-  padding: var(--dian-space-2);
-  min-width: 0;
-}
-
-.dc-list-head {
-  font-weight: 600;
-  font-size: 13px;
-  margin-bottom: var(--dian-space-2);
-  color: var(--dian-text-primary);
-}
-
-.dc-list-head-btn {
-  display: flex;
+.dc-rate-badge {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  z-index: 2;
+  display: inline-flex;
   align-items: center;
-  gap: 6px;
-  width: 100%;
-  border: 0;
-  padding: 0;
-  background: transparent;
-  cursor: pointer;
-  text-align: left;
-  font: inherit;
+  gap: 2px;
+  padding: 1px 7px;
+  border-radius: var(--dian-radius-pill);
+  font-size: 11.5px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--dian-primary);
+  background: var(--dian-surface-raised);
+  border: 1px solid var(--dian-primary);
+  box-shadow: var(--dian-shadow-sm);
+  line-height: 16px;
 }
 
-.dc-list-head-btn:hover .dc-list-more {
+.dc-rate-badge-inline {
+  position: static;
+  box-shadow: none;
+}
+
+.dc-hot-badge {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 1px 7px;
+  border-radius: var(--dian-radius-pill);
+  font-size: 11.5px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--dian-primary);
+  background: var(--dian-surface-raised);
+  border: 1px solid var(--dian-primary);
+  box-shadow: var(--dian-shadow-sm);
+  line-height: 16px;
+}
+
+.dc-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 7px;
+  line-height: 18px;
+  border-radius: var(--dian-radius-pill);
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--dian-text-secondary);
+  background: var(--dian-surface-hover);
+  white-space: nowrap;
+}
+
+.dc-chip-muted {
+  background: transparent;
+  border: 1px solid var(--dian-border);
+}
+
+.dc-chip-hot {
   color: var(--dian-primary);
 }
 
-.dc-list-count {
-  font-size: 11px;
-  font-weight: 400;
-  color: var(--dian-text-secondary);
-  background: var(--dian-surface-hover);
-  border-radius: 999px;
-  padding: 0 7px;
-  line-height: 18px;
+/* ---- 榜单快照: 海报卡片媒体区 ---- */
+
+.dc-hero {
+  padding-top: var(--dian-space-3);
 }
 
-.dc-list-more {
+.dc-hero-tabs {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   margin-left: auto;
-  font-size: 11px;
-  font-weight: 400;
-  color: var(--dian-text-secondary);
-  transition: color 0.2s;
-  white-space: nowrap;
+  flex-wrap: wrap;
 }
+
+.dc-hero-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid var(--dian-border);
+  border-radius: var(--dian-radius-pill);
+  background: var(--dian-surface-soft);
+  color: var(--dian-text-secondary);
+  font: inherit;
+  font-size: 12px;
+  padding: 2px 10px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: border-color 0.15s, color 0.15s, background 0.15s;
+}
+
+.dc-hero-tab:hover {
+  border-color: var(--dian-primary);
+  color: var(--dian-primary);
+}
+
+.dc-hero-tab:focus-visible {
+  outline: 2px solid var(--dian-focus-ring);
+  outline-offset: 1px;
+}
+
+.dc-hero-tab.is-active {
+  border-color: var(--dian-primary);
+  color: var(--dian-primary);
+  background: var(--dian-surface-hover);
+  font-weight: 600;
+}
+
+.dc-hero-tab-count {
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  background: var(--dian-surface-hover);
+  border-radius: var(--dian-radius-pill);
+  padding: 0 6px;
+  line-height: 16px;
+}
+
+.dc-hero-tab.is-active .dc-hero-tab-count {
+  color: var(--dian-primary-contrast);
+  background: var(--dian-primary);
+}
+
+.dc-hero-strip {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: 148px;
+  justify-content: start;
+  gap: var(--dian-space-3);
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  padding: var(--dian-space-1) 2px var(--dian-space-2);
+  scrollbar-width: thin;
+  scrollbar-color: var(--dian-border-strong) transparent;
+}
+
+.dc-hero-strip::-webkit-scrollbar {
+  height: 6px;
+}
+
+.dc-hero-strip::-webkit-scrollbar-thumb {
+  background: var(--dian-border-strong);
+  border-radius: var(--dian-radius-pill);
+}
+
+.dc-hero-strip::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.dc-hero-card {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--dian-border);
+  border-radius: var(--dian-radius-md);
+  background: var(--dian-surface-soft);
+  overflow: hidden;
+  cursor: pointer;
+  transition: transform 0.16s ease, box-shadow 0.16s ease, border-color 0.16s ease;
+}
+
+.dc-hero-card:hover {
+  transform: translateY(-3px);
+  border-color: var(--dian-primary);
+  box-shadow: var(--dian-shadow-md);
+}
+
+.dc-hero-poster {
+  position: relative;
+  aspect-ratio: 2 / 3;
+  width: 100%;
+  background: var(--dian-surface-hover);
+}
+
+.dc-hero-poster-img,
+.dc-hero-poster-img :deep(img),
+.dc-hero-poster-img :deep(.dc-poster-ph) {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.dc-hero-poster-img :deep(.dc-poster-img) {
+  border-radius: 0;
+}
+
+.dc-hero-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  gap: 6px;
+  padding: 8px;
+  background: linear-gradient(to top, var(--dian-scrim), transparent 55%);
+  opacity: 0;
+  transition: opacity 0.16s ease;
+}
+
+.dc-hero-card:hover .dc-hero-overlay,
+.dc-hero-card:focus-within .dc-hero-overlay {
+  opacity: 1;
+}
+
+/* 浮层压在 scrim 之上, 文字需恒为浅色, 由主题变量 --dian-text-inverse 提供 */
+.dc-hero-overlay-btn {
+  color: var(--dian-text-inverse);
+}
+
+.dc-hero-info {
+  padding: var(--dian-space-2) 8px;
+  display: grid;
+  gap: 5px;
+}
+
+.dc-hero-title {
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--dian-text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  line-height: 1.35;
+  min-height: 2.7em;
+  overflow-wrap: anywhere;
+}
+
+.dc-hero-meta {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+/* 骨架: 榜单完全无数据(刷新中/未抓取)时的占位, 节奏与卡片一致 */
+.dc-hero-skeleton {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: 148px;
+  justify-content: start;
+  gap: var(--dian-space-3);
+  overflow: hidden;
+  padding: var(--dian-space-1) 2px var(--dian-space-2);
+}
+
+.dc-sk-card {
+  border: 1px solid var(--dian-border);
+  border-radius: var(--dian-radius-md);
+  background: var(--dian-surface-soft);
+  padding: 8px;
+  display: grid;
+  gap: 8px;
+}
+
+.dc-sk {
+  border-radius: var(--dian-radius-sm);
+  background: linear-gradient(90deg, var(--dian-surface-hover) 25%, var(--dian-surface-soft) 50%, var(--dian-surface-hover) 75%);
+  background-size: 200% 100%;
+  animation: dc-sk-shimmer 1.4s ease infinite;
+}
+
+.dc-sk-poster {
+  aspect-ratio: 2 / 3;
+}
+
+.dc-sk-line {
+  height: 12px;
+}
+
+.dc-sk-line-sm {
+  width: 60%;
+}
+
+@keyframes dc-sk-shimmer {
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -200% 0;
+  }
+}
+
+/* ---- 完整榜单抽屉 ---- */
 
 .dc-full-head {
   display: flex;
@@ -992,14 +1307,20 @@ const fullListOpen = computed({
   border: 1px solid var(--dian-border);
   background: var(--dian-surface-soft);
   min-width: 0;
+  transition: border-color 0.15s;
+}
+
+.dc-full-row:hover {
+  border-color: var(--dian-primary);
 }
 
 .dc-full-rank {
   width: 22px;
   flex: none;
   text-align: center;
-  font-weight: 600;
+  font-weight: 700;
   font-size: 13px;
+  font-variant-numeric: tabular-nums;
   color: var(--dian-text-secondary);
 }
 
@@ -1043,52 +1364,6 @@ const fullListOpen = computed({
   flex: none;
 }
 
-
-.dc-item {
-  display: flex;
-  gap: 8px;
-  padding: 6px 4px;
-  border-radius: var(--dian-radius-sm);
-  cursor: pointer;
-  align-items: center;
-}
-
-.dc-item:hover {
-  background: var(--dian-surface-hover);
-}
-
-.dc-item-poster {
-  width: 40px;
-  height: 56px;
-  object-fit: cover;
-  border-radius: 6px;
-  flex: 0 0 40px;
-  background: var(--dian-surface-raised);
-}
-
-.dc-item-poster-ph {
-  background: linear-gradient(135deg, rgba(139, 200, 234, 0.3), rgba(155, 187, 244, 0.3));
-}
-
-.dc-item-main {
-  min-width: 0;
-}
-
-.dc-item-title {
-  font-size: 12.5px;
-  color: var(--dian-text-primary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  line-height: 1.35;
-}
-
-.dc-item-meta {
-  margin-top: 4px;
-}
-
 .dc-item-menu {
   display: flex;
   gap: 8px;
@@ -1098,6 +1373,14 @@ const fullListOpen = computed({
   display: flex;
   justify-content: center;
   padding: var(--dian-space-2);
+}
+
+/* ---- 双栏信息区 ---- */
+
+.dc-grid-2 {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: var(--dian-space-4);
 }
 
 .dc-inline-form {
@@ -1123,14 +1406,20 @@ const fullListOpen = computed({
 
 .dc-mini-row,
 .dc-history-row,
-.dc-queue-row,
-.dc-log-row {
+.dc-queue-row {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 6px 8px;
+  padding: 8px 10px;
   border-radius: var(--dian-radius-sm);
   background: var(--dian-surface-soft);
+  border: 1px solid transparent;
+  transition: border-color 0.15s;
+}
+
+.dc-history-row:hover,
+.dc-queue-row:hover {
+  border-color: var(--dian-border);
 }
 
 .dc-mini-title,
@@ -1155,7 +1444,7 @@ const fullListOpen = computed({
   display: flex;
   align-items: center;
   gap: 6px;
-  margin-top: 3px;
+  margin-top: 4px;
   flex-wrap: wrap;
 }
 
@@ -1166,18 +1455,112 @@ const fullListOpen = computed({
   flex: 0 0 auto;
 }
 
+.dc-status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex: none;
+}
+
+.dc-status-dot.is-ok {
+  background: var(--dian-success);
+}
+
+.dc-status-dot.is-fail {
+  background: var(--dian-error);
+}
+
+.dc-history-result {
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.dc-history-result.is-ok {
+  color: var(--dian-success);
+}
+
+.dc-history-result.is-fail {
+  color: var(--dian-error);
+}
+
+/* ---- 我的想看 ---- */
+
+.dc-wish-list {
+  display: grid;
+  gap: 4px;
+}
+
+.dc-wish-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--dian-divider);
+  font-size: 13px;
+  border-radius: var(--dian-radius-sm);
+  color: var(--dian-text-primary);
+  transition: background 0.15s ease;
+}
+
+.dc-wish-row:hover {
+  background: var(--dian-surface-hover);
+}
+
+.dc-wish-poster {
+  width: 28px;
+  height: 40px;
+  object-fit: cover;
+  border-radius: var(--dian-radius-sm);
+  flex: none;
+}
+
+.dc-wish-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--dian-text-primary);
+}
+
+.dc-wish-meta {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+}
+
+.dc-wish-more {
+  font-size: 12px;
+  padding: 4px 8px;
+}
+
+/* ---- 统计数字卡 ---- */
+
 .dc-stat-box {
   border: 1px solid var(--dian-border);
   border-radius: var(--dian-radius-md);
   background: var(--dian-surface-soft);
   padding: var(--dian-space-3);
   text-align: center;
+  min-width: 0;
+}
+
+.dc-stat-hero {
+  border-color: var(--dian-primary);
+  background: linear-gradient(160deg, var(--dian-surface-soft), var(--dian-surface-hover));
 }
 
 .dc-stat-num {
   font-size: 22px;
   font-weight: 700;
+  font-variant-numeric: tabular-nums;
   color: var(--dian-text-primary);
+}
+
+.dc-stat-hero .dc-stat-num {
+  font-size: 30px;
+  color: var(--dian-primary);
 }
 
 .dc-stat-accent {
@@ -1190,6 +1573,47 @@ const fullListOpen = computed({
   margin-top: 2px;
 }
 
+/* ---- 观察日志: 等宽小字时间线 ---- */
+
+.dc-log-list {
+  font-family: var(--dian-font-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
+  border-left: 2px solid var(--dian-divider);
+  padding-left: var(--dian-space-3);
+  gap: 2px;
+}
+
+.dc-log-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 2px 6px;
+  border-radius: var(--dian-radius-sm);
+  position: relative;
+}
+
+.dc-log-row:hover {
+  background: var(--dian-surface-soft);
+}
+
+.dc-log-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex: none;
+  align-self: center;
+  background: var(--dian-text-secondary);
+  margin-left: calc(-1 * var(--dian-space-3) - 4px);
+  margin-right: 2px;
+}
+
+.dc-log-dot.is-error {
+  background: var(--dian-error);
+}
+
+.dc-log-dot.is-warning {
+  background: var(--dian-warning);
+}
+
 .dc-log-time {
   font-size: 11px;
   color: var(--dian-text-secondary);
@@ -1198,13 +1622,15 @@ const fullListOpen = computed({
 }
 
 .dc-log-msg {
-  font-size: 12.5px;
-  color: var(--dian-text-primary);
+  font-size: 12px;
+  color: var(--dian-text-secondary);
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* ---- 设置抽屉 ---- */
 
 .dc-settings-section {
   font-weight: 600;
@@ -1254,14 +1680,33 @@ const fullListOpen = computed({
   font-size: 12px;
 }
 
+/* ---- 视口折叠: 宿主侧边栏打开时 iframe 变窄, 单栏 + 头部纵排 ---- */
+
+@media (max-width: 1000px) {
+  .dc-grid-2 {
+    grid-template-columns: 1fr;
+  }
+
+  /* 榜单切换 pill 从头行右侧落到整行, 避免挤压标题 */
+  .dc-hero-tabs {
+    margin-left: 0;
+    width: 100%;
+  }
+}
+
 @media (max-width: 600px) {
   .dc-header {
     align-items: flex-start;
     flex-direction: column;
   }
 
-  .dc-lists {
-    grid-template-columns: 1fr 1fr;
+  .dc-card {
+    padding: var(--dian-space-3);
+  }
+
+  .dc-hero-strip,
+  .dc-hero-skeleton {
+    grid-auto-columns: 128px;
   }
 
   .dc-settings-grid {
