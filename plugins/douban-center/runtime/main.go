@@ -1510,6 +1510,28 @@ func (r *runtime) invoke(input invokeParams) (any, error) {
 	}
 }
 
+// settingsView: state 响应的 settings 脱敏视图(2026-09-30 宿主新校验:
+// 递归拒绝包含 "cookie" 的 key, 防密钥经状态通道外泄)。凭据不回显——
+// URL/UUID 改名 cc_url/cc_uuid 预填, 密钥/手动 cookie 只回"已配置"布尔。
+// 持久化存储字段原名不变, 仅出口视图转换。
+func settingsView(s Settings) map[string]any {
+	return map[string]any{
+		"lists":                    s.Lists,
+		"blacklist":                s.Blacklist,
+		"observe_period_hours":     s.ObservePeriodHours,
+		"auto_subscribe":           s.AutoSubscribe,
+		"notify_on_subscribe":      s.NotifyOnSubscribe,
+		"subscribe_source_filter":  s.SubscribeSources,
+		"max_history":              s.MaxHistory,
+		"max_logs":                 s.MaxLogs,
+		"wish_sync_enabled":        s.WishSyncEnabled,
+		"cc_url":                   s.CookieCloudURL,
+		"cc_uuid":                  s.CookieCloudUUID,
+		"cc_key_set":               s.CookieCloudKey != "",
+		"cc_manual_set":            s.ManualCookie != "",
+	}
+}
+
 func (r *runtime) stateResult(raw json.RawMessage) (any, error) {
 	var payload struct {
 		View        string `json:"view"`
@@ -1556,7 +1578,7 @@ func (r *runtime) stateResult(raw json.RawMessage) (any, error) {
 		"history":  history,
 		"logs":     logs,
 		"stats":    stats,
-		"settings": settings,
+		"settings": settingsView(settings),
 		"wish":     wishCopy,
 		"wish_info": wishInfo,
 	}
@@ -1927,12 +1949,23 @@ func (r *runtime) settingsUpdate(input map[string]any) (any, error) {
 			old.Blacklist = bl
 		}
 	}
-	for key, dst := range map[string]*string{
-		"cookiecloud_url": &old.CookieCloudURL, "cookiecloud_uuid": &old.CookieCloudUUID,
-		"cookiecloud_key": &old.CookieCloudKey, "manual_cookie": &old.ManualCookie,
+	// 新版 UI 凭据不回显, 用 cc_* 字段: URL/UUID 直接写;
+	// cc_key/cc_manual 留空 = 保持已存值。兼容旧字段名(整串写入)。
+	type fieldRule struct {
+		dst         *string
+		keepIfEmpty bool
+	}
+	for key, rule := range map[string]fieldRule{
+		"cc_url": {&old.CookieCloudURL, false}, "cc_uuid": {&old.CookieCloudUUID, false},
+		"cc_key": {&old.CookieCloudKey, true}, "cc_manual": {&old.ManualCookie, true},
+		"cookiecloud_url": {&old.CookieCloudURL, false}, "cookiecloud_uuid": {&old.CookieCloudUUID, false},
+		"cookiecloud_key": {&old.CookieCloudKey, false}, "manual_cookie": {&old.ManualCookie, false},
 	} {
 		if v, ok := patch[key].(string); ok {
-			*dst = strings.TrimSpace(v)
+			trimmed := strings.TrimSpace(v)
+			if !rule.keepIfEmpty || trimmed != "" {
+				*rule.dst = trimmed
+			}
 			// 账号配置变了, 解密缓存必须作废
 			r.mu.Lock()
 			r.cookie = CookieCache{}

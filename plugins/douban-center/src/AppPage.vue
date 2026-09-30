@@ -121,10 +121,12 @@ interface AppState {
     auto_subscribe?: boolean
     notify_on_subscribe?: boolean
     subscribe_source_filter?: string[]
-    cookiecloud_url?: string
-    cookiecloud_uuid?: string
-    cookiecloud_key?: string
-    manual_cookie?: string
+    cc_url?: string
+    cc_uuid?: string
+    cc_key?: string
+    cc_manual?: string
+    cc_key_set?: boolean
+    cc_manual_set?: boolean
     wish_sync_enabled?: boolean
   }
   wish?: Array<{ douban_ref: string; title: string; year?: string; type?: string; poster_url?: string }>
@@ -178,10 +180,10 @@ const settingsForm = reactive<NonNullable<AppState['settings']>>({
   auto_subscribe: true,
   notify_on_subscribe: true,
   subscribe_source_filter: [],
-  cookiecloud_url: 'http://127.0.0.1:8088',
-  cookiecloud_uuid: '',
-  cookiecloud_key: '',
-  manual_cookie: '',
+  cc_url: 'http://127.0.0.1:8088',
+  cc_uuid: '',
+  cc_key: '',
+  cc_manual: '',
   wish_sync_enabled: false,
 })
 
@@ -664,19 +666,19 @@ const fullListOpen = computed({
           </div>
           <div class="dc-settings-row">
             <span>CookieCloud 地址</span>
-            <NInput v-model:value="settingsForm.cookiecloud_url" size="small" placeholder="http://127.0.0.1:8088" style="max-width: 260px" />
+            <NInput v-model:value="settingsForm.cc_url" size="small" placeholder="http://127.0.0.1:8088" style="max-width: 260px" />
           </div>
           <div class="dc-settings-row">
             <span>UUID</span>
-            <NInput v-model:value="settingsForm.cookiecloud_uuid" size="small" placeholder="浏览器扩展里的 UUID" style="max-width: 260px" />
+            <NInput v-model:value="settingsForm.cc_uuid" size="small" placeholder="浏览器扩展里的 UUID" style="max-width: 260px" />
           </div>
           <div class="dc-settings-row">
             <span>加密密钥</span>
-            <NInput v-model:value="settingsForm.cookiecloud_key" size="small" type="password" show-password-on="click" placeholder="浏览器扩展里的密钥" style="max-width: 260px" />
+            <NInput v-model:value="settingsForm.cc_key" size="small" type="password" show-password-on="click" :placeholder="settingsForm.cc_key_set ? '已配置，留空保持不变' : '浏览器扩展里的密钥'" style="max-width: 260px" />
           </div>
           <div class="dc-settings-row">
             <span>手动 Cookie 兜底（dbcl2=...）</span>
-            <NInput v-model:value="settingsForm.manual_cookie" size="small" placeholder="CookieCloud 不可用时使用" style="max-width: 260px" />
+            <NInput v-model:value="settingsForm.cc_manual" size="small" :placeholder="settingsForm.cc_manual_set ? '已配置，留空保持不变' : '手动 Cookie 兜底（dbcl2=...）'" style="max-width: 260px" />
           </div>
           <div class="dc-settings-row">
             <span></span>

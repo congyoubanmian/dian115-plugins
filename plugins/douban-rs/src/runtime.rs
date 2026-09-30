@@ -563,6 +563,35 @@ impl Runtime {
     /// 注意 Go 会先 `json.Marshal` 再 `Unmarshal` 成 `map[string]any` 才净化, 所以最终
     /// 响应里**所有**对象的键都是字典序 —— 这里用 `serde_json::Value`(BTreeMap)组装,
     /// 天然一致。
+    /// state 响应的 settings 视图脱敏(2026-09-30 宿主新校验):
+    /// 宿主递归拒绝包含 "cookie" 的 key(process-runtime-v1.md §4, 防密钥经状态通道
+    /// 传到 UI/日志)。凭据字段一律不回显: URL/UUID 改名预填, 密钥/手动 cookie 只回
+    /// "已配置"布尔。持久化存储(plugin_kv)不受此限制, 字段原名保留。
+    pub(crate) fn sanitize_settings_view(settings: &model::Settings) -> Value {
+        let mut value = to_value(settings);
+        if let Some(obj) = value.as_object_mut() {
+            let url = obj.get("cookiecloud_url").cloned().unwrap_or(Value::String(String::new()));
+            let uuid = obj.get("cookiecloud_uuid").cloned().unwrap_or(Value::String(String::new()));
+            let key_set = obj
+                .get("cookiecloud_key")
+                .and_then(|v| v.as_str())
+                .map_or(false, |s| !s.is_empty());
+            let manual_set = obj
+                .get("manual_cookie")
+                .and_then(|v| v.as_str())
+                .map_or(false, |s| !s.is_empty());
+            obj.remove("cookiecloud_url");
+            obj.remove("cookiecloud_uuid");
+            obj.remove("cookiecloud_key");
+            obj.remove("manual_cookie");
+            obj.insert("cc_url".to_string(), url);
+            obj.insert("cc_uuid".to_string(), uuid);
+            obj.insert("cc_key_set".to_string(), Value::Bool(key_set));
+            obj.insert("cc_manual_set".to_string(), Value::Bool(manual_set));
+        }
+        value
+    }
+
     pub(crate) fn state_doc(&self) -> Value {
         // Go cloneSettings: Lists 保证非 nil 空 map, Blacklist/SubscribeSources 保持原样
         let mut settings = self.settings.clone();
@@ -617,7 +646,7 @@ impl Runtime {
         state.insert("history".to_string(), to_value(&history));
         state.insert("logs".to_string(), to_value(&logs));
         state.insert("stats".to_string(), to_value(&self.stats));
-        state.insert("settings".to_string(), to_value(&settings));
+        state.insert("settings".to_string(), Runtime::sanitize_settings_view(&settings));
         state.insert("wish".to_string(), to_value(&wish));
         state.insert("wish_info".to_string(), to_value(&self.wish_info));
         Value::Object(state)
@@ -833,8 +862,11 @@ impl Runtime {
                 }
             }
         }
-        // 账号字段: trim 后写入; 任一账号字段变化都要作废解密缓存
+        // 账号字段: trim 后写入; 任一账号字段变化都要作废解密缓存。
+        // 新版 UI 不回显凭据, 用 cc_* 字段: URL/UUID 直接写;
+        // cc_key/cc_manual 留空 = 保持已存值(密钥不再经浏览器往返)。
         let mut account_changed = false;
+        // 旧字段名先应用, cc_* 后应用(两者同时出现时以 cc_* 为准)
         for (key, target) in [
             ("cookiecloud_url", &mut old.cookiecloud_url),
             ("cookiecloud_uuid", &mut old.cookiecloud_uuid),
@@ -843,6 +875,20 @@ impl Runtime {
         ] {
             if let Some(Value::String(text)) = patch.get(key) {
                 *target = text.trim().to_string();
+                account_changed = true;
+            }
+        }
+        for (key, target, keep_if_empty) in [
+            ("cc_url", &mut old.cookiecloud_url, false),
+            ("cc_uuid", &mut old.cookiecloud_uuid, false),
+            ("cc_key", &mut old.cookiecloud_key, true),
+            ("cc_manual", &mut old.manual_cookie, true),
+        ] {
+            if let Some(Value::String(text)) = patch.get(key) {
+                let trimmed = text.trim().to_string();
+                if !keep_if_empty || !trimmed.is_empty() {
+                    *target = trimmed;
+                }
                 account_changed = true;
             }
         }
@@ -1754,5 +1800,73 @@ mod tests {
             assert_eq!(result, json!({"status": "skipped", "message": "未声明的任务"}), "payload={payload}");
         }
         assert!(!runtime.deep_refresh, "job 结束必须复位 deepRefresh(Go 的 defer)");
+    }
+}
+
+#[cfg(test)]
+mod host_forbidden_field_tests {
+    use super::*;
+
+    /// 宿主(2026-09-30)递归拒绝 state 响应中包含 "cookie" 的 key、
+    /// 以及 password/token/secret 类 key。整棵 state 树必须干净。
+    fn assert_no_forbidden_keys(value: &Value, path: &str) {
+        match value {
+            Value::Object(map) => {
+                for (key, inner) in map {
+                    let lower = key.to_lowercase();
+                    assert!(
+                        !lower.contains("cookie")
+                            && !lower.contains("password")
+                            && !lower.contains("secret")
+                            && !lower.contains("token")
+                            && !lower.contains("authorization"),
+                        "state 里出现宿主禁用 key: {path}.{key}"
+                    );
+                    assert_no_forbidden_keys(inner, &format!("{path}.{key}"));
+                }
+            }
+            Value::Array(items) => {
+                for (i, inner) in items.iter().enumerate() {
+                    assert_no_forbidden_keys(inner, &format!("{path}[{i}]"));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    #[test]
+    fn state_doc_contains_no_host_forbidden_keys() {
+        let mut rt = Runtime::default();
+        rt.settings = model::Settings {
+            cookiecloud_url: "http://127.0.0.1:8088".into(),
+            cookiecloud_uuid: "uuid-x".into(),
+            cookiecloud_key: "secret-key".into(),
+            manual_cookie: "dbcl2=1:abc".into(),
+            wish_sync_enabled: true,
+            ..model::default_settings()
+        };
+        let state = rt.state_doc();
+        assert_no_forbidden_keys(&state, "$");
+        let settings = state["settings"].as_object().unwrap();
+        assert_eq!(settings["cc_url"], json!("http://127.0.0.1:8088"));
+        assert_eq!(settings["cc_uuid"], json!("uuid-x"));
+        assert_eq!(settings["cc_key_set"], json!(true));
+        assert_eq!(settings["cc_manual_set"], json!(true));
+        assert!(settings.get("cookiecloud_key").is_none());
+    }
+
+    #[test]
+    fn settings_update_cc_key_empty_keeps_stored_value() {
+        let mut rt = Runtime::default();
+        rt.settings.cookiecloud_key = "stored-secret".into();
+        rt.settings_update(&serde_json::from_str::<Map<String, Value>>(
+            r#"{"cc_key":"","cc_url":" http://x ","cc_uuid":"u1"}"#,
+        ).unwrap());
+        assert_eq!(rt.settings.cookiecloud_key, "stored-secret", "空 cc_key 必须保持原值");
+        assert_eq!(rt.settings.cookiecloud_url, "http://x");
+        assert_eq!(rt.settings.cookiecloud_uuid, "u1");
+        // 显式给新值则覆盖
+        rt.settings_update(&serde_json::from_str::<Map<String, Value>>(r#"{"cc_key":"new"}"#).unwrap());
+        assert_eq!(rt.settings.cookiecloud_key, "new");
     }
 }

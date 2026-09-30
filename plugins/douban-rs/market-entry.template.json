@@ -1,7 +1,7 @@
 {
   "id": "douban.rs",
   "name": "豆瓣中心（Rust 版）",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "豆瓣榜单抓取 + 黑名单过滤 + 观察队列 + 聚合订阅；支持 CookieCloud 同步浏览器豆瓣登录态，自动追订「我的想看」。",
   "author": "congyoubanmian",
   "homepage": "https://github.com/congyoubanmian/douban-center-wasm",
@@ -11,7 +11,8 @@
     "kind": "wasm",
     "protocol": "dian115:wasm@1",
     "autostart": true,
-    "trust_level": "wasm-sandbox"
+    "trust_level": "wasm-sandbox",
+    "memory_mb": 192
   },
   "permissions": {
     "apis": [
