@@ -28,7 +28,7 @@ md-5 = "0.10"
 # Go `encoding/hex`: ccKeyMaterial 的 hex.EncodeToString 前半段。
 hex = "0.4"
 # 榜单抓取回归: Go 用 `regexp` 抓豆瓣 HTML(re_* 那一批), 这里用同族的 regex。
-regex = "1"
+regex = { version = "1", default-features = false, features = ["std"] }
 
 [profile.release]
 opt-level = "z"

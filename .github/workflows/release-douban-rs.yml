@@ -87,6 +87,48 @@ jobs:
           }
           ls -l target/wasm32-unknown-unknown/release/plugin.wasm
 
+      # wasm-opt -Oz：本地已验证能把 plugin.wasm 从 1033934 压到 860853 字节
+      # （-16.7%），wazero 解释器下 RSS 稳态 55MB → 41MB，guest 回包不变。
+      # 版本必须与本地一致：本地用的是 npm 包 @wasm-opt/linux-x64@2.0.0 里的
+      # binaryen 132。不能用 apt 的 binaryen——rust:1-slim 现在是 Debian 13
+      # (trixie)，`apt-cache policy binaryen` 只有 120-4，压出来的字节与本地不同。
+      - name: wasm-opt 压缩（binaryen 132）
+        run: |
+          set -euo pipefail
+          WASM=target/wasm32-unknown-unknown/release/plugin.wasm
+          WASM_OPT_NPM_PKG=2.0.0
+          WASM_OPT_BINEN_VERSION=132
+          npm install --no-save --no-audit --no-fund \
+            --prefix "$RUNNER_TEMP/wasmopt" \
+            "@wasm-opt/linux-x64@$WASM_OPT_NPM_PKG"
+          WASM_OPT="$RUNNER_TEMP/wasmopt/node_modules/@wasm-opt/linux-x64/bin/wasm-opt"
+          "$WASM_OPT" --version
+          "$WASM_OPT" --version | grep -q "version_$WASM_OPT_BINEN_VERSION" || {
+            echo "::error::binaryen 版本不是 $WASM_OPT_BINEN_VERSION，与本地验证用的不一致，产物不可复现"
+            exit 1
+          }
+          BEFORE=$(stat -c %s "$WASM")
+          # 三个开关对应模块里已有的 memory.copy / trunc_sat 指令，缺任何一个
+          # wasm-opt 都会 "Fatal: error validating input"。
+          "$WASM_OPT" -Oz \
+            --enable-bulk-memory --enable-bulk-memory-opt --enable-nontrapping-float-to-int \
+            "$WASM" -o "$RUNNER_TEMP/plugin.opt.wasm"
+          # 产物仍能被 binaryen 解析校验（顺带打印函数数，确认没有把模块压坏）。
+          "$WASM_OPT" --enable-bulk-memory --enable-bulk-memory-opt --enable-nontrapping-float-to-int \
+            --metrics "$RUNNER_TEMP/plugin.opt.wasm" -o /dev/null
+          AFTER=$(stat -c %s "$RUNNER_TEMP/plugin.opt.wasm")
+          echo "wasm-opt(binaryen $WASM_OPT_BINEN_VERSION, npm 包 $WASM_OPT_NPM_PKG): $BEFORE -> $AFTER bytes"
+          [ "$AFTER" -lt "$BEFORE" ] || {
+            echo "::error::wasm-opt 压缩后体积没有变小（$BEFORE -> $AFTER）"
+            exit 1
+          }
+          # cargo 产物与 deps/ 下同名文件是硬链接，用 mv 换目录项而不是就地覆盖。
+          cp "$WASM" "$RUNNER_TEMP/plugin.preopt.wasm"
+          cp "$RUNNER_TEMP/plugin.opt.wasm" "$WASM.tmp"
+          mv "$WASM.tmp" "$WASM"
+          chmod 755 "$WASM"
+          ls -l "$WASM" "$RUNNER_TEMP/plugin.preopt.wasm"
+
       - name: 写入签名私钥
         env:
           SIGNING_KEY: ${{ secrets.DIAN115_PLUGIN_SIGNING_KEY }}
