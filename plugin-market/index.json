@@ -178,12 +178,12 @@
     {
       "id": "douban.rs",
       "name": "豆瓣中心（Rust 版）",
-      "version": "0.2.0",
+      "version": "0.2.1",
       "description": "豆瓣榜单抓取 + 黑名单过滤 + 观察队列 + 聚合订阅；支持 CookieCloud 同步浏览器豆瓣登录态，自动追订「我的想看」。",
       "author": "congyoubanmian",
       "homepage": "https://github.com/congyoubanmian/douban-center-wasm",
-      "package_url": "https://github.com/congyoubanmian/dian115-plugins/releases/download/rs-v0.2.0/douban.rs-0.2.0.d115p",
-      "sha256": "76f1bd5e9f44ebf597a7ddd984ec721589974a7ad8e57af5e743bb488d6c7dc5",
+      "package_url": "https://github.com/congyoubanmian/dian115-plugins/releases/download/rs-v0.2.1/douban.rs-0.2.1.d115p",
+      "sha256": "50241ecdf4735597c93ee7221a585cbbf94ced227718721e7e3acae0a7fc0656",
       "runtime": {
         "kind": "wasm",
         "protocol": "dian115:wasm@1",
