@@ -81,6 +81,18 @@ pub struct WishSubject {
     #[serde(rename = "type")]
     pub kind: String,
     pub pic: WishPic,
+    /// [功能2/3] 豆瓣评分(实测键 `count`/`max`/`star_count`/`value`;
+    /// 也可能是 `null` → `None`)。功能 2 的评分过滤器只用 `value`。
+    pub rating: Option<WishRating>,
+}
+
+/// [功能2/3] `subject.rating` 的取值子集(2026-09-30 实抓 `kind=mark` 响应复核:
+/// 3 条电影 + 1 条书, 每条的 `rating` 形态一致)。
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[serde(default)]
+pub struct WishRating {
+    /// 评分值(`rating.value`, `0..10`)。
+    pub value: f64,
 }
 
 /// 条目图片(Go `wish.go:153` 的匿名结构), 只取 `large`。
@@ -177,6 +189,19 @@ pub fn parse_manual_cookie(raw: &str) -> (String, String) {
 /// 纯函数(夹具 `wish_movie.json` / `wish_tv.json` 就是它的回归样本):
 /// `id` trim 后为空跳过; `type` 不是 `movie`/`tv` 跳过; 其余映射
 /// `douban_ref/title/year/type/poster_url`(`added_at` 由调用方补时间戳)。
+///
+/// # [功能2/3] 评分补提取(契约要求, 实现阶段补)
+///
+/// 想看响应里**每条都有** `subject.rating`(`{"count":543005,"max":10,"star_count":4.5,
+/// "value":8.6}`, 2026-09-30 复核 `tests/fixtures/wish_movie.json` / `wish_tv.json` 逐条一致),
+/// 但 Go 的 `WishItem` 没有这个字段, 于是功能 2 的评分过滤器拿不到 wish 条目的分数。
+/// 补法: [`WishSubject`] 加 `pub rating: Option<WishRating>`(只取 `value`), 这里映射进
+/// [`WishItem::rating`]; `rating` 为 `null`/缺失 → `0.0`(= 未知, 由
+/// [`crate::filter::SubscriptionCandidate::from_wish_item`] 折算成 `None`)。
+///
+/// **已按上面写好**(`WishSubject::rating` + 这里的映射都在本轮落地); 未做的是
+/// `can_subscribe` 的消费侧, 那在 [`crate::filter`]。`tests/wish_parse.rs` 需要补一条
+/// 断言: movie 夹具的 3 条评分分别是 `8.6 / 8.7 / 5.8`(取自实抓响应)。
 pub fn wish_items_from_interests(interests: &[WishInterest]) -> Vec<WishItem> {
     let mut items: Vec<WishItem> = Vec::new();
     for interest in interests {
@@ -197,6 +222,12 @@ pub fn wish_items_from_interests(interests: &[WishInterest]) -> Vec<WishItem> {
             kind: kind.to_string(),
             poster_url: interest.subject.pic.large.clone(),
             added_at: String::new(),
+            // [功能2/3] 评分来自 `subject.rating.value`; `null`/缺失 → 0.0(= 未知)。
+            rating: interest
+                .subject
+                .rating
+                .as_ref()
+                .map_or(0.0, |rating| rating.value),
         });
     }
     items
@@ -228,8 +259,7 @@ impl Runtime {
                 &settings.cookiecloud_key,
             ) {
                 Ok(data) => {
-                    let (header, uid, _count) =
-                        crate::cookiecloud::douban_cookie_from_cloud(&data);
+                    let (header, uid, _count) = crate::cookiecloud::douban_cookie_from_cloud(&data);
                     if !header.is_empty() {
                         self.cookie = CookieCache {
                             header: header.clone(),
@@ -294,7 +324,11 @@ impl Runtime {
             );
             let got = self.http_get_with_cookie(&url, header);
             if let Some(err) = got.error {
-                return Err(OpError::new(format!("HTTP {}: {}", got.status, err.message())));
+                return Err(OpError::new(format!(
+                    "HTTP {}: {}",
+                    got.status,
+                    err.message()
+                )));
             }
             let parsed: InterestsResponse = match crate::model::decode(&got.body) {
                 Some(parsed) => parsed,
@@ -329,7 +363,11 @@ impl Runtime {
         let response = match crate::host::call(&request) {
             Ok(response) => response,
             Err(err) => {
-                return HttpResult { body: Vec::new(), status: 0, error: Some(OpError::new(err.0)) }
+                return HttpResult {
+                    body: Vec::new(),
+                    status: 0,
+                    error: Some(OpError::new(err.0)),
+                }
             }
         };
         if response.status >= 400 {
@@ -340,7 +378,11 @@ impl Runtime {
             };
         }
         match store::decode_body(&response) {
-            Ok(body) => HttpResult { body, status: response.status, error: None },
+            Ok(body) => HttpResult {
+                body,
+                status: response.status,
+                error: None,
+            },
             Err(err) => HttpResult {
                 body: Vec::new(),
                 status: response.status,
@@ -391,7 +433,8 @@ impl Runtime {
         info.last_error = String::new();
 
         let mut all: Vec<WishItem> = Vec::new();
-        let mut merged: std::collections::BTreeMap<String, bool> = std::collections::BTreeMap::new();
+        let mut merged: std::collections::BTreeMap<String, bool> =
+            std::collections::BTreeMap::new();
         for want_type in ["movie", "tv"] {
             match self.fetch_wish(&header, &uid, want_type) {
                 Ok(items) => {
@@ -408,7 +451,10 @@ impl Runtime {
                 Err(err) => {
                     info.last_status = "failed".to_string();
                     info.last_error = format!("{want_type} 拉取失败: {}", err.message());
-                    self.log("warning", &format!("想看({want_type})拉取失败: {}", err.message()));
+                    self.log(
+                        "warning",
+                        &format!("想看({want_type})拉取失败: {}", err.message()),
+                    );
                 }
             }
         }
@@ -426,6 +472,34 @@ impl Runtime {
             }
             new_count += 1;
             seen.insert(item.douban_ref.clone(), true);
+            // [功能2/3] 自动路径: 内联订阅(以及下面的入队)之前先过两道守卫(墓碑先于过滤) ——
+            //   ① `self.no_resub_guard(&cand)` → `Some` 时**不入队、不订阅**, 记日志后
+            //      `continue`(墓碑集只对自动路径生效);
+            //   ② `!self.can_subscribe(&cand).allowed` 时同样 `continue`(滤掉的条目不进队列,
+            //      也就不需要 `mark_queue_item_filtered` —— 那一步是给已在队列里的条目用的)。
+            //   `cand = SubscriptionCandidate::from_wish_item(item)`; 评分来自
+            //   `wish_items_from_interests` 补提取的 `subject.rating.value`(见下)。
+            //   地区判定此刻没有 rexxar 详情 → 按 deviations 第 1 条降级放行并记 warning。
+            //   先写 `seen` 再守卫: 被拦的条目下一轮同步不再当"新条目"重判重记日志。
+            let cand = crate::filter::SubscriptionCandidate::from_wish_item(item);
+            if let Some(message) = self.no_resub_guard(&cand) {
+                self.log("info", &message);
+                continue;
+            }
+            let decision = self.can_subscribe(&cand);
+            if !decision.allowed {
+                let reason = decision.reason.clone().unwrap_or_default();
+                self.log(
+                    "info",
+                    &format!("已过滤自动订阅：{}（{}）", item.title, reason),
+                );
+                continue;
+            }
+            if decision.region_skipped {
+                self.log("warning", &crate::filter::region_degraded_log(&item.title));
+            }
+            // [功能2/3] 入队形态: 入队时把 `rating`/`year` 一并带上, 让 `process_due`
+            //   这一轮判定不必再回查 wish 列表。
             if subscribe_inline && settings.auto_subscribe {
                 let queued = QueueItem {
                     douban_ref: item.douban_ref.clone(),
@@ -433,6 +507,10 @@ impl Runtime {
                     list: "wish".to_string(),
                     poster_url: item.poster_url.clone(),
                     url: format!("https://www.douban.com/subject/{}/", item.douban_ref),
+                    // [功能1] 条目类型带上: 到期订阅的 rexxar 详情回退要按它走 movie/tv 路径
+                    media_type: item.kind.clone(),
+                    year: item.year.clone(),
+                    rating: item.rating,
                     entered_at: clock::now_rfc3339(),
                     state: "observing".to_string(),
                     ..QueueItem::default()
@@ -441,15 +519,16 @@ impl Runtime {
             } else {
                 // 前台(或未开自动订阅): 只入观察队列, 到期时间=现在,
                 // 由后台任务(wish-sync 每30分钟)接手订阅。
-                let duplicate = self
-                    .queue
-                    .items
-                    .as_ref()
-                    .map_or(false, |items| items.iter().any(|entry| entry.douban_ref == item.douban_ref));
+                let duplicate = self.queue.items.as_ref().map_or(false, |items| {
+                    items
+                        .iter()
+                        .any(|entry| entry.douban_ref == item.douban_ref)
+                });
                 if !duplicate {
                     let mut due_at = clock::now_rfc3339();
+                    // Go `wish.go`(空 if + else): 自动订阅开着 → 到期时间保持现在,
+                    // 后台任务接手立即订, 不再等观察期; 没开 → 下面这个分支, 现在 + 观察期。
                     if !settings.auto_subscribe {
-                        // 自动订阅开着: 到期立即订(后台接手), 不再等观察期。
                         let now_nanos = clock::now_unix_nanos();
                         let shifted = i128::from(now_nanos)
                             + i128::from(settings.observe_period_hours) * 3_600_000_000_000i128;
@@ -464,6 +543,10 @@ impl Runtime {
                         list: "wish".to_string(),
                         poster_url: item.poster_url.clone(),
                         url: format!("https://www.douban.com/subject/{}/", item.douban_ref),
+                        // [功能1] 条目类型带上: 到期订阅的 rexxar 详情回退要按它走 movie/tv 路径
+                        media_type: item.kind.clone(),
+                        year: item.year.clone(),
+                        rating: item.rating,
                         entered_at: clock::now_rfc3339(),
                         due_at,
                         state: "observing".to_string(),
@@ -483,7 +566,11 @@ impl Runtime {
         self.wish_info = info;
         self.touch();
         if new_count > 0 {
-            let suffix = if settings.auto_subscribe { "自动订阅" } else { "入观察队列" };
+            let suffix = if settings.auto_subscribe {
+                "自动订阅"
+            } else {
+                "入观察队列"
+            };
             self.log(
                 "info",
                 &format!("想看同步完成: 共 {count} 条, 新增 {new_count} (已{suffix})"),
@@ -665,7 +752,11 @@ mod tests {
         let big: Holder = serde_json::from_str(r#"{"id":4935623109}"#).unwrap();
         assert_eq!(big.id.as_str(), "4935623109");
         let null: Holder = serde_json::from_str(r#"{"id":null}"#).unwrap();
-        assert_eq!(null.id.as_str(), "", "null → 空串(Go 的 UnmarshalJSON 分支)");
+        assert_eq!(
+            null.id.as_str(),
+            "",
+            "null → 空串(Go 的 UnmarshalJSON 分支)"
+        );
 
         // 字段缺失走 serde(default) → 空串
         let missing: WishSubject = serde_json::from_str(r#"{"title":"某剧集"}"#).unwrap();
@@ -674,9 +765,10 @@ mod tests {
         assert_eq!(missing.kind, "");
 
         // 数字型 id 在完整条目里也要能一路映射到 douban_ref
-        let interest: WishInterest =
-            serde_json::from_str(r#"{"subject":{"id":12345,"title":"某剧集","year":"2026","type":"tv","pic":{}}}"#)
-                .unwrap();
+        let interest: WishInterest = serde_json::from_str(
+            r#"{"subject":{"id":12345,"title":"某剧集","year":"2026","type":"tv","pic":{}}}"#,
+        )
+        .unwrap();
         let items = wish_items_from_interests(&[interest]);
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].douban_ref, "12345");
@@ -703,8 +795,13 @@ mod tests {
         assert_eq!(tv.interests.len(), 4);
         let items = wish_items_from_interests(&tv.interests);
         assert_eq!(items.len(), 3, "book 必须被滤掉");
-        assert!(items.iter().all(|item| item.kind == "movie" || item.kind == "tv"));
-        assert!(!items.iter().any(|item| item.douban_ref == "26968034"), "书目不得进列表");
+        assert!(items
+            .iter()
+            .all(|item| item.kind == "movie" || item.kind == "tv"));
+        assert!(
+            !items.iter().any(|item| item.douban_ref == "26968034"),
+            "书目不得进列表"
+        );
 
         // id 为空白 → 跳过
         let blank: WishInterest =
@@ -715,7 +812,10 @@ mod tests {
     #[test]
     fn parse_manual_cookie_cases() {
         let (header, uid) = parse_manual_cookie("  dbcl2=123456789:tok; ck=abc  ");
-        assert_eq!(header, "dbcl2=123456789:tok; ck=abc", "header 是 trim 后的整段原文");
+        assert_eq!(
+            header, "dbcl2=123456789:tok; ck=abc",
+            "header 是 trim 后的整段原文"
+        );
         assert_eq!(uid, "123456789");
 
         let (header, uid) = parse_manual_cookie("dbcl2=999:tok");
@@ -739,11 +839,16 @@ mod tests {
             header: "dbcl2=x".to_string(),
             uid: "1".to_string(),
             source: "cookiecloud".to_string(),
-            fetched_at: clock::rfc3339((FIXED_NOW as i64 - offset_minutes * 60 * 1_000_000_000) as u64),
+            fetched_at: clock::rfc3339(
+                (FIXED_NOW as i64 - offset_minutes * 60 * 1_000_000_000) as u64,
+            ),
         };
         assert!(cookie_cache_fresh(&fresh(0)));
         assert!(cookie_cache_fresh(&fresh(44)), "44 分钟内必须新鲜");
-        assert!(!cookie_cache_fresh(&fresh(45)), "45 分钟整已过期(Go 是严格小于)");
+        assert!(
+            !cookie_cache_fresh(&fresh(45)),
+            "45 分钟整已过期(Go 是严格小于)"
+        );
         assert!(!cookie_cache_fresh(&fresh(60)));
         // 空字段 / 脏时间戳 → 不新鲜
         assert!(!cookie_cache_fresh(&CookieCache::EMPTY));
@@ -780,33 +885,60 @@ mod tests {
                 .collect();
             json!({"interests": items, "total": total}).to_string()
         }
-        let movie_base = "https://m.douban.com/rexxar/api/v2/user/123456789/interests?kind=mark&type=movie";
-        let tv_base = "https://m.douban.com/rexxar/api/v2/user/123456789/interests?kind=mark&type=tv";
+        let movie_base =
+            "https://m.douban.com/rexxar/api/v2/user/123456789/interests?kind=mark&type=movie";
+        let tv_base =
+            "https://m.douban.com/rexxar/api/v2/user/123456789/interests?kind=mark&type=tv";
         let host = TestHost::install(vec![
-            Route::json("GET", &format!("{movie_base}&start=0"), &interests_json(50, 52, "movie", 1000)),
-            Route::json("GET", &format!("{movie_base}&start=50"), &interests_json(2, 52, "movie", 2000)),
-            Route::json("GET", &format!("{tv_base}&start=0"), &interests_json(1, 1, "tv", 3000)),
+            Route::json(
+                "GET",
+                &format!("{movie_base}&start=0"),
+                &interests_json(50, 52, "movie", 1000),
+            ),
+            Route::json(
+                "GET",
+                &format!("{movie_base}&start=50"),
+                &interests_json(2, 52, "movie", 2000),
+            ),
+            Route::json(
+                "GET",
+                &format!("{tv_base}&start=0"),
+                &interests_json(1, 1, "tv", 3000),
+            ),
         ]);
         let runtime = Runtime::new();
-        let items = runtime.fetch_wish("dbcl2=123456789:t", "123456789", "movie").unwrap();
+        let items = runtime
+            .fetch_wish("dbcl2=123456789:t", "123456789", "movie")
+            .unwrap();
         assert_eq!(items.len(), 52, "50 + 2 条, 两页都要拉");
         assert_eq!(items[0].douban_ref, "1000");
         assert_eq!(items[51].douban_ref, "2001");
         assert_eq!(host.count("GET", movie_base), 2);
 
         let request = host.requests().pop().unwrap();
-        assert_eq!(request.headers.get("accept").map(String::as_str), Some("application/json"));
-        assert_eq!(request.headers.get("user-agent").map(String::as_str), Some(WISH_USER_AGENT));
+        assert_eq!(
+            request.headers.get("accept").map(String::as_str),
+            Some("application/json")
+        );
+        assert_eq!(
+            request.headers.get("user-agent").map(String::as_str),
+            Some(WISH_USER_AGENT)
+        );
         assert_eq!(
             request.headers.get("referer").map(String::as_str),
             Some("https://m.douban.com/mine/wish/"),
             "m 站接口要求登录态 referer"
         );
-        assert_eq!(request.headers.get("cookie").map(String::as_str), Some("dbcl2=123456789:t"));
+        assert_eq!(
+            request.headers.get("cookie").map(String::as_str),
+            Some("dbcl2=123456789:t")
+        );
         assert!(WISH_USER_AGENT.contains("iPhone"), "移动 UA");
 
         // 单页就够: 1 条 < pageSize → 不再翻页
-        let tv = runtime.fetch_wish("dbcl2=123456789:t", "123456789", "tv").unwrap();
+        let tv = runtime
+            .fetch_wish("dbcl2=123456789:t", "123456789", "tv")
+            .unwrap();
         assert_eq!(tv.len(), 1);
         assert_eq!(tv[0].kind, "tv");
         assert_eq!(host.count("GET", tv_base), 1);
@@ -859,7 +991,10 @@ mod tests {
         let (header, uid, source) = runtime.douban_cookie().unwrap();
         assert_eq!(uid, "123456789");
         assert_eq!(source, "cookiecloud");
-        assert!(header.contains("dbcl2=123456789:fakeTokenAbCdEf"), "实际: {header}");
+        assert!(
+            header.contains("dbcl2=123456789:fakeTokenAbCdEf"),
+            "实际: {header}"
+        );
         // 缓存已写入状态文档的 cookie 字段
         assert_eq!(runtime.cookie.uid, "123456789");
         assert_eq!(runtime.cookie.source, "cookiecloud");
@@ -868,7 +1003,11 @@ mod tests {
 
         // 第二次: 45 分钟 TTL 内直接命中缓存, 不再拉取
         let (header2, uid2, source2) = runtime.douban_cookie().unwrap();
-        assert_eq!(host.count("GET", "http://127.0.0.1:8088/get/"), 1, "缓存新鲜时不得再拉");
+        assert_eq!(
+            host.count("GET", "http://127.0.0.1:8088/get/"),
+            1,
+            "缓存新鲜时不得再拉"
+        );
         assert_eq!(
             (header2.as_str(), uid2.as_str(), source2.as_str()),
             (header.as_str(), "123456789", "cookiecloud")
@@ -877,7 +1016,11 @@ mod tests {
         // TTL 过期 → 重新拉取(Go 的 45 分钟)
         clock::testhooks::set_now(Some(FIXED_NOW + 46 * 60 * 1_000_000_000));
         let _ = runtime.douban_cookie().unwrap();
-        assert_eq!(host.count("GET", "http://127.0.0.1:8088/get/"), 2, "过期后必须重新拉取");
+        assert_eq!(
+            host.count("GET", "http://127.0.0.1:8088/get/"),
+            2,
+            "过期后必须重新拉取"
+        );
         clock::testhooks::set_now(None);
     }
 
@@ -901,7 +1044,10 @@ mod tests {
         // ③ 手动 cookie 没有 dbcl2
         let mut runtime = Runtime::new();
         runtime.settings.manual_cookie = "ck=abc".to_string();
-        assert_eq!(runtime.douban_cookie().unwrap_err().message(), "手动 cookie 里缺少 dbcl2");
+        assert_eq!(
+            runtime.douban_cookie().unwrap_err().message(),
+            "手动 cookie 里缺少 dbcl2"
+        );
 
         // ④ CookieCloud 拉取失败 + 无手动 cookie
         let _host = TestHost::install(vec![Route::fail("GET", "http://127.0.0.1:8088/get/")]);
@@ -984,12 +1130,20 @@ mod tests {
         let wish = runtime.wish.clone().unwrap();
         assert_eq!(wish.len(), 3);
         assert_eq!(
-            wish.iter().map(|item| item.douban_ref.as_str()).collect::<Vec<_>>(),
+            wish.iter()
+                .map(|item| item.douban_ref.as_str())
+                .collect::<Vec<_>>(),
             vec!["36808876", "36809864", "35653205"]
         );
         assert_eq!(wish[0].added_at, "2026-09-29T10:00:09Z");
         assert_eq!(runtime.wish_seen.as_ref().unwrap().len(), 3);
-        assert_eq!(host.count("GET", "https://m.douban.com/rexxar/api/v2/user/123456789/interests"), 2);
+        assert_eq!(
+            host.count(
+                "GET",
+                "https://m.douban.com/rexxar/api/v2/user/123456789/interests"
+            ),
+            2
+        );
 
         // 入观察队列: 3 条, 到期 = 现在 + 观察期(未开自动订阅)
         let queue = runtime.queue.items.clone().unwrap();
@@ -1016,8 +1170,15 @@ mod tests {
 
         // 第二次同步: 都见过了 → 不新增, 队列不重复入队
         runtime.sync_wish_list("invocation_0001", false);
-        assert_eq!((runtime.wish_info.last_count, runtime.wish_info.last_new), (3, 0));
-        assert_eq!(runtime.queue.items.as_ref().unwrap().len(), 3, "已见条目不得重复入队");
+        assert_eq!(
+            (runtime.wish_info.last_count, runtime.wish_info.last_new),
+            (3, 0)
+        );
+        assert_eq!(
+            runtime.queue.items.as_ref().unwrap().len(),
+            3,
+            "已见条目不得重复入队"
+        );
 
         // 自动订阅开启: 到期时间就是现在(Go 的"立即到期"写法)
         let mut runtime = Runtime::new();
@@ -1027,7 +1188,10 @@ mod tests {
         runtime.settings.auto_subscribe = true;
         runtime.settings.observe_period_hours = 24;
         runtime.sync_wish_list("invocation_0001", false);
-        assert_eq!(runtime.queue.items.as_ref().unwrap()[0].due_at, "2026-09-29T10:00:09Z");
+        assert_eq!(
+            runtime.queue.items.as_ref().unwrap()[0].due_at,
+            "2026-09-29T10:00:09Z"
+        );
     }
 
     /// 后台内联订阅: 新条目直接走 TMDB 匹配 + 聚合订阅, 不入队。
@@ -1040,7 +1204,11 @@ mod tests {
             "/api/tmdb/search",
             r#"{"results":[{"id":11,"title":"奥德赛","media_type":"movie","vote_average":7.5},{"id":22,"title":"南京照相馆","media_type":"movie","vote_average":7.5},{"id":33,"title":"人生路不熟","media_type":"movie","vote_average":7.5}]}"#,
         ));
-        routes.push(Route::json("GET", "/api/subscribe/pool/intents", r#"{"code":"ok","data":[]}"#));
+        routes.push(Route::json(
+            "GET",
+            "/api/subscribe/pool/intents",
+            r#"{"code":"ok","data":[]}"#,
+        ));
         routes.push(Route::json(
             "POST",
             "/api/subscribe/pool/intents",
@@ -1055,17 +1223,25 @@ mod tests {
         runtime.settings.auto_subscribe = true;
         runtime.sync_wish_list("invocation_0001", true);
 
-        assert_eq!((runtime.wish_info.last_count, runtime.wish_info.last_new), (3, 3));
+        assert_eq!(
+            (runtime.wish_info.last_count, runtime.wish_info.last_new),
+            (3, 3)
+        );
         assert!(runtime.queue.items.is_none(), "内联订阅不额外入队");
         let history = runtime.history.clone().unwrap();
         assert_eq!(history.len(), 3);
-        assert!(history.iter().all(|entry| entry.result == "succeeded" && entry.action == "subscribe"));
+        assert!(history
+            .iter()
+            .all(|entry| entry.result == "succeeded" && entry.action == "subscribe"));
         assert_eq!(history[0].intent_id, 171);
         let mut titles: Vec<String> = history.iter().map(|entry| entry.title.clone()).collect();
         titles.sort();
         assert_eq!(titles, vec!["人生路不熟", "南京照相馆", "奥德赛"]);
         assert_eq!(runtime.stats.total, 3);
-        assert_eq!(runtime.stats.by_list.as_ref().unwrap().get("wish"), Some(&3));
+        assert_eq!(
+            runtime.stats.by_list.as_ref().unwrap().get("wish"),
+            Some(&3)
+        );
         assert_eq!(host.count("POST", "/api/subscribe/pool/intents"), 3);
 
         // 幂等键与请求体照抄 Go
@@ -1074,7 +1250,11 @@ mod tests {
             .into_iter()
             .find(|request| request.method == "POST")
             .expect("必须发过 POST");
-        let key = request.headers.get("idempotency-key").cloned().unwrap_or_default();
+        let key = request
+            .headers
+            .get("idempotency-key")
+            .cloned()
+            .unwrap_or_default();
         assert!(
             key.starts_with("dc-sub-invocation_0001-"),
             "幂等键规则: dc-sub-<safeKey(invocationID)>-<tmdbID>, 实际 {key}"
@@ -1103,6 +1283,141 @@ mod tests {
         );
     }
 
+    /// [功能2/3] 入队带上评分/年份, 且过滤器/墓碑守卫在入队与内联订阅之前生效。
+    #[test]
+    fn sync_wish_list_applies_filter_and_tombstone_guards() {
+        fixed_clock();
+        // min_rating = 8.7: 奥德赛(8.6)与人生路不熟(5.8)被拦, 只有南京照相馆(8.7)过线
+        let _host = TestHost::install(fixture_routes());
+        let mut runtime = Runtime::new();
+        runtime.ensure_loaded();
+        warm_cookie(&mut runtime);
+        runtime.settings.wish_sync_enabled = true;
+        runtime.settings.auto_subscribe = false;
+        runtime.settings.min_rating = 8.7;
+        runtime.sync_wish_list("invocation_0001", false);
+
+        let queue = runtime.queue.items.clone().unwrap();
+        assert_eq!(queue.len(), 1, "被滤掉的条目不进观察队列");
+        assert_eq!(queue[0].douban_ref, "36809864");
+        // 入队形态: rating/year 一并带上, process_due 判定不必回查 wish 列表
+        assert_eq!(queue[0].rating, 8.7);
+        assert_eq!(queue[0].year, "2025");
+        let messages: Vec<String> = runtime
+            .logs
+            .clone()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|entry| entry.message)
+            .collect();
+        assert!(
+            messages.contains(&"已过滤自动订阅：奥德赛（评分不足（8.6 < 8.7））".to_string()),
+            "{messages:?}"
+        );
+        assert!(
+            messages.contains(&"已过滤自动订阅：人生路不熟（评分不足（5.8 < 8.7））".to_string()),
+            "{messages:?}"
+        );
+        // last_new 仍按"新条目数"计(守卫只拦订阅/入队, 不改想看统计)
+        assert_eq!(
+            (runtime.wish_info.last_count, runtime.wish_info.last_new),
+            (3, 3)
+        );
+        drop(_host);
+
+        // 墓碑守卫: 命中的条目不入队, 记一条跳过日志
+        let _host = TestHost::install(fixture_routes());
+        let mut runtime = Runtime::new();
+        runtime.ensure_loaded();
+        warm_cookie(&mut runtime);
+        runtime.settings.wish_sync_enabled = true;
+        runtime.history = Some(vec![crate::model::HistoryEntry {
+            douban_ref: "36809864".to_string(),
+            tmdb_ref: "tmdb:movie:123".to_string(),
+            action: "subscribe".to_string(),
+            result: "succeeded".to_string(),
+            intent_id: 9,
+            ..crate::model::HistoryEntry::default()
+        }]);
+        runtime.no_resub = Some(std::collections::BTreeMap::from([(
+            "36809864".to_string(),
+            crate::filter::NoResubEntry::default(),
+        )]));
+        runtime.sync_wish_list("invocation_0001", false);
+
+        let queue = runtime.queue.items.clone().unwrap_or_default();
+        assert!(
+            !queue.iter().any(|item| item.douban_ref == "36809864"),
+            "墓碑命中的条目不入队"
+        );
+        assert_eq!(queue.len(), 2, "另外两条不受影响");
+        let messages: Vec<String> = runtime
+            .logs
+            .clone()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|entry| entry.message)
+            .collect();
+        assert!(
+            messages.contains(&"已删除不重订，跳过自动订阅：南京照相馆".to_string()),
+            "{messages:?}"
+        );
+        // 被拦条目已写 seen: 第二轮同步不再重复判定/记日志
+        runtime.sync_wish_list("invocation_0001", false);
+        assert_eq!(
+            runtime
+                .logs
+                .clone()
+                .unwrap_or_default()
+                .iter()
+                .filter(|entry| entry.message.contains("已删除不重订"))
+                .count(),
+            1,
+            "seen 之后再不重复记墓碑日志"
+        );
+    }
+
+    /// [功能2/3] 内联订阅路径同样先过守卫: 被滤条目不订阅、不写历史。
+    #[test]
+    fn sync_wish_list_inline_blocked_by_filter() {
+        fixed_clock();
+        let mut routes = fixture_routes();
+        routes.push(Route::json(
+            "GET",
+            "/api/tmdb/search",
+            r#"{"results":[{"id":11,"title":"奥德赛","media_type":"movie","vote_average":7.5}]}"#,
+        ));
+        let _host = TestHost::install(routes);
+        let mut runtime = Runtime::new();
+        runtime.ensure_loaded();
+        warm_cookie(&mut runtime);
+        runtime.settings.wish_sync_enabled = true;
+        runtime.settings.auto_subscribe = true;
+        runtime.settings.min_rating = 9.0;
+        runtime.sync_wish_list("invocation_0001", true);
+
+        assert!(
+            runtime.history.is_none(),
+            "三条都被滤掉, 一次 TMDB 搜索都不该发"
+        );
+        assert!(runtime.queue.items.is_none());
+        let messages: Vec<String> = runtime
+            .logs
+            .clone()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|entry| entry.message)
+            .collect();
+        assert_eq!(
+            messages
+                .iter()
+                .filter(|m| m.contains("已过滤自动订阅"))
+                .count(),
+            3,
+            "{messages:?}"
+        );
+    }
+
     #[test]
     fn sync_wish_list_failure_paths() {
         fixed_clock();
@@ -1111,7 +1426,6 @@ mod tests {
         runtime.sync_wish_list("invocation_0001", false);
         assert_eq!(runtime.wish_info.last_status, "");
         assert!(runtime.logs.is_none());
-
         // ② 两种类型都拉取失败 → failed + 最后一条原因, 落盘后返回
         let host = TestHost::install(vec![Route::new(
             "GET",
@@ -1125,11 +1439,17 @@ mod tests {
         runtime.settings.wish_sync_enabled = true;
         runtime.sync_wish_list("invocation_0001", false);
         assert_eq!(runtime.wish_info.last_status, "failed");
-        assert_eq!(runtime.wish_info.last_error, "tv 拉取失败: HTTP 500: HTTP 500");
+        assert_eq!(
+            runtime.wish_info.last_error,
+            "tv 拉取失败: HTTP 500: HTTP 500"
+        );
         assert_eq!(runtime.wish_info.last_sync, "2026-09-29T10:00:09Z");
         assert!(runtime.wish.is_none(), "全失败时不动 wish 列表");
         assert!(runtime.queue.items.is_none());
-        assert!(host.count("PUT", "/api/plugin-runtime/storage/state") >= 1, "全失败也要落盘");
+        assert!(
+            host.count("PUT", "/api/plugin-runtime/storage/state") >= 1,
+            "全失败也要落盘"
+        );
         let messages: Vec<String> = runtime
             .logs
             .clone()
@@ -1137,8 +1457,18 @@ mod tests {
             .into_iter()
             .map(|entry| entry.message)
             .collect();
-        assert!(messages.iter().any(|message| message.starts_with("想看(movie)拉取失败: ")), "{messages:?}");
-        assert!(messages.iter().any(|message| message.starts_with("想看(tv)拉取失败: ")), "{messages:?}");
+        assert!(
+            messages
+                .iter()
+                .any(|message| message.starts_with("想看(movie)拉取失败: ")),
+            "{messages:?}"
+        );
+        assert!(
+            messages
+                .iter()
+                .any(|message| message.starts_with("想看(tv)拉取失败: ")),
+            "{messages:?}"
+        );
         drop(host);
 
         // ③ 部分失败: 仍按成功收尾(tv 夹具里 3 条影视)
@@ -1161,8 +1491,14 @@ mod tests {
         runtime.settings.wish_sync_enabled = true;
         runtime.settings.auto_subscribe = false;
         runtime.sync_wish_list("invocation_0001", false);
-        assert_eq!(runtime.wish_info.last_status, "succeeded", "拉到一个列表就继续收尾");
-        assert_eq!((runtime.wish_info.last_count, runtime.wish_info.last_new), (3, 3));
+        assert_eq!(
+            runtime.wish_info.last_status, "succeeded",
+            "拉到一个列表就继续收尾"
+        );
+        assert_eq!(
+            (runtime.wish_info.last_count, runtime.wish_info.last_new),
+            (3, 3)
+        );
         drop(_host);
 
         // ④ 取 cookie 失败 → failed + 原因, 且写一条 warning 日志
@@ -1170,7 +1506,10 @@ mod tests {
         runtime.settings.wish_sync_enabled = true;
         runtime.sync_wish_list("invocation_0001", false);
         assert_eq!(runtime.wish_info.last_status, "failed");
-        assert_eq!(runtime.wish_info.last_error, "未配置 CookieCloud 或手动豆瓣 cookie");
+        assert_eq!(
+            runtime.wish_info.last_error,
+            "未配置 CookieCloud 或手动豆瓣 cookie"
+        );
         let messages: Vec<String> = runtime
             .logs
             .clone()
@@ -1218,8 +1557,14 @@ mod tests {
         );
         assert_eq!(runtime.cookie.uid, "123456789");
         assert_eq!(runtime.cookie.source, "cookiecloud");
-        assert!(runtime.cookie.header.contains("dbcl2=123456789:fakeTokenAbCdEf"));
-        assert!(host.count("PUT", "/api/plugin-runtime/storage/state") >= 1, "测试成功要落盘缓存");
+        assert!(runtime
+            .cookie
+            .header
+            .contains("dbcl2=123456789:fakeTokenAbCdEf"));
+        assert!(
+            host.count("PUT", "/api/plugin-runtime/storage/state") >= 1,
+            "测试成功要落盘缓存"
+        );
         drop(host);
 
         // ③ 解密成功但没有 dbcl2
@@ -1335,4 +1680,3 @@ mod tests {
         assert_eq!(result["status"], "accepted");
     }
 }
-

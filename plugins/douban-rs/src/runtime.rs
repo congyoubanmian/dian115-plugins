@@ -31,8 +31,8 @@ use serde_json::{json, Map, Value};
 use crate::clock;
 use crate::host::{self, HostCallRequest};
 use crate::model::{
-    self, BlackState, CookieCache, HistoryEntry, LogEntry, PersistedState, Queue, Settings, Snapshot,
-    Stats, WishInfo, WishItem,
+    self, BlackState, CookieCache, HistoryEntry, LogEntry, PersistedState, Queue, Settings,
+    Snapshot, Stats, WishInfo, WishItem,
 };
 use crate::protocol::OpError;
 use crate::raw::{self, RawPayload};
@@ -65,6 +65,12 @@ pub struct Runtime {
     pub(crate) wish_seen: Option<BTreeMap<String, bool>>,
     pub(crate) wish_info: WishInfo,
     pub(crate) cookie: CookieCache,
+    /// 已删除不重订的墓碑集(功能 3; 键 = `douban_ref`)。判定/读写在本文件里只做
+    /// 接线(读文档/写文档/清空), 全部语义在 [`crate::filter`]。
+    pub(crate) no_resub: crate::filter::NoResubMap,
+    /// 上次墓碑扫描时间(RFC3339; 功能 3 的节流字段, 落在状态文档新键
+    /// `no_resub_scan_at` 上, 见 [`crate::filter::NO_RESUB_SCAN_MIN_INTERVAL_NANOS`])。
+    pub(crate) no_resub_scan_at: String,
 
     // ── 运行期字段 ──
     revision: u64,
@@ -141,6 +147,8 @@ impl Runtime {
             wish_seen: None,
             wish_info: WishInfo::EMPTY,
             cookie: CookieCache::EMPTY,
+            no_resub: None,
+            no_resub_scan_at: String::new(),
             revision: 0,
             last_status: String::new(),
             last_message: String::new(),
@@ -235,6 +243,8 @@ impl Runtime {
         self.wish_seen = document.wish_seen;
         self.wish_info = document.wish_info;
         self.cookie = document.cookie;
+        self.no_resub = document.no_resub;
+        self.no_resub_scan_at = document.no_resub_scan_at;
     }
 
     /// 旧版分键持久化迁移(Go `main.go:317` 的 `loadJSON` 系列)。
@@ -368,7 +378,10 @@ impl Runtime {
             } else {
                 if !self.load_warned {
                     self.load_warned = true;
-                    self.log("warning", "宿主存储持续不可读, 本次改动暂不落盘(避免覆盖已有配置)");
+                    self.log(
+                        "warning",
+                        "宿主存储持续不可读, 本次改动暂不落盘(避免覆盖已有配置)",
+                    );
                 }
                 return;
             }
@@ -396,6 +409,8 @@ impl Runtime {
             wish_seen: self.wish_seen.clone(),
             wish_info: self.wish_info.clone(),
             cookie: self.cookie.clone(),
+            no_resub: self.no_resub.clone(),
+            no_resub_scan_at: self.no_resub_scan_at.clone(),
         };
         let data = match serde_json::to_vec(&document) {
             Ok(data) => data,
@@ -492,7 +507,11 @@ impl Runtime {
         let response = match host::call(&request) {
             Ok(response) => response,
             Err(err) => {
-                return HttpResult { body: Vec::new(), status: 0, error: Some(OpError::new(err.0)) };
+                return HttpResult {
+                    body: Vec::new(),
+                    status: 0,
+                    error: Some(OpError::new(err.0)),
+                };
             }
         };
         if response.status >= 400 {
@@ -503,7 +522,11 @@ impl Runtime {
             };
         }
         match store::decode_body(&response) {
-            Ok(body) => HttpResult { body, status: response.status, error: None },
+            Ok(body) => HttpResult {
+                body,
+                status: response.status,
+                error: None,
+            },
             Err(err) => HttpResult {
                 body: Vec::new(),
                 status: response.status,
@@ -570,8 +593,14 @@ impl Runtime {
     pub(crate) fn sanitize_settings_view(settings: &model::Settings) -> Value {
         let mut value = to_value(settings);
         if let Some(obj) = value.as_object_mut() {
-            let url = obj.get("cookiecloud_url").cloned().unwrap_or(Value::String(String::new()));
-            let uuid = obj.get("cookiecloud_uuid").cloned().unwrap_or(Value::String(String::new()));
+            let url = obj
+                .get("cookiecloud_url")
+                .cloned()
+                .unwrap_or(Value::String(String::new()));
+            let uuid = obj
+                .get("cookiecloud_uuid")
+                .cloned()
+                .unwrap_or(Value::String(String::new()));
             let key_set = obj
                 .get("cookiecloud_key")
                 .and_then(|v| v.as_str())
@@ -631,8 +660,14 @@ impl Runtime {
         let wish: Vec<WishItem> = self.wish.clone().unwrap_or_default();
 
         let mut state = Map::new();
-        state.insert("status".to_string(), Value::String(self.last_status.clone()));
-        state.insert("last_message".to_string(), Value::String(self.last_message.clone()));
+        state.insert(
+            "status".to_string(),
+            Value::String(self.last_status.clone()),
+        );
+        state.insert(
+            "last_message".to_string(),
+            Value::String(self.last_message.clone()),
+        );
         state.insert("last_run".to_string(), Value::String(self.last_run.clone()));
         state.insert("revision".to_string(), Value::from(self.revision));
         state.insert("snapshot".to_string(), to_value(&snapshot));
@@ -640,15 +675,23 @@ impl Runtime {
         state.insert("observe_queue".to_string(), {
             let mut queue = Map::new();
             // Go cloneQueue 的 `append([]QueueItem(nil), ...)` → 空也是 null
-            queue.insert("items".to_string(), to_value(&go_copy_seq(&self.queue.items)));
+            queue.insert(
+                "items".to_string(),
+                to_value(&go_copy_seq(&self.queue.items)),
+            );
             Value::Object(queue)
         });
         state.insert("history".to_string(), to_value(&history));
         state.insert("logs".to_string(), to_value(&logs));
         state.insert("stats".to_string(), to_value(&self.stats));
-        state.insert("settings".to_string(), Runtime::sanitize_settings_view(&settings));
+        state.insert(
+            "settings".to_string(),
+            Runtime::sanitize_settings_view(&settings),
+        );
         state.insert("wish".to_string(), to_value(&wish));
         state.insert("wish_info".to_string(), to_value(&self.wish_info));
+        // 功能 3: 墓碑集暴露给 UI(state 响应只有这里能给前端看; 空表 → null)。
+        state.insert("no_resub".to_string(), to_value(&self.no_resub));
         Value::Object(state)
     }
 
@@ -664,11 +707,16 @@ impl Runtime {
     /// | `get-poster` | [`crate::poster::Runtime::get_poster`] | 路 1 |
     /// | `cookiecloud-test` | [`crate::wish::Runtime::action_cookie_cloud_test`] | 路 2 |
     /// | `wish-sync` | [`crate::wish::Runtime::action_wish_sync`] | 路 2 |
+    /// | `no-resub-clear` | [`crate::filter::Runtime::action_no_resub_clear`] | 功能 3 |
     /// | 其他 | Go `main.go:1712` 的 `unknown_action` | — |
     ///
     /// 业务失败是**正常 result**(`{"status":"failed",...}`), 不是 JSON-RPC error;
     /// 只有 payload 本身非法(`invalid action payload`)才走 `-32602`。
-    pub fn action(&mut self, invocation_id: &str, payload: RawPayload<'_>) -> Result<Value, OpError> {
+    pub fn action(
+        &mut self,
+        invocation_id: &str,
+        payload: RawPayload<'_>,
+    ) -> Result<Value, OpError> {
         let obj = payload.as_object().map_err(|_| invalid_action())?;
         let id = raw::string_field(obj, "id").map_err(|_| invalid_action())?;
         if id.is_empty() {
@@ -691,7 +739,9 @@ impl Runtime {
                 if let Err(err) = self.refresh_now(invocation_id) {
                     self.log("error", &format!("手动刷新失败: {err}"));
                     self.bump("failed", &format!("手动刷新失败: {err}"));
-                    return Ok(json!({"status": "failed", "message": format!("手动刷新失败: {err}")}));
+                    return Ok(
+                        json!({"status": "failed", "message": format!("手动刷新失败: {err}")}),
+                    );
                 }
                 Ok(json!({"status": "succeeded", "message": "榜单刷新完成"}))
             }
@@ -711,7 +761,11 @@ impl Runtime {
                 // Go `main.go:1648`: 原地过滤(`kept := Items[:0]`), 顺序不变;
                 // nil 队列保持 nil, 非 nil 队列即使清空也仍是 `[]`
                 let kept = self.queue.items.as_ref().map(|items| {
-                    items.iter().filter(|item| item.douban_ref != douban_ref).cloned().collect()
+                    items
+                        .iter()
+                        .filter(|item| item.douban_ref != douban_ref)
+                        .cloned()
+                        .collect()
                 });
                 self.queue.items = kept;
                 self.persist_all();
@@ -731,18 +785,26 @@ impl Runtime {
                 blacklist.push(keyword.clone());
                 self.persist_all();
                 self.bump("succeeded", &format!("已添加黑名单关键词：{keyword}"));
-                Ok(json!({"status": "succeeded", "message": format!("已添加黑名单关键词：{keyword}")}))
+                Ok(
+                    json!({"status": "succeeded", "message": format!("已添加黑名单关键词：{keyword}")}),
+                )
             }
             "blacklist-remove" => {
                 let keyword = util::string_val(input.get("keyword")).trim().to_string();
                 // Go `main.go:1679`: 与添加不同, 这里不校验空关键词(nil 队列仍保持 nil)
                 let kept = self.settings.blacklist.as_ref().map(|items| {
-                    items.iter().filter(|item| *item != &keyword).cloned().collect()
+                    items
+                        .iter()
+                        .filter(|item| *item != &keyword)
+                        .cloned()
+                        .collect()
                 });
                 self.settings.blacklist = kept;
                 self.persist_all();
                 self.bump("succeeded", &format!("已移除黑名单关键词：{keyword}"));
-                Ok(json!({"status": "succeeded", "message": format!("已移除黑名单关键词：{keyword}")}))
+                Ok(
+                    json!({"status": "succeeded", "message": format!("已移除黑名单关键词：{keyword}")}),
+                )
             }
             "settings-update" => Ok(self.settings_update(&input)),
             "archive" => Ok(self.archive()),
@@ -763,6 +825,8 @@ impl Runtime {
             "get-poster" => self.get_poster(&input),
             "cookiecloud-test" => self.action_cookie_cloud_test(),
             "wish-sync" => self.action_wish_sync(invocation_id),
+            // 功能 3: 清空"已删除不重订"墓碑集(落地函数在 `filter.rs`)。
+            "no-resub-clear" => Ok(self.action_no_resub_clear()),
             _ => Ok(json!({"status": "failed", "code": "unknown_action", "message": "未知动作"})),
         }
     }
@@ -787,7 +851,11 @@ impl Runtime {
     }
 
     /// [`Runtime::job`] 的分发表本体(Go `main.go:2016` 起的 switch)。
-    fn job_dispatch(&mut self, invocation_id: &str, payload: RawPayload<'_>) -> Result<Value, OpError> {
+    fn job_dispatch(
+        &mut self,
+        invocation_id: &str,
+        payload: RawPayload<'_>,
+    ) -> Result<Value, OpError> {
         let obj = match payload.as_object() {
             Ok(obj) => obj,
             // Go: `json.Unmarshal(raw, &payload) != nil` → "任务参数无效"
@@ -802,7 +870,9 @@ impl Runtime {
                 if let Err(err) = self.refresh_now(invocation_id) {
                     self.log("error", &format!("定时刷新失败: {err}"));
                     self.bump("failed", &format!("定时刷新失败: {err}"));
-                    return Ok(json!({"status": "skipped", "message": format!("定时刷新失败: {err}")}));
+                    return Ok(
+                        json!({"status": "skipped", "message": format!("定时刷新失败: {err}")}),
+                    );
                 }
                 Ok(json!({"status": "accepted", "message": "榜单定时刷新完成"}))
             }
@@ -814,6 +884,13 @@ impl Runtime {
                     self.sync_wish_list(invocation_id, true);
                 }
                 let _ = self.process_due(invocation_id, &settings);
+                // [功能2/3] 墓碑判定(模块头"判定流程"第 6 条): 到期条目处理完之后扫一次
+                //   历史, 把"订阅成功过但宿主池已查不到"的条目写进墓碑集;
+                //   节流 >= 6 小时(`no_resub_scan_at` 落在状态文档新键上)。
+                if self.no_resub_scan_due() {
+                    self.resolve_no_resub_from_history();
+                    self.no_resub_scan_at = clock::now_rfc3339();
+                }
                 self.persist_all();
                 Ok(json!({"status": "accepted", "message": "想看与到期订阅已处理"}))
             }
@@ -838,7 +915,9 @@ impl Runtime {
         let mut old = self.settings.clone();
 
         if let Some(value) = patch.get("lists") {
-            if let Ok(lists) = serde_json::from_value::<BTreeMap<String, model::ListConfig>>(value.clone()) {
+            if let Ok(lists) =
+                serde_json::from_value::<BTreeMap<String, model::ListConfig>>(value.clone())
+            {
                 // 合并而不是整块替换: UI 在插件状态未加载时保存会送来缺键甚至空的 lists,
                 // 整块替换会静默清掉用户的榜单配置(2026-09-29 实际发生)。空对象直接忽略。
                 if !lists.is_empty() {
@@ -915,6 +994,42 @@ impl Runtime {
                 old.notify_on_subscribe = flag;
             }
         }
+        // 功能 2: 订阅过滤器三项。数值只在"非负有限"时接受(负数当脏数据忽略);
+        // `regions` 与 blacklist 同款语义: `null` 清空(nil), 类型不符整块忽略,
+        // 数组逐项 trim 后丢弃空项(空数组 = 不限)。
+        if let Some(value) = patch.get("min_rating") {
+            if let Some(rate) = value.as_f64() {
+                if rate.is_finite() && rate >= 0.0 {
+                    old.min_rating = rate;
+                }
+            }
+        }
+        if let Some(value) = patch.get("min_year") {
+            if let Some(year) = value.as_f64() {
+                // 数值非法时忽略(契约): 除"非负有限"外还要落在 i32 里 —— 越界数值
+                // (如直连 settings-update 传 3e9)经 `as i32` 会饱和成 i32::MAX,
+                // 等于给所有条目加了不可能通过的年份过滤且无任何报错。
+                if year.is_finite() && year >= 0.0 && year <= i32::MAX as f64 {
+                    old.min_year = year as i32;
+                }
+            }
+        }
+        if let Some(value) = patch.get("regions") {
+            match value {
+                Value::Null => old.regions = None,
+                _ => {
+                    if let Ok(regions) = serde_json::from_value::<Vec<String>>(value.clone()) {
+                        old.regions = Some(
+                            regions
+                                .into_iter()
+                                .map(|region| region.trim().to_string())
+                                .filter(|region| !region.is_empty())
+                                .collect(),
+                        );
+                    }
+                }
+            }
+        }
         if let Some(value) = patch.get("subscribe_source_filter") {
             match value {
                 Value::Null => old.subscribe_source_filter = None,
@@ -935,6 +1050,10 @@ impl Runtime {
     }
 
     /// 对应 Go `main.go:1977` `archive`: 清历史/日志/黑名单命中, 重置统计后落盘。
+    ///
+    /// **功能 3 明确不清 `no_resub` 墓碑集**: 历史会被归档抹掉, 但"用户删过这个订阅"是
+    /// 独立于历史的事实, 跟着归档消失就会在下一轮自动重订 —— 要清只能走 action
+    /// `no-resub-clear`(见 [`crate::filter`] 的"池消费式"说明)。
     pub fn archive(&mut self) -> Value {
         self.history = None; // Go: r.history = nil
         self.logs = None; // Go: r.logs = nil
@@ -1066,7 +1185,9 @@ mod tests {
     }
 
     fn state_body(host: &FakeHost) -> Value {
-        let raw = host.last_put_body(store::STATE_KEY).expect("必须写过 state");
+        let raw = host
+            .last_put_body(store::STATE_KEY)
+            .expect("必须写过 state");
         let parsed: Value = serde_json::from_slice(&raw).unwrap();
         parsed["value"].clone()
     }
@@ -1109,7 +1230,11 @@ mod tests {
         assert_eq!(diag["state_bytes"], crate::fixtures::STATE.len());
         assert_eq!(diag["account_bytes"], 0);
         assert_eq!(diag["overlay"], false);
-        assert_eq!(diag.as_object().unwrap().len(), 7, "字段集合必须恰好是这 7 个: {diag}");
+        assert_eq!(
+            diag.as_object().unwrap().len(),
+            7,
+            "字段集合必须恰好是这 7 个: {diag}"
+        );
 
         // state() 必须把这些数据如实吐出来(键名/裁剪与 Go 一致)
         let state = runtime.state(RawPayload::Null).unwrap();
@@ -1170,7 +1295,11 @@ mod tests {
         runtime.ensure_loaded();
 
         assert!(runtime.storage_ok(), "404 两次确认 = 全新安装, 允许落盘");
-        assert_eq!(runtime.settings.lists.as_ref().unwrap().len(), 5, "默认榜单");
+        assert_eq!(
+            runtime.settings.lists.as_ref().unwrap().len(),
+            5,
+            "默认榜单"
+        );
         assert_eq!(runtime.settings.max_logs, 200);
         assert_eq!(runtime.stats.by_list, Some(BTreeMap::new()));
         // 加载本身不写 state 键(只写 diag 面包屑)
@@ -1201,7 +1330,10 @@ mod tests {
         host.fail_all(true);
         let _guard = host.install();
         let mut patch = Map::new();
-        patch.insert("lists".to_string(), json!({"hot": {"source": "subjects_json"}}));
+        patch.insert(
+            "lists".to_string(),
+            json!({"hot": {"source": "subjects_json"}}),
+        );
         let result = runtime.settings_update(&patch);
         assert_eq!(result["status"], "succeeded");
         let attempted_puts: Vec<String> = host
@@ -1216,7 +1348,9 @@ mod tests {
         );
         let messages = log_messages(&runtime);
         assert!(
-            messages.iter().any(|message| message.contains("宿主存储持续不可读")),
+            messages
+                .iter()
+                .any(|message| message.contains("宿主存储持续不可读")),
             "必须留下警告日志: {messages:?}"
         );
     }
@@ -1241,13 +1375,20 @@ mod tests {
         let _guard = host.install();
         runtime.persist_all();
         assert!(
-            host.puts().iter().all(|record| record.key != store::STATE_KEY),
+            host.puts()
+                .iter()
+                .all(|record| record.key != store::STATE_KEY),
             "无法识别的状态文档绝不能被覆盖: {:?}",
-            host.puts().iter().map(|r| r.key.clone()).collect::<Vec<_>>()
+            host.puts()
+                .iter()
+                .map(|r| r.key.clone())
+                .collect::<Vec<_>>()
         );
         let messages = log_messages(&runtime);
         assert!(
-            messages.iter().any(|message| message.contains("宿主存储内容无法识别")),
+            messages
+                .iter()
+                .any(|message| message.contains("宿主存储内容无法识别")),
             "{messages:?}"
         );
         assert!(runtime.load_warned, "警告只提示一次");
@@ -1304,7 +1445,9 @@ mod tests {
         assert_eq!(attempted_state_puts, 0, "超过 4MiB 必须放弃落盘");
         let messages = log_messages(&runtime);
         assert!(
-            messages.iter().any(|message| message.starts_with("持久化跳过: 状态过大")),
+            messages
+                .iter()
+                .any(|message| message.starts_with("持久化跳过: 状态过大")),
             "{messages:?}"
         );
     }
@@ -1325,7 +1468,10 @@ mod tests {
         assert_eq!(runtime.settings.cookiecloud_uuid, "uuid-account");
         assert_eq!(runtime.settings.cookiecloud_url, "http://127.0.0.1:8088");
         assert_eq!(runtime.settings.cookiecloud_key, "key-test");
-        assert!(runtime.settings.wish_sync_enabled, "false 不能把 true 覆盖掉");
+        assert!(
+            runtime.settings.wish_sync_enabled,
+            "false 不能把 true 覆盖掉"
+        );
 
         let diag = diag_body(&host);
         assert_eq!(diag["overlay"], true);
@@ -1340,11 +1486,17 @@ mod tests {
     fn account_overlay_ignores_empty_account_document() {
         fixed_clock();
         let host = fixture_host();
-        host.set(store::ACCOUNT_KEY, br#"{"lists":null,"wish_sync_enabled":false}"#);
+        host.set(
+            store::ACCOUNT_KEY,
+            br#"{"lists":null,"wish_sync_enabled":false}"#,
+        );
         let _guard = host.install();
         let mut runtime = Runtime::new();
         runtime.ensure_loaded();
-        assert_eq!(runtime.settings.cookiecloud_uuid, "uuid-test", "空账号键不覆盖");
+        assert_eq!(
+            runtime.settings.cookiecloud_uuid, "uuid-test",
+            "空账号键不覆盖"
+        );
         let diag = diag_body(&host);
         assert_eq!(diag["overlay"], false);
     }
@@ -1358,7 +1510,9 @@ mod tests {
         runtime.ensure_loaded();
         runtime.save_account();
 
-        let raw = host.last_put_body(store::ACCOUNT_KEY).expect("必须写 account 键");
+        let raw = host
+            .last_put_body(store::ACCOUNT_KEY)
+            .expect("必须写 account 键");
         let parsed: Value = serde_json::from_slice(&raw).unwrap();
         let account = &parsed["value"];
         assert_eq!(account["cookiecloud_url"], "http://127.0.0.1:8088");
@@ -1369,7 +1523,10 @@ mod tests {
         assert_eq!(account["lists"], Value::Null);
         assert_eq!(account["blacklist"], Value::Null);
         assert_eq!(account["observe_period_hours"], 0);
-        assert!(account.get("manual_cookie").is_none(), "空字符串带 omitempty");
+        assert!(
+            account.get("manual_cookie").is_none(),
+            "空字符串带 omitempty"
+        );
     }
 
     #[test]
@@ -1403,21 +1560,40 @@ mod tests {
             fetched_at: "2026-09-29T00:00:00Z".into(),
         };
         let result = runtime.settings_update(&patch);
-        assert_eq!(result, json!({"status": "succeeded", "message": "设置已保存"}));
+        assert_eq!(
+            result,
+            json!({"status": "succeeded", "message": "设置已保存"})
+        );
 
         let lists = runtime.settings.lists.clone().unwrap();
         assert_eq!(lists["hot"].limit, 5);
-        assert_eq!(lists["cn_wom"], before["cn_wom"], "未提交的榜单键必须原样保留");
+        assert_eq!(
+            lists["cn_wom"], before["cn_wom"],
+            "未提交的榜单键必须原样保留"
+        );
         assert_eq!(lists["upcoming"].source, "coming_html");
-        assert_eq!(runtime.settings.blacklist, Some(vec!["烂片".to_string(), "注水".to_string()]));
-        assert_eq!(runtime.settings.cookiecloud_url, "http://127.0.0.1:9000", "账号字段要 trim");
+        assert_eq!(
+            runtime.settings.blacklist,
+            Some(vec!["烂片".to_string(), "注水".to_string()])
+        );
+        assert_eq!(
+            runtime.settings.cookiecloud_url, "http://127.0.0.1:9000",
+            "账号字段要 trim"
+        );
         assert_eq!(runtime.settings.cookiecloud_uuid, "uuid-new");
         assert_eq!(runtime.settings.cookiecloud_key, "key-new");
         assert_eq!(runtime.settings.manual_cookie, "");
         assert_eq!(runtime.settings.observe_period_hours, 12);
         assert!(!runtime.settings.auto_subscribe && !runtime.settings.notify_on_subscribe);
-        assert_eq!(runtime.settings.subscribe_source_filter, Some(vec!["wish".to_string()]));
-        assert_eq!(runtime.cookie, CookieCache::EMPTY, "账号配置变化必须作废解密缓存");
+        assert_eq!(
+            runtime.settings.subscribe_source_filter,
+            Some(vec!["wish".to_string()])
+        );
+        assert_eq!(
+            runtime.cookie,
+            CookieCache::EMPTY,
+            "账号配置变化必须作废解密缓存"
+        );
         assert_eq!(runtime.last_status, "succeeded");
         assert_eq!(runtime.last_message, "设置已保存");
 
@@ -1430,7 +1606,43 @@ mod tests {
             parsed["value"].clone()
         };
         assert_eq!(account["cookiecloud_url"], "http://127.0.0.1:9000");
-        assert_eq!(account["subscribe_source_filter"], Value::Null, "账号键只放账号字段");
+        assert_eq!(
+            account["subscribe_source_filter"],
+            Value::Null,
+            "账号键只放账号字段"
+        );
+    }
+
+    /// 评审修复回归: `min_year` 越界数值(直连 settings-update 传 3e9)必须按
+    /// "数值非法时忽略", 不能经 `as i32` 饱和成 `i32::MAX` —— 那等于给所有条目加了
+    /// 不可能通过的年份过滤且无任何报错(UI 的 :max=3000 只挡住正常路径)。
+    #[test]
+    fn settings_update_ignores_out_of_range_min_year() {
+        fixed_clock();
+        let host = fixture_host();
+        let _guard = host.install();
+        let mut runtime = Runtime::new();
+        runtime.ensure_loaded();
+
+        // 合法值生效
+        let patch: Map<String, Value> =
+            serde_json::from_str(r#"{"min_year":2020,"min_rating":6.5}"#).unwrap();
+        assert_eq!(runtime.settings_update(&patch)["status"], "succeeded");
+        assert_eq!(runtime.settings.min_year, 2020);
+        assert_eq!(runtime.settings.min_rating, 6.5);
+
+        // 越界(3e9 会饱和)→ 忽略, 原值保持
+        let patch: Map<String, Value> = serde_json::from_str(r#"{"min_year":3e9}"#).unwrap();
+        assert_eq!(runtime.settings_update(&patch)["status"], "succeeded");
+        assert_eq!(
+            runtime.settings.min_year, 2020,
+            "越界数值必须忽略, 不能饱和成 i32::MAX"
+        );
+
+        // 负数 → 同样忽略
+        let patch: Map<String, Value> = serde_json::from_str(r#"{"min_year":-1}"#).unwrap();
+        let _ = runtime.settings_update(&patch);
+        assert_eq!(runtime.settings.min_year, 2020);
     }
 
     /// 2026-09-29 事故回归: UI 在状态未加载时保存, 送来空的 / 缺键的 lists,
@@ -1453,8 +1665,14 @@ mod tests {
         let empty: Map<String, Value> = serde_json::from_str(r#"{"lists":{}}"#).unwrap();
         runtime.settings_update(&empty);
         let lists = runtime.settings.lists.clone().unwrap();
-        assert_eq!(lists["hot"].limit, 5, "空 lists 必须被忽略, 用户配置不能被默认值冲掉");
-        assert!(lists.contains_key("cn_wom"), "缺失的榜单键必须从默认配置补回");
+        assert_eq!(
+            lists["hot"].limit, 5,
+            "空 lists 必须被忽略, 用户配置不能被默认值冲掉"
+        );
+        assert!(
+            lists.contains_key("cn_wom"),
+            "缺失的榜单键必须从默认配置补回"
+        );
         assert_eq!(lists.len(), 5);
 
         let patch: Map<String, Value> =
@@ -1464,7 +1682,10 @@ mod tests {
         let lists = runtime.settings.lists.clone().unwrap();
         assert_eq!(lists.len(), 5, "缺失的榜单键必须从默认配置补回: {lists:?}");
         assert_eq!(lists["hot"].tag, "热门");
-        assert_eq!(lists["upcoming"].source, "coming_html", "upcoming 强制 coming_html");
+        assert_eq!(
+            lists["upcoming"].source, "coming_html",
+            "upcoming 强制 coming_html"
+        );
         assert_eq!(lists["upcoming"].limit, 5, "用户 limit 必须保留");
     }
 
@@ -1474,7 +1695,12 @@ mod tests {
         runtime.settings = Settings {
             lists: Some(BTreeMap::from([(
                 "upcoming".to_string(),
-                model::ListConfig { source: "wrong".into(), limit: 5, enabled: true, ..Default::default() },
+                model::ListConfig {
+                    source: "wrong".into(),
+                    limit: 5,
+                    enabled: true,
+                    ..Default::default()
+                },
             )])),
             ..Settings::EMPTY
         };
@@ -1497,8 +1723,14 @@ mod tests {
         let mut runtime = Runtime::new();
         runtime.ensure_loaded();
         let result = runtime.archive();
-        assert_eq!(result, json!({"status": "succeeded", "message": "已归档历史与日志"}));
-        assert!(runtime.history.is_none() && runtime.logs.is_none(), "archive 后 Go 里是 nil");
+        assert_eq!(
+            result,
+            json!({"status": "succeeded", "message": "已归档历史与日志"})
+        );
+        assert!(
+            runtime.history.is_none() && runtime.logs.is_none(),
+            "archive 后 Go 里是 nil"
+        );
         assert_eq!(runtime.stats.total, 0);
         assert_eq!(runtime.stats.last_archive_at, "2026-09-29T10:00:09Z");
         assert_eq!(runtime.black_state.keywords, None);
@@ -1545,23 +1777,55 @@ mod tests {
         let doc = runtime.state_doc();
         // settings.lists 是 {} 而不是 null(Go cloneSettings 的 make)
         assert!(doc["settings"]["lists"].is_object());
-        assert_eq!(doc["snapshot"]["lists"], json!({}), "cloneSnapshot 的 make(map)");
-        assert_eq!(doc["observe_queue"]["items"], Value::Null, "nil 队列 → null");
+        assert_eq!(
+            doc["snapshot"]["lists"],
+            json!({}),
+            "cloneSnapshot 的 make(map)"
+        );
+        assert_eq!(
+            doc["observe_queue"]["items"],
+            Value::Null,
+            "nil 队列 → null"
+        );
         assert_eq!(doc["history"], json!([]));
         assert_eq!(doc["logs"], json!([]));
         assert_eq!(doc["wish"], json!([]));
         assert_eq!(doc["blacklist"]["keywords"], Value::Null);
-        assert_eq!(doc["stats"]["by_list"], json!({}), "loadAll 会把 by_list 补成 {{}}");
+        assert_eq!(
+            doc["stats"]["by_list"],
+            json!({}),
+            "loadAll 会把 by_list 补成 {{}}"
+        );
         // Go 的 state 响应经过 map 往返, 所有键都是字典序
-        let keys: Vec<&str> = doc.as_object().unwrap().keys().map(String::as_str).collect();
+        let keys: Vec<&str> = doc
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
         let mut sorted = keys.clone();
         sorted.sort_unstable();
-        assert_eq!(keys, sorted, "state 响应的键序必须是字典序(Go 的 map 序列化)");
+        assert_eq!(
+            keys, sorted,
+            "state 响应的键序必须是字典序(Go 的 map 序列化)"
+        );
         assert_eq!(
             keys,
             vec![
-                "blacklist", "history", "last_message", "last_run", "logs", "observe_queue",
-                "revision", "settings", "snapshot", "stats", "status", "wish", "wish_info"
+                "blacklist",
+                "history",
+                "last_message",
+                "last_run",
+                "logs",
+                "no_resub",
+                "observe_queue",
+                "revision",
+                "settings",
+                "snapshot",
+                "stats",
+                "status",
+                "wish",
+                "wish_info"
             ]
         );
 
@@ -1571,10 +1835,22 @@ mod tests {
         runtime.queue.items = Some(Vec::new());
         runtime.snapshot.lists = Some(BTreeMap::from([("hot".to_string(), Some(Vec::new()))]));
         let doc = runtime.state_doc();
-        assert_eq!(doc["settings"]["blacklist"], Value::Null, "cloneSettings 的 append(nil)");
+        assert_eq!(
+            doc["settings"]["blacklist"],
+            Value::Null,
+            "cloneSettings 的 append(nil)"
+        );
         assert_eq!(doc["settings"]["subscribe_source_filter"], Value::Null);
-        assert_eq!(doc["observe_queue"]["items"], Value::Null, "cloneQueue 的 append(nil)");
-        assert_eq!(doc["snapshot"]["lists"]["hot"], Value::Null, "cloneSnapshot 的 append(nil)");
+        assert_eq!(
+            doc["observe_queue"]["items"],
+            Value::Null,
+            "cloneQueue 的 append(nil)"
+        );
+        assert_eq!(
+            doc["snapshot"]["lists"]["hot"],
+            Value::Null,
+            "cloneSnapshot 的 append(nil)"
+        );
     }
 
     #[test]
@@ -1582,21 +1858,31 @@ mod tests {
         let mut runtime = Runtime::new();
         runtime.settings = model::default_settings();
         for index in 0..80 {
-            runtime
-                .logs
-                .get_or_insert_with(Vec::new)
-                .push(LogEntry { at: String::new(), level: "info".into(), message: format!("l{index}") });
+            runtime.logs.get_or_insert_with(Vec::new).push(LogEntry {
+                at: String::new(),
+                level: "info".into(),
+                message: format!("l{index}"),
+            });
         }
         for index in 0..40 {
             runtime
                 .history
                 .get_or_insert_with(Vec::new)
-                .push(HistoryEntry { douban_ref: format!("r{index}"), ..Default::default() });
+                .push(HistoryEntry {
+                    douban_ref: format!("r{index}"),
+                    ..Default::default()
+                });
         }
         let doc = runtime.state_doc();
         assert_eq!(doc["logs"].as_array().unwrap().len(), STATE_LOGS_LIMIT);
-        assert_eq!(doc["logs"][0]["message"], "l0", "取前 50 条(Go 的 logs[:50])");
-        assert_eq!(doc["history"].as_array().unwrap().len(), STATE_HISTORY_LIMIT);
+        assert_eq!(
+            doc["logs"][0]["message"], "l0",
+            "取前 50 条(Go 的 logs[:50])"
+        );
+        assert_eq!(
+            doc["history"].as_array().unwrap().len(),
+            STATE_HISTORY_LIMIT
+        );
     }
 
     /// 端到端: 经协议分发走一次 settings-update(覆盖 action 分派与两个键的写入)。
@@ -1609,8 +1895,14 @@ mod tests {
         let request = br#"{"method":"runtime.invoke","params":{"envelope":{"op":"action","invocation_id":"inv_1","payload":{"id":"settings-update","input":{"lists":{"movie_wom":{"source":"chart_html","type":"movie","tag":"","sort":"","limit":10,"enabled":false}}}}}}}"#;
         let response = crate::protocol::dispatch(&mut runtime, request);
         let parsed: Value = serde_json::from_slice(&response).unwrap();
-        assert_eq!(parsed["result"], json!({"status": "succeeded", "message": "设置已保存"}));
-        assert_eq!(runtime.settings.lists.as_ref().unwrap()["movie_wom"].limit, 10);
+        assert_eq!(
+            parsed["result"],
+            json!({"status": "succeeded", "message": "设置已保存"})
+        );
+        assert_eq!(
+            runtime.settings.lists.as_ref().unwrap()["movie_wom"].limit,
+            10
+        );
         assert!(host.last_put_body(store::STATE_KEY).is_some());
         assert!(host.last_put_body(store::ACCOUNT_KEY).is_some());
         assert!(host.last_put_body(store::DIAG_KEY).is_some());
@@ -1628,11 +1920,17 @@ mod tests {
         let got = runtime.http_get("https://movie.douban.com/chart", "text/html");
         assert_eq!(got.status, 200);
         assert!(got.error.is_none());
-        assert!(got.body.is_empty(), "200 + 空 body_base64 → 空 body(Go 的 decodeBody 返回 nil, nil)");
+        assert!(
+            got.body.is_empty(),
+            "200 + 空 body_base64 → 空 body(Go 的 decodeBody 返回 nil, nil)"
+        );
         let request = host.requests().pop().expect("必须发出 host.call");
         assert_eq!(request.method, "GET");
         assert_eq!(request.path, "https://movie.douban.com/chart");
-        assert_eq!(request.headers.get("accept").map(String::as_str), Some("text/html"));
+        assert_eq!(
+            request.headers.get("accept").map(String::as_str),
+            Some("text/html")
+        );
         assert_eq!(
             request.headers.get("referer").map(String::as_str),
             Some("https://movie.douban.com/"),
@@ -1657,8 +1955,14 @@ mod tests {
         let _guard = host.install();
         let got = runtime.http_get("https://movie.douban.com/chart", "text/html");
         assert_eq!(got.status, 0);
-        assert_eq!(got.error.as_ref().map(OpError::message), Some("host_call 返回长度 0"));
-        assert!(runtime.http_get("https://x/", "text/html").into_result().is_err());
+        assert_eq!(
+            got.error.as_ref().map(OpError::message),
+            Some("host_call 返回长度 0")
+        );
+        assert!(runtime
+            .http_get("https://x/", "text/html")
+            .into_result()
+            .is_err());
     }
 
     /// 接线级动作(不依赖骨架模块): 黑名单增删(Go `main.go:1659` 起)。
@@ -1669,33 +1973,58 @@ mod tests {
         let _guard = host.install();
         let mut runtime = Runtime::new();
         runtime.ensure_loaded();
-        assert_eq!(runtime.settings.blacklist, Some(Vec::new()), "夹具里 blacklist 是 []");
+        assert_eq!(
+            runtime.settings.blacklist,
+            Some(Vec::new()),
+            "夹具里 blacklist 是 []"
+        );
 
         // 空关键词(缺失 / 纯空白) → 失败, 不落盘
         for input in [json!({}), json!({"keyword": "   "})] {
             let payload = json!({"id": "blacklist-add", "input": input});
-            let result = runtime.action("inv_1", RawPayload::Value(&payload)).unwrap();
-            assert_eq!(result, json!({"status": "failed", "message": "关键词不能为空"}), "input={input}");
+            let result = runtime
+                .action("inv_1", RawPayload::Value(&payload))
+                .unwrap();
+            assert_eq!(
+                result,
+                json!({"status": "failed", "message": "关键词不能为空"}),
+                "input={input}"
+            );
         }
         assert!(runtime.settings.blacklist.as_ref().unwrap().is_empty());
 
         // 添加: trim 后写入 + 落盘 + bump
         let payload = json!({"id": "blacklist-add", "input": {"keyword": " 烂片 "}});
-        let result = runtime.action("inv_1", RawPayload::Value(&payload)).unwrap();
-        assert_eq!(result, json!({"status": "succeeded", "message": "已添加黑名单关键词：烂片"}));
+        let result = runtime
+            .action("inv_1", RawPayload::Value(&payload))
+            .unwrap();
+        assert_eq!(
+            result,
+            json!({"status": "succeeded", "message": "已添加黑名单关键词：烂片"})
+        );
         assert_eq!(runtime.settings.blacklist, Some(vec!["烂片".to_string()]));
         assert_eq!(runtime.last_status, "succeeded");
         assert_eq!(state_body(&host)["settings"]["blacklist"], json!(["烂片"]));
 
         // 重复添加 → "关键词已存在", 不重复入列
-        let result = runtime.action("inv_1", RawPayload::Value(&payload)).unwrap();
-        assert_eq!(result, json!({"status": "succeeded", "message": "关键词已存在"}));
+        let result = runtime
+            .action("inv_1", RawPayload::Value(&payload))
+            .unwrap();
+        assert_eq!(
+            result,
+            json!({"status": "succeeded", "message": "关键词已存在"})
+        );
         assert_eq!(runtime.settings.blacklist.as_ref().unwrap().len(), 1);
 
         // 移除: 过滤该关键词; Go 的 `kept := s[:0]` 留下的是非 nil 空切片 → `[]`
         let payload = json!({"id": "blacklist-remove", "input": {"keyword": "烂片"}});
-        let result = runtime.action("inv_1", RawPayload::Value(&payload)).unwrap();
-        assert_eq!(result, json!({"status": "succeeded", "message": "已移除黑名单关键词：烂片"}));
+        let result = runtime
+            .action("inv_1", RawPayload::Value(&payload))
+            .unwrap();
+        assert_eq!(
+            result,
+            json!({"status": "succeeded", "message": "已移除黑名单关键词：烂片"})
+        );
         assert_eq!(runtime.settings.blacklist, Some(Vec::<String>::new()));
         assert_eq!(state_body(&host)["settings"]["blacklist"], json!([]));
     }
@@ -1720,8 +2049,13 @@ mod tests {
             .collect();
         let target = before[0].clone();
         let payload = json!({"id": "observe-remove", "input": {"douban_ref": target}});
-        let result = runtime.action("inv_1", RawPayload::Value(&payload)).unwrap();
-        assert_eq!(result, json!({"status": "succeeded", "message": "已从观察队列移除"}));
+        let result = runtime
+            .action("inv_1", RawPayload::Value(&payload))
+            .unwrap();
+        assert_eq!(
+            result,
+            json!({"status": "succeeded", "message": "已从观察队列移除"})
+        );
         let after: Vec<String> = runtime
             .queue
             .items
@@ -1745,41 +2079,75 @@ mod tests {
             .map(|item| (item.douban_ref.clone(), item.url.clone()))
             .expect("夹具里必须有带 URL 的榜单条目");
         let payload = json!({"id": "open-source", "input": {"douban_ref": douban_ref}});
-        let result = runtime.action("inv_1", RawPayload::Value(&payload)).unwrap();
-        assert_eq!(result, json!({"status": "succeeded", "message": "豆瓣来源已生成", "url": url}));
+        let result = runtime
+            .action("inv_1", RawPayload::Value(&payload))
+            .unwrap();
+        assert_eq!(
+            result,
+            json!({"status": "succeeded", "message": "豆瓣来源已生成", "url": url})
+        );
 
         // 未命中 → failed
         let payload = json!({"id": "open-source", "input": {"douban_ref": "db:subj:00000000"}});
-        let result = runtime.action("inv_1", RawPayload::Value(&payload)).unwrap();
-        assert_eq!(result, json!({"status": "failed", "message": "未找到对应豆瓣条目"}));
+        let result = runtime
+            .action("inv_1", RawPayload::Value(&payload))
+            .unwrap();
+        assert_eq!(
+            result,
+            json!({"status": "failed", "message": "未找到对应豆瓣条目"})
+        );
 
         // send-test: 通知通道被宿主禁用, 只回提示
         let payload = json!({"id": "send-test"});
-        let result = runtime.action("inv_1", RawPayload::Value(&payload)).unwrap();
+        let result = runtime
+            .action("inv_1", RawPayload::Value(&payload))
+            .unwrap();
         assert_eq!(result["status"], "skipped");
         assert!(
-            result["message"].as_str().unwrap().contains("通知功能已停用"),
+            result["message"]
+                .as_str()
+                .unwrap()
+                .contains("通知功能已停用"),
             "{result}"
         );
 
         // 未知动作: Go `main.go:1712`
         let payload = json!({"id": "teleport"});
-        let result = runtime.action("inv_1", RawPayload::Value(&payload)).unwrap();
-        assert_eq!(result, json!({"status": "failed", "code": "unknown_action", "message": "未知动作"}));
+        let result = runtime
+            .action("inv_1", RawPayload::Value(&payload))
+            .unwrap();
+        assert_eq!(
+            result,
+            json!({"status": "failed", "code": "unknown_action", "message": "未知动作"})
+        );
     }
 
     /// 接线级动作的 payload 契约: id 缺失/类型不符 → `-32602`; input 不是对象 → 空 map。
     #[test]
     fn action_payload_contract() {
         let mut runtime = Runtime::new();
-        for payload in [json!(null), json!([1]), json!("x"), json!({}), json!({"id": ""}), json!({"id": 7})] {
-            let err = runtime.action("inv_1", RawPayload::Value(&payload)).unwrap_err();
+        for payload in [
+            json!(null),
+            json!([1]),
+            json!("x"),
+            json!({}),
+            json!({"id": ""}),
+            json!({"id": 7}),
+        ] {
+            let err = runtime
+                .action("inv_1", RawPayload::Value(&payload))
+                .unwrap_err();
             assert_eq!(err.message(), "invalid action payload", "payload={payload}");
         }
         // input 类型不符 → Go 的 `json.Unmarshal` 失败 → 空 map → "关键词不能为空"
         let payload = json!({"id": "blacklist-add", "input": [1, 2]});
-        let result = runtime.action("inv_1", RawPayload::Value(&payload)).unwrap();
-        assert_eq!(result, json!({"status": "failed", "message": "关键词不能为空"}));
+        let result = runtime
+            .action("inv_1", RawPayload::Value(&payload))
+            .unwrap();
+        assert_eq!(
+            result,
+            json!({"status": "failed", "message": "关键词不能为空"})
+        );
     }
 
     /// job 分发表的外壳: 参数非法与未声明任务的提示语(Go `main.go:2016`/`2043`)。
@@ -1792,14 +2160,25 @@ mod tests {
         // 覆盖的是"值存在但不是对象"的那条失败分支。
         for payload in [json!(null), json!([1]), json!("x"), json!({"id": 7})] {
             let result = runtime.job("inv_1", RawPayload::Value(&payload)).unwrap();
-            assert_eq!(result, json!({"status": "skipped", "message": "任务参数无效"}), "payload={payload}");
+            assert_eq!(
+                result,
+                json!({"status": "skipped", "message": "任务参数无效"}),
+                "payload={payload}"
+            );
         }
         // 解得出但 ID 为空(空对象/未知 id) → Go 的 default 分支
         for payload in [json!({}), json!({"id": "no-such-job"})] {
             let result = runtime.job("inv_1", RawPayload::Value(&payload)).unwrap();
-            assert_eq!(result, json!({"status": "skipped", "message": "未声明的任务"}), "payload={payload}");
+            assert_eq!(
+                result,
+                json!({"status": "skipped", "message": "未声明的任务"}),
+                "payload={payload}"
+            );
         }
-        assert!(!runtime.deep_refresh, "job 结束必须复位 deepRefresh(Go 的 defer)");
+        assert!(
+            !runtime.deep_refresh,
+            "job 结束必须复位 deepRefresh(Go 的 defer)"
+        );
     }
 }
 
@@ -1859,14 +2238,22 @@ mod host_forbidden_field_tests {
     fn settings_update_cc_key_empty_keeps_stored_value() {
         let mut rt = Runtime::default();
         rt.settings.cookiecloud_key = "stored-secret".into();
-        rt.settings_update(&serde_json::from_str::<Map<String, Value>>(
-            r#"{"cc_key":"","cc_url":" http://x ","cc_uuid":"u1"}"#,
-        ).unwrap());
-        assert_eq!(rt.settings.cookiecloud_key, "stored-secret", "空 cc_key 必须保持原值");
+        rt.settings_update(
+            &serde_json::from_str::<Map<String, Value>>(
+                r#"{"cc_key":"","cc_url":" http://x ","cc_uuid":"u1"}"#,
+            )
+            .unwrap(),
+        );
+        assert_eq!(
+            rt.settings.cookiecloud_key, "stored-secret",
+            "空 cc_key 必须保持原值"
+        );
         assert_eq!(rt.settings.cookiecloud_url, "http://x");
         assert_eq!(rt.settings.cookiecloud_uuid, "u1");
         // 显式给新值则覆盖
-        rt.settings_update(&serde_json::from_str::<Map<String, Value>>(r#"{"cc_key":"new"}"#).unwrap());
+        rt.settings_update(
+            &serde_json::from_str::<Map<String, Value>>(r#"{"cc_key":"new"}"#).unwrap(),
+        );
         assert_eq!(rt.settings.cookiecloud_key, "new");
     }
 }

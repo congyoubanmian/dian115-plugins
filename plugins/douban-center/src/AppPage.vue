@@ -20,6 +20,7 @@ import {
   NSpin,
   NSwitch,
   NTag,
+  useDialog,
   useMessage,
 } from 'naive-ui'
 import {
@@ -128,9 +129,15 @@ interface AppState {
     cc_key_set?: boolean
     cc_manual_set?: boolean
     wish_sync_enabled?: boolean
+    // 订阅过滤器(功能 2): 0/空数组在状态响应里带 omitempty 会被省略
+    min_rating?: number
+    min_year?: number
+    regions?: string[]
   }
   wish?: Array<{ douban_ref: string; title: string; year?: string; type?: string; poster_url?: string }>
   wish_info?: { enabled?: boolean; last_sync?: string; last_count?: number; last_new?: number; last_status?: string; last_error?: string; uid?: string; source?: string }
+  // 已删除不重订墓碑集(功能 3): 键 = douban_ref, 值仅供展示
+  no_resub?: Record<string, { tmdb_ref?: string; intent_id?: number; at?: string; reason?: string }>
   [key: string]: unknown
 }
 
@@ -146,6 +153,8 @@ const props = defineProps<{
 }>()
 
 const message = useMessage()
+// 功能 3: 手动订阅"已删除不重订"墓碑条目前的二次确认弹窗(NDialogProvider 已在入口挂载)
+const dialog = useDialog()
 const busy = ref('')
 const state = computed<AppState>(() => (props.runtimeState as AppState) || {})
 const settingsOpen = ref(false)
@@ -185,7 +194,13 @@ const settingsForm = reactive<NonNullable<AppState['settings']>>({
   cc_key: '',
   cc_manual: '',
   wish_sync_enabled: false,
+  min_rating: 0,
+  min_year: 0,
+  regions: [],
 })
+
+// 地区在设置抽屉里按"逗号分隔文本"编辑, 保存时才拆成数组
+const regionsText = ref('')
 
 // 状态可能迟到或失败(宿主重启/更新窗口里 runtime/state 会 502),
 // 表单必须始终可渲染: lists 深合并, 并为每个榜单定义补默认行,
@@ -210,6 +225,12 @@ watch(
     }
     const { lists: _drop, ...rest } = incoming
     Object.assign(settingsForm, rest, { lists })
+    // 过滤器三项(0/空数组)在状态响应里被 omitempty 省略, 必须显式回填默认值,
+    // 否则"把 min_rating 改回 0(不限)"之后表单会一直残留旧值
+    settingsForm.min_rating = typeof incoming.min_rating === 'number' ? incoming.min_rating : 0
+    settingsForm.min_year = typeof incoming.min_year === 'number' ? incoming.min_year : 0
+    settingsForm.regions = Array.isArray(incoming.regions) ? [...incoming.regions] : []
+    regionsText.value = settingsForm.regions.join(', ')
   },
   { immediate: true, deep: true },
 )
@@ -230,7 +251,16 @@ async function runAction(action: string, input: Record<string, unknown> = {}, op
       message.error(String(result.message || '操作失败'))
       return result
     }
-    if (!opts.silent) message.success(String(result.message || '操作完成'))
+    if (!opts.silent) {
+      // 功能 3: 手动订阅命中"已删除不重订"墓碑时, 后端在 subscribe/subscribe-now 的
+      // 成功响应里带回 no_resub_confirm 确认文案, 必须提示给用户, 不能只弹"订阅成功"
+      const confirmText = result.no_resub_confirm
+      if (typeof confirmText === 'string' && confirmText) {
+        message.warning(confirmText, { duration: 8000, closable: true })
+      } else {
+        message.success(String(result.message || '操作完成'))
+      }
+    }
     return result
   } catch (error: any) {
     message.error(String(error?.message || '操作失败'))
@@ -262,14 +292,32 @@ async function openSource(item: ChartItem | QueueItem) {
   }
 }
 
+// 功能 3: 手动订阅前先查墓碑集(state.no_resub), 命中则弹二次确认 —— 确认后才放行
+// (后端手动入口不拦墓碑; 订阅成功响应里还会带 no_resub_confirm 文案兜底提示)。
+function confirmNoResubThen(doubanRef: string, run: () => Promise<unknown>) {
+  if (!state.value.no_resub?.[doubanRef]) {
+    void run()
+    return
+  }
+  dialog.warning({
+    title: '条目已被你删除过',
+    content: '该条目此前订阅过、现在已被你删除：自动订阅不会重订它，确认要手动订阅吗？',
+    positiveText: '手动订阅',
+    negativeText: '取消',
+    onPositiveClick: () => {
+      void run()
+    },
+  })
+}
+
 async function subscribeItem(item: ChartItem) {
   itemMenuOpen.value = false
   targetItem.value = null
-  await runAction('subscribe', { douban_ref: item.douban_ref })
+  confirmNoResubThen(item.douban_ref, () => runAction('subscribe', { douban_ref: item.douban_ref }))
 }
 
 async function subscribeQueueNow(item: QueueItem) {
-  await runAction('subscribe-now', { douban_ref: item.douban_ref })
+  confirmNoResubThen(item.douban_ref, () => runAction('subscribe-now', { douban_ref: item.douban_ref }))
 }
 
 async function removeQueue(item: QueueItem) {
@@ -310,7 +358,18 @@ async function saveSettings() {
     message.warning('插件状态尚未加载（可能正在重启），请稍后再保存，以免配置被清空')
     return
   }
-  await runAction('settings-update', { ...settingsForm })
+  // 过滤器三项: 空输入按 0(不限); 地区按逗号(全角/半角)拆分、去空 → 空数组 = 不限。
+  // 后端只收 number/数组, 类型不符会整项忽略。
+  const payload = {
+    ...settingsForm,
+    min_rating: settingsForm.min_rating ?? 0,
+    min_year: settingsForm.min_year ?? 0,
+    regions: regionsText.value
+      .split(/[,，]/)
+      .map((s) => s.trim())
+      .filter(Boolean),
+  }
+  await runAction('settings-update', payload)
   settingsOpen.value = false
 }
 
@@ -318,7 +377,22 @@ async function archive() {
   await runAction('archive')
 }
 
-const queuePending = computed(() => (state.value.observe_queue?.items || []).filter((i) => i.state !== 'subscribed'))
+// 功能 2/3: filtered/no_resub 是终态(过滤器拦下 / 命中已删除不重订墓碑) —— 仍展示(带标签),
+// 但不再算"待自动订阅"
+const queueBlocked = computed(() =>
+  (state.value.observe_queue?.items || []).filter((i) => i.state === 'filtered' || i.state === 'no_resub'),
+)
+const queuePending = computed(() =>
+  (state.value.observe_queue?.items || []).filter(
+    (i) => i.state !== 'subscribed' && i.state !== 'filtered' && i.state !== 'no_resub',
+  ),
+)
+
+// 功能 3: 墓碑集(已删除不重订)的条数与清除动作
+const noResubCount = computed(() => Object.keys(state.value.no_resub || {}).length)
+async function clearNoResub() {
+  await runAction('no-resub-clear')
+}
 const historyRecent = computed(() => state.value.history || [])
 const logsRecent = computed(() => state.value.logs || [])
 const snapshotLists = computed(() => state.value.snapshot?.lists || {})
@@ -493,7 +567,7 @@ const fullListOpen = computed({
           <h3><NIcon :component="Eye" :size="15" /> 观察队列</h3>
           <NTag size="small" type="warning" :bordered="false">待自动订阅 {{ queuePending.length }} 条</NTag>
         </div>
-        <div v-if="!queuePending.length" class="dc-empty">
+        <div v-if="!queuePending.length && !queueBlocked.length" class="dc-empty">
           <NEmpty description="队列为空" size="small" />
         </div>
         <div v-else class="dc-queue-list">
@@ -516,6 +590,26 @@ const fullListOpen = computed({
               </NButton>
             </div>
           </div>
+          <!-- 功能 2/3: 被过滤器/墓碑拦下的终态条目, 只读展示(手动订阅仍可用) -->
+          <div v-for="item in queueBlocked.slice(0, 8)" :key="item.douban_ref" class="dc-queue-row">
+            <div class="dc-queue-main">
+              <div class="dc-queue-title" :title="item.last_error">{{ item.title }}</div>
+              <div class="dc-queue-meta">
+                <NTag size="tiny" :bordered="false">{{ listLabel(item.list) }}</NTag>
+                <NTag v-if="item.state === 'filtered'" size="tiny" type="warning" :bordered="false" :title="item.last_error">已过滤</NTag>
+                <NTag v-else-if="item.state === 'no_resub'" size="tiny" :bordered="false">已删除不重订</NTag>
+              </div>
+            </div>
+            <div class="dc-queue-actions">
+              <NButton size="tiny" :loading="busy === 'subscribe-now'" @click="subscribeQueueNow(item)">仍要订阅</NButton>
+              <NButton size="tiny" quaternary @click="openSource(item)">
+                <template #icon><NIcon :component="ExternalLink" /></template>
+              </NButton>
+              <NButton size="tiny" quaternary type="error" @click="removeQueue(item)">
+                <template #icon><NIcon :component="Trash2" /></template>
+              </NButton>
+            </div>
+          </div>
         </div>
       </div>
     </section>
@@ -530,6 +624,11 @@ const fullListOpen = computed({
       </div>
       <div v-if="!wishItems.length" class="dc-empty">还没有同步到想看条目，点「立即同步」或在设置里配置豆瓣账号</div>
       <div v-else class="dc-wish-list">
+        <!-- 功能 3: 墓碑集非空时给出条数与清除入口 -->
+        <div v-if="noResubCount > 0" class="dc-wish-row dc-wish-resub-row">
+          <span class="dc-muted">已删除不重订：{{ noResubCount }} 条</span>
+          <NButton size="tiny" :loading="busy === 'no-resub-clear'" @click="clearNoResub">清除重订限制</NButton>
+        </div>
         <div v-for="w in wishItems.slice(0, 24)" :key="w.douban_ref" class="dc-wish-row">
           <span class="dc-wish-title">{{ w.title }}</span>
           <span class="dc-muted">{{ w.year }} · {{ w.type === 'tv' ? '剧集' : '电影' }}</span>
@@ -703,6 +802,22 @@ const fullListOpen = computed({
             <span>订阅成功后发送 Telegram 通知</span>
             <NSwitch v-model:value="settingsForm.notify_on_subscribe" size="small" />
           </div>
+          <!-- 功能 2: 订阅过滤器三项(文案与 Rust 侧 UI_COPY_* 常量逐字一致) -->
+          <div class="dc-settings-row">
+            <span>最低评分</span>
+            <NInputNumber v-model:value="settingsForm.min_rating" size="small" :min="0" :max="10" :step="0.1" style="max-width: 260px" />
+          </div>
+          <p class="dc-muted dc-settings-hint">最低评分（0 = 不限；无评分的条目按“低于阈值”处理，会被过滤）</p>
+          <div class="dc-settings-row">
+            <span>最低年份</span>
+            <NInputNumber v-model:value="settingsForm.min_year" size="small" :min="0" :max="3000" style="max-width: 260px" />
+          </div>
+          <p class="dc-muted dc-settings-hint">最低年份（0 = 不限；豆瓣口碑榜/即将上映榜多数条目没有年份）</p>
+          <div class="dc-settings-row">
+            <span>地区</span>
+            <NInput v-model:value="regionsText" size="small" placeholder="如：美国, 日本" style="max-width: 260px" />
+          </div>
+          <p class="dc-muted dc-settings-hint">地区（逗号分隔，留空 = 不限；只在已取到豆瓣条目详情时生效）</p>
 
           <div class="dc-settings-row dc-settings-actions">
             <NButton type="primary" :loading="busy === 'settings-update'" @click="saveSettings">保存设置</NButton>
@@ -1131,6 +1246,12 @@ const fullListOpen = computed({
   justify-content: flex-start;
   gap: var(--dian-space-2);
   margin-top: var(--dian-space-2);
+}
+
+/* 功能 2: 过滤器输入项下方的说明文字 */
+.dc-settings-hint {
+  margin: -2px 0 6px;
+  font-size: 12px;
 }
 
 @media (max-width: 600px) {

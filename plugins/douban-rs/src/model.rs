@@ -41,6 +41,18 @@ pub fn is_zero_i64(value: &i64) -> bool {
     *value == 0
 }
 
+/// `omitempty` 对 i32: 0 省略(功能 2 的 [`Settings::min_year`])。
+pub fn is_zero_i32(value: &i32) -> bool {
+    *value == 0
+}
+
+/// `omitempty` 对 f64: 0 省略(功能 2 的 [`Settings::min_rating`] 与 [`WishItem::rating`])。
+///
+/// Go 的 `omitempty` 对 `float64` 是"零值省略", 即 `0` 与 `-0` 都省; Rust 直接比 0.0。
+pub fn is_zero_f64(value: &f64) -> bool {
+    *value == 0.0
+}
+
 /// Go `json.Unmarshal` 到结构体的语义: 字段缺失或为 `null` → 零值; 类型不符 → 报错。
 ///
 /// serde 的默认行为对 `null` 严格(集合/标量都报错), 与 Go 不同; 因此这里先用
@@ -112,6 +124,18 @@ pub struct Settings {
     #[serde(skip_serializing_if = "String::is_empty")]
     pub manual_cookie: String,
     pub wish_sync_enabled: bool,
+
+    // ── 订阅过滤器(功能 2; 契约见 `subscribe.rs` 模块头) ──
+    /// 最低豆瓣评分, `0` = 不限。无评分的条目按"低于阈值"处理。
+    #[serde(skip_serializing_if = "is_zero_f64")]
+    pub min_rating: f64,
+    /// 最低年份, `0` = 不限。比较的是原始年份数值, 不是字符串序。
+    #[serde(skip_serializing_if = "is_zero_i32")]
+    pub min_year: i32,
+    /// 国家/地区白名单(精确匹配 rexxar 详情的 `countries`), 空 = 不限。
+    /// **降级语义(deviation)**: 地区的唯一来源是 rexxar 条目详情, 详情没取到时不拦。
+    #[serde(skip_serializing_if = "skip_empty_seq")]
+    pub regions: GoSlice<String>,
 }
 
 impl Settings {
@@ -130,6 +154,9 @@ impl Settings {
         cookiecloud_key: String::new(),
         manual_cookie: String::new(),
         wish_sync_enabled: false,
+        min_rating: 0.0,
+        min_year: 0,
+        regions: None,
     };
 
     /// 账号字段是否非空 —— `loadAccountOverlay` 的 `applied` 判定。
@@ -170,11 +197,16 @@ pub struct Snapshot {
 }
 
 impl Snapshot {
-    pub const EMPTY: Snapshot = Snapshot { fetched_at: String::new(), lists: None };
+    pub const EMPTY: Snapshot = Snapshot {
+        fetched_at: String::new(),
+        lists: None,
+    };
 }
 
 /// 观察队列条目 (Go `main.go:130` `QueueItem`)。
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// (功能 2 加了 [`QueueItem::rating`]: f64 不实现 `Eq`, 因此这里只能 derive `PartialEq`。)
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct QueueItem {
     pub douban_ref: String,
@@ -188,6 +220,12 @@ pub struct QueueItem {
     pub media_type: String,
     #[serde(skip_serializing_if = "String::is_empty")]
     pub year: String,
+    /// 豆瓣评分(`0` = 未知/无评分)。功能 2 新增(非 Go 字段, 同 [`WishItem::rating`] 的
+    /// 先例): 入队时从 `ChartItem::rate` / 想看的 `subject.rating.value` 折算带上来,
+    /// 让 `process_due` 的评分过滤不必回查快照/想看列表。`omitempty`: 0 不落盘,
+    /// 旧文档(与 Go 写出的文档)读进来自然为 0。
+    #[serde(skip_serializing_if = "is_zero_f64")]
+    pub rating: f64,
     #[serde(skip_serializing_if = "String::is_empty")]
     pub poster_path: String,
     pub entered_at: String,
@@ -277,11 +315,19 @@ pub struct BlackState {
 }
 
 impl BlackState {
-    pub const EMPTY: BlackState = BlackState { keywords: None, hits: 0, recent: None };
+    pub const EMPTY: BlackState = BlackState {
+        keywords: None,
+        hits: 0,
+        recent: None,
+    };
 }
 
 /// 想看条目 (Go `wish.go:15` `WishItem`)。
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// 功能 2 在 Go 字段之外补了 [`WishItem::rating`]: 想看响应本身带
+/// `subject.rating.value`, 用于 [`crate::filter::Runtime::can_subscribe`] 的评分过滤
+/// (榜单条目走 `ChartItem::rate`)。`0` = 未知/无评分, 与旧文档兼容(omitempty)。
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct WishItem {
     pub douban_ref: String,
@@ -294,6 +340,9 @@ pub struct WishItem {
     pub poster_url: String,
     #[serde(skip_serializing_if = "String::is_empty")]
     pub added_at: String,
+    /// 豆瓣评分(`subject.rating.value`), `0` = 未知/无评分。功能 2 新增。
+    #[serde(skip_serializing_if = "is_zero_f64")]
+    pub rating: f64,
 }
 
 /// 想看同步状态摘要 (Go `wish.go:24` `WishInfo`)。
@@ -378,6 +427,15 @@ pub struct PersistedState {
     pub wish_seen: GoMap<String, bool>,
     pub wish_info: WishInfo,
     pub cookie: CookieCache,
+    /// 已删除不重订的墓碑集(功能 3; 键 = `douban_ref`, 形态见
+    /// [`crate::filter::NoResubEntry`])。带 `omitempty`: 空表不落盘, 旧文档读进来是 `None`。
+    #[serde(skip_serializing_if = "skip_empty_map")]
+    pub no_resub: crate::filter::NoResubMap,
+    /// 上次墓碑扫描(`resolve_no_resub_from_history`)的时间(RFC3339, 功能 3)。
+    /// 节流用: 距上次扫描不足 [`crate::filter::NO_RESUB_SCAN_MIN_INTERVAL_NANOS`] 就跳过。
+    /// 空 = 从未扫过。带 `omitempty`, 旧文档读进来是空串。
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub no_resub_scan_at: String,
 }
 
 impl PersistedState {
@@ -397,7 +455,13 @@ pub fn default_settings() -> Settings {
     let mut lists = BTreeMap::new();
     lists.insert(
         "upcoming".to_string(),
-        ListConfig { source: "coming_html".into(), kind: "movie".into(), limit: 20, enabled: true, ..ListConfig::default() },
+        ListConfig {
+            source: "coming_html".into(),
+            kind: "movie".into(),
+            limit: 20,
+            enabled: true,
+            ..ListConfig::default()
+        },
     );
     lists.insert(
         "hot".to_string(),
@@ -434,7 +498,13 @@ pub fn default_settings() -> Settings {
     );
     lists.insert(
         "movie_wom".to_string(),
-        ListConfig { source: "chart_html".into(), kind: "movie".into(), limit: 20, enabled: true, ..ListConfig::default() },
+        ListConfig {
+            source: "chart_html".into(),
+            kind: "movie".into(),
+            limit: 20,
+            enabled: true,
+            ..ListConfig::default()
+        },
     );
     Settings {
         lists: Some(lists),
@@ -469,7 +539,10 @@ mod tests {
     #[test]
     fn fixture_restores_every_section() {
         let doc = PersistedState::parse(crate::fixtures::STATE).unwrap();
-        assert!(doc.is_recognizable(), "lists 必须非 nil —— 否则 Go 版会把状态当成空");
+        assert!(
+            doc.is_recognizable(),
+            "lists 必须非 nil —— 否则 Go 版会把状态当成空"
+        );
         assert_eq!(doc.settings.lists.as_ref().unwrap().len(), 5);
         assert_eq!(doc.queue.items.as_ref().unwrap().len(), 109);
         assert_eq!(doc.snapshot.lists.as_ref().unwrap().len(), 5);
@@ -480,15 +553,25 @@ mod tests {
         assert_eq!(doc.wish.as_ref().unwrap().len(), 3);
         assert_eq!(doc.wish_seen.as_ref().unwrap().len(), 3);
         assert_eq!(doc.wish_info.uid, "123456789");
-        assert_eq!(doc.cookie, CookieCache::EMPTY, "脱敏夹具里登录 cookie 必须为空");
+        assert_eq!(
+            doc.cookie,
+            CookieCache::EMPTY,
+            "脱敏夹具里登录 cookie 必须为空"
+        );
         assert_eq!(doc.blackstate.keywords, None, "Go nil slice → null");
         // 榜单条目字段全:
         let lists = doc.snapshot.lists.as_ref().unwrap();
         let hot = lists.get("hot").and_then(|items| items.as_ref()).unwrap();
         assert_eq!(hot[0].douban_ref, "db:subj:36850814");
         assert!(hot[0].poster_url.starts_with("https://img"));
-        let movie_wom = lists.get("movie_wom").and_then(|items| items.as_ref()).unwrap();
-        assert!(movie_wom.iter().any(|item| item.rank == "1"), "rank 字段必须解出来");
+        let movie_wom = lists
+            .get("movie_wom")
+            .and_then(|items| items.as_ref())
+            .unwrap();
+        assert!(
+            movie_wom.iter().any(|item| item.rank == "1"),
+            "rank 字段必须解出来"
+        );
     }
 
     /// 与夹具等价但用构造值检查 null / [] / {} 三态(Go 的 nil 与空是两回事)。
@@ -498,15 +581,28 @@ mod tests {
             r#"{"settings":{"lists":{},"blacklist":[],"subscribe_source_filter":[]}}"#,
         )
         .unwrap();
-        assert!(doc.is_recognizable(), "空对象 lists 在 Go 里是非 nil map → 算已加载");
+        assert!(
+            doc.is_recognizable(),
+            "空对象 lists 在 Go 里是非 nil map → 算已加载"
+        );
         assert_eq!(doc.settings.lists, Some(BTreeMap::new()));
         assert_eq!(doc.settings.blacklist, Some(Vec::new()));
         let encoded = serde_json::to_string(&doc).unwrap();
-        assert!(encoded.contains(r#""lists":{}"#), "空 map 必须是 {{}} 而不是 null: {encoded}");
-        assert!(encoded.contains(r#""blacklist":[]"#), "空 slice 必须是 [] 而不是 null: {encoded}");
+        assert!(
+            encoded.contains(r#""lists":{}"#),
+            "空 map 必须是 {{}} 而不是 null: {encoded}"
+        );
+        assert!(
+            encoded.contains(r#""blacklist":[]"#),
+            "空 slice 必须是 [] 而不是 null: {encoded}"
+        );
 
-        let null_doc: PersistedState = serde_json::from_str(r#"{"settings":{"lists":null}}"#).unwrap();
-        assert!(!null_doc.is_recognizable(), "null lists 在 Go 里是 nil → 不能算已加载");
+        let null_doc: PersistedState =
+            serde_json::from_str(r#"{"settings":{"lists":null}}"#).unwrap();
+        assert!(
+            !null_doc.is_recognizable(),
+            "null lists 在 Go 里是 nil → 不能算已加载"
+        );
         assert_eq!(null_doc.settings.lists, None);
     }
 
@@ -530,13 +626,19 @@ mod tests {
         assert!(!encoded.contains("cookiecloud_key"), "{encoded}");
         // 无 omitempty 的字段必须出现, 且 nil → null
         assert!(encoded.contains(r#""lists":null"#), "{encoded}");
-        assert!(encoded.contains(r#""subscribe_source_filter":null"#), "{encoded}");
+        assert!(
+            encoded.contains(r#""subscribe_source_filter":null"#),
+            "{encoded}"
+        );
         assert!(encoded.contains(r#""by_list":null"#), "{encoded}");
         // 全新安装第一次落盘就是这个形态: history/logs/queue.items 是 null(不是 [])
         assert!(encoded.contains(r#""history":null"#), "{encoded}");
         assert!(encoded.contains(r#""logs":null"#), "{encoded}");
         assert!(encoded.contains(r#""queue":{"items":null}"#), "{encoded}");
-        assert!(encoded.contains(r#""snapshot":{"fetched_at":"","lists":null}"#), "{encoded}");
+        assert!(
+            encoded.contains(r#""snapshot":{"fetched_at":"","lists":null}"#),
+            "{encoded}"
+        );
     }
 
     /// Go 的结构体解码对 `null` 宽容: 字段是 null → 零值(nil / 0 / ""), 不报错。
@@ -582,8 +684,12 @@ mod tests {
         assert_eq!(doc.settings.lists.as_ref().unwrap()["hot"].source, "x");
 
         // Go 的 json.Unmarshal 对类型不符会报错(而不是静默取零值)
-        assert!(PersistedState::parse(br#"{"settings":{"lists":{"hot":{"limit":"30"}}}}"#).is_none());
-        assert!(PersistedState::parse(br#"{"settings":{"lists":{"hot":{"limit":30.5}}}}"#).is_none());
+        assert!(
+            PersistedState::parse(br#"{"settings":{"lists":{"hot":{"limit":"30"}}}}"#).is_none()
+        );
+        assert!(
+            PersistedState::parse(br#"{"settings":{"lists":{"hot":{"limit":30.5}}}}"#).is_none()
+        );
         assert!(PersistedState::parse(br#"{"queue":{"items":[{"attempt":true}]}}"#).is_none());
         assert!(PersistedState::parse(br#"{"stats":{"total":"3"}}"#).is_none());
         // 整体不是对象(数组/字符串/数字/裸 null) → 解不出来
@@ -603,9 +709,19 @@ mod tests {
         .unwrap();
         let value: Value = serde_json::to_value(&doc).unwrap();
         let item = &value["queue"]["items"][0];
-        assert!(item.get("tmdb_ref").is_none() && item.get("last_error").is_none(), "{item}");
-        assert_eq!(item["attempt"], json!(0), "attempt 无 omitempty → 0 必须出现");
-        assert!(value["history"][0].get("intent_id").is_none(), "intent_id 带 omitempty → 0 省略");
+        assert!(
+            item.get("tmdb_ref").is_none() && item.get("last_error").is_none(),
+            "{item}"
+        );
+        assert_eq!(
+            item["attempt"],
+            json!(0),
+            "attempt 无 omitempty → 0 必须出现"
+        );
+        assert!(
+            value["history"][0].get("intent_id").is_none(),
+            "intent_id 带 omitempty → 0 省略"
+        );
         assert!(value["snapshot"]["lists"]["hot"][0].get("rank").is_none());
         assert!(value["wish"][0].get("poster_url").is_none());
     }
@@ -626,7 +742,10 @@ mod tests {
         assert!(settings.auto_subscribe && settings.notify_on_subscribe);
         assert_eq!(settings.max_history, 200);
         assert_eq!(settings.max_logs, 200);
-        assert_eq!(settings.blacklist, None, "Go defaultSettings 的 nil slice → null");
+        assert_eq!(
+            settings.blacklist, None,
+            "Go defaultSettings 的 nil slice → null"
+        );
         assert!(!settings.has_account_fields());
     }
 

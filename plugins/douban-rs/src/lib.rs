@@ -33,6 +33,21 @@
 //! - 路 2(CookieCloud 与想看): [`cookiecloud`] + [`wish`]
 //! - 路 3(TMDB 匹配与聚合订阅): [`subscribe`]
 //!
+//! # 第二轮(rs-0.2.0)两路并行
+//!
+//! 契约已冻结, 骨架里的 `todo!()` 由实现阶段填体:
+//!
+//! - **功能 1(TMDB 匹配增强)**: 名下文件 [`subject`](新增模块)+ `subscribe.rs` 的**匹配函数内部**
+//!   (回退入口后加过 `kind` 参数 —— 评审修复: 剧集条目要走 rexxar 的 tv 路径);
+//!   失配时经 [`subject::Runtime::rexxar_subject_detail`] 取
+//!   `original_title`/`aka` 回退重搜, 仍失配才 `needs_review`。
+//! - **功能 2(订阅过滤器)+ 功能 3(已删除不重订)**: 名下文件 [`filter`](新增模块)+ `wish.rs`
+//!   (想看的 `subject.rating` 补提取)+ `AppPage.vue`(设置抽屉三个输入 / 想看区墓碑数);
+//!   在 `subscribe.rs` 的**订阅入口**加一道 `can_subscribe` / `no_resub_guard` 守卫。
+//!
+//! 两路的文件边界与共享面(`subscribe.rs` 上互不重叠的两条线)写在 [`filter`] 与
+//! [`subject`] 的模块头, 合并时以那里为准。
+//!
 //! 接线(模块声明、action/job 分发表、共享辅助)已在本阶段一次性完成并冻结:
 //! `lib.rs` / `runtime.rs` / `protocol.rs` / `host.rs` / `store.rs` / `model.rs` /
 //! `raw.rs` / `util.rs` / `clock.rs` / `Cargo.toml` 在并行阶段**不得修改**。
@@ -48,6 +63,7 @@ pub mod arena;
 pub mod charts;
 pub mod clock;
 pub mod cookiecloud;
+pub mod filter;
 pub mod host;
 pub mod model;
 pub mod poster;
@@ -55,6 +71,7 @@ pub mod protocol;
 pub mod raw;
 pub mod runtime;
 pub mod store;
+pub mod subject;
 pub mod subscribe;
 pub mod util;
 pub mod wish;
@@ -78,4 +95,12 @@ pub mod fixtures {
     pub const WISH_MOVIE: &[u8] = include_bytes!("../tests/fixtures/wish_movie.json");
     /// 豆瓣 `kind=mark&type=tv` 想看接口原文(4 条: 混进了 1 条 book, `year` 是 null)。
     pub const WISH_TV: &[u8] = include_bytes!("../tests/fixtures/wish_tv.json");
+    /// rexxar `movie/36808876`(奥德赛)条目详情原文, 2026-09-30 实抓后**截字段**脱敏。
+    ///
+    /// 功能 1(TMDB 匹配增强)与功能 2(地区过滤)的字段路径回归样本:
+    /// `original_title` / `aka` / `year` / `rating.value` / `countries`。
+    pub const SUBJECT_DETAIL_MOVIE: &[u8] = include_bytes!("../tests/fixtures/subject_detail.json");
+    /// rexxar `tv/34862797`(列奥纳多)条目详情原文 —— 剧集形态的对照样本:
+    /// `original_title` 非空、`aka` 非空(电影那份的 `aka` 是空数组)。
+    pub const SUBJECT_DETAIL_TV: &[u8] = include_bytes!("../tests/fixtures/subject_detail_tv.json");
 }

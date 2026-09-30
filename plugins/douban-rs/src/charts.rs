@@ -150,7 +150,10 @@ static_regex!(
     r#"<a[^>]*href="https://movie\.douban\.com/subject/([0-9]+)/"[^>]*>[\t\n\f\r ]*([^<]+)"#
 );
 /// Go `main.go:525` `reItemMod`: `(?s)<div class="item mod[^"]*">.*?</div>\s*</div>`。
-static_regex!(re_item_mod, r#"(?s)<div class="item mod[^"]*">.*?</div>[\t\n\f\r ]*</div>"#);
+static_regex!(
+    re_item_mod,
+    r#"(?s)<div class="item mod[^"]*">.*?</div>[\t\n\f\r ]*</div>"#
+);
 /// Go `main.go:526` `reItemSubj`: `<h3>\s*<a[^>]*href="https://movie\.douban\.com/subject/(\d+)/"[^>]*>\s*([^<]+)`。
 static_regex!(
     re_item_subj,
@@ -455,7 +458,11 @@ impl Runtime {
             }
             let mut rank = String::new();
             if let Some(rank_match) = re_no().captures(row) {
-                rank = rank_match.get(1).map(|m| m.as_str()).unwrap_or("").to_string();
+                rank = rank_match
+                    .get(1)
+                    .map(|m| m.as_str())
+                    .unwrap_or("")
+                    .to_string();
             }
             // 口碑榜 HTML 不带海报, 只能按标题逐条问豆瓣; 前台动作只有 ~10 秒预算,
             // 逐条补海报要多次外部请求, 因此只放在后台任务里做, 且只补前若干条。
@@ -515,7 +522,10 @@ impl Runtime {
                 Err(err) => self.log("warning", &format!("榜单 {key} 抓取失败: {err}")),
                 Ok(items) => self.log("info", &format!("榜单 {} 抓到 {} 条", key, items.len())),
             }
-            results.push(ListResult { key, items: outcome });
+            results.push(ListResult {
+                key,
+                items: outcome,
+            });
         }
         results
     }
@@ -716,12 +726,28 @@ impl Runtime {
             (period as u64).saturating_mul(3_600_000_000_000), // Go: period * time.Hour
         );
         let queue = self.queue.items.get_or_insert_with(Vec::new);
+        // [功能2/3] 入队时带上过滤判定要用的评分: `item.rate` 解析不出(口碑榜/即将上映榜
+        // 实测大量空串, 见 `crate::filter` 的 deviations 第 3 条)→ 0 = 未知, 到期处理时
+        // `min_rating > 0` 会按"无评分"拦; `year` 本就在 [`QueueItem`] 上(但
+        // `ChartItem::year` 对这两个榜单实测同样常为空)。
+        // [功能1] `media_type` 取该榜单配置的 `kind`(movie/tv): 到期订阅的 rexxar
+        // 详情回退要按它走对应路径(配置缺失/为空 → 空串, 按 movie 取, 与旧行为一致)。
+        let media_type = self
+            .settings
+            .lists
+            .as_ref()
+            .and_then(|lists| lists.get(list))
+            .map(|config| config.kind.clone())
+            .unwrap_or_default();
         queue.push(QueueItem {
             douban_ref: item.douban_ref.clone(),
             title: item.title.clone(),
             list: list.to_string(),
             poster_url: item.poster_url.clone(),
             url: item.url.clone(),
+            media_type,
+            year: item.year.clone(),
+            rating: crate::filter::parse_rate(&item.rate).unwrap_or(0.0),
             entered_at: clock::now_rfc3339(),
             due_at: clock::rfc3339(due_nanos),
             state: "observing".to_string(),
@@ -812,13 +838,28 @@ mod tests {
         // 找不到锚点 → 原样返回整份
         assert_eq!(section_after(html, "id=\"y\"", "", ""), html);
         // open/close 都为空 → 从锚点到结尾
-        assert_eq!(section_after(html, "id=\"x\"", "", ""), "id=\"x\" bbb OPEN ccc CLOSE ddd");
+        assert_eq!(
+            section_after(html, "id=\"x\"", "", ""),
+            "id=\"x\" bbb OPEN ccc CLOSE ddd"
+        );
         // open 截取(从锚点之后找, 找不到就保持不动)
-        assert_eq!(section_after(html, "id=\"x\"", "OPEN", ""), "OPEN ccc CLOSE ddd");
-        assert_eq!(section_after(html, "id=\"x\"", "NOPE", ""), "id=\"x\" bbb OPEN ccc CLOSE ddd");
+        assert_eq!(
+            section_after(html, "id=\"x\"", "OPEN", ""),
+            "OPEN ccc CLOSE ddd"
+        );
+        assert_eq!(
+            section_after(html, "id=\"x\"", "NOPE", ""),
+            "id=\"x\" bbb OPEN ccc CLOSE ddd"
+        );
         // close 截取
-        assert_eq!(section_after(html, "id=\"x\"", "", "CLOSE"), "id=\"x\" bbb OPEN ccc ");
-        assert_eq!(section_after(html, "id=\"x\"", "NOPE", "NOPE"), "id=\"x\" bbb OPEN ccc CLOSE ddd");
+        assert_eq!(
+            section_after(html, "id=\"x\"", "", "CLOSE"),
+            "id=\"x\" bbb OPEN ccc "
+        );
+        assert_eq!(
+            section_after(html, "id=\"x\"", "NOPE", "NOPE"),
+            "id=\"x\" bbb OPEN ccc CLOSE ddd"
+        );
         // 锚点在 open/close 之后: open 找不到 → 不动; close 找不到 → 不动
         assert_eq!(section_after(html, "ddd", "OPEN", "CLOSE"), "ddd");
         // 锚点就在 close 片段里
@@ -896,9 +937,18 @@ mod tests {
             request.path,
             "https://movie.douban.com/j/search_subjects?type=movie&tag=%E7%83%AD%E9%97%A8&sort=recommend&page_limit=30&page_start=0"
         );
-        assert_eq!(request.headers.get("accept").map(String::as_str), Some("application/json, text/plain;q=0.9"));
-        assert_eq!(request.headers.get("user-agent").map(String::as_str), Some(BROWSER_USER_AGENT));
-        assert_eq!(request.headers.get("referer").map(String::as_str), Some("https://movie.douban.com/"));
+        assert_eq!(
+            request.headers.get("accept").map(String::as_str),
+            Some("application/json, text/plain;q=0.9")
+        );
+        assert_eq!(
+            request.headers.get("user-agent").map(String::as_str),
+            Some(BROWSER_USER_AGENT)
+        );
+        assert_eq!(
+            request.headers.get("referer").map(String::as_str),
+            Some("https://movie.douban.com/")
+        );
     }
 
     #[test]
@@ -912,7 +962,12 @@ mod tests {
         let _guard = stub.install();
 
         let runtime = Runtime::new();
-        let config = ListConfig { source: "subjects_json".into(), kind: "movie".into(), tag: "热门".into(), ..ListConfig::default() };
+        let config = ListConfig {
+            source: "subjects_json".into(),
+            kind: "movie".into(),
+            tag: "热门".into(),
+            ..ListConfig::default()
+        };
         let items = runtime.fetch_subjects_json(&config).expect("抓取成功");
         assert_eq!(items.len(), 1, "标题全空白的条目要跳过");
         assert_eq!(items[0].douban_ref, "db:subj:2");
@@ -922,7 +977,10 @@ mod tests {
         let stub2 = ScriptedHttp::new();
         stub2.route("/j/search_subjects", 200, br#"{"subjects":null}"#.to_vec());
         let _guard2 = stub2.install();
-        assert!(runtime.fetch_subjects_json(&config).expect("null 也要能解").is_empty());
+        assert!(runtime
+            .fetch_subjects_json(&config)
+            .expect("null 也要能解")
+            .is_empty());
     }
 
     #[test]
@@ -931,13 +989,25 @@ mod tests {
         stub.route("/j/search_subjects", 503, Vec::new());
         let _guard = stub.install();
         let runtime = Runtime::new();
-        let config = ListConfig { source: "subjects_json".into(), ..ListConfig::default() };
-        assert_eq!(runtime.fetch_subjects_json(&config).unwrap_err().to_string(), "HTTP 503");
+        let config = ListConfig {
+            source: "subjects_json".into(),
+            ..ListConfig::default()
+        };
+        assert_eq!(
+            runtime
+                .fetch_subjects_json(&config)
+                .unwrap_err()
+                .to_string(),
+            "HTTP 503"
+        );
 
         let stub2 = ScriptedHttp::new();
         stub2.route("/j/search_subjects", 200, b"<html>not json</html>".to_vec());
         let _guard2 = stub2.install();
-        let err = runtime.fetch_subjects_json(&config).unwrap_err().to_string();
+        let err = runtime
+            .fetch_subjects_json(&config)
+            .unwrap_err()
+            .to_string();
         assert!(err.starts_with("响应解析失败: "), "实际: {err}");
     }
 
@@ -949,7 +1019,11 @@ mod tests {
     #[test]
     fn fetch_coming_parses_real_page() {
         let stub = ScriptedHttp::new();
-        stub.route("https://movie.douban.com/cinema/later/", 200, COMING_HTML.to_vec());
+        stub.route(
+            "https://movie.douban.com/cinema/later/",
+            200,
+            COMING_HTML.to_vec(),
+        );
         let _guard = stub.install();
 
         let runtime = Runtime::new();
@@ -983,7 +1057,10 @@ mod tests {
         // 只发一次请求(HTML 页面), 且带防盗链头
         assert_eq!(stub.requests().len(), 1);
         assert_eq!(
-            stub.requests()[0].headers.get("referer").map(String::as_str),
+            stub.requests()[0]
+                .headers
+                .get("referer")
+                .map(String::as_str),
             Some("https://movie.douban.com/")
         );
         assert_eq!(
@@ -999,8 +1076,16 @@ mod tests {
         let _guard = stub.install();
         let runtime = Runtime::new();
         assert_eq!(runtime.fetch_coming(2).expect("抓取成功").len(), 2);
-        assert_eq!(runtime.fetch_coming(0).expect("抓取成功").len(), 1, "Go 是 append 后再比 len >= limit");
-        assert_eq!(runtime.fetch_coming(-1).expect("抓取成功").len(), 1, "负数 limit 不能 panic");
+        assert_eq!(
+            runtime.fetch_coming(0).expect("抓取成功").len(),
+            1,
+            "Go 是 append 后再比 len >= limit"
+        );
+        assert_eq!(
+            runtime.fetch_coming(-1).expect("抓取成功").len(),
+            1,
+            "负数 limit 不能 panic"
+        );
 
         // 重复 id 只留一条(Go 的 seen 去重); 手工最小片段(标签形态照抄真实页面的
         // 每个 item 都是 `<div class="item mod...">…</div></div>`)。
@@ -1065,7 +1150,11 @@ mod tests {
         assert_eq!(items[9].douban_ref, "db:subj:37002986");
 
         // 前台不补海报: 只发一次页面请求
-        assert_eq!(stub.requests().len(), 1, "deep_refresh=false 不该有海报查询");
+        assert_eq!(
+            stub.requests().len(),
+            1,
+            "deep_refresh=false 不该有海报查询"
+        );
     }
 
     /// 后台(deep_refresh)只为前 `POSTER_LOOKUP_LIMIT` 条补海报(Go `main.go:749`)。
@@ -1085,14 +1174,27 @@ mod tests {
         assert!(items.iter().all(|item| item.poster_url.is_empty()));
 
         let urls: Vec<String> = stub.requests().iter().map(|r| r.path.clone()).collect();
-        let suggest_calls = urls.iter().filter(|url| url.contains("/j/subject_suggest")).count();
-        let rexxar_calls = urls.iter().filter(|url| url.contains("/rexxar/api/v2/movie/")).count();
+        let suggest_calls = urls
+            .iter()
+            .filter(|url| url.contains("/j/subject_suggest"))
+            .count();
+        let rexxar_calls = urls
+            .iter()
+            .filter(|url| url.contains("/rexxar/api/v2/movie/"))
+            .count();
         assert_eq!(suggest_calls, POSTER_LOOKUP_LIMIT);
-        assert_eq!(rexxar_calls, POSTER_LOOKUP_LIMIT, "suggest 失败后回退 rexxar");
+        assert_eq!(
+            rexxar_calls, POSTER_LOOKUP_LIMIT,
+            "suggest 失败后回退 rexxar"
+        );
         assert_eq!(urls.len(), 1 + POSTER_LOOKUP_LIMIT * 2);
         // 只问前 8 条(按标题查, 校验 id 一致)
         assert!(urls[1].starts_with("https://movie.douban.com/j/subject_suggest?q="));
-        assert!(urls[1].contains("%E7%BD%97%E6%96%AF"), "第一条是《罗斯》: {}", urls[1]);
+        assert!(
+            urls[1].contains("%E7%BD%97%E6%96%AF"),
+            "第一条是《罗斯》: {}",
+            urls[1]
+        );
         assert!(urls[2].ends_with("/rexxar/api/v2/movie/35322132"));
     }
 
@@ -1127,10 +1229,17 @@ mod tests {
         let _guard = stub.install();
         let runtime = Runtime::new();
 
-        let chart = ListConfig { source: "chart_html".into(), limit: 3, ..ListConfig::default() };
+        let chart = ListConfig {
+            source: "chart_html".into(),
+            limit: 3,
+            ..ListConfig::default()
+        };
         assert_eq!(runtime.fetch_list("movie_wom", &chart).unwrap().len(), 3);
 
-        let unknown = ListConfig { source: "rss_xml".into(), ..ListConfig::default() };
+        let unknown = ListConfig {
+            source: "rss_xml".into(),
+            ..ListConfig::default()
+        };
         let err = runtime.fetch_list("x", &unknown).unwrap_err().to_string();
         assert_eq!(err, "未知榜单来源 \"rss_xml\"");
 
@@ -1147,21 +1256,52 @@ mod tests {
         let mut lists = BTreeMap::new();
         lists.insert(
             "upcoming".to_string(),
-            ListConfig { source: "coming_html".into(), kind: "movie".into(), limit: 20, enabled: true, ..ListConfig::default() },
+            ListConfig {
+                source: "coming_html".into(),
+                kind: "movie".into(),
+                limit: 20,
+                enabled: true,
+                ..ListConfig::default()
+            },
         );
         lists.insert(
             "movie_wom".to_string(),
-            ListConfig { source: "chart_html".into(), kind: "movie".into(), limit: 20, enabled: true, ..ListConfig::default() },
+            ListConfig {
+                source: "chart_html".into(),
+                kind: "movie".into(),
+                limit: 20,
+                enabled: true,
+                ..ListConfig::default()
+            },
         );
         lists.insert(
             "hot".to_string(),
-            ListConfig { source: "subjects_json".into(), kind: "movie".into(), tag: "热门".into(), sort: "recommend".into(), limit: 30, enabled: true, ..ListConfig::default() },
+            ListConfig {
+                source: "subjects_json".into(),
+                kind: "movie".into(),
+                tag: "热门".into(),
+                sort: "recommend".into(),
+                limit: 30,
+                enabled: true,
+                ..ListConfig::default()
+            },
         );
         lists.insert(
             "off".to_string(),
-            ListConfig { source: "subjects_json".into(), kind: "tv".into(), tag: "国产剧".into(), enabled: false, ..ListConfig::default() },
+            ListConfig {
+                source: "subjects_json".into(),
+                kind: "tv".into(),
+                tag: "国产剧".into(),
+                enabled: false,
+                ..ListConfig::default()
+            },
         );
-        Settings { lists: Some(lists), observe_period_hours: 24, max_logs: 200, ..Settings::default() }
+        Settings {
+            lists: Some(lists),
+            observe_period_hours: 24,
+            max_logs: 200,
+            ..Settings::default()
+        }
     }
 
     /// Go: 按 `sourceCost` 稳定排序, 便宜的 JSON 榜单先抓; 未启用的不抓。
@@ -1189,7 +1329,10 @@ mod tests {
         assert!(urls[0].starts_with("https://movie.douban.com/j/search_subjects?"));
         assert!(urls[1].starts_with("https://movie.douban.com/chart"));
         assert!(urls[2].starts_with("https://movie.douban.com/cinema/later/"));
-        assert!(!urls.iter().any(|url| url.contains("type=tv")), "禁用的榜单不能被请求");
+        assert!(
+            !urls.iter().any(|url| url.contains("type=tv")),
+            "禁用的榜单不能被请求"
+        );
 
         // 日志: 每个榜单两条(开始 / 抓到 N 条)
         let logs = runtime.logs.clone().unwrap_or_default();
@@ -1222,7 +1365,10 @@ mod tests {
 
         let logs = runtime.logs.clone().unwrap_or_default();
         let messages: Vec<&str> = logs.iter().map(|entry| entry.message.as_str()).collect();
-        assert_eq!(messages[2], "本次已用 7 秒, 跳过剩余榜单(下轮自动刷新会补齐)");
+        assert_eq!(
+            messages[2],
+            "本次已用 7 秒, 跳过剩余榜单(下轮自动刷新会补齐)"
+        );
         assert_eq!(logs[2].level, "warning");
 
         // 后台预算 8 分钟: 同样的 7 秒不触发跳过
@@ -1254,7 +1400,10 @@ mod tests {
         let results = runtime.fetch_enabled_lists(&refresh_settings(), ACTION_BUDGET_MS);
         assert_eq!(results.len(), 3, "单榜失败不打断其余榜单");
         assert!(results[0].items.is_err());
-        assert_eq!(results[0].items.as_ref().unwrap_err().to_string(), "HTTP 500");
+        assert_eq!(
+            results[0].items.as_ref().unwrap_err().to_string(),
+            "HTTP 500"
+        );
         assert!(results[1].items.is_ok());
         let logs = runtime.logs.clone().unwrap_or_default();
         assert_eq!(logs[1].message, "榜单 hot 抓取失败: HTTP 500");
@@ -1334,7 +1483,10 @@ mod tests {
             .expect("夹具里 upcoming 至少 2 条");
         runtime.snapshot = Snapshot {
             fetched_at: snapshot.fetched_at.clone(),
-            lists: Some(BTreeMap::from([(list_upcoming().to_string(), upcoming.clone())])),
+            lists: Some(BTreeMap::from([(
+                list_upcoming().to_string(),
+                upcoming.clone(),
+            )])),
         };
         runtime.queue = crate::model::Queue::EMPTY;
         // 第 2 条当作"历史上已成功订阅过"(第 1 条留给黑名单用例)
@@ -1354,14 +1506,33 @@ mod tests {
         runtime.filter_and_enqueue(&snapshot, &settings);
 
         let queued = runtime.queue.items.clone().unwrap_or_default();
-        assert_eq!(queued.len(), items.len() - 2, "去掉黑名单命中与已订阅各 1 条");
+        assert_eq!(
+            queued.len(),
+            items.len() - 2,
+            "去掉黑名单命中与已订阅各 1 条"
+        );
         assert!(queued.iter().all(|item| item.state == "observing"));
         assert!(queued.iter().all(|item| item.list == "upcoming"));
-        assert!(queued.iter().all(|item| item.due_at == "2026-09-30T10:00:09Z"), "due = now + 24h");
-        assert!(queued.iter().all(|item| item.entered_at == "2026-09-29T10:00:09Z"));
+        assert!(
+            queued
+                .iter()
+                .all(|item| item.due_at == "2026-09-30T10:00:09Z"),
+            "due = now + 24h"
+        );
+        assert!(queued
+            .iter()
+            .all(|item| item.entered_at == "2026-09-29T10:00:09Z"));
         assert!(queued.iter().all(|item| item.attempt == 0));
-        assert!(!queued.iter().any(|item| item.douban_ref == subscribed_ref), "历史成功订阅过的要跳过");
-        assert!(!queued.iter().any(|item| item.douban_ref == "db:subj:36828393"), "黑名单命中的不入队");
+        assert!(
+            !queued.iter().any(|item| item.douban_ref == subscribed_ref),
+            "历史成功订阅过的要跳过"
+        );
+        assert!(
+            !queued
+                .iter()
+                .any(|item| item.douban_ref == "db:subj:36828393"),
+            "黑名单命中的不入队"
+        );
         assert_eq!(runtime.black_state.hits, 1);
     }
 
@@ -1378,9 +1549,18 @@ mod tests {
             ..ChartItem::default()
         };
         // 空关键词不参与命中(Go: `kw != "" && ...`)
-        runtime.check_item(&item, "hot", &["".to_string(), "动物".to_string()], &mut hits);
+        runtime.check_item(
+            &item,
+            "hot",
+            &["".to_string(), "动物".to_string()],
+            &mut hits,
+        );
         assert_eq!(hits.get("疯狂动物城2").map(String::as_str), Some("动物"));
-        assert_eq!(runtime.queue.items.as_ref().map_or(0, Vec::len), 0, "命中黑名单不入队");
+        assert_eq!(
+            runtime.queue.items.as_ref().map_or(0, Vec::len),
+            0,
+            "命中黑名单不入队"
+        );
 
         // 未命中 → 入队; observe_period_hours = 0 → Go 按 24 小时
         let mut hits2 = BTreeMap::new();
@@ -1411,15 +1591,27 @@ mod tests {
             })
             .collect();
         lists.insert("hot".to_string(), Some(items));
-        runtime.snapshot = Snapshot { fetched_at: clock::now_rfc3339(), lists: Some(lists.clone()) };
+        runtime.snapshot = Snapshot {
+            fetched_at: clock::now_rfc3339(),
+            lists: Some(lists.clone()),
+        };
         runtime.queue = crate::model::Queue::EMPTY;
-        let snapshot = Snapshot { fetched_at: clock::now_rfc3339(), lists: Some(lists) };
-        let settings = Settings { blacklist: Some(vec!["黑片".to_string()]), ..Settings::default() };
+        let snapshot = Snapshot {
+            fetched_at: clock::now_rfc3339(),
+            lists: Some(lists),
+        };
+        let settings = Settings {
+            blacklist: Some(vec!["黑片".to_string()]),
+            ..Settings::default()
+        };
 
         runtime.filter_and_enqueue(&snapshot, &settings);
         assert_eq!(runtime.black_state.hits, 25);
         assert_eq!(runtime.black_state.recent.as_ref().map_or(0, Vec::len), 20);
-        assert_eq!(runtime.black_state.hits, 25, "hits 是命中条数, 不受 recent 截断影响");
+        assert_eq!(
+            runtime.black_state.hits, 25,
+            "hits 是命中条数, 不受 recent 截断影响"
+        );
         // 全部命中黑名单 → 一条都不入队
         assert_eq!(runtime.queue.items.as_ref().map_or(0, Vec::len), 0);
     }
@@ -1448,9 +1640,27 @@ mod tests {
         // 1. 快照: 3 个启用的榜单(未启用的 off 不出现), 条目数与真实夹具一致
         let lists = runtime.snapshot.lists.clone().expect("lists 非空");
         assert_eq!(lists.len(), 3);
-        assert_eq!(lists.get("hot").and_then(|items| items.as_ref()).map(Vec::len), Some(6));
-        assert_eq!(lists.get("movie_wom").and_then(|items| items.as_ref()).map(Vec::len), Some(10));
-        assert_eq!(lists.get("upcoming").and_then(|items| items.as_ref()).map(Vec::len), Some(6));
+        assert_eq!(
+            lists
+                .get("hot")
+                .and_then(|items| items.as_ref())
+                .map(Vec::len),
+            Some(6)
+        );
+        assert_eq!(
+            lists
+                .get("movie_wom")
+                .and_then(|items| items.as_ref())
+                .map(Vec::len),
+            Some(10)
+        );
+        assert_eq!(
+            lists
+                .get("upcoming")
+                .and_then(|items| items.as_ref())
+                .map(Vec::len),
+            Some(6)
+        );
         assert!(!lists.contains_key("off"), "禁用的榜单不进快照");
         assert_eq!(runtime.snapshot.fetched_at, clock::rfc3339(FIXED_NOW));
         assert_eq!(runtime.last_run, clock::rfc3339(FIXED_NOW));
@@ -1458,12 +1668,21 @@ mod tests {
         // 2. 入队: 22 条抓取结果里有 2 条与更早的榜单同 ref(hot 与 movie_wom 都有
         //    35322132/36801617) → `check_item` 按 ref 去重, 实际入队 20 条。
         let queued = runtime.queue.items.clone().unwrap_or_default();
-        assert_eq!(queued.len(), 20, "Go 的 checkItem 按 douban_ref 去重, 跨榜单也算");
+        assert_eq!(
+            queued.len(),
+            20,
+            "Go 的 checkItem 按 douban_ref 去重, 跨榜单也算"
+        );
         let refs: BTreeSet<&str> = queued.iter().map(|item| item.douban_ref.as_str()).collect();
         assert_eq!(refs.len(), 20, "队列里不能有重复 ref");
         assert!(queued.iter().all(|item| item.state == "observing"));
         assert!(queued.iter().all(|item| item.attempt == 0));
-        assert!(queued.iter().all(|item| item.due_at == "2026-09-30T10:00:09Z"), "due = now + 24h");
+        assert!(
+            queued
+                .iter()
+                .all(|item| item.due_at == "2026-09-30T10:00:09Z"),
+            "due = now + 24h"
+        );
         // Go 的遍历顺序: 先 upcoming, 再其余榜单(这里按榜单键字典序), 队尾是 movie_wom
         assert_eq!(queued[0].list, "upcoming");
         assert_eq!(queued[0].douban_ref, "db:subj:36828393");
@@ -1484,9 +1703,15 @@ mod tests {
             .filter(|request| request.method == "GET" && request.path.starts_with("https://"))
             .collect();
         assert_eq!(page_gets.len(), 3, "实际: {page_gets:?}");
-        assert!(page_gets[0].path.starts_with("https://movie.douban.com/j/search_subjects?"));
-        assert!(page_gets[1].path.starts_with("https://movie.douban.com/chart"));
-        assert!(page_gets[2].path.starts_with("https://movie.douban.com/cinema/later/"));
+        assert!(page_gets[0]
+            .path
+            .starts_with("https://movie.douban.com/j/search_subjects?"));
+        assert!(page_gets[1]
+            .path
+            .starts_with("https://movie.douban.com/chart"));
+        assert!(page_gets[2]
+            .path
+            .starts_with("https://movie.douban.com/cinema/later/"));
         assert!(page_gets.iter().all(|request| {
             request.headers.get("referer").map(String::as_str) == Some("https://movie.douban.com/")
                 && request.headers.get("user-agent").map(String::as_str) == Some(BROWSER_USER_AGENT)
@@ -1505,13 +1730,26 @@ mod tests {
         for key in ["zz_wom", "aa_wom", "mm_wom"] {
             lists.insert(
                 key.to_string(),
-                ListConfig { source: "subjects_json".into(), kind: "movie".into(), limit: 1, enabled: true, ..ListConfig::default() },
+                ListConfig {
+                    source: "subjects_json".into(),
+                    kind: "movie".into(),
+                    limit: 1,
+                    enabled: true,
+                    ..ListConfig::default()
+                },
             );
         }
-        let settings = Settings { lists: Some(lists), ..Settings::default() };
+        let settings = Settings {
+            lists: Some(lists),
+            ..Settings::default()
+        };
 
         let results = runtime.fetch_enabled_lists(&settings, ACTION_BUDGET_MS);
         let keys: Vec<&str> = results.iter().map(|result| result.key.as_str()).collect();
-        assert_eq!(keys, vec!["aa_wom", "mm_wom", "zz_wom"], "同成本时按键序, 结果可复现");
+        assert_eq!(
+            keys,
+            vec!["aa_wom", "mm_wom", "zz_wom"],
+            "同成本时按键序, 结果可复现"
+        );
     }
 }

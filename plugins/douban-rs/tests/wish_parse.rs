@@ -40,10 +40,22 @@ fn movie_fixture_maps_every_entry() {
     assert_eq!(items[0].title, "奥德赛");
     assert_eq!(items[0].year, "2026");
     assert_eq!(items[0].kind, "movie");
-    assert!(items[0].poster_url.starts_with("https://img"), "{}", items[0].poster_url);
+    assert!(
+        items[0].poster_url.starts_with("https://img"),
+        "{}",
+        items[0].poster_url
+    );
     assert!(items[2].poster_url.starts_with("https://img"));
     // `added_at` 由调用方(runtime)补时间戳, 纯函数不填
     assert!(items.iter().all(|item| item.added_at.is_empty()));
+    // [功能2/3] 评分补提取: `subject.rating.value` → `WishItem::rating`
+    // (三条实测值, 见 fixtures/README.md; `rating: null` 的形态由 tv 样本与最小样本覆盖)
+    let ratings: Vec<f64> = items.iter().map(|item| item.rating).collect();
+    assert_eq!(
+        ratings,
+        vec![8.6, 8.7, 5.8],
+        "评分必须来自 subject.rating.value"
+    );
 }
 
 #[test]
@@ -58,9 +70,33 @@ fn tv_fixture_filters_out_non_video_entries() {
         !items.iter().any(|item| item.douban_ref == "26968034"),
         "书目不得进订阅列表(拿去 TMDB 匹配会订阅到同名电影)"
     );
-    assert!(items.iter().all(|item| item.kind == "movie" || item.kind == "tv"));
+    assert!(items
+        .iter()
+        .all(|item| item.kind == "movie" || item.kind == "tv"));
     // `type=tv` 的响应里混着 movie: 既有的 kind 原样保留, 不按查询类型改写
     assert_eq!(items[0].kind, "movie");
+}
+
+/// [功能2/3] `rating` 缺失/`null` → `0.0`(= 未知, [`WishItem::rating`] 的 omitempty 形态):
+/// tv 夹具里的 4 条实测**都带** `rating`(连那条书也有 8.5), `null`/缺失的形态
+/// 这里用单独构造的最小样本钉住。
+#[test]
+fn missing_or_null_rating_maps_to_zero() {
+    let parsed: InterestsResponse = plugin::model::decode(
+        // 字节串字面量只收 ASCII, 样本里是中文标题 → 用 &str 再 as_bytes
+        r#"{"interests":[
+            {"subject":{"id":"1","title":"无评分","year":"2024","type":"movie","rating":null}},
+            {"subject":{"id":"2","title":"缺评分","year":"2025","type":"movie"}}],
+            "total":2}"#
+            .as_bytes(),
+    )
+    .expect("null/缺失的 rating 都必须能解");
+    let items = wish_items_from_interests(&parsed.interests);
+    assert_eq!(items.len(), 2);
+    assert!(
+        items.iter().all(|item| item.rating == 0.0),
+        "null/缺失 → 0.0"
+    );
 }
 
 /// 真实样本里 `year` 键**缺失**(那条 book), 未知字段的 `null`(rating/release_date)
@@ -85,7 +121,8 @@ fn missing_year_decodes_to_zero_and_null_needs_go_style_decode() {
         serde_json::from_slice::<InterestsResponse>(minimal).is_err(),
         "serde 对建模字段上的 null 是严格的(与 Go 不同)"
     );
-    let parsed: InterestsResponse = plugin::model::decode(minimal).expect("model::decode 走 null → 零值");
+    let parsed: InterestsResponse =
+        plugin::model::decode(minimal).expect("model::decode 走 null → 零值");
     assert_eq!(parsed.interests[0].subject.year, "");
     assert_eq!(parsed.interests[0].subject.id.as_str(), "1");
 }
@@ -140,12 +177,23 @@ fn request_constants_match_the_mobile_endpoint() {
 #[test]
 fn manual_cookie_parsing_cases() {
     let (header, uid) = parse_manual_cookie("  dbcl2=123456789:tok; ck=abc  ");
-    assert_eq!(header, "dbcl2=123456789:tok; ck=abc", "header 是 trim 后的整段原文");
+    assert_eq!(
+        header, "dbcl2=123456789:tok; ck=abc",
+        "header 是 trim 后的整段原文"
+    );
     assert_eq!(uid, "123456789");
 
-    assert_eq!(parse_manual_cookie("dbcl2=999").1, "999", "没有冒号时 uid 就是整段");
+    assert_eq!(
+        parse_manual_cookie("dbcl2=999").1,
+        "999",
+        "没有冒号时 uid 就是整段"
+    );
     for invalid in ["", "no-equals", "ck=abc", "123456789:tok", "dbcl2=;ck=x"] {
-        assert_eq!(parse_manual_cookie(invalid), (String::new(), String::new()), "{invalid:?}");
+        assert_eq!(
+            parse_manual_cookie(invalid),
+            (String::new(), String::new()),
+            "{invalid:?}"
+        );
     }
 }
 
@@ -165,7 +213,10 @@ fn cookie_cache_ttl_is_45_minutes() {
 
     assert!(cookie_cache_fresh(&at(0)), "刚取到的缓存必须新鲜");
     assert!(cookie_cache_fresh(&at(44)), "44 分钟内必须新鲜");
-    assert!(!cookie_cache_fresh(&at(45)), "45 分钟整已过期(Go 是严格小于)");
+    assert!(
+        !cookie_cache_fresh(&at(45)),
+        "45 分钟整已过期(Go 是严格小于)"
+    );
     assert!(!cookie_cache_fresh(&at(60)));
 
     // 配置变更作废缓存的效果: 空缓存(全零字段)永远不新鲜

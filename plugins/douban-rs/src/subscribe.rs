@@ -10,6 +10,31 @@
 //! `store.rs`、`model.rs`、`raw.rs`、`util.rs`、`clock.rs`、`Cargo.toml`。
 //! 另外两路的名下文件: 路 1 = `charts.rs` + `poster.rs`, 路 2 = `cookiecloud.rs` + `wish.rs`。
 //!
+//! # 第二轮(rs-0.2.0): 两路并行时本文件的共享面(冻结, 互不重叠)
+//!
+//! 本文件是功能 1 与功能 2/3 两路**唯一共享**的文件, 但两路各占一条线, 合并无需解冲突:
+//!
+//! | 路 | 只动这里 | 加的标记 |
+//! |----|----------|----------|
+//! | 功能 1(TMDB 匹配增强) | [`Runtime::subscribe_queue_item`] 与 [`Runtime::subscribe_from_snapshot`] 里 `tmdb_search → match_tmdb → 阈值判定` 的**函数体** | `// [功能1]` |
+//! | 功能 2/3(过滤器 + 墓碑集) | **订阅入口**的前置守卫调用(见下表), 以及 [`Runtime::process_due`] 保留循环里对 `filtered`/`no_resub` 终态的 `keep` | `// [功能2/3]` |
+//!
+//! 两路都**不改**本文件的任何签名、不加减参数; 功能 1 的实现全部在
+//! [`crate::subject`](`rexxar_subject_detail` + 回退候选顺序), 功能 2/3 的实现全部在
+//! [`crate::filter`](`can_subscribe` / `no_resub_guard` / 墓碑读写)。
+//!
+//! ## 功能 2/3 的入口守卫(冻结的调用矩阵)
+//!
+//! | 本文件里的入口 | 触发 | 过滤 | 墓碑 | 备注 |
+//! |----------------|------|------|------|------|
+//! | [`Runtime::process_due`](chart 到期 / wish 到期) | 自动 | ✔ | ✔ 拦截 | 被拦条目 `state = filtered` / `no_resub`, 终态保留 |
+//! | [`Runtime::subscribe_queue_now`](action `subscribe-now`) | 手动 | ✔ | ✘ 不拦 | 响应里带 [`crate::filter::NO_RESUB_CONFIRM_TEXT`] |
+//! | [`Runtime::subscribe_from_snapshot`](action `subscribe`) | 手动 | ✘ | ✘ 不拦 | 仅带确认文案 |
+//! | `wish.rs::sync_wish_list` 内联订阅(路 2/3 名下) | 自动 | ✔ | ✔ 拦截 | 不经过本文件 |
+//!
+//! `needs_review` 与 `filtered` 的分工: **过滤/墓碑是明确判定, 不是"需要人看"** ——
+//! 两者都不再进 `needs_review`, 避免把"用户设定的过滤器起了作用"报成故障。
+//!
 //! # 已冻结的调用点
 //!
 //! - `runtime.rs::action` 的 `subscribe` → [`Runtime::subscribe_from_snapshot`];
@@ -147,6 +172,18 @@ pub struct PoolIntentListResult {
     pub data: Vec<PoolIntentEntry>,
 }
 
+/// 宿主订阅池列表查询的单次条数上限(Go `main.go:960` 同款 `?limit=200`)。
+///
+/// 墓碑判定([`crate::filter::Runtime::resolve_no_resub_from_history`])依赖该查询的
+/// **完整性**: 返回条数达到上限时无法证明"池里真的没有", 必须跳过判定(宁可漏判
+/// 不可误判), 否则第 201 条起的订阅会被误写成持久墓碑。
+pub(crate) const HOST_POOL_INTENTS_LIMIT: usize = 200;
+
+/// `GET /api/subscribe/pool/intents?limit=<上限>` 的请求路径(两处调用共用, 防 drift)。
+pub(crate) fn pool_intents_path() -> String {
+    format!("/api/subscribe/pool/intents?limit={HOST_POOL_INTENTS_LIMIT}")
+}
+
 /// 已有订阅条目(Go `main.go:950` 的匿名结构)。
 #[derive(Debug, Clone, Default, serde::Deserialize)]
 #[serde(default)]
@@ -205,7 +242,9 @@ pub fn match_tmdb(res: Option<&TmdbSearchResult>, query: &str, want_type: &str) 
             if title == q {
                 score += 0.7;
                 matched = true;
-            } else if !title.is_empty() && (title.contains(q.as_str()) || q.contains(title.as_str())) {
+            } else if !title.is_empty()
+                && (title.contains(q.as_str()) || q.contains(title.as_str()))
+            {
                 score += 0.4;
                 matched = true;
             }
@@ -278,7 +317,10 @@ impl Runtime {
             Err(err) => return Err(OpError::new(err.0)),
         };
         if response.status >= 400 {
-            return Err(OpError::new(format!("TMDB 搜索失败 HTTP {}", response.status)));
+            return Err(OpError::new(format!(
+                "TMDB 搜索失败 HTTP {}",
+                response.status
+            )));
         }
         let body = match store::decode_body(&response) {
             Ok(body) => body,
@@ -296,10 +338,82 @@ impl Runtime {
         }
     }
 
+    // ─────────────────────── [功能1] 匹配增强 ───────────────────────
+
+    /// [功能1] 匹配增强的唯一新入口: 标题直配失败时用豆瓣详情回退重搜。
+    ///
+    /// 契约(骨架注释原样保留, 括号内为落地说明):
+    /// - 入参 `query` 是豆瓣标题(与现在的直配一致), `douban_ref` 用于取 rexxar 详情
+    ///   (两种形态都收: `db:subj:36808876` / `36808876`, 取末段数字);
+    /// - 返回 `(best, confidence, fallback_hit)`:
+    ///   - 直配成功 → `(item, conf, None)`;
+    ///   - 回退命中 → `(item, conf, Some(命中的候选名))`, 调用方记回退日志后照常走
+    ///     `do_subscribe`(命中不再是 `needs_review`);
+    ///   - 回退也失败 → `(直配的 best, conf, None)`(不吞直配结果, 不新增错误分支);
+    /// - `tmdb_search` 的 Err 原样上抛(直配那一次的失败语义不变, 回退期间的 Err 忽略);
+    /// - 回退候选与判定阈值: [`crate::subject::SubjectDetail::fallback_titles`] +
+    ///   [`CONFIDENCE_THRESHOLD`], 每个候选一次 `tmdb_search` + 一次 [`match_tmdb`],
+    ///   取置信度最高者; `want_type` 仍传空串(与现有直配一致, 不计 media_type 加分)。
+    ///
+    /// 落地取舍(已在 deviations 记录):
+    /// - **匹配查询用候选名本身**(契约 ② 的 "或候选名"): 搜什么就拿什么评分, 才能验证
+    ///   这次搜索真的命中了该候选 —— 用豆瓣标题评分会让 aka 回退形同虚设(豆瓣标题
+    ///   直配已经失败过一次)。
+    /// - **`kind` 透传给 rexxar**(评审修复: 原先固定传空串 → 一律按 `movie` 路径取,
+    ///   而 rexxar 对 `movie/<剧id>` 实测回 301, 剧集条目详情恒为 `None`, 全部享受
+    ///   不到原名/aka 回退): 调用方传条目已知的类型(`QueueItem::media_type`, 入队时
+    ///   由 wish 条目的 `type` / 榜单配置的 `kind` 填上; 快照订阅按榜单配置查);
+    ///   传空串/未知值时 [`crate::subject::Runtime::rexxar_subject_detail`] 按
+    ///   `movie` 取, 与旧行为一致。
+    pub fn match_tmdb_with_detail_fallback(
+        &self,
+        query: &str,
+        douban_ref: &str,
+        kind: &str,
+    ) -> Result<(TmdbItem, f64, Option<String>), OpError> {
+        // 直配: 与既有路径逐字一致(want_type 空串); Err 原样上抛
+        let res = self.tmdb_search(query)?;
+        let (best, confidence) = match_tmdb(Some(&res), query, "");
+        if confidence >= CONFIDENCE_THRESHOLD && best.id != 0 {
+            return Ok((best, confidence, None));
+        }
+        // 失配 → rexxar 详情回退。取不到数字 id / 详情没取到 / 没有可用候选 →
+        // 保持直配结果(不吞直配结果, 不重复搜原标题)。
+        let subject_id = crate::subject::douban_subject_id(douban_ref);
+        if subject_id.is_empty() {
+            return Ok((best, confidence, None));
+        }
+        let Some(detail) = self.rexxar_subject_detail(kind, &subject_id) else {
+            return Ok((best, confidence, None));
+        };
+        // 候选顺序 original_title → aka(去空去重), 每个候选一次完整搜索 + 评估;
+        // 单个候选失败(host.call 失败 / HTTP >= 400)不阻断, 继续下一个。
+        let mut hit: Option<(TmdbItem, f64, String)> = None;
+        for candidate in detail.fallback_titles() {
+            let Ok(candidate_res) = self.tmdb_search(&candidate) else {
+                continue;
+            };
+            let (item, candidate_confidence) = match_tmdb(Some(&candidate_res), &candidate, "");
+            if candidate_confidence < CONFIDENCE_THRESHOLD || item.id == 0 {
+                continue;
+            }
+            let better = hit.as_ref().map_or(true, |(_, best_confidence, _)| {
+                candidate_confidence > *best_confidence
+            });
+            if better {
+                hit = Some((item, candidate_confidence, candidate));
+            }
+        }
+        Ok(match hit {
+            Some((item, hit_confidence, candidate)) => (item, hit_confidence, Some(candidate)),
+            None => (best, confidence, None),
+        })
+    }
+
     /// Go `main.go:959` `hostIntentExists`: 宿主是否已有同 `(tmdb_id, media_type)` 的聚合
     /// 订阅。任何失败(host 错误 / HTTP >= 400 / 解析失败)都返回 `(false, 0)`。
     pub fn host_intent_exists(&self, tmdb_id: i64, media_type: &str) -> (bool, i64) {
-        let request = HostCallRequest::new("GET", "/api/subscribe/pool/intents?limit=200")
+        let request = HostCallRequest::new("GET", &pool_intents_path())
             .with_header("accept", "application/json");
         let response = match host::call(&request) {
             Ok(response) => response,
@@ -317,7 +431,8 @@ impl Runtime {
             None => return (false, 0),
         };
         for entry in &out.data {
-            if entry.tmdb_id == tmdb_id && (media_type.is_empty() || entry.media_type == media_type) {
+            if entry.tmdb_id == tmdb_id && (media_type.is_empty() || entry.media_type == media_type)
+            {
                 return (true, entry.id);
             }
         }
@@ -343,7 +458,11 @@ impl Runtime {
         if item.id == 0 {
             return Err(OpError::new("TMDB 条目无效"));
         }
-        let season = if item.media_type == "movie" || want_type == "movie" { 0 } else { 1 };
+        let season = if item.media_type == "movie" || want_type == "movie" {
+            0
+        } else {
+            1
+        };
         let mut body = PoolIntentCreateRequest {
             tmdb_id: item.id,
             media_type: item.media_type.clone(),
@@ -353,7 +472,11 @@ impl Runtime {
             poster_path: item.poster_path.clone(),
             backdrop_path: item.backdrop_path.clone(),
             // Go: EnabledSources: r.settings.SubscribeSources(omitempty: nil 与空都省略)
-            enabled_sources: self.settings.subscribe_source_filter.clone().unwrap_or_default(),
+            enabled_sources: self
+                .settings
+                .subscribe_source_filter
+                .clone()
+                .unwrap_or_default(),
             episode_scope_mode: "follow".to_string(),
         };
         if body.media_type.is_empty() {
@@ -376,7 +499,10 @@ impl Runtime {
             Err(err) => return Err(OpError::new(err.0)),
         };
         if response.status >= 400 {
-            return Err(OpError::new(format!("创建订阅失败 HTTP {}", response.status)));
+            return Err(OpError::new(format!(
+                "创建订阅失败 HTTP {}",
+                response.status
+            )));
         }
         let body = match store::decode_body(&response) {
             Ok(body) => body,
@@ -393,7 +519,10 @@ impl Runtime {
         };
         if out.code != "ok" {
             // Go 的 `%q`: 字符串按 Go 字面量转义(等价于 Rust 的 `{:?}`)
-            return Err(OpError::new(format!("创建订阅返回异常 code={:?}", out.code)));
+            return Err(OpError::new(format!(
+                "创建订阅返回异常 code={:?}",
+                out.code
+            )));
         }
         Ok(out.data.id)
     }
@@ -411,7 +540,12 @@ impl Runtime {
         let mut keep: Vec<QueueItem> = Vec::new();
         let mut due: Vec<QueueItem> = Vec::new();
         for item in self.queue.items.take().unwrap_or_default() {
-            if item.state == "needs_review" {
+            // [功能2/3] 被过滤 / 被墓碑拦下的条目是**终态**, 与本分支同样直接保留,
+            //   不要掉进下面的到期判定(否则每轮 wish-sync 都会重新订阅/重新计数)。
+            if item.state == "needs_review"
+                || item.state == crate::filter::FILTERED_QUEUE_STATE
+                || item.state == crate::filter::NO_RESUB_QUEUE_STATE
+            {
                 keep.push(item);
                 continue;
             }
@@ -428,7 +562,42 @@ impl Runtime {
         let mut subscribed: i64 = 0;
         let mut needs_review: i64 = 0;
         for q in due {
-            let (status, _intent_id, message) = self.subscribe_queue_item(invocation_id, &q, settings);
+            // [功能2/3] 自动路径的两道前置守卫(顺序固定: 墓碑先于过滤):
+            //   ① `self.no_resub_guard(&cand)` → `Some(message)` 时把该条目标成
+            //      `crate::filter::NO_RESUB_QUEUE_STATE` 后 `keep.push`, `continue`(永不重订);
+            //   ② `self.can_subscribe(&cand)` → `!allowed` 时走
+            //      `self.mark_queue_item_filtered(...)`, 同样 `keep` + `continue`。
+            //   评分来自入队时带上的 `QueueItem::rating`(chart 的 `rate`/wish 的
+            //   `subject.rating.value`, 见 `charts.rs`/`wish.rs` 的入队点);
+            //   地区判定此刻还没有 rexxar 详情(`countries = None`)→ 按 deviations 第 1 条
+            //   降级放行并记 warning。
+            let rating = crate::filter::Runtime::queue_item_rating(&q);
+            let cand = crate::filter::SubscriptionCandidate::from_queue_item(&q, rating);
+            if let Some(message) = self.no_resub_guard(&cand) {
+                let mut kept = q.clone();
+                kept.state = crate::filter::NO_RESUB_QUEUE_STATE.to_string();
+                kept.last_error = message.clone();
+                self.log("info", &message);
+                keep.push(kept);
+                continue;
+            }
+            let decision = self.can_subscribe(&cand);
+            if !decision.allowed {
+                let reason = decision.reason.clone().unwrap_or_default();
+                // 队列此刻已被 `take()` 走, 这里只落日志; 终态标在保留下来的副本上
+                self.mark_queue_item_filtered(&q.douban_ref, &reason);
+                let mut kept = q.clone();
+                kept.state = crate::filter::FILTERED_QUEUE_STATE.to_string();
+                kept.last_error = reason;
+                keep.push(kept);
+                continue;
+            }
+            if decision.region_skipped {
+                self.log("warning", &crate::filter::region_degraded_log(&q.title));
+            }
+            // [功能1] 本循环体**不动**: 匹配回退在 `subscribe_queue_item` 内部。
+            let (status, _intent_id, message) =
+                self.subscribe_queue_item(invocation_id, &q, settings);
             match status.as_str() {
                 "succeeded" => {
                     subscribed += 1;
@@ -478,14 +647,30 @@ impl Runtime {
         q: &QueueItem,
         settings: &Settings,
     ) -> (String, i64, String) {
-        let res = match self.tmdb_search(&q.title) {
-            Ok(res) => res,
-            Err(err) => {
-                return ("failed".to_string(), 0, format!("TMDB 搜索失败: {}", err.message()))
-            }
-        };
-        // Go: matchTMDB(res, q.Title, "") —— wantType 传空串(不计 media_type 加分)
-        let (item, confidence) = match_tmdb(Some(&res), &q.title, "");
+        // [功能1] 匹配增强(只改本函数体, 签名不变): 直配 + rexxar 详情回退
+        //   (original_title → aka, 取过阈值者)都在 `match_tmdb_with_detail_fallback` 里;
+        //   它的 Err 只可能是直配那次 `tmdb_search` 失败, 按原语义返回 failed。
+        //   `kind` 传队列条目入队时带上的 `media_type`(wish 条目的 `type` / 榜单配置
+        //   的 `kind`; 旧文档/未知时为空串 → 按 movie 取, 与旧行为一致)。
+        let (item, confidence, fallback_hit) =
+            match self.match_tmdb_with_detail_fallback(&q.title, &q.douban_ref, &q.media_type) {
+                Ok(out) => out,
+                Err(err) => {
+                    return (
+                        "failed".to_string(),
+                        0,
+                        format!("TMDB 搜索失败: {}", err.message()),
+                    )
+                }
+            };
+        // [功能1] 回退命中: 记一条回退日志(含候选名)后照常走 do_subscribe ——
+        //   命中回退不再是 needs_review; 未命中时 message 保持 `TMDB 匹配置信不足 ({:.2})`。
+        if let Some(candidate) = &fallback_hit {
+            self.log(
+                "info",
+                &format!("TMDB 回退匹配: {} 经 {} 命中", q.title, candidate),
+            );
+        }
         if confidence < CONFIDENCE_THRESHOLD || item.id == 0 {
             return (
                 "needs_review".to_string(),
@@ -542,7 +727,11 @@ impl Runtime {
         let intent_id = match self.create_subscription(invocation_id, item, "", &title, &year) {
             Ok(id) => id,
             Err(err) => {
-                return ("failed".to_string(), 0, format!("创建聚合订阅失败: {}", err.message()))
+                return (
+                    "failed".to_string(),
+                    0,
+                    format!("创建聚合订阅失败: {}", err.message()),
+                )
             }
         };
         self.add_history_and_log(
@@ -590,23 +779,40 @@ impl Runtime {
         douban_ref: &str,
     ) -> Result<Value, OpError> {
         // Go 遍历 map[string][]ChartItem(随机序)取第一个命中; 这里按榜单键字典序取第一个。
+        // 连同榜单键一起取出: 匹配回退要按该榜单配置的 `kind` 走 rexxar 的 movie/tv 路径。
         let found = self.snapshot.lists.as_ref().and_then(|lists| {
-            lists
-                .values()
-                .filter_map(|items| items.as_ref())
-                .flatten()
-                .find(|item| item.douban_ref == douban_ref)
-                .cloned()
+            lists.iter().find_map(|(key, items)| {
+                let item = items
+                    .as_ref()?
+                    .iter()
+                    .find(|item| item.douban_ref == douban_ref)?;
+                Some((key.clone(), item.clone()))
+            })
         });
         let settings = self.settings.clone();
-        let found = match found {
+        let (found_list, found) = match found {
             Some(found) => found,
-            None => {
-                return Ok(json!({"status": "failed", "message": "榜单快照中未找到该条目"}))
-            }
+            None => return Ok(json!({"status": "failed", "message": "榜单快照中未找到该条目"})),
         };
-        let res = match self.tmdb_search(&found.title) {
-            Ok(res) => res,
+        // 条目类型: 该榜单配置里配的 `kind`(movie/tv; 配置缺失/为空 → 空串, 按 movie 取)
+        let found_kind = settings
+            .lists
+            .as_ref()
+            .and_then(|lists| lists.get(&found_list))
+            .map(|config| config.kind.clone())
+            .unwrap_or_default();
+        // [功能1] 匹配增强的第二个改动点(只改本函数体): 与 `subscribe_queue_item` 同一套
+        //   回退(详情候选 → 重搜 → 取最高置信度), 失败文案保持
+        //   `TMDB 匹配置信不足 ({:.2})，无法自动订阅`。
+        // [功能2/3] action `subscribe` 是**手动**入口(不在契约的自动路径清单里):
+        //   不加 `can_subscribe`/`no_resub_guard` 守卫; 成功路径的响应里额外带
+        //   `self.no_resub_confirmation(&found.douban_ref)` 给的确认文案(有则填)。
+        let (item, confidence, fallback_hit) = match self.match_tmdb_with_detail_fallback(
+            &found.title,
+            &found.douban_ref,
+            &found_kind,
+        ) {
+            Ok(out) => out,
             Err(err) => {
                 return Ok(json!({
                     "status": "failed",
@@ -614,7 +820,13 @@ impl Runtime {
                 }))
             }
         };
-        let (item, confidence) = match_tmdb(Some(&res), &found.title, "");
+        // [功能1] 回退命中: 记一条回退日志(含候选名)后照常走 do_subscribe
+        if let Some(candidate) = &fallback_hit {
+            self.log(
+                "info",
+                &format!("TMDB 回退匹配: {} 经 {} 命中", found.title, candidate),
+            );
+        }
         if confidence < CONFIDENCE_THRESHOLD || item.id == 0 {
             return Ok(json!({
                 "status": "failed",
@@ -637,7 +849,13 @@ impl Runtime {
                 }
             }
             self.persist_all();
-            return Ok(json!({"status": "succeeded", "message": "订阅成功", "intent_id": intent_id}));
+            // [功能2/3] 手动入口不拦墓碑, 只在响应里带确认文案(有墓碑时; UI 据此提示)
+            let mut payload =
+                json!({"status": "succeeded", "message": "订阅成功", "intent_id": intent_id});
+            if let Some(text) = self.no_resub_confirmation(&q.douban_ref) {
+                payload["no_resub_confirm"] = Value::String(text);
+            }
+            return Ok(payload);
         }
         self.add_history_and_log(
             HistoryEntry {
@@ -676,10 +894,27 @@ impl Runtime {
         let settings = self.settings.clone();
         let q = match found {
             Some(q) => q,
-            None => {
-                return Ok(json!({"status": "failed", "message": "观察队列中未找到该条目"}))
-            }
+            None => return Ok(json!({"status": "failed", "message": "观察队列中未找到该条目"})),
         };
+        // [功能2/3] action `subscribe-now` 是**手动**入口: 不过墓碑守卫(手动必须能订),
+        //   但这里是唯一"手动 + 需要过滤判定"的入口 —— 在 `subscribe_queue_item` 之前
+        //   应用 [`crate::filter::Runtime::can_subscribe`]; `!allowed` 时 →
+        //   `mark_queue_item_filtered` + 返回 `{"status":"failed","message":"<reason>"}`
+        //   (与 needs_review 分支同构, 但**不写 needs_review 历史**, 队列标 `filtered`)。
+        //   地区判定降级(deviations 第 1 条)同样记 warning。
+        let rating = crate::filter::Runtime::queue_item_rating(&q);
+        let cand = crate::filter::SubscriptionCandidate::from_queue_item(&q, rating);
+        let decision = self.can_subscribe(&cand);
+        if !decision.allowed {
+            let reason = decision.reason.clone().unwrap_or_default();
+            self.mark_queue_item_filtered(&douban_ref, &reason);
+            self.persist_all();
+            return Ok(json!({"status": "failed", "message": reason}));
+        }
+        if decision.region_skipped {
+            self.log("warning", &crate::filter::region_degraded_log(&q.title));
+        }
+        // [功能1] 本函数体不动。
         let (status, intent_id, message) = self.subscribe_queue_item(invocation_id, &q, &settings);
         if status == "succeeded" {
             if let Some(items) = self.queue.items.as_mut() {
@@ -690,7 +925,13 @@ impl Runtime {
                 }
             }
             self.persist_all();
-            return Ok(json!({"status": "succeeded", "message": "订阅成功", "intent_id": intent_id}));
+            // [功能2/3] 手动入口不拦墓碑, 只在响应里带确认文案(有墓碑时; UI 据此提示)
+            let mut payload =
+                json!({"status": "succeeded", "message": "订阅成功", "intent_id": intent_id});
+            if let Some(text) = self.no_resub_confirmation(&douban_ref) {
+                payload["no_resub_confirm"] = Value::String(text);
+            }
+            return Ok(payload);
         }
         if status == "needs_review" {
             self.add_history_and_log(
@@ -822,7 +1063,11 @@ mod tests {
     fn subscribe_host(search: &str, intent_id: i64) -> TestHost {
         TestHost::install(vec![
             Route::json("GET", "/api/tmdb/search", search),
-            Route::json("GET", "/api/subscribe/pool/intents", r#"{"code":"ok","data":[]}"#),
+            Route::json(
+                "GET",
+                "/api/subscribe/pool/intents",
+                r#"{"code":"ok","data":[]}"#,
+            ),
             Route::json(
                 "POST",
                 "/api/subscribe/pool/intents",
@@ -857,7 +1102,9 @@ mod tests {
         let exact = tmdb_item(1, "奥德赛", "movie", 7.5);
         let partial = tmdb_item(2, "奥德赛 (2026)", "tv", 3.0);
         let unrelated = tmdb_item(3, "别的电影", "movie", 9.0);
-        let res = TmdbSearchResult { results: vec![partial.clone(), exact.clone(), unrelated] };
+        let res = TmdbSearchResult {
+            results: vec![partial.clone(), exact.clone(), unrelated],
+        };
 
         // 完全相同 + media_type 相符 + 评分 >= 6 → 1.0
         let (best, score) = match_tmdb(Some(&res), "奥德赛", "movie");
@@ -871,7 +1118,9 @@ mod tests {
 
         // 互相包含 +0.4: "奥德赛" 含于 "奥德赛 (2026)"; media_type 不符(tv vs movie)
         // 且评分 < 6 → 只有 0.4(Go `main.go:891` 的类型加分要求 `it.MediaType == wantType`)
-        let only_partial = TmdbSearchResult { results: vec![partial.clone()] };
+        let only_partial = TmdbSearchResult {
+            results: vec![partial.clone()],
+        };
         let (best, score) = match_tmdb(Some(&only_partial), "奥德赛", "movie");
         assert_eq!(best.id, 2);
         assert!((score - 0.4).abs() < 1e-9, "0.4(包含), 实际 {score}");
@@ -880,7 +1129,9 @@ mod tests {
         // → exact 0.7 + media_type 相符 0.25 = 0.95(评分 < 6 无加分)。
         // (注意 `res` 里 id=2 的标题是 "奥德赛 (2026)" —— 带空格, normalizeTitle 不删
         // 内部空格, Go 那边同样只折全角标点/trim 两端, 所以它不会命中这个查询。)
-        let folded = TmdbSearchResult { results: vec![tmdb_item(4, "奥德赛(2026)", "tv", 3.0)] };
+        let folded = TmdbSearchResult {
+            results: vec![tmdb_item(4, "奥德赛(2026)", "tv", 3.0)],
+        };
         let (best, score) = match_tmdb(Some(&folded), "奥德赛（2026）", "tv");
         assert_eq!(best.id, 4);
         assert!((score - 0.95).abs() < 1e-9, "0.7 + 0.25, 实际 {score}");
@@ -893,7 +1144,10 @@ mod tests {
         // None / 空结果 → 零值 + 0
         assert_eq!(match_tmdb(None, "x", "movie"), (TmdbItem::default(), 0.0));
         let empty = TmdbSearchResult { results: vec![] };
-        assert_eq!(match_tmdb(Some(&empty), "x", "movie"), (TmdbItem::default(), 0.0));
+        assert_eq!(
+            match_tmdb(Some(&empty), "x", "movie"),
+            (TmdbItem::default(), 0.0)
+        );
     }
 
     #[test]
@@ -932,13 +1186,11 @@ mod tests {
     #[test]
     fn tmdb_search_shape_and_error_branches() {
         fixed_clock();
-        let host = TestHost::install(vec![
-            Route::json(
-                "GET",
-                "/api/tmdb/search",
-                r#"{"results":[{"id":1077295,"title":"奥德赛","media_type":"movie","vote_average":7.4}]}"#,
-            ),
-        ]);
+        let host = TestHost::install(vec![Route::json(
+            "GET",
+            "/api/tmdb/search",
+            r#"{"results":[{"id":1077295,"title":"奥德赛","media_type":"movie","vote_average":7.4}]}"#,
+        )]);
         let runtime = Runtime::new();
         let out = runtime.tmdb_search("奥德赛").unwrap();
         assert_eq!(out.results.len(), 1);
@@ -946,29 +1198,41 @@ mod tests {
         let request = host.requests().pop().unwrap();
         assert_eq!(request.method, "GET");
         assert_eq!(
-            request.path,
-            "/api/tmdb/search?q=%E5%A5%A5%E5%BE%B7%E8%B5%9B",
+            request.path, "/api/tmdb/search?q=%E5%A5%A5%E5%BE%B7%E8%B5%9B",
             "路径必须是 QueryEscape 后的形态"
         );
-        assert_eq!(request.headers.get("accept").map(String::as_str), Some("application/json"));
+        assert_eq!(
+            request.headers.get("accept").map(String::as_str),
+            Some("application/json")
+        );
         drop(host);
 
         // HTTP >= 400 → `TMDB 搜索失败 HTTP <status>`
         let _host = TestHost::install(vec![Route::new("GET", "/api/tmdb/search", 500, b"")]);
         let runtime = Runtime::new();
-        assert_eq!(runtime.tmdb_search("x").unwrap_err().message(), "TMDB 搜索失败 HTTP 500");
+        assert_eq!(
+            runtime.tmdb_search("x").unwrap_err().message(),
+            "TMDB 搜索失败 HTTP 500"
+        );
         drop(_host);
 
         // host.call 失败 → 原始错误串
         let _host = TestHost::install(vec![Route::fail("GET", "/api/tmdb/search")]);
         let runtime = Runtime::new();
-        assert_eq!(runtime.tmdb_search("x").unwrap_err().message(), "host_call 返回长度 0");
+        assert_eq!(
+            runtime.tmdb_search("x").unwrap_err().message(),
+            "host_call 返回长度 0"
+        );
         drop(_host);
 
         // 响应不是 JSON → serde 的错误原文(Go 是 json.Unmarshal 的错误)
         let _host = TestHost::install(vec![Route::json("GET", "/api/tmdb/search", "not json")]);
         let runtime = Runtime::new();
-        assert!(runtime.tmdb_search("x").unwrap_err().message().contains("expected"));
+        assert!(runtime
+            .tmdb_search("x")
+            .unwrap_err()
+            .message()
+            .contains("expected"));
         drop(_host);
 
         // Go 的 json.Unmarshal 对 `null` 解成零值结构体, 不报错
@@ -987,7 +1251,8 @@ mod tests {
         let runtime = Runtime::new();
         assert_eq!(runtime.host_intent_exists(1077295, "movie"), (true, 171));
         assert_eq!(
-            host.last_path("GET", "/api/subscribe/pool/intents").as_deref(),
+            host.last_path("GET", "/api/subscribe/pool/intents")
+                .as_deref(),
             Some("/api/subscribe/pool/intents?limit=200")
         );
         // media_type 不符 / tmdb_id 不符 → 不存在
@@ -1042,7 +1307,10 @@ mod tests {
             Some("dc-sub-invocation_0001-1077295"),
             "幂等键规则照抄 Go: dc-sub-<safeKey(invocationID)>-<tmdbID>"
         );
-        assert_eq!(request.headers.get("content-type").map(String::as_str), Some("application/json"));
+        assert_eq!(
+            request.headers.get("content-type").map(String::as_str),
+            Some("application/json")
+        );
         let raw = crate::store::decode_body(&crate::host::HostCallResponse {
             status: 200,
             headers: Default::default(),
@@ -1067,8 +1335,15 @@ mod tests {
         // 字段顺序必须与 Go 结构体一致(宿主可能对 body 做指纹)
         let text = std::str::from_utf8(&raw).unwrap();
         let order: Vec<usize> = [
-            "\"tmdb_id\"", "\"media_type\"", "\"season\"", "\"title\"", "\"year\"", "\"poster_path\"",
-            "\"backdrop_path\"", "\"enabled_sources\"", "\"episode_scope_mode\"",
+            "\"tmdb_id\"",
+            "\"media_type\"",
+            "\"season\"",
+            "\"title\"",
+            "\"year\"",
+            "\"poster_path\"",
+            "\"backdrop_path\"",
+            "\"enabled_sources\"",
+            "\"episode_scope_mode\"",
         ]
         .iter()
         .map(|key| text.find(key).expect("字段必须在 body 里"))
@@ -1097,10 +1372,18 @@ mod tests {
 
         let item = tmdb_item(1, "x", "tv", 0.0);
         // HTTP >= 400
-        let _host = TestHost::install(vec![Route::new("POST", "/api/subscribe/pool/intents", 502, b"")]);
+        let _host = TestHost::install(vec![Route::new(
+            "POST",
+            "/api/subscribe/pool/intents",
+            502,
+            b"",
+        )]);
         let runtime = Runtime::new();
         assert_eq!(
-            runtime.create_subscription("inv", &item, "", "x", "").unwrap_err().message(),
+            runtime
+                .create_subscription("inv", &item, "", "x", "")
+                .unwrap_err()
+                .message(),
             "创建订阅失败 HTTP 502"
         );
         drop(_host);
@@ -1113,7 +1396,10 @@ mod tests {
         )]);
         let runtime = Runtime::new();
         assert_eq!(
-            runtime.create_subscription("inv", &item, "", "x", "").unwrap_err().message(),
+            runtime
+                .create_subscription("inv", &item, "", "x", "")
+                .unwrap_err()
+                .message(),
             r#"创建订阅返回异常 code="duplicate""#
         );
         drop(_host);
@@ -1127,7 +1413,12 @@ mod tests {
         let runtime = Runtime::new();
         let mut tv = item.clone();
         tv.media_type = String::new();
-        assert_eq!(runtime.create_subscription("inv", &tv, "tv", "某剧", "").unwrap(), 7);
+        assert_eq!(
+            runtime
+                .create_subscription("inv", &tv, "tv", "某剧", "")
+                .unwrap(),
+            7
+        );
         let request = host.requests().pop().unwrap();
         let raw = crate::store::decode_body(&crate::host::HostCallResponse {
             status: 200,
@@ -1139,7 +1430,11 @@ mod tests {
         assert_eq!(body["season"], 1);
         assert_eq!(body["media_type"], "tv");
         assert_eq!(body.get("year"), None, "空 year 带 omitempty");
-        assert_eq!(body.get("enabled_sources"), None, "nil subscribe_source_filter 省略");
+        assert_eq!(
+            body.get("enabled_sources"),
+            None,
+            "nil subscribe_source_filter 省略"
+        );
     }
 
     #[test]
@@ -1159,7 +1454,10 @@ mod tests {
         assert_eq!(status, "needs_review");
         assert_eq!(intent_id, 0);
         assert_eq!(message, "TMDB 匹配置信不足 (0.00)");
-        assert!(runtime.history.is_none(), "needs_review 由调用方写历史, 这里不写");
+        assert!(
+            runtime.history.is_none(),
+            "needs_review 由调用方写历史, 这里不写"
+        );
         drop(_host);
 
         // TMDB 搜索失败 → failed + 文案
@@ -1171,13 +1469,23 @@ mod tests {
         drop(_host);
 
         // 命中 → succeeded, 走 do_subscribe
-        let host = subscribe_host(&search_body(&[tmdb_item(1077295, "奥德赛", "movie", 7.4)]), 171);
+        let host = subscribe_host(
+            &search_body(&[tmdb_item(1077295, "奥德赛", "movie", 7.4)]),
+            171,
+        );
         let mut runtime = Runtime::new();
-        let (status, intent_id, message) = runtime.subscribe_queue_item("invocation_0001", &q, &settings);
-        assert_eq!((status.as_str(), intent_id, message.as_str()), ("succeeded", 171, ""));
+        let (status, intent_id, message) =
+            runtime.subscribe_queue_item("invocation_0001", &q, &settings);
+        assert_eq!(
+            (status.as_str(), intent_id, message.as_str()),
+            ("succeeded", 171, "")
+        );
         assert_eq!(host.count("POST", "/api/subscribe/pool/intents"), 1);
         assert_eq!(runtime.stats.total, 1);
-        assert_eq!(runtime.stats.by_list.as_ref().unwrap().get("wish"), Some(&1));
+        assert_eq!(
+            runtime.stats.by_list.as_ref().unwrap().get("wish"),
+            Some(&1)
+        );
         let history = runtime.history.as_ref().unwrap();
         assert_eq!(history[0].message, "订阅成功");
         assert_eq!(history[0].intent_id, 171);
@@ -1206,15 +1514,25 @@ mod tests {
         let item = tmdb_item(1077295, "奥德赛", "movie", 7.4);
         let (status, intent_id, message) =
             runtime.do_subscribe("invocation_0001", &q, &item, &Settings::EMPTY);
-        assert_eq!((status.as_str(), intent_id, message.as_str()), ("succeeded", 171, ""));
-        assert_eq!(host.count("POST", "/api/subscribe/pool/intents"), 0, "去重命中时不得创建");
+        assert_eq!(
+            (status.as_str(), intent_id, message.as_str()),
+            ("succeeded", 171, "")
+        );
+        assert_eq!(
+            host.count("POST", "/api/subscribe/pool/intents"),
+            0,
+            "去重命中时不得创建"
+        );
         let queued = &runtime.queue.items.as_ref().unwrap()[0];
         assert_eq!(queued.state, "subscribed");
         assert_eq!(queued.tmdb_ref, "tmdb:movie:1077295");
         assert_eq!(queued.media_type, "", "去重路径不补 media_type(与 Go 一致)");
         let history = runtime.history.as_ref().unwrap();
         assert_eq!(history[0].message, "已存在同类聚合订阅，跳过重复创建");
-        assert_eq!(runtime.logs.as_ref().unwrap()[0].message, "已存在订阅，跳过：奥德赛");
+        assert_eq!(
+            runtime.logs.as_ref().unwrap()[0].message,
+            "已存在订阅，跳过：奥德赛"
+        );
         drop(host);
 
         // 新建成功 → 回填 media_type/year/poster_path
@@ -1231,7 +1549,8 @@ mod tests {
         let mut item = tmdb_item(1077295, "奥德赛", "movie", 7.4);
         item.poster_path = "/p1.jpg".to_string();
         item.release_date = "2026-08-14".to_string();
-        let (status, intent_id, _) = runtime.do_subscribe("invocation_0001", &q, &item, &Settings::EMPTY);
+        let (status, intent_id, _) =
+            runtime.do_subscribe("invocation_0001", &q, &item, &Settings::EMPTY);
         assert_eq!((status.as_str(), intent_id), ("succeeded", 171));
         let queued = &runtime.queue.items.as_ref().unwrap()[0];
         assert_eq!(queued.state, "subscribed");
@@ -1239,12 +1558,19 @@ mod tests {
         assert_eq!(queued.media_type, "movie");
         assert_eq!(queued.year, "2026");
         assert_eq!(queued.poster_path, "/p1.jpg");
-        assert_eq!(runtime.logs.as_ref().unwrap()[0].message, "已创建聚合订阅：奥德赛");
+        assert_eq!(
+            runtime.logs.as_ref().unwrap()[0].message,
+            "已创建聚合订阅：奥德赛"
+        );
         drop(host);
 
         // 创建失败 → failed + `创建聚合订阅失败: ...`
         let _host = TestHost::install(vec![
-            Route::json("GET", "/api/subscribe/pool/intents", r#"{"code":"ok","data":[]}"#),
+            Route::json(
+                "GET",
+                "/api/subscribe/pool/intents",
+                r#"{"code":"ok","data":[]}"#,
+            ),
             Route::new("POST", "/api/subscribe/pool/intents", 502, b""),
         ]);
         let mut runtime = Runtime::new();
@@ -1264,13 +1590,46 @@ mod tests {
         let past = "2026-09-29T09:00:00Z".to_string();
         let future = "2026-09-30T10:00:00Z".to_string();
         runtime.queue.items = Some(vec![
-            QueueItem { douban_ref: "due-ok".into(), title: "奥德赛".into(), list: "wish".into(), state: "observing".into(), due_at: past.clone(), ..QueueItem::default() },
-            QueueItem { douban_ref: "not-due".into(), title: "奥德赛".into(), list: "wish".into(), state: "observing".into(), due_at: future, ..QueueItem::default() },
-            QueueItem { douban_ref: "review".into(), title: "奥德赛".into(), list: "wish".into(), state: "needs_review".into(), due_at: past.clone(), ..QueueItem::default() },
-            QueueItem { douban_ref: "bad-date".into(), title: "奥德赛".into(), list: "wish".into(), state: "observing".into(), due_at: "garbage".into(), ..QueueItem::default() },
+            QueueItem {
+                douban_ref: "due-ok".into(),
+                title: "奥德赛".into(),
+                list: "wish".into(),
+                state: "observing".into(),
+                due_at: past.clone(),
+                ..QueueItem::default()
+            },
+            QueueItem {
+                douban_ref: "not-due".into(),
+                title: "奥德赛".into(),
+                list: "wish".into(),
+                state: "observing".into(),
+                due_at: future,
+                ..QueueItem::default()
+            },
+            QueueItem {
+                douban_ref: "review".into(),
+                title: "奥德赛".into(),
+                list: "wish".into(),
+                state: "needs_review".into(),
+                due_at: past.clone(),
+                ..QueueItem::default()
+            },
+            QueueItem {
+                douban_ref: "bad-date".into(),
+                title: "奥德赛".into(),
+                list: "wish".into(),
+                state: "observing".into(),
+                due_at: "garbage".into(),
+                ..QueueItem::default()
+            },
         ]);
-        let (subscribed, needs_review, err) = runtime.process_due("invocation_0001", &Settings::EMPTY);
-        assert_eq!((subscribed, needs_review, err.as_str()), (2, 0, ""), "垃圾 due_at 按已到期处理");
+        let (subscribed, needs_review, err) =
+            runtime.process_due("invocation_0001", &Settings::EMPTY);
+        assert_eq!(
+            (subscribed, needs_review, err.as_str()),
+            (2, 0, ""),
+            "垃圾 due_at 按已到期处理"
+        );
         assert_eq!(host.count("POST", "/api/subscribe/pool/intents"), 2);
         let kept: Vec<String> = runtime
             .queue
@@ -1280,7 +1639,11 @@ mod tests {
             .iter()
             .map(|item| item.douban_ref.clone())
             .collect();
-        assert_eq!(kept, vec!["not-due".to_string(), "review".to_string()], "未到期与 needs_review 保留");
+        assert_eq!(
+            kept,
+            vec!["not-due".to_string(), "review".to_string()],
+            "未到期与 needs_review 保留"
+        );
         // 订阅成功的两条都写了历史
         assert_eq!(runtime.stats.total, 2);
         drop(host);
@@ -1354,14 +1717,27 @@ mod tests {
         )]));
 
         // 未命中 → failed(不发 TMDB 请求, 不落盘)
-        let result = runtime.subscribe_from_snapshot("invocation_0001", "nope").unwrap();
-        assert_eq!(result, json!({"status": "failed", "message": "榜单快照中未找到该条目"}));
+        let result = runtime
+            .subscribe_from_snapshot("invocation_0001", "nope")
+            .unwrap();
+        assert_eq!(
+            result,
+            json!({"status": "failed", "message": "榜单快照中未找到该条目"})
+        );
         assert_eq!(host.count("GET", "/api/tmdb/search"), 0);
 
         // 命中 → succeeded + intent_id + 落盘
-        let result = runtime.subscribe_from_snapshot("invocation_0001", "36808876").unwrap();
-        assert_eq!(result, json!({"status": "succeeded", "message": "订阅成功", "intent_id": 171}));
-        assert!(host.count("PUT", "/api/plugin-runtime/storage/state") >= 1, "成功路径要 persist_all");
+        let result = runtime
+            .subscribe_from_snapshot("invocation_0001", "36808876")
+            .unwrap();
+        assert_eq!(
+            result,
+            json!({"status": "succeeded", "message": "订阅成功", "intent_id": 171})
+        );
+        assert!(
+            host.count("PUT", "/api/plugin-runtime/storage/state") >= 1,
+            "成功路径要 persist_all"
+        );
         let history = runtime.history.as_ref().unwrap();
         assert_eq!(history[0].title, "奥德赛");
         assert_eq!(history[0].list, "", "Go 里局部 QueueItem 的 List 为空");
@@ -1379,13 +1755,18 @@ mod tests {
                 ..crate::model::ChartItem::default()
             }]),
         )]));
-        let result = runtime.subscribe_from_snapshot("invocation_0001", "36808876").unwrap();
+        let result = runtime
+            .subscribe_from_snapshot("invocation_0001", "36808876")
+            .unwrap();
         assert_eq!(
             result,
             json!({"status": "failed", "message": "TMDB 匹配置信不足 (0.00)，无法自动订阅"})
         );
         assert_eq!(host.count("POST", "/api/subscribe/pool/intents"), 0);
-        assert!(runtime.history.is_none(), "置信不足在 do_subscribe 之前就返回, 不写历史");
+        assert!(
+            runtime.history.is_none(),
+            "置信不足在 do_subscribe 之前就返回, 不写历史"
+        );
     }
 
     #[test]
@@ -1396,8 +1777,13 @@ mod tests {
         let mut runtime = Runtime::new();
         runtime.ensure_loaded();
         // 队列里找不到
-        let result = runtime.subscribe_queue_now("invocation_0001", "nope").unwrap();
-        assert_eq!(result, json!({"status": "failed", "message": "观察队列中未找到该条目"}));
+        let result = runtime
+            .subscribe_queue_now("invocation_0001", "nope")
+            .unwrap();
+        assert_eq!(
+            result,
+            json!({"status": "failed", "message": "观察队列中未找到该条目"})
+        );
 
         runtime.queue.items = Some(vec![QueueItem {
             douban_ref: "36808876".to_string(),
@@ -1406,8 +1792,13 @@ mod tests {
             state: "observing".to_string(),
             ..QueueItem::default()
         }]);
-        let result = runtime.subscribe_queue_now("invocation_0001", "36808876").unwrap();
-        assert_eq!(result, json!({"status": "succeeded", "message": "订阅成功", "intent_id": 171}));
+        let result = runtime
+            .subscribe_queue_now("invocation_0001", "36808876")
+            .unwrap();
+        assert_eq!(
+            result,
+            json!({"status": "succeeded", "message": "订阅成功", "intent_id": 171})
+        );
         assert_eq!(runtime.queue.items.as_ref().unwrap()[0].state, "subscribed");
         drop(host);
 
@@ -1422,14 +1813,22 @@ mod tests {
             state: "observing".to_string(),
             ..QueueItem::default()
         }]);
-        let result = runtime.subscribe_queue_now("invocation_0001", "36808876").unwrap();
-        assert_eq!(result, json!({"status": "failed", "message": "TMDB 匹配置信不足 (0.00)"}));
+        let result = runtime
+            .subscribe_queue_now("invocation_0001", "36808876")
+            .unwrap();
+        assert_eq!(
+            result,
+            json!({"status": "failed", "message": "TMDB 匹配置信不足 (0.00)"})
+        );
         let queued = &runtime.queue.items.as_ref().unwrap()[0];
         assert_eq!(queued.state, "needs_review");
         assert_eq!(queued.last_error, "TMDB 匹配置信不足 (0.00)");
         let history = runtime.history.as_ref().unwrap();
         assert_eq!(history[0].result, "needs_review");
-        assert_eq!(runtime.logs.as_ref().unwrap()[0].message, "TMDB 匹配待确认：奥德赛 (TMDB 匹配置信不足 (0.00))");
+        assert_eq!(
+            runtime.logs.as_ref().unwrap()[0].message,
+            "TMDB 匹配待确认：奥德赛 (TMDB 匹配置信不足 (0.00))"
+        );
         assert_eq!(runtime.stats.total, 0, "needs_review 不计统计");
         drop(host);
 
@@ -1444,8 +1843,13 @@ mod tests {
             state: "observing".to_string(),
             ..QueueItem::default()
         }]);
-        let result = runtime.subscribe_queue_now("invocation_0001", "36808876").unwrap();
-        assert_eq!(result, json!({"status": "failed", "message": "TMDB 搜索失败: host_call 返回长度 0"}));
+        let result = runtime
+            .subscribe_queue_now("invocation_0001", "36808876")
+            .unwrap();
+        assert_eq!(
+            result,
+            json!({"status": "failed", "message": "TMDB 搜索失败: host_call 返回长度 0"})
+        );
         let history = runtime.history.as_ref().unwrap();
         assert_eq!(history[0].result, "failed");
     }
@@ -1481,12 +1885,18 @@ mod tests {
         assert_eq!(history.len(), 2);
         assert_eq!(history[0].douban_ref, "c");
         assert_eq!(history[1].douban_ref, "b");
-        assert_eq!(history[0].created_at, "2026-09-29T10:00:09Z", "created_at 取现在");
+        assert_eq!(
+            history[0].created_at, "2026-09-29T10:00:09Z",
+            "created_at 取现在"
+        );
         // failed 不计数
         assert_eq!(runtime.stats.total, 2);
         assert_eq!(runtime.stats.month, "2026-09");
         assert_eq!(runtime.stats.month_new, 2);
-        assert_eq!(runtime.stats.by_list.as_ref().unwrap().get("wish"), Some(&1));
+        assert_eq!(
+            runtime.stats.by_list.as_ref().unwrap().get("wish"),
+            Some(&1)
+        );
         assert_eq!(runtime.stats.by_list.as_ref().unwrap().get("hot"), Some(&1));
         // 版本号: 每条历史 +1
         assert_eq!(runtime.revision(), 3);
@@ -1510,5 +1920,361 @@ mod tests {
             ..HistoryEntry::default()
         });
         assert_eq!(runtime.stats.total, 1);
+    }
+
+    // ─────────────────────── [功能1] 匹配增强 ───────────────────────
+
+    /// rexxar 详情路由: 用脱敏 tv 夹具应答 `m.douban.com/rexxar/api/v2/` 下的请求。
+    /// (TestHost 按 `path.starts_with(prefix)` 匹配, 外部请求带完整 URL, 前缀要含域名。)
+    fn rexxar_tv_route() -> Route {
+        Route::json(
+            "GET",
+            "https://m.douban.com/rexxar/api/v2/",
+            std::str::from_utf8(crate::fixtures::SUBJECT_DETAIL_TV).unwrap(),
+        )
+    }
+
+    /// 直配(搜豆瓣标题"列奥纳多")只搜到不相关条目。
+    fn direct_miss_route() -> Route {
+        Route::json(
+            "GET",
+            &format!("/api/tmdb/search?q={}", query_escape("列奥纳多")),
+            &search_body(&[tmdb_item(9, "别的剧", "tv", 8.0)]),
+        )
+    }
+
+    /// 订阅池: 列表为空 + 创建返回 id=171。
+    fn pool_routes() -> Vec<Route> {
+        vec![
+            Route::json(
+                "GET",
+                "/api/subscribe/pool/intents",
+                r#"{"code":"ok","data":[]}"#,
+            ),
+            Route::json(
+                "POST",
+                "/api/subscribe/pool/intents",
+                r#"{"code":"ok","data":{"id":171}}"#,
+            ),
+        ]
+    }
+
+    fn leonardo_queue_item() -> QueueItem {
+        QueueItem {
+            douban_ref: "db:subj:34862797".to_string(),
+            title: "列奥纳多".to_string(),
+            list: "wish".to_string(),
+            // [功能1] 入队带上条目类型(评审修复): 匹配回退按它走 rexxar 的 tv 路径
+            media_type: "tv".to_string(),
+            ..QueueItem::default()
+        }
+    }
+
+    /// 回退路径一(包装函数层): 原标题直配失配 → rexxar 详情 → original_title 命中。
+    #[test]
+    fn match_tmdb_with_detail_fallback_hits_via_original_title() {
+        let host = TestHost::install(vec![
+            direct_miss_route(),
+            rexxar_tv_route(),
+            // 原名 "Leonardo" 命中: 完全相同 0.7 + 评分 >= 6 加 0.05
+            Route::json(
+                "GET",
+                "/api/tmdb/search?q=Leonardo",
+                &search_body(&[tmdb_item(128007, "Leonardo", "tv", 7.8)]),
+            ),
+        ]);
+        let runtime = Runtime::new();
+        let (item, confidence, fallback_hit) = runtime
+            .match_tmdb_with_detail_fallback("列奥纳多", "db:subj:34862797", "tv")
+            .expect("直配搜索成功, 不该 Err");
+        assert_eq!(item.id, 128007);
+        assert!(
+            (confidence - 0.75).abs() < 1e-9,
+            "0.7 + 0.05, 实际 {confidence}"
+        );
+        assert_eq!(fallback_hit.as_deref(), Some("Leonardo"));
+
+        // 请求顺序: 直配 → rexxar 详情 → 原名重搜; 之后 aka 候选继续逐个搜索
+        // (取置信度最高者), 未注册路由 404 被忽略。
+        let paths: Vec<String> = host.requests().iter().map(|r| r.path.clone()).collect();
+        assert_eq!(
+            paths[0],
+            format!("/api/tmdb/search?q={}", query_escape("列奥纳多"))
+        );
+        assert_eq!(
+            paths[1], "https://m.douban.com/rexxar/api/v2/tv/34862797",
+            "kind 传 tv → tv 路径(评审修复前固定 movie 路径, 剧集详情恒取不到)"
+        );
+        assert_eq!(paths[2], "/api/tmdb/search?q=Leonardo");
+        assert_eq!(paths.len(), 6, "直配 1 + rexxar 1 + 原名/aka 4 个候选各 1");
+    }
+
+    /// 回退路径二(包装函数层): 原名也没命中 → aka 列表按序重搜, aka[0] 命中。
+    #[test]
+    fn match_tmdb_with_detail_fallback_hits_via_aka() {
+        let host = TestHost::install(vec![
+            direct_miss_route(),
+            rexxar_tv_route(),
+            // 原名 "Leonardo" 搜到不相关条目 → 0 分
+            Route::json(
+                "GET",
+                "/api/tmdb/search?q=Leonardo",
+                &search_body(&[tmdb_item(8, "别的电影", "movie", 9.0)]),
+            ),
+            // aka[0] "莱昂纳多" 命中
+            Route::json(
+                "GET",
+                &format!("/api/tmdb/search?q={}", query_escape("莱昂纳多")),
+                &search_body(&[tmdb_item(128007, "莱昂纳多", "tv", 7.8)]),
+            ),
+        ]);
+        let runtime = Runtime::new();
+        let (item, confidence, fallback_hit) = runtime
+            .match_tmdb_with_detail_fallback("列奥纳多", "34862797", "tv")
+            .expect("直配搜索成功, 不该 Err");
+        assert_eq!(item.id, 128007);
+        assert_eq!(
+            fallback_hit.as_deref(),
+            Some("莱昂纳多"),
+            "命中的候选名是 aka[0]"
+        );
+        assert!(
+            (confidence - 0.75).abs() < 1e-9,
+            "0.7 + 0.05, 实际 {confidence}"
+        );
+
+        // 顺序: 直配 → rexxar → 原名(未中) → aka[0](命中)
+        let paths: Vec<String> = host.requests().iter().map(|r| r.path.clone()).collect();
+        assert_eq!(paths[2], "/api/tmdb/search?q=Leonardo");
+        assert_eq!(
+            paths[3],
+            format!("/api/tmdb/search?q={}", query_escape("莱昂纳多"))
+        );
+    }
+
+    /// 回退也全失配 → 返回**直配**结果(不吞直配结果, 不新增错误分支)。
+    #[test]
+    fn match_tmdb_with_detail_fallback_all_miss_returns_direct_result() {
+        let host = TestHost::install(vec![
+            direct_miss_route(),
+            rexxar_tv_route(),
+            Route::json(
+                "GET",
+                "/api/tmdb/search?q=Leonardo",
+                &search_body(&[tmdb_item(8, "别的电影", "movie", 9.0)]),
+            ),
+        ]);
+        let runtime = Runtime::new();
+        let (item, confidence, fallback_hit) = runtime
+            .match_tmdb_with_detail_fallback("列奥纳多", "34862797", "tv")
+            .expect("直配搜索成功, 不该 Err");
+        assert_eq!(fallback_hit, None);
+        assert!((confidence - 0.0).abs() < 1e-9, "回退失败时返回直配置信度");
+        assert_eq!(item.id, 9, "不吞直配结果: best 是直配结果的第一个候选");
+        // 直配 1 次 + 4 个候选各 1 次(其中部分 404/不相关)
+        assert_eq!(host.count("GET", "/api/tmdb/search"), 5);
+    }
+
+    /// 详情没取到 / 取不到数字 id → 不发起任何候选搜索, 直接按直配结果判定。
+    #[test]
+    fn match_tmdb_with_detail_fallback_without_detail_skips_candidates() {
+        // rexxar 404 → 没有详情 → 只有直配一次搜索
+        let host = TestHost::install(vec![Route::json(
+            "GET",
+            "/api/tmdb/search",
+            &search_body(&[tmdb_item(9, "别的剧", "tv", 8.0)]),
+        )]);
+        let runtime = Runtime::new();
+        let (_, confidence, fallback_hit) = runtime
+            .match_tmdb_with_detail_fallback("列奥纳多", "db:subj:34862797", "tv")
+            .unwrap();
+        assert_eq!(fallback_hit, None);
+        assert!((confidence - 0.0).abs() < 1e-9);
+        assert_eq!(host.count("GET", "/api/tmdb/search"), 1);
+        assert_eq!(
+            host.count("GET", "https://m.douban.com/rexxar/"),
+            1,
+            "rexxar 试过一次"
+        );
+        drop(host);
+
+        // douban_ref 取不到数字 id → 连 rexxar 都不发
+        let host = TestHost::install(vec![Route::json(
+            "GET",
+            "/api/tmdb/search",
+            &search_body(&[tmdb_item(9, "别的剧", "tv", 8.0)]),
+        )]);
+        let runtime = Runtime::new();
+        let (_, _, fallback_hit) = runtime
+            .match_tmdb_with_detail_fallback("列奥纳多", "https://movie.douban.com/subject/1/", "")
+            .unwrap();
+        assert_eq!(fallback_hit, None);
+        assert_eq!(host.requests().len(), 1, "只有直配一次, 不发 rexxar");
+    }
+
+    /// 三条路径之一(队列入口): 原标题失配 → 原名回退命中 → 订阅成功 + 回退日志。
+    #[test]
+    fn subscribe_queue_item_falls_back_via_original_title() {
+        fixed_clock();
+        let mut routes = vec![
+            direct_miss_route(),
+            rexxar_tv_route(),
+            Route::json(
+                "GET",
+                "/api/tmdb/search?q=Leonardo",
+                &search_body(&[tmdb_item(128007, "Leonardo", "tv", 7.8)]),
+            ),
+        ];
+        routes.extend(pool_routes());
+        let host = TestHost::install(routes);
+        let mut runtime = Runtime::new();
+
+        let q = leonardo_queue_item();
+        let (status, intent_id, message) =
+            runtime.subscribe_queue_item("invocation_0001", &q, &Settings::EMPTY);
+        assert_eq!(
+            (status.as_str(), intent_id, message.as_str()),
+            ("succeeded", 171, "")
+        );
+        assert_eq!(host.count("POST", "/api/subscribe/pool/intents"), 1);
+        let history = runtime.history.as_ref().unwrap();
+        assert_eq!(history[0].message, "订阅成功");
+        assert_eq!(history[0].tmdb_ref, "tmdb:tv:128007");
+        // 回退日志: `TMDB 回退匹配: <条目> 经 <候选名> 命中`, 在订阅日志之前
+        let logs = runtime.logs.as_ref().unwrap();
+        assert_eq!(logs[0].level, "info");
+        assert_eq!(logs[0].message, "TMDB 回退匹配: 列奥纳多 经 Leonardo 命中");
+        assert_eq!(logs[1].message, "已创建聚合订阅：列奥纳多");
+    }
+
+    /// 三条路径之二(队列入口): 原名失配 → aka[0] 命中 → 订阅成功 + 回退日志。
+    #[test]
+    fn subscribe_queue_item_falls_back_via_aka() {
+        fixed_clock();
+        let mut routes = vec![
+            direct_miss_route(),
+            rexxar_tv_route(),
+            Route::json(
+                "GET",
+                "/api/tmdb/search?q=Leonardo",
+                &search_body(&[tmdb_item(8, "别的电影", "movie", 9.0)]),
+            ),
+            Route::json(
+                "GET",
+                &format!("/api/tmdb/search?q={}", query_escape("莱昂纳多")),
+                &search_body(&[tmdb_item(128007, "莱昂纳多", "tv", 7.8)]),
+            ),
+        ];
+        routes.extend(pool_routes());
+        let host = TestHost::install(routes);
+        let mut runtime = Runtime::new();
+
+        let q = leonardo_queue_item();
+        let (status, intent_id, _) =
+            runtime.subscribe_queue_item("invocation_0001", &q, &Settings::EMPTY);
+        assert_eq!((status.as_str(), intent_id), ("succeeded", 171));
+        assert_eq!(host.count("POST", "/api/subscribe/pool/intents"), 1);
+        let logs = runtime.logs.as_ref().unwrap();
+        assert_eq!(logs[0].message, "TMDB 回退匹配: 列奥纳多 经 莱昂纳多 命中");
+        let history = runtime.history.as_ref().unwrap();
+        assert_eq!(history[0].tmdb_ref, "tmdb:tv:128007");
+        assert_eq!(runtime.stats.total, 1, "回退命中的订阅照常计入统计");
+    }
+
+    /// 三条路径之三(队列入口): 直配与全部回退候选都失配 → 保持 needs_review,
+    /// message 用**直配**置信度; 不写历史、不记回退日志、不创建订阅。
+    #[test]
+    fn subscribe_queue_item_needs_review_when_all_fallbacks_miss() {
+        fixed_clock();
+        let host = TestHost::install(vec![
+            direct_miss_route(),
+            rexxar_tv_route(),
+            Route::json(
+                "GET",
+                "/api/tmdb/search?q=Leonardo",
+                &search_body(&[tmdb_item(8, "别的电影", "movie", 9.0)]),
+            ),
+            // aka[0] 搜到不相关条目; 其余 aka 未注册(404)同样忽略
+            Route::json(
+                "GET",
+                &format!("/api/tmdb/search?q={}", query_escape("莱昂纳多")),
+                &search_body(&[tmdb_item(7, "又一部别的", "movie", 9.0)]),
+            ),
+        ]);
+        let mut runtime = Runtime::new();
+
+        let q = leonardo_queue_item();
+        let (status, intent_id, message) =
+            runtime.subscribe_queue_item("inv", &q, &Settings::EMPTY);
+        assert_eq!(status, "needs_review");
+        assert_eq!(intent_id, 0);
+        assert_eq!(message, "TMDB 匹配置信不足 (0.00)");
+        assert_eq!(host.count("POST", "/api/subscribe/pool/intents"), 0);
+        assert!(
+            runtime.history.is_none(),
+            "needs_review 由调用方写历史, 这里不写"
+        );
+        assert!(runtime.logs.is_none(), "回退失败不记回退日志");
+    }
+
+    /// 快照订阅入口同样接线: 原标题失配 → 原名回退命中 → succeeded + 回退日志。
+    #[test]
+    fn subscribe_from_snapshot_falls_back_via_original_title() {
+        fixed_clock();
+        let mut routes = vec![
+            direct_miss_route(),
+            rexxar_tv_route(),
+            Route::json(
+                "GET",
+                "/api/tmdb/search?q=Leonardo",
+                &search_body(&[tmdb_item(128007, "Leonardo", "tv", 7.8)]),
+            ),
+        ];
+        routes.extend(pool_routes());
+        let host = TestHost::install(routes);
+        let mut runtime = Runtime::new();
+        runtime.ensure_loaded();
+        // 列奥纳多是剧集: 快照条目放进 tv 榜单(cn_wom 默认 kind=tv), 匹配回退才会走
+        // rexxar 的 tv 路径取到详情(评审修复前固定 movie 路径 → 详情恒 None)。
+        runtime.snapshot.lists = Some(BTreeMap::from([(
+            "cn_wom".to_string(),
+            Some(vec![crate::model::ChartItem {
+                douban_ref: "34862797".to_string(),
+                title: "列奥纳多".to_string(),
+                ..crate::model::ChartItem::default()
+            }]),
+        )]));
+
+        let result = runtime
+            .subscribe_from_snapshot("invocation_0001", "34862797")
+            .unwrap();
+        assert_eq!(
+            result,
+            json!({"status": "succeeded", "message": "订阅成功", "intent_id": 171})
+        );
+        assert_eq!(host.count("POST", "/api/subscribe/pool/intents"), 1);
+        let logs = runtime.logs.as_ref().unwrap();
+        assert_eq!(logs[0].message, "TMDB 回退匹配: 列奥纳多 经 Leonardo 命中");
+        drop(host);
+
+        // 快照入口的回退全失配 → failed 文案保持 `，无法自动订阅` 后缀
+        let _host = TestHost::install(vec![direct_miss_route(), rexxar_tv_route()]);
+        let mut runtime = Runtime::new();
+        runtime.ensure_loaded();
+        runtime.snapshot.lists = Some(BTreeMap::from([(
+            "cn_wom".to_string(),
+            Some(vec![crate::model::ChartItem {
+                douban_ref: "34862797".to_string(),
+                title: "列奥纳多".to_string(),
+                ..crate::model::ChartItem::default()
+            }]),
+        )]));
+        let result = runtime
+            .subscribe_from_snapshot("invocation_0001", "34862797")
+            .unwrap();
+        assert_eq!(
+            result,
+            json!({"status": "failed", "message": "TMDB 匹配置信不足 (0.00)，无法自动订阅"})
+        );
     }
 }

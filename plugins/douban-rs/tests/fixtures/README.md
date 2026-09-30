@@ -9,6 +9,8 @@
 | `chart_listcont2.html` | `https://movie.douban.com/chart` | 2026-09-29 | 只摘取 `<ul class="content" id="listCont2">` 一段(10 条口碑榜, 含锚点与 `</ul>` 收口) |
 | `coming_showing_soon.html` | `https://movie.douban.com/cinema/later/`(302 → `/cinema/later/<城市>/`) | 2026-09-29 | 只摘取 `<div id="showing-soon">` 起的 6 个 `<div class="item mod...">` |
 | `search_subjects.json` | `https://movie.douban.com/j/search_subjects?type=movie&tag=热门&sort=recommend&page_limit=30&page_start=0` | 2026-09-29 | 截取前 6 条(原文 30 条), 其余字段原样保留 |
+| `subject_detail.json` | `https://m.douban.com/rexxar/api/v2/movie/36808876`(移动 UA + `referer: https://m.douban.com/`) | 2026-09-30 | 功能 1/2 的字段路径回归样本(原名/又名/评分/年份/地区), 见下"rexxar 条目详情" |
+| `subject_detail_tv.json` | `https://m.douban.com/rexxar/api/v2/tv/34862797` | 2026-09-30 | 剧集形态对照样本: `original_title` 与 `aka` 都非空(电影那份的 `aka` 是空数组) |
 
 ## 脱敏
 
@@ -45,6 +47,26 @@ openssl enc -aes-256-cbc -md md5 -S 0011223344556677 -pass pass:3da15fcde08ae670
 `nonblock_b64`(解码后 10 字节)是格式守卫的反例。改夹具时必须同步重跑
 `tests/cookiecloud_vectors.rs`: 它对每条向量做"独立复算 key/iv → 解密逐字节等于明文 →
 用同一 key/iv 重新加密逐字节等于密文"三环核对。
+
+## rexxar 条目详情夹具的用法(功能 1 / 功能 2)
+
+两份样本是 2026-09-30 用**移动 UA**(`wish.rs` 的 `WISH_USER_AGENT` 同款 iPhone Safari 串)+
+`referer: https://m.douban.com/` + `accept: application/json, text/plain;q=0.9` 实抓的
+公开接口响应, 压成单行。契约冻结的字段路径(全部来自实测, 逐个复核):
+
+| 语义 | 字段路径 | 实测值 |
+|------|----------|--------|
+| 原名 | `original_title` | movie/36808876 = `"The Odyssey"`; tv/34862797 = `"Leonardo"`; 国产片可能是 `""`(如 movie/35653205) |
+| 又名 | `aka` | movie/36808876 = `[]`(空!); tv/34862797 = `["莱昂纳多","李奥纳多","列奥纳多·达·芬奇"]` |
+| 评分 | `rating.value` | 8.6 / 7.8(另有 `rating.count`/`max`/`star_count`; 无评分时 `rating` 整体是 `null`) |
+| 年份 | `year` | `"2026"` / `"2021"`(**字符串**; `release_date` 是 `null`, 别拿它取年份) |
+| 地区 | `countries` | `["美国","加拿大",…]` / `["意大利","美国",…]`(string[], 精确中文名) |
+| 类型 | `type` / `subtype` | `"movie"` / `"tv"`, 与 URL 段一致 |
+
+**脱敏说明**: 原响应里有第三方用户信息(`cover.author.id/uid/url` 等), 已整块剔除; 另剔除
+`color_scheme`/`variable_modules`/`trailers`/`vendors` 等与契约无关的展示字段。保留的字段
+都是原文原值, 没有编造。`aka` 为空数组是**真实数据**(电影 36808876 的豆瓣页就没挂又名),
+所以"又名回退"的样本用 tv/34862797 那份。
 
 ## 榜单夹具的用法
 
