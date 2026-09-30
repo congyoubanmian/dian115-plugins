@@ -123,10 +123,11 @@ jobs:
             exit 1
           }
           # cargo 产物与 deps/ 下同名文件是硬链接，用 mv 换目录项而不是就地覆盖。
+          # target/ 由上一步 docker(root) 构建产出，回写需要 sudo（runner 免密 sudo）。
           cp "$WASM" "$RUNNER_TEMP/plugin.preopt.wasm"
-          cp "$RUNNER_TEMP/plugin.opt.wasm" "$WASM.tmp"
-          mv "$WASM.tmp" "$WASM"
-          chmod 755 "$WASM"
+          sudo cp "$RUNNER_TEMP/plugin.opt.wasm" "$WASM.tmp"
+          sudo mv "$WASM.tmp" "$WASM"
+          sudo chmod 755 "$WASM"
           ls -l "$WASM" "$RUNNER_TEMP/plugin.preopt.wasm"
 
       - name: 写入签名私钥
