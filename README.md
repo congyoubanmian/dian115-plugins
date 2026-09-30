@@ -15,7 +15,8 @@ plugin-market/
 ├── index.json                       DIAN115 市场索引
 └── icons/<插件id>.svg               插件图标
 plugins/
-├── douban-center/                   豆瓣中心 WASM 插件
+├── douban-rs/                       豆瓣中心 WASM 插件（Rust 运行时）
+├── douban-center/                   豆瓣中心共享前端（Vue，douban.rs 复用）
 └── music-dl/                        音乐下载 WASM 插件（UI + 调度）
 sidecars/
 └── music-agent/                     音乐下载配套服务（流式下载 + CD2 写入）
@@ -25,10 +26,10 @@ sidecars/
 
 | 插件 ID | 名称 | 说明 | 额外组件 |
 | --- | --- | --- | --- |
-| `douban.center` | 豆瓣中心 | 豆瓣榜单、观察队列与聚合订阅；CookieCloud 同步「我的想看」自动追订 | 可选：本机 CookieCloud 服务 |
+| `douban.rs` | 豆瓣中心 | 豆瓣榜单、观察队列与聚合订阅；CookieCloud 同步「我的想看」自动追订（Rust 运行时，内存占用更低） | 可选：本机 CookieCloud 服务 |
 | `music.dl` | 音乐下载 | 网易云/QQ/酷狗扫码、搜索和下载 | **必须部署 `sidecars/music-agent`** |
 
-## 想看同步（可选，douban.center 0.3.0+）
+## 想看同步（可选，douban.rs）
 
 1. 部署本机 CookieCloud：`docker run -d --name cookiecloud --restart unless-stopped -m 128m -p 8088:8088 -v /volume1/docker/cookiecloud/data:/data/api/data easychen/cookiecloud`
 2. 浏览器安装 CookieCloud 扩展，服务器填 `http://<NAS内网IP>:8088`，随机生成 UUID 和密钥，**「需要同步的域名」强烈建议只填 `douban.com`**

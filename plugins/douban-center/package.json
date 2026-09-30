@@ -5,14 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build:ui": "vue-tsc --noEmit && vite build",
-    "build:wasm": "node scripts/build-wasm.mjs",
-    "build:runtime": "node scripts/build-runtime.mjs",
-    "build": "npm run build:ui && npm run build:wasm",
-    "check": "node scripts/check.mjs",
-    "package": "node scripts/package.mjs",
-    "release": "npm run build && npm run package",
-    "market": "node scripts/build-market-index.mjs"
+    "build:ui": "vue-tsc --noEmit && vite build"
   },
   "peerDependencies": {
     "@lucide/vue": "^1.16.0",
