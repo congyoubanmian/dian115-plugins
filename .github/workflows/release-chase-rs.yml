@@ -1,0 +1,196 @@
+name: 发布追剧管家 Rust 版插件
+
+# 推一个 chase-v<版本> 标签即自动: rust:1-slim 容器里编译 WASM → 打包签名 →
+# 生成市场索引(新增 chase.rs 条目, 保留 douban.rs / music.dl) →
+# 创建 Release 并上传 .d115p → 把索引回写到 main。
+#
+# 前置: 仓库 Secrets 里配置 DIAN115_PLUGIN_SIGNING_KEY（插件签名私钥的 PEM 全文）。
+# 私钥只用于签名，务必妥善保管；泄漏意味着他人可以伪造本发布者的插件包。
+#
+# 前端: 本插件自带 frontend/（Vue 3 + Federation，vite outDir = frontend/build/frontend/dist），
+# 与 douban-rs 不同, 不再复用 douban-center 的前端。build/ 目录按仓库约定不入库
+# （.gitignore 的 `**/build/`），所以这里先在 frontend/ 里跑 build:ui 产出
+# frontend/build/frontend/dist，再由 package.mjs 原样打包这些资产。
+
+on:
+  push:
+    tags:
+      - 'chase-v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '发布标签（需与插件版本一致，例如 chase-v0.1.0）'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: plugins/chase-rs
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # 必须构建标签指向的提交: tag 先于 main 到达时 main 上还是旧 manifest,
+          # 版本校验会失败。dispatch 时用输入的 tag。
+          ref: ${{ github.event.inputs.tag || github.ref }}
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: 校验标签与清单版本一致
+        env:
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          VERSION=$(node -p "require('./manifest.template.json').version")
+          EXPECTED_TAG="chase-v$VERSION"
+          echo "tag=$TAG manifest=$VERSION expected=$EXPECTED_TAG"
+          [ "$TAG" = "$EXPECTED_TAG" ] || {
+            echo "::error::标签与 manifest 版本不一致（应为 $EXPECTED_TAG）"
+            exit 1
+          }
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "PACKAGE=chase.rs-$VERSION.d115p" >> "$GITHUB_ENV"
+
+      - name: 构建前端产物（本插件自带 frontend/）
+        working-directory: plugins/chase-rs/frontend
+        run: |
+          npm ci
+          npm run build:ui
+
+      - name: 确认前端产物存在
+        run: |
+          test -f frontend/build/frontend/dist/assets/remoteEntry.js || {
+            echo "::error::缺少前端产物 plugins/chase-rs/frontend/build/frontend/dist/assets/remoteEntry.js"
+            exit 1
+          }
+
+      - name: 构建 WASM 运行时（rust:1-slim）
+        run: |
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE/plugins/chase-rs:/src" \
+            -w /src \
+            -e CARGO_TERM_COLOR=always \
+            rust:1-slim \
+            sh -c 'set -e; rustup target list --installed | grep -qx wasm32-unknown-unknown || rustup target add wasm32-unknown-unknown; cargo build --release --target wasm32-unknown-unknown'
+
+      - name: 校验构建产物
+        run: |
+          test -s target/wasm32-unknown-unknown/release/plugin.wasm || {
+            echo "::error::缺少 target/wasm32-unknown-unknown/release/plugin.wasm"
+            exit 1
+          }
+          ls -l target/wasm32-unknown-unknown/release/plugin.wasm
+
+      # wasm-opt -Oz：本地已用同一命令验证能把 plugin.wasm 从 451425 压到 372270 字节
+      # （-17.5%），且 dian115_handle 导出保留（package.mjs 的 ABI 校验依赖它）。
+      # 版本必须与本地一致：本地用的是 npm 包 @wasm-opt/linux-x64@2.0.0 里的
+      # binaryen 132。不能用 apt 的 binaryen——rust:1-slim 现在是 Debian 13
+      # (trixie)，`apt-cache policy binaryen` 只有 120-4，压出来的字节与本地不同。
+      # 开关按本模块实际指令集: memory.copy(340)/memory.fill(21) 与 trunc_sat 需要
+      # bulk-memory / bulk-memory-opt / nontrapping-float-to-int, 缺哪个都会 "Fatal: error validating input"。
+      - name: wasm-opt 压缩（binaryen 132）
+        run: |
+          set -euo pipefail
+          WASM=target/wasm32-unknown-unknown/release/plugin.wasm
+          WASM_OPT_NPM_PKG=2.0.0
+          WASM_OPT_BINEN_VERSION=132
+          npm install --no-save --no-audit --no-fund \
+            --prefix "$RUNNER_TEMP/wasmopt" \
+            "@wasm-opt/linux-x64@$WASM_OPT_NPM_PKG"
+          WASM_OPT="$RUNNER_TEMP/wasmopt/node_modules/@wasm-opt/linux-x64/bin/wasm-opt"
+          "$WASM_OPT" --version
+          "$WASM_OPT" --version | grep -q "version_$WASM_OPT_BINEN_VERSION" || {
+            echo "::error::binaryen 版本不是 $WASM_OPT_BINEN_VERSION，与本地验证用的不一致，产物不可复现"
+            exit 1
+          }
+          BEFORE=$(stat -c %s "$WASM")
+          "$WASM_OPT" -Oz \
+            --enable-bulk-memory --enable-bulk-memory-opt --enable-nontrapping-float-to-int \
+            "$WASM" -o "$RUNNER_TEMP/plugin.opt.wasm"
+          # 产物仍能被 binaryen 解析校验（顺带打印函数数，确认没有把模块压坏）。
+          "$WASM_OPT" --enable-bulk-memory --enable-bulk-memory-opt --enable-nontrapping-float-to-int \
+            --metrics "$RUNNER_TEMP/plugin.opt.wasm" -o /dev/null
+          AFTER=$(stat -c %s "$RUNNER_TEMP/plugin.opt.wasm")
+          echo "wasm-opt(binaryen $WASM_OPT_BINEN_VERSION, npm 包 $WASM_OPT_NPM_PKG): $BEFORE -> $AFTER bytes"
+          [ "$AFTER" -lt "$BEFORE" ] || {
+            echo "::error::wasm-opt 压缩后体积没有变小（$BEFORE -> $AFTER）"
+            exit 1
+          }
+          # cargo 产物与 deps/ 下同名文件是硬链接，用 mv 换目录项而不是就地覆盖。
+          # target/ 由上一步 docker(root) 构建产出，回写需要 sudo（runner 免密 sudo）。
+          cp "$WASM" "$RUNNER_TEMP/plugin.preopt.wasm"
+          sudo cp "$RUNNER_TEMP/plugin.opt.wasm" "$WASM.tmp"
+          sudo mv "$WASM.tmp" "$WASM"
+          sudo chmod 755 "$WASM"
+          ls -l "$WASM" "$RUNNER_TEMP/plugin.preopt.wasm"
+
+      - name: 写入签名私钥
+        env:
+          SIGNING_KEY: ${{ secrets.DIAN115_PLUGIN_SIGNING_KEY }}
+        run: |
+          [ -n "$SIGNING_KEY" ] || { echo "::error::未配置 Secrets.DIAN115_PLUGIN_SIGNING_KEY"; exit 1; }
+          mkdir -p "$RUNNER_TEMP/dian115"
+          printf '%s\n' "$SIGNING_KEY" > "$RUNNER_TEMP/dian115/publisher.pem"
+          chmod 600 "$RUNNER_TEMP/dian115/publisher.pem"
+
+      - name: 打包并签名
+        env:
+          DIAN115_PLUGIN_SIGNING_KEY: ${{ runner.temp }}/dian115/publisher.pem
+        run: node package.mjs
+
+      - name: 清理私钥
+        if: always()
+        run: rm -f "$RUNNER_TEMP/dian115/publisher.pem"
+
+      - name: 生成市场索引
+        env:
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: node build-market-index.mjs --repo="https://github.com/${{ github.repository }}" --tag="$TAG"
+
+      - name: 创建 Release 并上传插件包
+        working-directory: .
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          test -f "plugins/chase-rs/releases/$PACKAGE" || {
+            echo "::error::缺少预期包 $PACKAGE"
+            ls -la plugins/chase-rs/releases || true
+            exit 1
+          }
+          gh release create "$TAG" "plugins/chase-rs/releases/$PACKAGE" \
+            --title "$TAG" \
+            --notes "自动构建发布（追剧管家 Rust 版：rust:1-slim 编译 + wasm-opt 压缩的 WASM 运行时 + 自带 Vue 前端 + 签名包）。
+
+          安装：DIAN115 插件中心 → 添加插件仓库 → https://github.com/${{ github.repository }}" \
+            || gh release upload "$TAG" "plugins/chase-rs/releases/$PACKAGE" --clobber
+
+      - name: 回写市场索引到 main
+        working-directory: .
+        env:
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # 当前 checkout 在 tag 上；先保存生成文件，再切到最新 main 后覆盖，
+          # 避免 CI 运行期间 main 有新提交导致 non-fast-forward。
+          cp plugin-market/index.json "$RUNNER_TEMP/index.json"
+          mkdir -p "$RUNNER_TEMP/icons"
+          cp -a plugin-market/icons/. "$RUNNER_TEMP/icons/"
+          git fetch origin main
+          git checkout -B main origin/main
+          cp "$RUNNER_TEMP/index.json" plugin-market/index.json
+          cp -a "$RUNNER_TEMP/icons/." plugin-market/icons/
+          git add plugin-market/index.json plugin-market/icons
+          if git diff --cached --quiet; then
+            echo "索引无变化"
+          else
+            git commit -m "chore: 更新追剧管家 Rust 版市场索引 $TAG [skip ci]"
+            git push origin main
+          fi

@@ -1,0 +1,106 @@
+{
+  "$schema": "https://raw.githubusercontent.com/madbrolab/dian115/main/docs/plugin-platform/manifest.schema.json",
+  "schema_version": 1,
+  "id": "chase.rs",
+  "name": "追剧管家（Rust 版）",
+  "version": "0.1.0",
+  "description": "小时级对齐「订阅池里的剧集订阅」与「Emby 已有集数」：只对可解析的条目做只增 PATCH total_episodes，并产出追剧日历与当天一次的 Telegram 日报；减方向只给建议，从不写。",
+  "default_locale": "zh-CN",
+  "publisher": {
+    "name": "congyoubanmian",
+    "key_id": "ed25519:REPLACED_BY_PACKAGER",
+    "url": "https://github.com/congyoubanmian"
+  },
+  "compatibility": {
+    "dian115": ">=3.8.51 <5.0.0",
+    "plugin_api": "^2.0"
+  },
+  "runtime": {
+    "kind": "wasm",
+    "entry": "runtime/plugin.wasm",
+    "protocol": "dian115:wasm@1",
+    "startup_timeout_ms": 10000,
+    "timeout_ms": 20000,
+    "background_timeout_ms": 240000,
+    "max_concurrency": 1,
+    "restart_policy": "on-failure",
+    "memory_mb": 128,
+    "resident": false
+  },
+  "permissions": {
+    "apis": [
+      {
+        "method": "GET",
+        "path": "/api/subscribe/pool/intents",
+        "reason": "读取订阅池的剧集订阅（media_type=tv），作为「应有多少集」的已知值来源"
+      },
+      {
+        "method": "PATCH",
+        "path": "/api/subscribe/pool/intents/:id/episodes",
+        "reason": "把某一季的 total_episodes 抬到与 Emby 已有集数/TMDB 集数一致（只增，绝不缩小）"
+      },
+      {
+        "method": "GET",
+        "path": "/api/plugin-host/emby/instances",
+        "reason": "列出 Emby 实例，选出默认或用户指定的实例来查询覆盖"
+      },
+      {
+        "method": "GET",
+        "path": "/api/plugin-host/emby/episodes",
+        "reason": "查询该剧该季在 Emby 已有的集号列表（缺集判定的依据）"
+      },
+      {
+        "method": "GET",
+        "path": "/api/subscribe/air-calendar",
+        "reason": "读取追剧日历，生成未来若干天的播出安排与日报的「今日播出」段"
+      },
+      {
+        "method": "GET",
+        "path": "/api/tmdb/tv/:id",
+        "reason": "读取 TMDB 剧集详情里该季的 episode_count，作为补订的目标上限"
+      },
+      {
+        "method": "POST",
+        "path": "/api/notifications/plugin",
+        "reason": "投递每个自然日至多一次的追剧日报（带去重键，无交互按钮）"
+      },
+      {
+        "method": "GET",
+        "path": "/api/plugin-runtime/storage/:key",
+        "reason": "读取本插件自己的状态文档（state 单键）：设置、上一轮结果与诊断"
+      },
+      {
+        "method": "PUT",
+        "path": "/api/plugin-runtime/storage/:key",
+        "reason": "写回状态文档（带 ETag If-Match 乐观锁与唯一幂等键）"
+      }
+    ],
+    "network": []
+  },
+  "ui": {
+    "mode": "federation",
+    "icon": "frontend/icon.svg",
+    "federation": {
+      "entry": "frontend/dist/assets/remoteEntry.js",
+      "assets_root": "frontend/dist/assets",
+      "module": "./AppPage"
+    }
+  },
+  "jobs": [
+    {
+      "id": "align",
+      "handler": "alignHourly",
+      "default_schedule": "0 * * * *",
+      "allow_overlap": false
+    }
+  ],
+  "homepage": "https://github.com/congyoubanmian/dian115-plugins",
+  "repository": "https://github.com/congyoubanmian/dian115-plugins",
+  "license": "MIT",
+  "tags": [
+    "emby",
+    "subscribe",
+    "align",
+    "automation"
+  ]
+}
