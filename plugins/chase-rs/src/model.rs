@@ -185,6 +185,9 @@ pub struct AlignItem {
     pub emby_have_count: i64,
     /// 缺口上沿 = max(0, emby_have_max - total_known)。
     pub gap_max: i64,
+    /// 该季的 TMDB 目标集数(没取到 = 0)。align-now 连同 Emby 覆盖一起复用这一行,
+    /// 就不必为同一季再花一次 host.call, 也不会退化成"只按 Emby 缺口"判定。
+    pub target_upper: i64,
     pub from_total: i64,
     pub to_total: i64,
     /// `patched` | `dry-run` | `skipped` | `failed`。

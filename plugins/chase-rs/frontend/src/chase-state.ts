@@ -17,6 +17,8 @@ export interface AlignItem {
   emby_have_count?: number
   /** 缺口上沿 = max(0, emby_have_max - total_known)。 */
   gap_max?: number
+  /** 该季的 TMDB 目标集数(没取到 = 0); align-now 会连同覆盖一起复用这一行。 */
+  target_upper?: number
   from_total?: number
   to_total?: number
   /** `patched` | `dry-run` | `skipped` | `failed`。 */

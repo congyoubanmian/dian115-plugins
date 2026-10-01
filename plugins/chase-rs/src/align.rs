@@ -61,14 +61,24 @@ impl Evidence {
     }
 
     /// 从缓存(align-now 复用 `state.align.items` 里的 6 小时内结果)组装证据。
-    pub fn from_cache(from_total: i64, have_max: i64, have_count: i64) -> Evidence {
+    ///
+    /// 缓存的**行**按 (intent_id, tmdb_id, season) 命中(见
+    /// `runtime::Runtime::cached_coverage`), 所以这里把该行记录的目标集数一并带上:
+    /// 固定写 0 会让 align-now 对同一季给出与整点对齐不同的目标(只用 Emby 缺口),
+    /// 而缓存行本身就有那次的 TMDB 目标。缺失/没取到仍是 0。
+    pub fn from_cache(
+        from_total: i64,
+        have_max: i64,
+        have_count: i64,
+        target_upper: i64,
+    ) -> Evidence {
         let have_max = if have_max >= 0 { Some(have_max) } else { None };
         Evidence {
             from_total,
             have_max,
             have_count: if have_count >= 0 { Some(have_count) } else { None },
             gap_max: have_max.filter(|max| *max > from_total).unwrap_or(0),
-            target_upper: 0,
+            target_upper: target_upper.max(0),
         }
     }
 }
@@ -341,18 +351,28 @@ mod tests {
 
     #[test]
     fn cached_evidence_feeds_align_now() {
-        let evidence = Evidence::from_cache(10, 14, 14);
+        // 缓存行里没有目标(或没取到) → 只用 Emby 缺口判定
+        let evidence = Evidence::from_cache(10, 14, 14, 0);
         assert_eq!(evidence.have_max, Some(14));
         assert_eq!(evidence.gap_max, 14);
-        assert_eq!(evidence.target_upper, 0, "缓存路径没有 TMDB 目标");
+        assert_eq!(evidence.target_upper, 0, "缓存行没有目标时才是 0");
         let decision = decide(&evidence, &settings(20), false);
         assert_eq!(decision.action, ACTION_PATCHED);
         assert_eq!(decision.to_total, 14);
 
+        // 缓存行带着该季的目标 → align-now 与整点对齐同目标, 不会被压成纯 Emby 缺口
+        let with_target = Evidence::from_cache(10, 14, 3, 16);
+        assert_eq!(with_target.target_upper, 16);
+        assert_eq!(with_target.gap_max, 14);
+        let decision = decide(&with_target, &settings(20), false);
+        assert_eq!(decision.to_total, 16);
+
         // 缓存里记录的是 -1(未知) → 不能据此补订
-        let unknown = Evidence::from_cache(10, -1, -1);
+        let unknown = Evidence::from_cache(10, -1, -1, 0);
         assert_eq!(unknown.have_max, None);
         assert_eq!(decide(&unknown, &settings(20), false).action, ACTION_SKIPPED);
+        // 负数目标同样夹掉, 不参与抬升
+        assert_eq!(Evidence::from_cache(10, 14, 14, -3).target_upper, 0);
     }
 
     #[test]
@@ -465,13 +485,13 @@ mod tests {
 
     #[test]
     fn cached_zero_coverage_is_known_zero_not_unknown() {
-        let evidence = Evidence::from_cache(10, 0, 0);
+        let evidence = Evidence::from_cache(10, 0, 0, 0);
         assert_eq!(evidence.have_max, Some(0), "缓存里的 0 集是已知事实");
         let decision = decide(&evidence, &settings(20), false);
         assert_eq!(decision.have_max, 0, "已知 0 与未知 -1 必须区分开");
         assert_eq!(decision.action, ACTION_SKIPPED);
         // 未知(-1)时缓存路径不产生任何结论
-        let unknown = Evidence::from_cache(10, -1, -1);
+        let unknown = Evidence::from_cache(10, -1, -1, 0);
         assert_eq!(unknown.have_count, None);
         assert_eq!(decide(&unknown, &settings(20), false).action, ACTION_SKIPPED);
     }

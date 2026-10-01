@@ -426,14 +426,16 @@ impl Runtime {
                 break;
             }
 
-            // 优先用 6 小时内新鲜的缓存判定
+            // 优先用 6 小时内新鲜的缓存判定。
+            // 缓存按 (intent_id, tmdb_id, season) 命中: 用户在窗口内改了剧/季, 旧行
+            // 直接作废(否则会拿上一季的 have_max 判定并 PATCH, 连探测都省了)。
             let cached = cache
-                .get(&intent.id)
-                .filter(|(at, _, _)| is_fresh(at, CACHE_FRESH_SECS))
+                .get(&(intent.id, intent.tmdb_id, intent.season))
+                .filter(|(at, _, _, _)| is_fresh(at, CACHE_FRESH_SECS))
                 .cloned();
             let evidence = match cached {
-                Some((_, have_max, have_count)) => {
-                    Evidence::from_cache(intent.total_known, have_max, have_count)
+                Some((_, have_max, have_count, target_upper)) => {
+                    Evidence::from_cache(intent.total_known, have_max, have_count, target_upper)
                 }
                 None => {
                     let remaining = ALIGN_NOW_PROBE_LIMIT.saturating_sub(probe_calls);
@@ -492,6 +494,8 @@ impl Runtime {
                                     reason: failure.message.clone(),
                                 },
                                 &now,
+                                // 实测路径: 该条这轮没有 TMDB 目标(探测量都给 Emby 了)
+                                0,
                             ));
                             continue;
                         }
@@ -514,6 +518,7 @@ impl Runtime {
                                 ..decision.clone()
                             },
                             &now,
+                            evidence.target_upper,
                         ));
                         continue;
                     }
@@ -530,16 +535,16 @@ impl Runtime {
                     } else {
                         counters.failed = counters.failed.saturating_add(1);
                     }
-                    items.push(item_of(intent, outcome, &now));
+                    items.push(item_of(intent, outcome, &now, evidence.target_upper));
                 }
                 align::ACTION_DRY_RUN => {
                     planned += 1;
                     counters.aligned = counters.aligned.saturating_add(1);
-                    items.push(item_of(intent, decision, &now));
+                    items.push(item_of(intent, decision, &now, evidence.target_upper));
                 }
                 _ => {
                     counters.skipped = counters.skipped.saturating_add(1);
-                    items.push(item_of(intent, decision, &now));
+                    items.push(item_of(intent, decision, &now, evidence.target_upper));
                 }
             }
         }
@@ -1011,8 +1016,18 @@ impl Runtime {
                         "pool.intents",
                         &format!("limit={}&offset={offset}", intents::LIMIT_MAX),
                         fetched.http_status,
-                        &format!("items={received}"),
+                        &format!("items={received}&skipped={}", fetched.page.skipped),
                     );
+                    if fetched.page.skipped > 0 {
+                        // 字段不完整的条目被跳过(不填默认值): 留一条可读告警,
+                        // 免得宿主契约变化时静默少对齐几条。
+                        let message = format!(
+                            "订阅池第 {} 页有 {} 条条目字段不完整, 已跳过(不填默认值)",
+                            page + 1,
+                            fetched.page.skipped
+                        );
+                        self.state.log("warning", &message);
+                    }
                     if received < intents::LIMIT_MAX as usize {
                         break;
                     }
@@ -1116,6 +1131,7 @@ impl Runtime {
                                 reason: format!("状态 {} 不参与补订", display_state(&intent.state)),
                             },
                             &now,
+                            0,
                         ),
                     );
                     continue;
@@ -1136,6 +1152,7 @@ impl Runtime {
                                 reason: format!("已达单轮补订上限 {patch_limit} 条"),
                             },
                             &now,
+                            0,
                         ),
                     );
                     continue;
@@ -1171,6 +1188,7 @@ impl Runtime {
                                         reason: "同一剧集本轮已探测失败, 不重复消耗预算".to_string(),
                                     },
                                     &now,
+                                    0,
                                 ),
                             );
                             continue;
@@ -1195,6 +1213,7 @@ impl Runtime {
                                         ),
                                     },
                                     &now,
+                                    0,
                                 ),
                             );
                             continue;
@@ -1252,6 +1271,7 @@ impl Runtime {
                                             reason: failure.message.clone(),
                                         },
                                         &now,
+                                        0,
                                     ),
                                 );
                                 continue;
@@ -1295,6 +1315,7 @@ impl Runtime {
                                         ..decision.clone()
                                     },
                                     &now,
+                                    target_upper,
                                 ),
                             );
                         } else {
@@ -1307,16 +1328,16 @@ impl Runtime {
                                 // 非 200 记 failed: 本轮不重试, 下一小时再来
                                 counters.failed = counters.failed.saturating_add(1);
                             }
-                            push_align_item(&mut items, item_of(intent, outcome, &now));
+                            push_align_item(&mut items, item_of(intent, outcome, &now, target_upper));
                         }
                     }
                     align::ACTION_DRY_RUN => {
                         counters.aligned = counters.aligned.saturating_add(1);
-                        push_align_item(&mut items, item_of(intent, decision, &now));
+                        push_align_item(&mut items, item_of(intent, decision, &now, target_upper));
                     }
                     _ => {
                         counters.skipped = counters.skipped.saturating_add(1);
-                        push_align_item(&mut items, item_of(intent, decision, &now));
+                        push_align_item(&mut items, item_of(intent, decision, &now, target_upper));
                     }
                 }
 
@@ -1524,14 +1545,27 @@ impl Runtime {
             .collect();
     }
 
-    /// align-now 的缓存: intent_id → (探测时刻, have_max, have_count)。
-    fn cached_coverage(&self) -> BTreeMap<i64, (String, i64, i64)> {
+    /// align-now 的缓存: (intent_id, tmdb_id, season) → (探测时刻, have_max,
+    /// have_count, target_upper)。
+    ///
+    /// 键里必须带 tmdb_id/season: 订阅的剧/季在 6 小时窗口内被改过时, 只按
+    /// intent_id 命中就会拿**上一季**的 have_max(和目标)去判定并 PATCH, 而且
+    /// 因为"缓存命中"连 Emby 都不再探测。
+    fn cached_coverage(&self) -> BTreeMap<(i64, i64, i64), (String, i64, i64, i64)> {
         self.state
             .align
             .items
             .iter()
             .map(|item| {
-                (item.intent_id, (item.at.clone(), item.emby_have_max, item.emby_have_count))
+                (
+                    (item.intent_id, item.tmdb_id, item.season),
+                    (
+                        item.at.clone(),
+                        item.emby_have_max,
+                        item.emby_have_count,
+                        item.target_upper,
+                    ),
+                )
             })
             .collect()
     }
@@ -1696,7 +1730,10 @@ impl std::fmt::Display for OpError {
 impl std::error::Error for OpError {}
 
 /// 判定结果 → 状态文档里的一行。
-fn item_of(intent: &Intent, decision: Decision, at: &str) -> AlignItem {
+///
+/// `target_upper` 是该条这一轮用的该季 TMDB 目标(没取到/还没轮到取 = 0):
+/// 它随行落进状态文档, align-now 复用缓存行时就能拿到与整点对齐相同的目标。
+fn item_of(intent: &Intent, decision: Decision, at: &str, target_upper: i64) -> AlignItem {
     AlignItem {
         intent_id: intent.id,
         tmdb_id: intent.tmdb_id,
@@ -1706,6 +1743,7 @@ fn item_of(intent: &Intent, decision: Decision, at: &str) -> AlignItem {
         emby_have_max: decision.have_max,
         emby_have_count: decision.have_count,
         gap_max: decision.gap_max,
+        target_upper: target_upper.max(0),
         from_total: decision.from_total,
         to_total: decision.to_total,
         action: decision.action.to_string(),
@@ -2117,6 +2155,52 @@ mod tests {
         drop(guard);
     }
 
+    /// 订阅池里字段不完整的条目(缺 season / media_type 等)在解析层就被跳过:
+    /// 既不能拿默认值参与对齐, 也不能静默消失 —— 要留一条可读告警。
+    #[test]
+    fn incomplete_intents_are_skipped_and_reported() {
+        let fake = FakeHost::new();
+        fake.route_prefix(
+            "GET",
+            "GET /api/subscribe/pool/intents?",
+            200,
+            r#"{"code":"ok","data":[
+                 {"id":41,"tmdb_id":1396,"season":5,"media_type":"tv",
+                  "title":"绝命毒师","total_episodes_known":10,"state":"partial"},
+                 {"id":42,"tmdb_id":1399,"title":"权力的游戏",
+                  "total_episodes_known":5,"state":"partial"}
+               ],"counts":{}}"#.as_bytes(),
+        );
+        fake.route_prefix("GET", "GET /api/plugin-host/emby/instances", 200, &instances_body());
+        fake.route_prefix("GET", "GET /api/plugin-host/emby/episodes?", 200, &episodes_body());
+        fake.route_prefix("GET", "GET /api/subscribe/air-calendar", 200, &calendar_body());
+        fake.route_prefix("GET", "GET /api/tmdb/tv/", 200, &tmdb_body());
+        fake.route_prefix("PATCH", "PATCH /api/subscribe/pool/intents/", 200, b"{}");
+        let guard = fake.install();
+        let mut runtime = Runtime::new();
+        runtime.ensure_loaded();
+        let result = job(&mut runtime, "align");
+        assert_eq!(result["status"], "accepted", "{result}");
+        assert_eq!(result["patched"], 1, "只有字段完整的那条参与: {result}");
+        assert_eq!(result["intents_seen"], 1, "缺 season/media_type 的条目不算数");
+        assert_eq!(fake.patches().len(), 1);
+
+        let doc = stored(&fake);
+        assert_eq!(doc.align.items.len(), 1);
+        assert_eq!(doc.stats.tv_intents, 1);
+        assert!(
+            doc.logs
+                .iter()
+                .any(|entry| entry.level == "warning" && entry.message.contains("字段不完整")),
+            "被跳过的畸形条目要留告警: {:?}",
+            doc.logs.iter().map(|entry| &entry.message).collect::<Vec<_>>()
+        );
+        // 告警里不得出现被丢弃条目的具体值(更不得出现凭据键名)
+        let text = String::from_utf8(doc_bytes(&fake)).unwrap();
+        assert!(!text.contains("api_key"), "{text}");
+        drop(guard);
+    }
+
     #[test]
     fn pool_list_failure_skips_the_whole_round_with_zero_writes() {
         let fake = FakeHost::new();
@@ -2417,6 +2501,120 @@ mod tests {
         .unwrap();
         assert_eq!(String::from_utf8_lossy(&body), r#"{"total_episodes":12}"#);
         assert!(fake.puts().is_empty(), "align-now 不落盘");
+        drop(guard);
+    }
+
+    /// 缓存行只在 (intent_id, tmdb_id, season) 全同时才算命中: 订阅在 6 小时窗口内
+    /// 改了季, 旧行的 have_max 是**另一季**的, 必须重新实测再判定。
+    #[test]
+    fn align_now_does_not_reuse_a_cache_row_from_another_season() {
+        let fake = FakeHost::new();
+        let at = clock::now_rfc3339();
+        // 缓存行: 第 5 季, Emby 已有到第 12 集(旧值), 目标 16 集 —— 全是第 5 季的
+        fake.set(
+            "state",
+            format!(
+                r#"{{"schema_version":1,"revision":7,
+                    "emby_instances":[{{"id":3,"name":"客厅","is_default":true,"key_ready":true}}],
+                    "align":{{"items":[{{"intent_id":41,"tmdb_id":1396,"season":5,"title":"绝命毒师",
+                        "total_known":2,"emby_have_max":12,"emby_have_count":3,"gap_max":10,
+                        "target_upper":16,"from_total":2,"to_total":12,
+                        "action":"patched","reason":"","at":"{at}"}}]}}}}"#
+            )
+            .as_bytes(),
+        );
+        // 订阅池里同一条现在指向第 1 季
+        fake.route_prefix(
+            "GET",
+            "GET /api/subscribe/pool/intents?",
+            200,
+            r#"{"code":"ok","data":[{"id":41,"tmdb_id":1396,"season":1,"media_type":"tv",
+                 "title":"绝命毒师","total_episodes_known":2,"state":"partial"}],"counts":{}}"#.as_bytes(),
+        );
+        // 第 1 季在 Emby 里只有 4 集 → 缺口 4(误用第 5 季缓存会补到 12)
+        fake.route_prefix(
+            "GET",
+            "GET /api/plugin-host/emby/episodes?",
+            200,
+            br#"{"items":[{"index_number":1},{"index_number":2},{"index_number":3},{"index_number":4}]}"#,
+        );
+        fake.route_prefix("PATCH", "PATCH /api/subscribe/pool/intents/", 200, b"{}");
+        let guard = fake.install();
+        let mut runtime = Runtime::new();
+        runtime.ensure_loaded();
+        let calls_before = crate::host::observed_calls();
+
+        let result = action(&mut runtime, "align-now", json!({}));
+        assert_eq!(result["patched"], 1, "{result}");
+        assert_eq!(fake.patches().len(), 1);
+        let body = crate::host::decode_response_body(&crate::host::HostCallResponse {
+            status: 200,
+            headers: Default::default(),
+            body_base64: fake.patches()[0].body_base64.clone(),
+        })
+        .unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&body),
+            r#"{"total_episodes":4}"#,
+            "必须用第 1 季的实测覆盖, 不是第 5 季缓存里的 12 集"
+        );
+        let calls = crate::host::observed_calls() - calls_before;
+        assert_eq!(calls, 3, "换季后必须重新探 Emby(1 页订阅池 + 1 次探测 + 1 次 PATCH), 实际 {calls}");
+        assert!(
+            fake.business_paths().iter().any(|path| path.contains("season=1")),
+            "探测的必须是新季: {:?}",
+            fake.business_paths()
+        );
+        assert!(fake.puts().is_empty(), "align-now 不落盘");
+        drop(guard);
+    }
+
+    /// 缓存行命中时连同该季的 TMDB 目标一起复用: 不能退化成"只按 Emby 缺口"判定,
+    /// 否则同一季在 align-now 与整点对齐下会得出不同的总数。
+    #[test]
+    fn align_now_reuses_the_cached_season_target() {
+        let fake = FakeHost::new();
+        let at = clock::now_rfc3339();
+        fake.set(
+            "state",
+            format!(
+                r#"{{"schema_version":1,"revision":7,
+                    "emby_instances":[{{"id":3,"name":"客厅","is_default":true,"key_ready":true}}],
+                    "align":{{"items":[{{"intent_id":41,"tmdb_id":1396,"season":5,"title":"绝命毒师",
+                        "total_known":10,"emby_have_max":12,"emby_have_count":3,"gap_max":2,
+                        "target_upper":16,"from_total":10,"to_total":16,
+                        "action":"patched","reason":"","at":"{at}"}}]}}}}"#
+            )
+            .as_bytes(),
+        );
+        fake.route_prefix(
+            "GET",
+            "GET /api/subscribe/pool/intents?",
+            200,
+            r#"{"code":"ok","data":[{"id":41,"tmdb_id":1396,"season":5,"media_type":"tv",
+                 "title":"绝命毒师","total_episodes_known":10,"state":"partial"}],"counts":{}}"#.as_bytes(),
+        );
+        fake.route_prefix("PATCH", "PATCH /api/subscribe/pool/intents/", 200, b"{}");
+        let guard = fake.install();
+        let mut runtime = Runtime::new();
+        runtime.ensure_loaded();
+        let calls_before = crate::host::observed_calls();
+
+        let result = action(&mut runtime, "align-now", json!({}));
+        assert_eq!(result["patched"], 1, "{result}");
+        let body = crate::host::decode_response_body(&crate::host::HostCallResponse {
+            status: 200,
+            headers: Default::default(),
+            body_base64: fake.patches()[0].body_base64.clone(),
+        })
+        .unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&body),
+            r#"{"total_episodes":16}"#,
+            "缓存行里的该季目标(16)大于 Emby 覆盖(12), 必须用上"
+        );
+        let calls = crate::host::observed_calls() - calls_before;
+        assert_eq!(calls, 2, "缓存命中 → 1 页订阅池 + 1 次 PATCH, 不再探 Emby: {calls}");
         drop(guard);
     }
 

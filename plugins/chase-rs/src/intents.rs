@@ -8,8 +8,10 @@
 //! 中间层曾出现过 `data` 不是数组的形态, 所以解析仍按防御式来:
 //!
 //! - 根可以是数组(裸列表)或对象; 对象里 `data` 优先, 再退 `items`/`records`/`list`;
-//! - 每条的 `id` / `tmdb_id` / `total_episodes_known` 三个字段缺一不可(缺了就跳过该条,
-//!   **不填 0 继续** —— 0 集订阅会让对齐器算出一个假的缺口);
+//! - 每条的 `id` / `tmdb_id` / `total_episodes_known` / `season` / `media_type` 缺一不可
+//!   (缺了就跳过该条, **不填默认值继续** —— 0 集订阅会算出假缺口, `season` 缺省成 0
+//!   会把 TMDB 查询打到特别篇上, `media_type` 缺省成 "tv" 则是把可能是电影的条目
+//!   当成追剧条目写进统计与界面; 规范里这五个字段都是必填, 见 openapi-v1.yaml:6548-6557);
 //! - 数组非空但**一条都解不出来** ⇒ 判为形状不匹配(整轮跳过), 而不是"本轮没有订阅"。
 //!
 //! # 写方向
@@ -139,14 +141,23 @@ pub fn parse_list(raw: &[u8]) -> Result<IntentPage, String> {
     Ok(page)
 }
 
-/// 解析单条; 关键字段(id / tmdb_id / total_episodes_known)缺失即 `None`。
+/// 解析单条; 关键字段(id / tmdb_id / total_episodes_known / season / media_type)
+/// 缺失即 `None`。
+///
+/// `season` / `media_type` 与另外三个一样是 `PoolIntent` 的必填字段
+/// (openapi-v1.yaml:6548-6557), 缺了**不能**拿 0 / "tv" 顶替:
+/// - `season` 缺省成 0 ⇒ 探测与 TMDB 查询都打到特别篇(season 0)上, 得到的
+///   `have_max` 与整点对齐的季不是同一季;
+/// - `media_type` 缺省成 "tv" ⇒ 即使宿主漏了媒体类型(或返回了电影), 该条也会被
+///   当成追剧条目参与对齐, 并把默认值原样写进统计与界面。
 pub fn parse_intent(element: &serde_json::Value) -> Option<Intent> {
     let obj = element.as_object()?;
     let id = raw::first_i64(obj, &["id", "intent_id"])?;
     let tmdb_id = raw::first_i64(obj, &["tmdb_id", "tmdbId"])?;
     let total_known = raw::first_i64(obj, &["total_episodes_known", "total_episodes"])?;
-    let media_type = raw::first_string(obj, &["media_type"]).unwrap_or_else(|| MEDIA_TYPE.to_string());
-    let season = raw::first_i64(obj, &["season"]).unwrap_or(0);
+    let media_type =
+        raw::first_string(obj, &["media_type"]).filter(|text| !text.is_empty())?;
+    let season = raw::first_i64(obj, &["season"])?;
     let title = raw::first_string(obj, &["title", "name"]).unwrap_or_default();
     let state = raw::first_string(obj, &["state"]).unwrap_or_default();
     let needed = raw::first_string(obj, &["needed_episodes"]).filter(|text| !text.is_empty());
@@ -249,8 +260,8 @@ mod tests {
     fn loose_fixture() -> Vec<u8> {
         r#"{
           "data": {"items": [
-            {"intent_id": "7", "tmdbId": "1396", "season": "5", "name": "绝命毒师",
-             "total_episodes": "13", "state": "caught_up"}
+            {"intent_id": "7", "tmdbId": "1396", "season": "5", "media_type": "tv",
+             "name": "绝命毒师", "total_episodes": "13", "state": "caught_up"}
           ]}
         }"#.as_bytes()
         .to_vec()
@@ -258,7 +269,8 @@ mod tests {
 
     /// 裸数组形态(没有信封)。
     fn bare_fixture() -> Vec<u8> {
-        br#"[{"id": 9, "tmdb_id": 99, "season": 1, "total_episodes_known": 8, "state": "pending"}]"#
+        br#"[{"id": 9, "tmdb_id": 99, "season": 1, "media_type": "tv",
+              "total_episodes_known": 8, "state": "pending"}]"#
             .to_vec()
     }
 
@@ -286,7 +298,7 @@ mod tests {
         assert_eq!(loose.items[0].id, 7);
         assert_eq!(loose.items[0].tmdb_id, 1396);
         assert_eq!(loose.items[0].total_known, 13);
-        assert_eq!(loose.items[0].media_type, "tv", "缺 media_type 按 tv 处理(请求已按 tv 过滤)");
+        assert_eq!(loose.items[0].media_type, "tv", "media_type 从载荷里读, 不是默认值");
 
         let bare = parse_list(&bare_fixture()).unwrap();
         assert_eq!(bare.items.len(), 1);
@@ -316,15 +328,41 @@ mod tests {
         let raw = br#"{
           "code": "ok",
           "data": [
-            {"id": 1, "tmdb_id": 2, "total_episodes_known": 3},
-            {"id": 4, "tmdb_id": 5},
-            {"tmdb_id": 6, "total_episodes_known": 7},
+            {"id": 1, "tmdb_id": 2, "season": 1, "media_type": "tv", "total_episodes_known": 3},
+            {"id": 4, "tmdb_id": 5, "media_type": "tv", "total_episodes_known": 6},
+            {"id": 7, "tmdb_id": 8, "season": 2, "total_episodes_known": 9},
+            {"id": 10, "tmdb_id": 11, "season": 3, "media_type": "tv"},
             "not an object"
           ]
         }"#;
         let page = parse_list(raw).unwrap();
         assert_eq!(page.items.len(), 1, "只有完整的一条能被收下");
-        assert_eq!(page.skipped, 3);
+        // 缺 season / 缺 media_type / 缺 total_episodes_known / 非对象 → 四条全跳过,
+        // 没有一条会被填上默认 season=0 或默认 media_type="tv" 混进来。
+        assert_eq!(page.skipped, 4);
+    }
+
+    #[test]
+    fn missing_season_or_media_type_is_skipped_not_defaulted() {
+        // 规范里 season / media_type 都是必填(openapi-v1.yaml:6548-6557):
+        // 缺 season ⇒ TMDB 查询会落到 season=0(特别篇); 缺 media_type ⇒ 电影也可能
+        // 被当成追剧条目参与对齐。两种都必须跳过, 不能拿默认值顶替。
+        let base = json!({"id": 1, "tmdb_id": 2, "season": 5, "media_type": "tv", "total_episodes_known": 3});
+        assert!(parse_intent(&base).is_some());
+        let mut no_season = base.clone();
+        no_season.as_object_mut().unwrap().remove("season");
+        assert!(parse_intent(&no_season).is_none(), "缺 season 必须跳过");
+        let mut no_type = base.clone();
+        no_type.as_object_mut().unwrap().remove("media_type");
+        assert!(parse_intent(&no_type).is_none(), "缺 media_type 必须跳过");
+        // 空串等同于缺失(否则会被当成"非 tv"而静默漏掉, 而不是记进 skipped)
+        let mut empty_type = base.clone();
+        empty_type["media_type"] = json!("");
+        assert!(parse_intent(&empty_type).is_none());
+        // 认得出类型但不是 tv 的条目照常收下(由调用方按 MEDIA_TYPE 过滤)
+        let mut movie = base;
+        movie["media_type"] = json!("movie");
+        assert_eq!(parse_intent(&movie).unwrap().media_type, "movie");
     }
 
     #[test]
@@ -417,7 +455,13 @@ mod tests {
     #[test]
     fn patch_path_targets_the_documented_route() {
         assert_eq!(patch_path(41), "/api/subscribe/pool/intents/41/episodes");
-        assert_eq!(parse_intent(&json!({"id": -1, "tmdb_id": 2, "total_episodes_known": 0})).unwrap().id, -1);
+        assert_eq!(
+            parse_intent(&json!({"id": -1, "tmdb_id": 2, "season": 0, "media_type": "movie",
+                                 "total_episodes_known": 0}))
+            .unwrap()
+            .id,
+            -1
+        );
     }
 
     // ── 三路径之二/之三: 失败分类 + 逐字段边界 ──
@@ -446,18 +490,21 @@ mod tests {
 
     #[test]
     fn parse_intent_rejects_incomplete_entries_and_clamps_ranges() {
-        // 三个关键字段缺一不可: 缺了就跳过, 绝不填 0 继续(0 集订阅会算出假缺口)
-        assert!(parse_intent(&json!({"tmdb_id": 1, "total_episodes_known": 2})).is_none());
-        assert!(parse_intent(&json!({"id": 1, "total_episodes_known": 2})).is_none());
-        assert!(parse_intent(&json!({"id": 1, "tmdb_id": 2})).is_none());
-        assert!(parse_intent(&json!({"id": "x", "tmdb_id": 2, "total_episodes_known": 2})).is_none());
+        // 关键字段缺一不可: 缺了就跳过, 绝不填默认值继续
+        // (0 集订阅会算出假缺口; 缺 season 会去查特别篇; 缺 media_type 会把电影当追剧)
+        assert!(parse_intent(&json!({"tmdb_id": 1, "season": 1, "media_type": "tv", "total_episodes_known": 2})).is_none());
+        assert!(parse_intent(&json!({"id": 1, "season": 1, "media_type": "tv", "total_episodes_known": 2})).is_none());
+        assert!(parse_intent(&json!({"id": 1, "tmdb_id": 2, "season": 1, "media_type": "tv"})).is_none());
+        assert!(parse_intent(&json!({"id": 1, "tmdb_id": 2, "media_type": "tv", "total_episodes_known": 2})).is_none());
+        assert!(parse_intent(&json!({"id": 1, "tmdb_id": 2, "season": 1, "total_episodes_known": 2})).is_none());
+        assert!(parse_intent(&json!({"id": "x", "tmdb_id": 2, "season": 1, "media_type": "tv", "total_episodes_known": 2})).is_none());
         assert!(parse_intent(&json!("not an object")).is_none());
         assert!(parse_intent(&json!(null)).is_none());
 
-        // 负集数/负季号夹到 0, 超长标题按 UTF-8 边界截断
+        // 负集数/负季号夹到 0(字段在, 只是值越界), 超长标题按 UTF-8 边界截断
         let intent = parse_intent(&json!({
-            "id": 3, "tmdb_id": 4, "season": -2, "total_episodes_known": -9,
-            "title": "剧".repeat(200)
+            "id": 3, "tmdb_id": 4, "season": -2, "media_type": "tv",
+            "total_episodes_known": -9, "title": "剧".repeat(200)
         }))
         .unwrap();
         assert_eq!(intent.total_known, 0);
