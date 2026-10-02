@@ -289,12 +289,12 @@
     {
       "id": "music.rs",
       "name": "音乐下载（Rust 版）",
-      "version": "0.3.5",
+      "version": "0.3.6",
       "description": "网易云/QQ 音乐扫码登录、搜索与音质自选取链；无 sidecar，由宿主代理下载（本地暂存 → CD2 入库），任务状态落 KV 队列并支持 Telegram 回调重试。",
       "author": "congyoubanmian",
       "homepage": "https://github.com/congyoubanmian/dian115-plugins",
-      "package_url": "https://github.com/congyoubanmian/dian115-plugins/releases/download/music-rs-v0.3.5/music.rs-0.3.5.d115p",
-      "sha256": "605ee7b7d485687040c7b2581f4e32164403900c4223d32bdbc0d424b1b4cc73",
+      "package_url": "https://github.com/congyoubanmian/dian115-plugins/releases/download/music-rs-v0.3.6/music.rs-0.3.6.d115p",
+      "sha256": "828bc07bb680847d31bebab2553546f9a3a5f1b6ae52e4ff5dd786b18b6d6a65",
       "runtime": {
         "kind": "wasm",
         "protocol": "dian115:wasm@1",
@@ -362,7 +362,7 @@
               "GET",
               "POST"
             ],
-            "proxy_mode": "system",
+            "proxy_mode": "direct",
             "reason": "网易云搜索（POST /api/cloudsearch/pc）与扫码登录页（music.163.com/login?codekey=，由用户手机扫描）"
           },
           {
@@ -371,7 +371,7 @@
               "GET",
               "POST"
             ],
-            "proxy_mode": "system",
+            "proxy_mode": "direct",
             "reason": "网易云扫码登录：取 unikey（/api/login/qrcode/unikey）与轮询登录态（/api/login/qrcode/client/login）"
           },
           {
@@ -380,7 +380,7 @@
               "GET",
               "POST"
             ],
-            "proxy_mode": "system",
+            "proxy_mode": "direct",
             "reason": "网易云 eapi 取链（/eapi/song/enhance/player/url/v1），按所选音质向下逐级尝试"
           },
           {
@@ -389,7 +389,7 @@
               "GET",
               "POST"
             ],
-            "proxy_mode": "system",
+            "proxy_mode": "direct",
             "reason": "QQ 扫码登录：ptqrshow 取二维码、ptqrlogin 轮询扫码结果与回跳地址"
           },
           {
@@ -398,7 +398,7 @@
               "GET",
               "POST"
             ],
-            "proxy_mode": "system",
+            "proxy_mode": "direct",
             "reason": "微信扫码登录：connect/qrconnect 取登录页与 connect/qrcode/<uuid> 二维码图片"
           },
           {
@@ -407,7 +407,7 @@
               "GET",
               "POST"
             ],
-            "proxy_mode": "system",
+            "proxy_mode": "direct",
             "reason": "微信扫码轮询（connect/l/qrconnect）：拿 wx_errcode / wx_code，再用 code 换 QQ 音乐 cookie"
           },
           {
@@ -416,7 +416,7 @@
               "GET",
               "POST"
             ],
-            "proxy_mode": "system",
+            "proxy_mode": "direct",
             "reason": "QQ 音乐核心接口（cgi-bin/musicu.fcg）：微信 code 换 cookie 与歌曲取链（music.vkey.GetVkey）"
           },
           {
@@ -425,7 +425,7 @@
               "GET",
               "POST"
             ],
-            "proxy_mode": "system",
+            "proxy_mode": "direct",
             "reason": "QQ 音乐搜索（soso/fcgi-bin/search_for_qq_cp）"
           },
           {
@@ -434,7 +434,7 @@
               "GET",
               "POST"
             ],
-            "proxy_mode": "system",
+            "proxy_mode": "direct",
             "reason": "QQ 登录重定向链落点（oauth2.0/login_jump）：qqPollQR 成功后最多 8 跳跟随回跳、收集 QQ 音乐 cookie"
           },
           {
