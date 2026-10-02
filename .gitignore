@@ -23,3 +23,7 @@ node_modules/
 
 # Rust 构建产物（容器内 root 写入, 绝不提交）
 **/target/
+
+# music-rs: 宿主契约参考资料(打包时从官方仓库取, 不入库)与前端构建产物
+plugins/music-rs/docs-ref/
+plugins/music-rs/frontend/dist/

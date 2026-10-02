@@ -1,0 +1,197 @@
+{
+  "$schema": "https://raw.githubusercontent.com/madbrolab/dian115/main/docs/plugin-platform/manifest.schema.json",
+  "schema_version": 1,
+  "id": "music.rs",
+  "name": "音乐下载（Rust 版）",
+  "version": "0.3.0",
+  "description": "网易云/QQ 音乐扫码登录、搜索与音质自选取链；无 sidecar，由宿主代理下载（本地暂存 → CD2 入库），任务状态落 KV 队列并支持 Telegram 回调重试。",
+  "default_locale": "zh-CN",
+  "publisher": {
+    "name": "congyoubanmian",
+    "key_id": "ed25519:REPLACED_BY_PACKAGER",
+    "url": "https://github.com/congyoubanmian"
+  },
+  "compatibility": {
+    "dian115": ">=3.8.51 <5.0.0",
+    "plugin_api": "^2.0"
+  },
+  "runtime": {
+    "kind": "wasm",
+    "entry": "runtime/plugin.wasm",
+    "protocol": "dian115:wasm@1",
+    "startup_timeout_ms": 60000,
+    "shutdown_timeout_ms": 5000,
+    "timeout_ms": 60000,
+    "background_timeout_ms": 600000,
+    "memory_mb": 128,
+    "max_concurrency": 2,
+    "restart_policy": "on-failure"
+  },
+  "permissions": {
+    "apis": [
+      {
+        "method": "GET",
+        "path": "/api/plugin-host/files/roots",
+        "reason": "列出宿主可访问的文件根（本地暂存目录与 CD2 音乐目录），供下载落点选择"
+      },
+      {
+        "method": "GET",
+        "path": "/api/plugin-host/files/entries",
+        "reason": "浏览暂存目录与音乐目录条目，确认下载产物是否已落盘/入库"
+      },
+      {
+        "method": "POST",
+        "path": "/api/plugin-host/files/downloads",
+        "reason": "让宿主代下载：把网易云/QQ 直链下载到本地暂存目录（无 sidecar 的第一段）"
+      },
+      {
+        "method": "POST",
+        "path": "/api/plugin-host/files/directories",
+        "reason": "首次 pump 时在本地可写根下自动创建暂存目录"
+      },
+      {
+        "method": "GET",
+        "path": "/api/plugin-host/jobs/:job_ref",
+        "reason": "轮询宿主代下载任务的进度与结果，推进 KV 任务队列"
+      },
+      {
+        "method": "POST",
+        "path": "/api/local-files/rename",
+        "reason": "把 <短id>.part 暂存文件改名为最终曲名后再复制进目标目录"
+      },
+      {
+        "method": "POST",
+        "path": "/api/local-files/copy",
+        "reason": "把暂存完成的音频复制进 CD2 挂载的音乐目录（第二段），由 CD2 负责入库整理"
+      },
+      {
+        "method": "GET",
+        "path": "/api/plugin-runtime/storage/:key",
+        "reason": "读取状态文档（任务队列/登录会话/设置），带 ETag 用于乐观锁"
+      },
+      {
+        "method": "PUT",
+        "path": "/api/plugin-runtime/storage/:key",
+        "reason": "写入状态文档（If-Match 乐观锁 + 幂等键）"
+      },
+      {
+        "method": "POST",
+        "path": "/api/notifications/plugin",
+        "reason": "下载尝试用尽失败时推送错误通知（标题含歌名，带 retry:<短id> 重试按钮）"
+      }
+    ],
+    "network": [
+      {
+        "origin": "https://music.163.com",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "proxy_mode": "system",
+        "reason": "网易云搜索（POST /api/cloudsearch/pc）与扫码登录页（music.163.com/login?codekey=，由用户手机扫描）"
+      },
+      {
+        "origin": "https://interface.music.163.com",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "proxy_mode": "system",
+        "reason": "网易云扫码登录：取 unikey（/api/login/qrcode/unikey）与轮询登录态（/api/login/qrcode/client/login）"
+      },
+      {
+        "origin": "https://interface3.music.163.com",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "proxy_mode": "system",
+        "reason": "网易云 eapi 取链（/eapi/song/enhance/player/url/v1），按所选音质向下逐级尝试"
+      },
+      {
+        "origin": "https://ssl.ptlogin2.qq.com",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "proxy_mode": "system",
+        "reason": "QQ 扫码登录：ptqrshow 取二维码、ptqrlogin 轮询扫码结果与回跳地址"
+      },
+      {
+        "origin": "https://open.weixin.qq.com",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "proxy_mode": "system",
+        "reason": "微信扫码登录：connect/qrconnect 取登录页与 connect/qrcode/<uuid> 二维码图片"
+      },
+      {
+        "origin": "https://lp.open.weixin.qq.com",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "proxy_mode": "system",
+        "reason": "微信扫码轮询（connect/l/qrconnect）：拿 wx_errcode / wx_code，再用 code 换 QQ 音乐 cookie"
+      },
+      {
+        "origin": "https://u.y.qq.com",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "proxy_mode": "system",
+        "reason": "QQ 音乐核心接口（cgi-bin/musicu.fcg）：微信 code 换 cookie 与歌曲取链（music.vkey.GetVkey）"
+      },
+      {
+        "origin": "https://c.y.qq.com",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "proxy_mode": "system",
+        "reason": "QQ 音乐搜索（soso/fcgi-bin/search_for_qq_cp）"
+      },
+      {
+        "origin": "https://graph.qq.com",
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "proxy_mode": "system",
+        "reason": "QQ 登录重定向链落点（oauth2.0/login_jump）：qqPollQR 成功后最多 8 跳跟随回跳、收集 QQ 音乐 cookie"
+      }
+    ]
+  },
+  "ui": {
+    "mode": "federation",
+    "icon": "frontend/icon.svg",
+    "federation": {
+      "entry": "frontend/dist/assets/remoteEntry.js",
+      "assets_root": "frontend/dist/assets",
+      "module": "./AppPage"
+    }
+  },
+  "jobs": [
+    {
+      "id": "queue-pump",
+      "handler": "queuePump",
+      "default_schedule": "*/5 * * * *",
+      "allow_overlap": false
+    }
+  ],
+  "events": [
+    "telegram.callback"
+  ],
+  "homepage": "https://github.com/congyoubanmian/dian115-plugins",
+  "repository": "https://github.com/congyoubanmian/dian115-plugins",
+  "license": "MIT",
+  "tags": [
+    "music",
+    "netease",
+    "qq",
+    "rust",
+    "download"
+  ]
+}

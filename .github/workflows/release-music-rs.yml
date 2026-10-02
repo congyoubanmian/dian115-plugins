@@ -1,0 +1,149 @@
+name: 发布音乐下载 Rust 版插件
+
+# 推一个 music-rs-v<版本> 标签即自动: music-dl 依赖 npm ci → build-ui.mjs 构建本插件前端
+# (复用 music-dl 的 node_modules, 与本地构建同一路径) → rust:1-slim 容器编译 WASM →
+# 打包签名 → 生成市场索引(新增 music.rs 条目, 保留 douban.center/douban.rs/chase.rs/music.dl) →
+# 创建 Release 并上传 .d115p → 把索引回写到 main。
+#
+# 前置: 仓库 Secrets 里配置 DIAN115_PLUGIN_SIGNING_KEY（插件签名私钥的 PEM 全文）。
+
+on:
+  push:
+    tags:
+      - 'music-rs-v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '发布标签（需与插件版本一致，例如 music-rs-v0.3.0）'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: plugins/music-rs
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # 必须构建标签指向的提交: tag 先于 main 到达时 main 上还是旧 manifest,
+          # 版本校验会失败。dispatch 时用输入的 tag。
+          ref: ${{ github.event.inputs.tag || github.ref }}
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: 校验标签与清单版本一致
+        env:
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          VERSION=$(node -p "require('./manifest.template.json').version")
+          EXPECTED_TAG="music-rs-v$VERSION"
+          echo "tag=$TAG manifest=$VERSION expected=$EXPECTED_TAG"
+          [ "$TAG" = "$EXPECTED_TAG" ] || {
+            echo "::error::标签与 manifest 版本不一致（应为 $EXPECTED_TAG）"
+            exit 1
+          }
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "PACKAGE=music.rs-$VERSION.d115p" >> "$GITHUB_ENV"
+
+      # 前端不自带 node_modules: build-ui.mjs 软链复用同仓库 music-dl 的依赖,
+      # 所以先在 music-dl 里 npm ci 装出那份依赖(lockfile 已入库)。
+      - name: 安装 UI 依赖（music-dl 的 node_modules）
+        working-directory: plugins/music-dl
+        run: npm ci
+
+      - name: 构建前端产物（build-ui.mjs）
+        run: node build-ui.mjs
+
+      - name: 确认前端产物存在
+        run: |
+          test -f frontend/dist/assets/remoteEntry.js || {
+            echo "::error::缺少前端产物 plugins/music-rs/frontend/dist/assets/remoteEntry.js"
+            exit 1
+          }
+
+      - name: 构建 WASM 运行时（rust:1-slim）
+        run: |
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE/plugins/music-rs:/src" \
+            -w /src \
+            -e CARGO_TERM_COLOR=always \
+            rust:1-slim \
+            sh -c 'set -e; rustup target list --installed | grep -qx wasm32-unknown-unknown || rustup target add wasm32-unknown-unknown; cargo build --release --target wasm32-unknown-unknown'
+
+      - name: 校验构建产物
+        run: |
+          test -s target/wasm32-unknown-unknown/release/plugin.wasm || {
+            echo "::error::缺少 target/wasm32-unknown-unknown/release/plugin.wasm"
+            exit 1
+          }
+          ls -l target/wasm32-unknown-unknown/release/plugin.wasm
+
+      - name: 写入签名私钥
+        env:
+          SIGNING_KEY: ${{ secrets.DIAN115_PLUGIN_SIGNING_KEY }}
+        run: |
+          [ -n "$SIGNING_KEY" ] || { echo "::error::未配置 Secrets.DIAN115_PLUGIN_SIGNING_KEY"; exit 1; }
+          mkdir -p "$RUNNER_TEMP/dian115"
+          printf '%s\n' "$SIGNING_KEY" > "$RUNNER_TEMP/dian115/publisher.pem"
+          chmod 600 "$RUNNER_TEMP/dian115/publisher.pem"
+
+      - name: 打包并签名
+        env:
+          DIAN115_PLUGIN_SIGNING_KEY: ${{ runner.temp }}/dian115/publisher.pem
+        run: node package.mjs
+
+      - name: 清理私钥
+        if: always()
+        run: rm -f "$RUNNER_TEMP/dian115/publisher.pem"
+
+      - name: 生成市场索引
+        env:
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: node build-market-index.mjs --repo="https://github.com/${{ github.repository }}" --tag="$TAG"
+
+      - name: 创建 Release 并上传插件包
+        working-directory: .
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          test -f "plugins/music-rs/releases/$PACKAGE" || {
+            echo "::error::缺少预期包 $PACKAGE"
+            ls -la plugins/music-rs/releases || true
+            exit 1
+          }
+          gh release create "$TAG" "plugins/music-rs/releases/$PACKAGE" \
+            --title "$TAG" \
+            --notes "自动构建发布（音乐下载 Rust 版：无 sidecar，宿主代理下载两段式入库 + KV 任务队列 + Telegram 回调重试）。
+
+          安装：DIAN115 插件中心 → 添加插件仓库 → https://github.com/${{ github.repository }}" \
+            || gh release upload "$TAG" "plugins/music-rs/releases/$PACKAGE" --clobber
+
+      - name: 回写市场索引到 main
+        working-directory: .
+        env:
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          cp plugin-market/index.json "$RUNNER_TEMP/index.json"
+          mkdir -p "$RUNNER_TEMP/icons"
+          cp -a plugin-market/icons/. "$RUNNER_TEMP/icons/"
+          git fetch origin main
+          git checkout -B main origin/main
+          cp "$RUNNER_TEMP/index.json" plugin-market/index.json
+          cp -a "$RUNNER_TEMP/icons/." plugin-market/icons/
+          git add plugin-market/index.json plugin-market/icons
+          if git diff --cached --quiet; then
+            echo "索引无变化"
+          else
+            git commit -m "chore: 更新音乐下载 Rust 版市场索引 $TAG [skip ci]"
+            git push origin main
+          fi

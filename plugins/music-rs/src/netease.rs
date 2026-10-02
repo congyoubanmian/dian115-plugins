@@ -1,0 +1,797 @@
+//! 网易云音乐: 搜索 / eapi 取链 / 扫码登录。
+//!
+//! 移植来源两处:
+//! - `plugins/music-dl/runtime/netease.go` —— 协议主体(eapi 加解密、搜索、
+//!   取链、扫码 create/poll、cookie 读写);
+//! - sidecar `sidecars/music-agent/app/server.mjs` + `fetch-worker.mjs` 的网易云
+//!   部分 —— UA、随机国内 IP 头、音质阶梯与逐级回退顺序、cookie 合并保存。
+//!
+//! | 本文件 | Go 对照 | 请求的域名(已在 manifest permissions.network 声明) |
+//! |--------|---------|--------------------------------------------------|
+//! | [`qr_create`] | `netease.go:171` `neteaseQRCreate` | `https://interface.music.163.com/api/login/qrcode/unikey` |
+//! | [`qr_poll`] | `netease.go:196` `neteaseQRPoll` | `https://interface.music.163.com/api/login/qrcode/client/login` |
+//! | [`search`] | `netease.go:63` `neteaseSearch` | `https://music.163.com/api/cloudsearch/pc` |
+//! | [`song_url`] | `netease.go:112` `neteaseSongURL` | `https://interface3.music.163.com/eapi/song/enhance/player/url/v1` |
+//! | [`login_status`] | (Go 版直接读 `state.sessions["netease"]`) | 无网络请求 |
+//!
+//! # 协议细节的出处
+//!
+//! - **eapi 加密/参数**: Go `netease.go:18` `aesECBEncrypt` + `netease.go:31`
+//!   `neteaseEapiParams` —— path 把**首个** `/eapi/` 换成 `/api/`, 摘要
+//!   `md5("nobody" + path + "use" + json + "md5forencrypt")`, 明文
+//!   `path-36cd479b6b5-<json>-36cd479b6b5-<md5>`, AES-128-ECB + PKCS#7 后 hex。
+//!   JSON 的键序: Go 的 `encoding/json` 对 `map` 按键排序, serde_json 默认
+//!   (`BTreeMap`) 同样按键排序 —— 这是 `params` 正确的前提。唯一的残余差异是 Go
+//!   `json.Marshal` 会把字符串里的 `<`/`>`/`&` 转义成 `\u003c` 等, serde_json
+//!   不转义; payload 里只有调用方给的 `song_id` 可能带这类字符。
+//! - **eapi payload**: Go `netease.go:120-131`, 含那个**故意不闭合**的 `header`
+//!   JSON(末尾只有 `requestId":"N"`, 没有右花括号)与纳秒后 8 位的 `requestId`;
+//!   `sky` 档额外带 `immerseType: "c51"`。Go 里那个没被用到的 `payloadBase` 是死
+//!   代码(`_ = payloadBase`), 不移植。
+//! - **音质阶梯**: Go `main.go:21` 的 `neteaseLevels` 与 sidecar
+//!   `fetch-worker.mjs:104` 逐字相同(由高到低 8 档); 升序表在 sidecar
+//!   `server.mjs:308`(`NETEASE_LEVEL_ORDER`, 歌单详情用它算 `qualities`)。
+//!   逐级回退见 [`level_ladder`]。
+//! - **UA**: Go `main.go:15-16` 与 sidecar `server.mjs:18-20` 逐字相同
+//!   ([`CHROME_UA`] / [`DESKTOP_UA`])。
+//! - **随机国内 IP 头**: sidecar `server.mjs:79-89`(搜索与扫码请求带
+//!   `x-real-ip`/`x-forwarded-for`, 缺失会被网易风控按 8821「请切换其他登录方式」
+//!   拦截), 见 [`ip_headers`]。
+//! - **cookie 头**: Go `netease.go:51` `neteaseCookieHeader` —— 固定前缀
+//!   `os=pc; appver=; osver=; deviceId=pyncm!`, 再按存在与否追加 `MUSIC_U` /
+//!   `__csrf_token`(其余 cookie 不回显)。
+//! - **cookie 解析/保存**: 解析用 Go `netease.go:219` 的 `SplitN("=", 2)`(值里的
+//!   `=` 保留), 保存按 sidecar `server.mjs:158` 的合并语义(`{...旧, ...新}`)。
+//!   插件契约要求落 KV 键 [`COOKIE_KEY`](COOKIE_KEY)(`cookies.netease`), 而不是
+//!   Go 版的 `state.sessions`。
+//! - **请求头基线**: Go 的 `content-type`/`referer`/`user-agent`, 叠加 sidecar 的
+//!   IP 头; 取链请求不带 IP 头(与 `fetch-worker.mjs:90-97` 一致, 只带 UA + cookie)。
+//!
+//! # 已知偏差(逐条说明)
+//!
+//! - **Set-Cookie 设备 cookie 没移植**: sidecar 在扫码 create 时记下 `NMTID` 并在
+//!   poll 时回填(`server.mjs:117-137`); 宿主返回的响应会剥掉 `set-cookie`
+//!   (`docs-ref/new-hostcall.md:220`), 插件拿不到这个值。poll 侧仍保留
+//!   `set-cookie` 兜底解析(拿得到就用)。
+//! - **随机数**: sidecar 用 `Math.random()`, 本 crate 没有 rand 依赖,
+//!   改用墙钟纳秒 + 进程内计数器的 xorshift32(见 [`ip_headers`]); 只用于换 IP,
+//!   不承担安全用途。
+//! - **请求体 base64**: Go 的网易云请求用 `base64.StdEncoding`(带 padding; 存储层
+//!   用的是 RawStdEncoding), 这里保持一致。
+//! - **[`login_status`]**: Go 版没有对应函数(直接读 `state.sessions["netease"]`
+//!   判空), 这里读同一个 KV 键返回 `{"logged_in", "has_music_u"}`。
+//! - **错误文案**: Go 的 `json.Unmarshal` 错误文本换成 serde 的文本
+//!   (`搜索解析失败: <serde 错误>`), 前缀与中文文案保持不变。
+//!
+//! # 测试
+//!
+//! 不联网的纯函数向量测试在 `tests/netease.rs`(AES-ECB 已知向量、eapi params、
+//! cookie 字符串解析、表单编码、音质阶梯)。
+
+use std::collections::BTreeMap;
+use std::sync::Mutex;
+
+use aes::cipher::block_padding::Pkcs7;
+use aes::cipher::{BlockEncryptMut, KeyInit};
+use aes::Aes128;
+use base64::engine::general_purpose::STANDARD;
+use base64::Engine as _;
+use ecb::Encryptor;
+use md5::{Digest, Md5};
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Map, Value};
+
+use crate::clock;
+use crate::host::{self, HostCallRequest, HostCallResponse};
+use crate::store;
+
+/// 空桩统一返回值。
+///
+/// 本模块已实现, 不再返回它; 常量保留是因为 [`crate::qq`] / [`crate::download`] /
+/// [`crate::tasks`] 的空桩与 `lib.rs` 的接线测试仍以它为准。
+pub const NOT_IMPLEMENTED: &str = "not implemented";
+
+// ─────────────────────────── 常量 ───────────────────────────
+
+/// 搜索接口(Go `netease.go:70`)。
+pub const SEARCH_URL: &str = "https://music.163.com/api/cloudsearch/pc";
+/// 扫码取 unikey(Go `netease.go:175`)。
+pub const QR_UNIKEY_URL: &str = "https://interface.music.163.com/api/login/qrcode/unikey";
+/// 扫码轮询(Go `netease.go:201`)。
+pub const QR_LOGIN_URL: &str = "https://interface.music.163.com/api/login/qrcode/client/login";
+/// eapi 取链(Go `netease.go:133`)。
+pub const SONG_URL_API: &str = "https://interface3.music.163.com/eapi/song/enhance/player/url/v1";
+
+/// 通用 UA(Go `main.go:15` `chromeUA` = sidecar `server.mjs:18` `UA`)。
+pub const CHROME_UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36";
+/// 扫码用桌面客户端 UA(Go `main.go:16` `neteaseDesktopUA` = sidecar `server.mjs:20` `NETEASE_QR_UA`)。
+pub const DESKTOP_UA: &str = "Mozilla/5.0 (Windows NT 10.0; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Safari/537.36 Chrome/91.0.4472.164 NeteaseMusicDesktop/3.0.18.203152";
+
+/// 扫码登录页(Go `netease.go:192` 的 `qr_content` 前缀)。
+pub const LOGIN_PAGE: &str = "https://music.163.com/login";
+
+/// eapi 密钥(Go `netease.go:37`): 16 字节。
+pub const EAPI_KEY: &[u8] = b"e82ckenh8dichen8";
+/// eapi 明文里的固定分隔符(Go `netease.go:36` `-36cd479b6b5-`)。
+const EAPI_SEPARATOR: &[u8] = b"-36cd479b6b5-";
+/// eapi 请求的 Content-Type(Go `netease.go:139`)。
+const FORM_CONTENT_TYPE: &str = "application/x-www-form-urlencoded";
+
+/// 搜索/常规接口的 Referer(Go `netease.go:71` = sidecar `server.mjs:97`)。
+const MUSIC_REFERER: &str = "https://music.163.com/";
+/// 扫码接口的 Referer(sidecar `server.mjs:114/133` 用 http 形态)。
+const QR_REFERER: &str = "http://music.163.com/";
+
+/// 会话 cookie 的 KV 键(本插件契约; Go 版存在 `state.sessions["netease"]`)。
+pub const COOKIE_KEY: &str = "cookies.netease";
+/// cookie 头固定前缀(Go `netease.go:53`; 与 eapi payload 的 header 同源)。
+pub const COOKIE_BASE: &str = "os=pc; appver=; osver=; deviceId=pyncm!";
+
+/// 音质阶梯, **由高到低**(Go `main.go:21` `neteaseLevels` = sidecar
+/// `fetch-worker.mjs:104`); [`song_url`] 从命中档位向下逐级尝试。
+pub static LEVELS: [&str; 8] = [
+    "jymaster", "jyeffect", "sky", "hires", "lossless", "dolby", "exhigh", "standard",
+];
+
+/// 升序档位表(sidecar `server.mjs:308` `NETEASE_LEVEL_ORDER`; 歌单详情用它
+/// `slice(0, maxIdx + 1).reverse()` 取候选)。
+///
+/// 注意它与 [`LEVELS`] **不互为反转**: sidecar 的两份来源对 `dolby` 的位次不同
+/// (这里紧跟 `jyeffect`, [`LEVELS`] 里紧跟 `lossless`), 本移植照抄各自原样。
+pub static LEVELS_ASCENDING: [&str; 8] = [
+    "standard", "exhigh", "lossless", "hires", "sky", "jyeffect", "dolby", "jymaster",
+];
+
+/// 取链结果(Go `neteaseSongURL` 的 `(dlURL, ext, actual, size, err)` 返回元组)。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SongUrl {
+    /// 直链(Go `dlURL`)。
+    pub url: String,
+    /// 文件扩展名(Go `ext`: `flac` / `mp3`; 空时 Go 兜底 `flac`)。
+    pub ext: String,
+    /// 实际命中的音质档位(Go `actual`; SongUrl 里字段名按本插件契约为 `level`)。
+    pub level: String,
+    /// 文件字节数(Go `size`; 未知为 0)。
+    pub size: i64,
+}
+
+impl SongUrl {
+    /// 占位构造(字段全空), 供上层在拿不到直链时构造类型占位。
+    pub fn placeholder() -> Self {
+        SongUrl {
+            url: String::new(),
+            ext: String::new(),
+            level: String::new(),
+            size: 0,
+        }
+    }
+}
+
+// ─────────────────────────── eapi ───────────────────────────
+
+/// AES-ECB 加密 + PKCS#7 填充(Go `netease.go:18` `aesECBEncrypt`)。
+///
+/// Go 的 `aes.NewCipher` 接受 16/24/32 字节密钥, 本移植点只用 16 字节常量密钥
+/// [`EAPI_KEY`], 其余长度返回错误(不 panic)。
+///
+/// `data` 长度整除 16 时补满一整块(标准 PKCS#7, 与 Go 的手工 `pad = 16 - len%16` 一致)。
+pub fn aes_ecb_encrypt(data: &[u8], key: &[u8]) -> Result<Vec<u8>, String> {
+    let cipher = Encryptor::<Aes128>::new_from_slice(key)
+        .map_err(|_| "AES 密钥长度非法(仅支持 16 字节 AES-128)".to_string())?;
+    // `encrypt_padded_mut` 要求缓冲区至少比明文多一个块; PKCS#7 最多补 16 字节。
+    let mut buffer = vec![0u8; data.len() + 16];
+    buffer[..data.len()].copy_from_slice(data);
+    let out = cipher
+        .encrypt_padded_mut::<Pkcs7>(&mut buffer, data.len())
+        .map_err(|_| "AES 填充失败".to_string())?;
+    Ok(out.to_vec())
+}
+
+/// Go `netease.go:33` `strings.Replace(apiURL, "/eapi/", "/api/", 1)`: 只换第一处。
+pub fn eapi_path(api_url: &str) -> String {
+    match api_url.find("/eapi/") {
+        Some(index) => {
+            let mut out = String::with_capacity(api_url.len());
+            out.push_str(&api_url[..index]);
+            out.push_str("/api/");
+            out.push_str(&api_url[index + "/eapi/".len()..]);
+            out
+        }
+        None => api_url.to_string(),
+    }
+}
+
+/// eapi 请求参数(Go `netease.go:31` `neteaseEapiParams`): hex(AES-ECB(明文))。
+///
+/// 明文 = `path-36cd479b6b5-<payload 紧凑 JSON>-36cd479b6b5-<md5 hex>`,
+/// 其中 `md5 = md5("nobody" + path + "use" + json + "md5forencrypt")`。
+/// `path` 用 [`eapi_path`] 归一化。
+pub fn eapi_params(api_url: &str, payload: &Value) -> String {
+    let path = eapi_path(api_url);
+    // Go `mustJSON`(wasm.go:121): 序列化失败回退到固定错误信封(对 Value 不可达)。
+    let payload_json = serde_json::to_vec(payload).unwrap_or_else(|_| crate::util::ENCODE_FAILED.to_vec());
+
+    let mut digest_input = Vec::with_capacity(32 + path.len() + payload_json.len());
+    digest_input.extend_from_slice(b"nobody");
+    digest_input.extend_from_slice(path.as_bytes());
+    digest_input.extend_from_slice(b"use");
+    digest_input.extend_from_slice(&payload_json);
+    digest_input.extend_from_slice(b"md5forencrypt");
+    let digest = hex::encode(Md5::digest(&digest_input));
+
+    let mut text = Vec::with_capacity(path.len() + payload_json.len() + digest.len() + 32);
+    text.extend_from_slice(path.as_bytes());
+    text.extend_from_slice(EAPI_SEPARATOR);
+    text.extend_from_slice(&payload_json);
+    text.extend_from_slice(EAPI_SEPARATOR);
+    text.extend_from_slice(digest.as_bytes());
+
+    let encrypted = aes_ecb_encrypt(&text, EAPI_KEY).expect("EAPI_KEY 固定 16 字节");
+    hex::encode(encrypted)
+}
+
+/// 取链 payload(Go `netease.go:120-131`)。
+///
+/// `header` 是**故意不闭合**的 JSON 文本(Go 原样拼接): 末尾只有
+/// `"requestId":"N"` 而没有右花括号 —— 服务端接受这个形态, 移植时不要"顺手修好"。
+/// `request_id` 由调用方给出(生产用 [`request_id`])。
+pub fn song_url_payload(song_id: &str, level: &str, request_id: u64) -> Value {
+    let header = format!(
+        "{{\"os\":\"pc\",\"appver\":\"\",\"osver\":\"\",\"deviceId\":\"pyncm!\",\"requestId\":\"{request_id}\""
+    );
+    let mut payload = Map::new();
+    payload.insert("ids".to_string(), json!([song_id]));
+    payload.insert("level".to_string(), Value::String(level.to_string()));
+    payload.insert("encodeType".to_string(), Value::String("flac".to_string()));
+    payload.insert("header".to_string(), Value::String(header));
+    if level == "sky" {
+        payload.insert("immerseType".to_string(), Value::String("c51".to_string()));
+    }
+    Value::Object(payload)
+}
+
+/// Go `netease.go:127` 的 `time.Now().UnixNano() % 1e8`: 纳秒时间戳的后 8 位。
+pub fn request_id(unix_nanos: u64) -> u64 {
+    unix_nanos % 100_000_000
+}
+
+/// Go `netease.go:113-119`: 从 `level` 命中处向下逐级尝试; 未命中(含空串)从最高档开始。
+pub fn level_ladder(level: &str) -> &'static [&'static str] {
+    let start = LEVELS.iter().position(|candidate| *candidate == level).unwrap_or(0);
+    &LEVELS[start..]
+}
+
+// ─────────────────────────── 表单编码 ───────────────────────────
+
+/// Go `url.QueryEscape`: RFC 3986 unreserved(`A-Za-z0-9-_.~`)原样, 空格转 `+`,
+/// 其余字节按 UTF-8 逐字节 `%XX`(大写十六进制)。
+pub fn query_escape(text: &str) -> String {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    let mut out = String::with_capacity(text.len());
+    for &byte in text.as_bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(byte as char)
+            }
+            b' ' => out.push('+'),
+            _ => {
+                out.push('%');
+                out.push(HEX[(byte >> 4) as usize] as char);
+                out.push(HEX[(byte & 0x0f) as usize] as char);
+            }
+        }
+    }
+    out
+}
+
+/// Go `url.Values.Encode()`: 按键排序后 `k=v` 用 `&` 连接(键与值都做 [`query_escape`])。
+pub fn form_encode(pairs: &[(&str, &str)]) -> String {
+    let mut sorted: Vec<(&str, &str)> = pairs.to_vec();
+    sorted.sort_by(|left, right| left.0.cmp(right.0));
+    let mut out = String::new();
+    for (key, value) in sorted {
+        if !out.is_empty() {
+            out.push('&');
+        }
+        out.push_str(&query_escape(key));
+        out.push('=');
+        out.push_str(&query_escape(value));
+    }
+    out
+}
+
+// ─────────────────────────── cookie ───────────────────────────
+
+/// 按 Go `strings.TrimSpace` / `unicode.IsSpace` 去除首尾空白。
+///
+/// Rust 的 `char::is_whitespace`(`str::trim` 的判据)就是 Unicode `White_Space`
+/// 属性, 与 Go 的 `unicode.IsSpace` 逐字符一致: 除 Latin-1 的
+/// `\t \n \v \f \r 空格 U+0085 U+00A0` 外, U+1680、U+2000..U+200A、U+2028、
+/// U+2029、U+202F、U+205F、U+3000(全角空格)都算空白。
+fn go_trim_space(text: &str) -> &str {
+    text.trim()
+}
+
+/// 解析 `name=value; name2=value2`(Go `netease.go:219-224` 的 `SplitN("=", 2)`)。
+///
+/// - 每个分号段先按 Go 语义去首尾空白;
+/// - 没有 `=` 的段忽略; 名字为空的段忽略;
+/// - 值里的 `=` 原样保留(`SplitN` 上限 2);
+/// - 同名后者覆盖前者(map 语义), 与 Go/sidecar 一致。
+pub fn parse_cookie_string(cookie: &str) -> BTreeMap<String, String> {
+    let mut cookies = BTreeMap::new();
+    for pair in cookie.split(';') {
+        let pair = go_trim_space(pair);
+        let (name, value) = match pair.split_once('=') {
+            Some(parts) => parts,
+            None => continue,
+        };
+        if name.is_empty() {
+            continue;
+        }
+        cookies.insert(name.to_string(), value.to_string());
+    }
+    cookies
+}
+
+/// 解析单条 `Set-Cookie` 行(sidecar `server.mjs:154-157`): 只取分号前的 `name=value`,
+/// 名字去空白, 值原样(可含 `=`)。
+pub fn parse_set_cookie(line: &str) -> Option<(String, String)> {
+    let first = line.split(';').next().unwrap_or("");
+    let (name, value) = first.split_once('=')?;
+    let name = name.trim();
+    if name.is_empty() {
+        return None;
+    }
+    Some((name.to_string(), value.to_string()))
+}
+
+/// Go `netease.go:51-61` `neteaseCookieHeader`: 固定前缀 + `MUSIC_U` + `__csrf_token`。
+pub fn cookie_header(cookies: &BTreeMap<String, String>) -> String {
+    let mut header = String::from(COOKIE_BASE);
+    if let Some(music_u) = cookies.get("MUSIC_U") {
+        header.push_str("; MUSIC_U=");
+        header.push_str(music_u);
+    }
+    if let Some(csrf) = cookies.get("__csrf_token") {
+        header.push_str("; __csrf_token=");
+        header.push_str(csrf);
+    }
+    header
+}
+
+/// 从 KV 读会话 cookie(键 [`COOKIE_KEY`]); 缺失/损坏 → 空表。
+pub fn load_cookies() -> BTreeMap<String, String> {
+    let (raw, ok) = store::get(COOKIE_KEY);
+    if !ok || raw.is_empty() {
+        return BTreeMap::new();
+    }
+    serde_json::from_slice::<BTreeMap<String, String>>(&raw).unwrap_or_default()
+}
+
+/// cookie 落盘的幂等键序列(会话内跨多次写入保持递增, 避免宿主 24h 幂等记录撞键)。
+fn put_ids() -> std::sync::MutexGuard<'static, store::PutIds> {
+    static IDS: Mutex<store::PutIds> = Mutex::new(store::PutIds::new());
+    IDS.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// 合并写入会话 cookie(键 [`COOKIE_KEY`])。
+///
+/// 合并语义对齐 sidecar `server.mjs:158`(旧值保留、新值覆盖), 不是 Go
+/// `saveSessionCookies` 的整表替换 —— 扫码回调只带回部分 cookie 时, 不能让已有
+/// 的会话字段凭空消失。
+pub fn save_cookies(cookies: &BTreeMap<String, String>) -> Result<(), String> {
+    let mut merged = load_cookies();
+    for (name, value) in cookies {
+        merged.insert(name.clone(), value.clone());
+    }
+    let data = serde_json::to_vec(&merged).map_err(|err| format!("cookie 序列化失败: {err}"))?;
+    let mut ids = put_ids();
+    store::put(&mut ids, COOKIE_KEY, &data).map_err(|err| err.to_string())
+}
+
+// ─────────────────────────── 请求头 ───────────────────────────
+
+/// sidecar `server.mjs:81` 的国内 IP 前缀表。
+const CN_PREFIXES: [[u32; 2]; 9] = [
+    [116, 255],
+    [116, 228],
+    [218, 192],
+    [124, 0],
+    [14, 132],
+    [183, 14],
+    [58, 14],
+    [113, 116],
+    [120, 230],
+];
+
+/// 无 rand 依赖的伪随机(xorshift32): 墙钟纳秒(宿主精度 1ms) + 进程内计数器做种子。
+fn pseudo_random_u32() -> u32 {
+    static COUNTER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let tick = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let mut seed = (clock::now_unix_nanos() as u32) ^ tick.wrapping_mul(0x9E37_79B9);
+    seed ^= seed << 13;
+    seed ^= seed >> 17;
+    seed ^= seed << 5;
+    seed
+}
+
+/// 随机国内 IP 头(sidecar `server.mjs:79-89`)。
+///
+/// 网易风控按 `X-Real-IP`/`X-Forwarded-For` 判定客户端位置, 缺失时报
+/// 8821「请切换其他登录方式」(扫码授权阶段被拦)。前缀取自 sidecar 的 `CN_PREFIXES`,
+/// 后两段随机 1..=254。
+pub fn ip_headers() -> BTreeMap<String, String> {
+    let value = pseudo_random_u32();
+    let prefix = CN_PREFIXES[(value as usize) % CN_PREFIXES.len()];
+    let third = (value >> 8) % 254 + 1;
+    let fourth = (value >> 16) % 254 + 1;
+    let ip = format!("{}.{}.{}.{}", prefix[0], prefix[1], third, fourth);
+    let mut headers = BTreeMap::new();
+    headers.insert("x-real-ip".to_string(), ip.clone());
+    headers.insert("x-forwarded-for".to_string(), ip);
+    headers
+}
+
+/// 出站请求的基线头(Go `netease.go` 各请求的 content-type + user-agent)。
+fn base_headers(user_agent: &str) -> BTreeMap<String, String> {
+    let mut headers = BTreeMap::new();
+    headers.insert("content-type".to_string(), FORM_CONTENT_TYPE.to_string());
+    headers.insert("user-agent".to_string(), user_agent.to_string());
+    headers
+}
+
+/// POST 表单请求(Go 的 `hostCall` + `base64.StdEncoding` 请求体)。
+fn post_form(
+    url: &str,
+    headers: BTreeMap<String, String>,
+    form: &str,
+) -> Result<HostCallResponse, String> {
+    let mut request =
+        HostCallRequest::new("POST", url).with_body_base64(STANDARD.encode(form.as_bytes()));
+    request.headers = headers;
+    host::call(&request).map_err(|err| err.to_string())
+}
+
+/// 响应里所有 `set-cookie` 行的值(宿主当前会剥掉这个头, 拿到就用)。
+fn set_cookie_lines(response: &HostCallResponse) -> Vec<String> {
+    let mut lines = Vec::new();
+    for (name, values) in &response.headers {
+        if name.eq_ignore_ascii_case("set-cookie") {
+            lines.extend(values.iter().cloned());
+        }
+    }
+    lines
+}
+
+// ─────────────────────────── 响应结构 ───────────────────────────
+
+/// 响应字段一律用 `Option<T>` + `#[serde(default)]`, 对齐 Go 结构体解码:
+/// 缺失与 `null` → 零值不报错, 类型不符 → 报错。
+#[derive(Debug, Default, Deserialize)]
+struct QrCreateResponse {
+    #[serde(default)]
+    code: Option<i64>,
+    #[serde(default)]
+    unikey: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct QrPollResponse {
+    #[serde(default)]
+    code: Option<i64>,
+    #[serde(default)]
+    message: Option<String>,
+    #[serde(default)]
+    cookie: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct SearchResponse {
+    #[serde(default)]
+    result: Option<SearchResult>,
+    /// Go 解出了 `code` 但没用; 保留以便类型不符时同样报错(`netease.go:92`)。
+    #[serde(default)]
+    #[allow(dead_code)]
+    code: Option<i64>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct SearchResult {
+    #[serde(default)]
+    songs: Option<Vec<SearchSong>>,
+    #[serde(default, rename = "songCount")]
+    song_count: Option<i64>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+struct SearchSong {
+    #[serde(default)]
+    id: Option<i64>,
+    #[serde(default)]
+    name: Option<String>,
+    /// `ar`: 歌手数组; `null`/缺失 → 空数组。
+    #[serde(default)]
+    ar: Option<Vec<SearchArtist>>,
+    /// `al`: 专辑; `null`/缺失 → 空对象。
+    #[serde(default)]
+    al: Option<SearchAlbum>,
+    /// `dt`: 时长(毫秒)。
+    #[serde(default)]
+    dt: Option<i64>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+struct SearchArtist {
+    #[serde(default)]
+    name: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+struct SearchAlbum {
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default, rename = "picUrl")]
+    pic_url: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct SongUrlResponse {
+    #[serde(default)]
+    data: Option<Vec<SongUrlItem>>,
+    /// Go 解出了 `code` 但没用; 保留以便类型不符时同样报错(`netease.go:156`)。
+    #[serde(default)]
+    #[allow(dead_code)]
+    code: Option<i64>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct SongUrlItem {
+    #[serde(default)]
+    url: Option<String>,
+    #[serde(default)]
+    level: Option<String>,
+    /// 文件类型(Go 的 `Type string` 字段, json tag 是 `type`); `type` 是 Rust
+    /// 关键字, 所以改名字段 + `rename`。
+    #[serde(default, rename = "type")]
+    kind: Option<String>,
+    #[serde(default)]
+    size: Option<i64>,
+}
+
+// ─────────────────────────── 入口 ───────────────────────────
+
+/// 扫码创建(Go `netease.go:171` `neteaseQRCreate`): 返回 `{key, qr_content}`。
+///
+/// `qr_content` 是登录页 URL(sidecar 那边是渲染好的 `qr_dataurl`; wasm 里没有
+/// 二维码渲染依赖, 前端自己画)。
+pub fn qr_create() -> Result<Value, String> {
+    let form = form_encode(&[("type", "3")]);
+    let mut headers = base_headers(DESKTOP_UA);
+    headers.insert("referer".to_string(), QR_REFERER.to_string());
+    headers.extend(ip_headers());
+    let response = post_form(QR_UNIKEY_URL, headers, &form)?;
+    let body = store::decode_body(&response).unwrap_or_default();
+    // Go `netease.go:187`: 解包失败 / `code != 200` / `unikey` 为空 → 同一个错误。
+    let out: QrCreateResponse = serde_json::from_slice(&body).unwrap_or_default();
+    let unikey = out.unikey.unwrap_or_default();
+    if out.code != Some(200) || unikey.is_empty() {
+        return Err("获取二维码失败".to_string());
+    }
+    Ok(json!({
+        "key": unikey,
+        "qr_content": format!("{LOGIN_PAGE}?codekey={}", query_escape(&unikey)),
+    }))
+}
+
+/// 扫码轮询(Go `netease.go:196` `neteaseQRPoll`): 返回
+/// `{status, message, code, logged_in?}`(803 时带 `logged_in: true` 并落 cookie)。
+pub fn qr_poll(key: &str) -> Result<Value, String> {
+    let form = form_encode(&[("key", key), ("type", "3")]);
+    let mut headers = base_headers(DESKTOP_UA);
+    headers.insert("referer".to_string(), QR_REFERER.to_string());
+    headers.extend(ip_headers());
+    let response = post_form(QR_LOGIN_URL, headers, &form)?;
+    let body = store::decode_body(&response).unwrap_or_default();
+    // Go `netease.go:214` 忽略解包错误 → 零值结构体(code=0, status="")。
+    let out: QrPollResponse = serde_json::from_slice(&body).unwrap_or_default();
+    let code = out.code.unwrap_or_default();
+    let status = match code {
+        800 => "expired",
+        801 => "waiting",
+        802 => "scanned",
+        803 => "success",
+        _ => "",
+    };
+    let mut result = json!({
+        "status": status,
+        "message": out.message.clone().unwrap_or_default(),
+        "code": code,
+    });
+    if code == 803 {
+        // cookie 在 body 和 Set-Cookie 都可能有(sidecar `server.mjs:149-157`)。
+        let mut cookies = parse_cookie_string(out.cookie.as_deref().unwrap_or(""));
+        for line in set_cookie_lines(&response) {
+            if let Some((name, value)) = parse_set_cookie(&line) {
+                cookies.insert(name, value);
+            }
+        }
+        // Go `netease.go:225` 忽略落盘错误(登录态以 KV 为准, 失败不改变本次结果)。
+        let _ = save_cookies(&cookies);
+        result["logged_in"] = Value::Bool(true);
+    }
+    Ok(result)
+}
+
+/// 单曲搜索(Go `netease.go:63` `neteaseSearch`): `page` 从 1 起, 每页 30 条。
+///
+/// 返回 `{songs, total, page}`; 歌曲字段与 Go 的 `map[string]any` 一致
+/// (`id` 是数字, 不是 sidecar 的字符串)。
+pub fn search(query: &str, page: u32) -> Result<Value, String> {
+    // Go `netease.go:68`: offset = (page-1)*30(page 从 1 起)。
+    // 用 i64 保留 page=0 时的负数偏移, 与 Go 的 int 运算一致。
+    let offset_text = ((i64::from(page) - 1) * 30).to_string();
+    let form = form_encode(&[
+        ("s", query),
+        ("type", "1"),
+        ("limit", "30"),
+        ("offset", offset_text.as_str()),
+    ]);
+    let mut headers = base_headers(CHROME_UA);
+    headers.insert("referer".to_string(), MUSIC_REFERER.to_string());
+    headers.extend(ip_headers());
+    let response = post_form(SEARCH_URL, headers, &form)?;
+    let body = store::decode_body(&response).unwrap_or_default();
+    let parsed: SearchResponse =
+        serde_json::from_slice(&body).map_err(|err| format!("搜索解析失败: {err}"))?;
+
+    let result = parsed.result.unwrap_or_default();
+    let songs: Vec<Value> = result
+        .songs
+        .unwrap_or_default()
+        .iter()
+        .map(|song| {
+            let album = song.al.clone().unwrap_or_default();
+            let singers = song
+                .ar
+                .clone()
+                .unwrap_or_default()
+                .iter()
+                .map(|artist| artist.name.clone().unwrap_or_default())
+                .collect::<Vec<String>>()
+                .join("/");
+            json!({
+                "id": song.id.unwrap_or_default(),
+                "name": song.name.clone().unwrap_or_default(),
+                "singers": singers,
+                "album": album.name.unwrap_or_default(),
+                "cover": album.pic_url.unwrap_or_default(),
+                "duration_ms": song.dt.unwrap_or_default(),
+                "source": "netease",
+            })
+        })
+        .collect();
+    Ok(json!({
+        "songs": songs,
+        "total": result.song_count.unwrap_or_default(),
+        "page": page,
+    }))
+}
+
+/// 按音质向下逐级取链(Go `netease.go:112` `neteaseSongURL`)。
+///
+/// `level` 命中 [`LEVELS`] 就从那一档开始, 未命中(含空串)从最高档 `jymaster` 开始;
+/// 每档发一次 eapi 请求, 解包失败 / `data` 为空 / 直链不以 `http` 开头都继续下一档;
+/// 网络错误立即返回(与 Go 一致)。`level` 字段回显响应里的 `data[0].level`(Go
+/// 的 `actual`), `ext` 为空时兜底 `flac`。
+pub fn song_url(song_id: &str, level: &str) -> Result<SongUrl, String> {
+    let mut headers = base_headers(CHROME_UA);
+    headers.insert("cookie".to_string(), cookie_header(&load_cookies()));
+
+    for current in level_ladder(level) {
+        let payload = song_url_payload(song_id, current, request_id(clock::now_unix_nanos()));
+        let params = eapi_params(SONG_URL_API, &payload);
+        let form = form_encode(&[("params", params.as_str())]);
+        let response = post_form(SONG_URL_API, headers.clone(), &form)?;
+        let body = store::decode_body(&response).unwrap_or_default();
+        let out: SongUrlResponse = match serde_json::from_slice(&body) {
+            Ok(out) => out,
+            // Go `netease.go:158`: 解不出来就试下一档。
+            Err(_) => continue,
+        };
+        let item = match out.data.unwrap_or_default().into_iter().next() {
+            Some(item) => item,
+            None => continue,
+        };
+        let url = item.url.unwrap_or_default();
+        if !url.starts_with("http") {
+            continue;
+        }
+        let ext = item.kind.unwrap_or_default();
+        let ext = if ext.is_empty() { "flac".to_string() } else { ext };
+        return Ok(SongUrl {
+            url,
+            ext,
+            level: item.level.unwrap_or_default(),
+            size: item.size.unwrap_or_default(),
+        });
+    }
+    Err("所有音质均未获取到链接（需要 SVIP 且歌曲有对应音源）".to_string())
+}
+
+/// 登录态查询: 从 KV 读会话 cookie 是否还在(Go 版从 `state.sessions["netease"]` 读)。
+///
+/// 不回显任何 cookie 值(宿主禁止凭据出现在响应里)。
+pub fn login_status() -> Result<Value, String> {
+    let cookies = load_cookies();
+    Ok(json!({
+        "logged_in": !cookies.is_empty(),
+        "has_music_u": cookies.contains_key("MUSIC_U"),
+    }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn go_trim_space_matches_go_unicode_isspace() {
+        assert_eq!(go_trim_space("  a b  "), "a b");
+        assert_eq!(go_trim_space("\t\n a \r\n"), "a");
+        assert_eq!(go_trim_space("\u{85}a\u{a0}"), "a", "Go unicode.IsSpace 认 NEL/NBSP");
+        assert_eq!(
+            go_trim_space("\u{3000}a\u{3000}"),
+            "a",
+            "U+3000 是 Unicode White_Space, Go unicode.IsSpace 同样为 true"
+        );
+        assert_eq!(
+            go_trim_space("\u{2003}a\u{2029}"),
+            "a",
+            "EM SPACE / LINE SEPARATOR 也在 White_Space 里"
+        );
+        assert_eq!(
+            go_trim_space("\u{200b}a\u{200b}"),
+            "\u{200b}a\u{200b}",
+            "零宽空格 U+200B 不是 White_Space, 不能被裁掉"
+        );
+    }
+
+    #[test]
+    fn eapi_path_replaces_first_segment_only() {
+        assert_eq!(eapi_path("https://x/eapi/a"), "https://x/api/a");
+        assert_eq!(eapi_path("https://x/eapi/a/eapi/b"), "https://x/api/a/eapi/b");
+        assert_eq!(eapi_path("https://x/api/a"), "https://x/api/a");
+        assert_eq!(eapi_path(""), "");
+    }
+
+    #[test]
+    fn parse_set_cookie_takes_first_pair() {
+        assert_eq!(
+            parse_set_cookie("MUSIC_U=abc; Path=/; HttpOnly"),
+            Some(("MUSIC_U".to_string(), "abc".to_string()))
+        );
+        assert_eq!(
+            parse_set_cookie("__csrf_token=a=b; Path=/"),
+            Some(("__csrf_token".to_string(), "a=b".to_string()))
+        );
+        assert_eq!(parse_set_cookie(" no-equals "), None);
+        assert_eq!(parse_set_cookie("=v"), None);
+    }
+
+    /// 未命中阶梯(含空串)必须从最高档开始(Go `netease.go:113-119`)。
+    #[test]
+    fn level_ladder_defaults_to_highest() {
+        assert_eq!(level_ladder(""), &LEVELS[..]);
+        assert_eq!(level_ladder("bogus"), &LEVELS[..]);
+        assert_eq!(level_ladder("hires"), &LEVELS[3..]);
+        assert_eq!(level_ladder("standard"), &LEVELS[7..]);
+    }
+
+    #[test]
+    fn request_id_keeps_last_eight_digits() {
+        assert_eq!(request_id(1_790_676_009_123_456_789), 23_456_789);
+        assert_eq!(request_id(0), 0);
+        assert_eq!(request_id(99_999_999), 99_999_999);
+        assert_eq!(request_id(100_000_001), 1);
+    }
+}
