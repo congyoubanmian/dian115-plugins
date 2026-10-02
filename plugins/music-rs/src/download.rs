@@ -22,6 +22,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
+use crate::clock;
 use crate::host::{self, HostCallRequest};
 use crate::netease::{self, SongUrl};
 use crate::qq;
@@ -45,6 +46,17 @@ pub const DEFAULT_COOKIECLOUD_URL: &str = "http://127.0.0.1:8088";
 
 const FILES_ROOTS: &str = "/api/plugin-host/files/roots";
 const FILES_ENTRIES: &str = "/api/plugin-host/files/entries";
+
+// ── 诊断留档(0.3.7): files/roots 与 files/entries 都是官方无字段契约的
+// GenericHostObject, 出入只能靠原始响应排查。pump 每轮把两处原始 HTTP 响应
+// (base64, 规避宿主对响应内容的过滤)写入 KV `pumpdiag`, 供真机诊断读取。
+static DIAG_ROOTS_RAW: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
+static DIAG_ENTRIES: std::sync::Mutex<(u16, String)> = std::sync::Mutex::new((0, String::new()));
+
+fn diag_b64(bytes: &[u8]) -> String {
+    use base64::Engine as _;
+    base64::engine::general_purpose::STANDARD.encode(bytes)
+}
 const FILES_DIRECTORIES: &str = "/api/plugin-host/files/directories";
 const FILES_DOWNLOADS: &str = "/api/plugin-host/files/downloads";
 const JOBS_PREFIX: &str = "/api/plugin-host/jobs/";
@@ -439,6 +451,7 @@ pub fn probe_roots() -> RootsProbe {
             roots: Vec::new(),
         };
     }
+    *DIAG_ROOTS_RAW.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = diag_b64(&body);
     let value: Value = match serde_json::from_slice(&body) {
         Ok(value) => value,
         Err(err) => {
@@ -559,6 +572,8 @@ fn find_ref(value: &Value, depth: u8) -> Option<String> {
 fn entries_parent_ref(staging: &str) -> Result<ParentRef, String> {
     let path = format!("{FILES_ENTRIES}?path={}", netease::query_escape(staging));
     let (status, body) = host_roundtrip("GET", &path, None, None)?;
+    *DIAG_ENTRIES.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) =
+        (u16::try_from(status).unwrap_or_default(), diag_b64(&body));
     if status == 404 {
         return Ok(ParentRef::Missing);
     }
@@ -1169,13 +1184,31 @@ pub fn pump(ids: &mut PutIds) -> Result<Value, String> {
                         }
                     }
                 }
-                Err(err) => report
-                    .messages
-                    .push(format!("暂存目录 {dir} 不可用: {err}")),
+                Err(err) => {
+                    let reason = format!("暂存目录 {dir} 不可用: {err}");
+                    // 0.3.7: 阻塞原因落到每个排队任务的 error, UI 不再只能看到干等的 queued。
+                    for task in queue.iter_mut() {
+                        if task.status == tasks::STATUS_QUEUED && task.error != reason {
+                            task.error = reason.clone();
+                        }
+                    }
+                    report.messages.push(reason);
+                }
             },
         }
     }
 
+    let diag = json!({
+        "at": clock::now_rfc3339(),
+        "staging_dir": staging,
+        "roots_raw_b64": DIAG_ROOTS_RAW.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone(),
+        "entries_status": DIAG_ENTRIES.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).0,
+        "entries_body_b64": DIAG_ENTRIES.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).1.clone(),
+        "messages": report.messages,
+    });
+    if let Err(err) = store::put_json(ids, "pumpdiag", &diag) {
+        report.messages.push(format!("pumpdiag 写入失败: {err}"));
+    }
     tasks::save(ids, &queue)?;
 
     Ok(json!({
