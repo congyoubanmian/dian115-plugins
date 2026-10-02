@@ -40,6 +40,8 @@ pub const DEFAULT_QUALITY: &str = "jymaster";
 pub const DEFAULT_MAX_ACTIVE: u32 = 2;
 /// `max_active` 的接受上限(防止一次 pump 起过多宿主调用)。
 pub const MAX_ACTIVE_CAP: u32 = 16;
+/// CookieCloud 服务默认地址(本机官方默认端口, 见 `cookiecloud.rs`)。
+pub const DEFAULT_COOKIECLOUD_URL: &str = "http://127.0.0.1:8088";
 
 const FILES_ROOTS: &str = "/api/plugin-host/files/roots";
 const FILES_ENTRIES: &str = "/api/plugin-host/files/entries";
@@ -66,6 +68,10 @@ fn default_true() -> bool {
     true
 }
 
+fn default_cookiecloud_url() -> String {
+    DEFAULT_COOKIECLOUD_URL.to_string()
+}
+
 /// 下载管线设置(KV `settings`)。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Settings {
@@ -84,6 +90,17 @@ pub struct Settings {
     /// 失败时是否发 Telegram 通知。
     #[serde(default = "default_true")]
     pub notify_on_fail: bool,
+    /// CookieCloud 服务地址(默认本机 8088; 字段名保留原名落 KV —— 宿主的
+    /// "cookie" 键名校验只针对 state/action 响应, 持久化存储不受限, 见
+    /// `cookiecloud.rs` 模块头)。
+    #[serde(default = "default_cookiecloud_url")]
+    pub cookiecloud_url: String,
+    /// CookieCloud 的 UUID(浏览器扩展同步端点 `/get/{uuid}`)。
+    #[serde(default)]
+    pub cookiecloud_uuid: String,
+    /// CookieCloud 的同步口令。**绝不回显**(state/settings 视图只给 `cc_key_ready` 布尔)。
+    #[serde(default)]
+    pub cookiecloud_key: String,
 }
 
 impl Default for Settings {
@@ -94,6 +111,9 @@ impl Default for Settings {
             quality: DEFAULT_QUALITY.to_string(),
             max_active: DEFAULT_MAX_ACTIVE,
             notify_on_fail: true,
+            cookiecloud_url: DEFAULT_COOKIECLOUD_URL.to_string(),
+            cookiecloud_uuid: String::new(),
+            cookiecloud_key: String::new(),
         }
     }
 }
@@ -113,6 +133,11 @@ impl Settings {
         if self.max_active == 0 || self.max_active > MAX_ACTIVE_CAP {
             self.max_active = DEFAULT_MAX_ACTIVE;
         }
+        if self.cookiecloud_url.trim().is_empty() {
+            self.cookiecloud_url = DEFAULT_COOKIECLOUD_URL.to_string();
+        }
+        self.cookiecloud_uuid = self.cookiecloud_uuid.trim().to_string();
+        self.cookiecloud_key = self.cookiecloud_key.trim().to_string();
         self
     }
 }
@@ -148,6 +173,11 @@ pub fn normalize_path(path: &str) -> String {
 }
 
 /// 设置的可展示形态(state 响应 / settings-update 返回)。
+///
+/// CookieCloud 字段(0.3.4): 宿主(2026-09-30)递归拒绝 state/action 响应里键名含
+/// "cookie" 子串的整个响应(douban-rs `sanitize_settings_view` 的同一宿主规则),
+/// 所以输出键改名 `cc_url`/`cc_uuid`; 密钥绝不回显, 只给 `cc_key_ready` 布尔
+/// (同步口令非空)。持久化 KV 里的字段原名不变。
 pub fn settings_view(settings: &Settings) -> Value {
     json!({
         "staging_dir": display_path(&settings.staging_dir),
@@ -155,6 +185,9 @@ pub fn settings_view(settings: &Settings) -> Value {
         "quality": settings.quality,
         "max_active": settings.max_active,
         "notify_on_fail": settings.notify_on_fail,
+        "cc_url": settings.cookiecloud_url,
+        "cc_uuid": settings.cookiecloud_uuid,
+        "cc_key_ready": !settings.cookiecloud_key.is_empty(),
     })
 }
 
@@ -190,6 +223,18 @@ pub fn settings_update(ids: &mut PutIds, patch: &Map<String, Value>) -> Result<V
     }
     if let Some(flag) = patch.get("notify_on_fail").and_then(Value::as_bool) {
         settings.notify_on_fail = flag;
+    }
+    // CookieCloud 三项(0.3.4): 纯字符串, trim 后原样写入 —— **不走路径归一化**
+    // ("http://…" 不以 "/" 开头, 会被 normalize_path 加上 "/" 前缀破坏);
+    // 空串原样写入(显式清空 UUID/口令), URL 清空后由 normalized() 回默认本机地址。
+    for (key, target) in [
+        ("cookiecloud_url", &mut settings.cookiecloud_url),
+        ("cookiecloud_uuid", &mut settings.cookiecloud_uuid),
+        ("cookiecloud_key", &mut settings.cookiecloud_key),
+    ] {
+        if let Some(Value::String(text)) = patch.get(key) {
+            *target = text.trim().to_string();
+        }
     }
     let settings = settings.normalized();
     save_settings(ids, &settings)?;
@@ -1562,6 +1607,82 @@ mod tests {
             Some("/x/y.flac".to_string())
         );
         assert_eq!(job_result_path(&json!({"status": "succeeded"})), None);
+    }
+
+    /// CookieCloud 设置(0.3.4): settings-update 接受三个键(字符串、不做路径归一化),
+    /// settings_view 只输出改名后的 cc_url/cc_uuid + cc_key_ready 布尔, 且整棵视图
+    /// 递归不含 "cookie" 键名、没有以 "/" 开头的字符串值(宿主 2026-09-30 两条校验)。
+    #[test]
+    fn cookiecloud_settings_update_and_sanitized_view() {
+        let fake = install_pipeline_host(JobOutcome::Succeeded);
+        let mut ids = PutIds::new();
+
+        // ① 三个键都收; URL 不被 normalize_path 破坏(不以 "h" 开头判断: 显式给
+        //    "http://…" 必须原样落 KV)。
+        let patch = json!({
+            "cookiecloud_url": "  http://127.0.0.1:8088/  ",
+            "cookiecloud_uuid": " cc-uuid-1 ",
+            "cookiecloud_key": " cc-key-1 ",
+        });
+        let view = settings_update(&mut ids, patch.as_object().unwrap()).unwrap();
+        assert_eq!(view["cc_url"], "http://127.0.0.1:8088/", "URL 只 trim 空白, 尾斜杠由 pull 侧去除");
+        assert_eq!(view["cc_uuid"], "cc-uuid-1");
+        assert_eq!(view["cc_key_ready"], true, "密钥非空 → ready 布尔");
+        assert!(view.get("cookiecloud_url").is_none(), "视图不得回显原字段名");
+        assert!(view.get("cookiecloud_key").is_none(), "密钥绝不回显");
+
+        let reloaded = load_settings();
+        assert_eq!(reloaded.cookiecloud_url, "http://127.0.0.1:8088/");
+        assert_eq!(reloaded.cookiecloud_uuid, "cc-uuid-1");
+        assert_eq!(reloaded.cookiecloud_key, "cc-key-1");
+
+        // ② 默认视图: URL 回默认本机地址, cc_key_ready=false。
+        let view = settings_view(&Settings::default());
+        assert_eq!(view["cc_url"], DEFAULT_COOKIECLOUD_URL);
+        assert_eq!(view["cc_uuid"], "");
+        assert_eq!(view["cc_key_ready"], false);
+
+        // ③ 清空 URL → normalized 回默认; 空串显式写入 UUID/密钥(允许清除)。
+        let patch = json!({"cookiecloud_url": "", "cookiecloud_uuid": " ", "cookiecloud_key": ""});
+        let view = settings_update(&mut ids, patch.as_object().unwrap()).unwrap();
+        assert_eq!(view["cc_url"], DEFAULT_COOKIECLOUD_URL);
+        assert_eq!(view["cc_uuid"], "");
+        assert_eq!(view["cc_key_ready"], false);
+
+        // ④ 宿主两条校验: 视图键名递归无 "cookie" 子串; 无以 "/" 开头的字符串值
+        //    (looks_like_abs_path 的判据, "//" 开头也不算但这里一并排除)。
+        fn assert_view_sanitized(value: &Value, path: &str) {
+            match value {
+                Value::Object(map) => {
+                    for (key, inner) in map {
+                        assert!(
+                            !key.to_lowercase().contains("cookie"),
+                            "视图键名含 cookie 子串: {path}.{key}"
+                        );
+                        assert_view_sanitized(inner, &format!("{path}.{key}"));
+                    }
+                }
+                Value::Array(items) => {
+                    for (index, inner) in items.iter().enumerate() {
+                        assert_view_sanitized(inner, &format!("{path}[{index}]"));
+                    }
+                }
+                Value::String(text) => {
+                    assert!(
+                        !text.starts_with('/'),
+                        "视图字符串值以 / 开头(宿主会整体拒绝): {path}={text}"
+                    );
+                }
+                _ => {}
+            }
+        }
+        let mut filled = Settings::default();
+        filled.cookiecloud_uuid = "u-9".to_string();
+        filled.cookiecloud_key = "k-9".to_string();
+        for view in [view, settings_view(&filled)] {
+            assert_view_sanitized(&view, "$");
+        }
+        drop(fake);
     }
 
     #[test]

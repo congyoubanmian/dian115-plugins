@@ -835,6 +835,14 @@ fn save_cookies(cookies: &BTreeMap<String, String>) -> Result<(), String> {
     store::put(&mut ids, COOKIE_KEY, &data).map_err(|err| err.to_string())
 }
 
+/// 公开的合并入口(CookieCloud 同步用, 0.3.4): 语义与 [`save_cookies`] 一致 ——
+/// 已存字段保留、同名字段覆盖([`save_cookie_string`] 走的是"先清洗再合并"的
+/// 完整链路, 而同步侧在 [`crate::cookiecloud`] 里已完成白名单过滤与
+/// [`normalize_cookies`], 这里只负责落盘)。
+pub fn merge_cookies(cookies: &BTreeMap<String, String>) -> Result<(), String> {
+    save_cookies(cookies)
+}
+
 /// 把 cookie 头拼好: 已保存的会话 cookie + 调用方附加的 `extra`。
 fn cookie_with_extra(extra: &str) -> String {
     let existing = cookie_header(&load_cookies());

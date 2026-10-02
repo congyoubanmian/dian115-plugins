@@ -82,13 +82,17 @@ interface Task {
   updated_ms?: number
 }
 
-/** 下载设置(download.rs `Settings`)。 */
+/** 下载设置(download.rs `Settings`; state 里是 `settings_view` 的脱敏形态)。 */
 interface Settings {
   staging_dir?: string
   target_dir?: string
   quality?: string
   max_active?: number
   notify_on_fail?: boolean
+  /** CookieCloud 三项的视图键(download.rs `settings_view` 改名输出): 密钥绝不回显, 只给 ready 布尔。 */
+  cc_url?: string
+  cc_uuid?: string
+  cc_key_ready?: boolean
 }
 
 interface LoginInfo {
@@ -346,9 +350,12 @@ async function pasteCookie() {
   }
   pasteBusy.value = true
   try {
+    // 输入键沿用 `qq_cookie`/`netease_cookie`; 响应键是 `qq_login`/`netease_login`
+    // (宿主 2026-09-30 递归拒绝 action 响应里键名含 "cookie" 子串的整个响应)。
     const key = loginSource.value === 'qq' ? 'qq_cookie' : 'netease_cookie'
+    const resultKey = loginSource.value === 'qq' ? 'qq_login' : 'netease_login'
     const result = await invoke('settings-update', { [key]: raw })
-    const info = (result[key] || {}) as Record<string, unknown>
+    const info = (result[resultKey] || {}) as Record<string, unknown>
     if (info.status === 'failed') {
       message.error(String(info.message || 'Cookie 保存失败'))
     } else {
@@ -359,6 +366,37 @@ async function pasteCookie() {
     message.error(String((error as { message?: string })?.message || error))
   } finally {
     pasteBusy.value = false
+  }
+}
+
+// ── CookieCloud 同步(地址/UUID/口令在「设置」页配置, 这里一键拉取两侧登录态) ──
+const ccSyncBusy = ref(false)
+
+async function syncFromCookieCloud() {
+  ccSyncBusy.value = true
+  try {
+    // 无入参: 后端从 KV 设置里取 URL/UUID/口令(runtime.rs 分发表; 成功 data 形状见 cookiecloud.rs)。
+    const result = await invoke('cookiecloud-sync')
+    if (result.status === 'failed') {
+      message.error(String(result.message || 'CookieCloud 同步失败'))
+      return
+    }
+    const data = (result.data || {}) as Record<string, any>
+    const side = (value: unknown): Record<string, any> =>
+      value && typeof value === 'object' ? (value as Record<string, any>) : {}
+    const netease = side(data.netease)
+    const qq = side(data.qq)
+    message.success(
+      `CookieCloud 同步完成 —— 网易云: 保存 ${Number(netease.saved) || 0} 条, ${
+        netease.logged_in === true ? '已登录' : '未登录'
+      }; QQ: 保存 ${Number(qq.saved) || 0} 条, ${qq.logged_in === true ? '已登录' : '未登录'}`,
+    )
+    // 与扫码成功同款收尾: invoke 里已 refresh, 这里再兜底一次让「当前登录状态」标签立刻跟上。
+    await refreshState()
+  } catch (error: unknown) {
+    message.error(String((error as { message?: string })?.message || error || 'CookieCloud 同步失败'))
+  } finally {
+    ccSyncBusy.value = false
   }
 }
 
@@ -847,7 +885,14 @@ interface SettingsForm {
   quality: string
   max_active: number
   notify_on_fail: boolean
+  /** CookieCloud: 视图只回显 cc_url/cc_uuid; 密钥只在提交时发送, 输入框不回显。 */
+  cc_url: string
+  cc_uuid: string
+  cc_key: string
 }
+
+/** CookieCloud 服务端默认地址(download.rs `DEFAULT_COOKIECLOUD_URL`, URL 清空后后端也回落到它)。 */
+const DEFAULT_CC_URL = 'http://127.0.0.1:8088'
 
 const DEFAULTS: SettingsForm = {
   staging_dir: '',
@@ -855,6 +900,9 @@ const DEFAULTS: SettingsForm = {
   quality: 'jymaster',
   max_active: 2,
   notify_on_fail: true,
+  cc_url: DEFAULT_CC_URL,
+  cc_uuid: '',
+  cc_key: '',
 }
 /** download.rs `MAX_ACTIVE_CAP`。 */
 const MAX_ACTIVE_CAP = 16
@@ -869,6 +917,10 @@ function readSettings(source: Settings): SettingsForm {
     quality: String(source.quality || DEFAULTS.quality),
     max_active: Number(source.max_active) > 0 ? Number(source.max_active) : DEFAULTS.max_active,
     notify_on_fail: source.notify_on_fail !== false,
+    // 视图键是改名后的 cc_url/cc_uuid(download.rs `settings_view`); 密钥不在视图里, 恒为空串。
+    cc_url: String(source.cc_url || DEFAULT_CC_URL),
+    cc_uuid: String(source.cc_uuid || ''),
+    cc_key: '',
   }
 }
 
@@ -886,6 +938,10 @@ const changedKeys = computed(() => {
   if (form.quality !== before.quality) keys.push('quality')
   if (Number(form.max_active) !== before.max_active) keys.push('max_active')
   if (form.notify_on_fail !== before.notify_on_fail) keys.push('notify_on_fail')
+  // CookieCloud 三项按后端原字段名提交(入参不受视图改名限制); 密钥只在非空时算改动。
+  if (form.cc_url.trim() !== before.cc_url) keys.push('cookiecloud_url')
+  if (form.cc_uuid.trim() !== before.cc_uuid) keys.push('cookiecloud_uuid')
+  if (form.cc_key.trim() !== before.cc_key) keys.push('cookiecloud_key')
   return keys
 })
 
@@ -916,6 +972,9 @@ async function saveSettings() {
   if (changedKeys.value.includes('quality')) patch.quality = form.quality
   if (changedKeys.value.includes('max_active')) patch.max_active = Number(form.max_active)
   if (changedKeys.value.includes('notify_on_fail')) patch.notify_on_fail = form.notify_on_fail
+  if (changedKeys.value.includes('cookiecloud_url')) patch.cookiecloud_url = form.cc_url.trim()
+  if (changedKeys.value.includes('cookiecloud_uuid')) patch.cookiecloud_uuid = form.cc_uuid.trim()
+  if (changedKeys.value.includes('cookiecloud_key')) patch.cookiecloud_key = form.cc_key.trim()
 
   savingSettings.value = true
   try {
@@ -930,8 +989,11 @@ async function saveSettings() {
       Object.assign(form, next)
       baseline.value = next
     } else {
-      baseline.value = { ...form }
+      // 响应里拿不到设置视图时按已提交值对齐 baseline; 密钥除外(见下)。
+      baseline.value = { ...form, cc_key: '' }
     }
+    // 密钥不回显(state 与响应都不给): 保存成功后立即清掉输入框, 配置与否看「已配置」标记。
+    form.cc_key = ''
     message.success('设置已保存')
   } catch (error: unknown) {
     message.error(String((error as { message?: string })?.message || '设置保存失败'))
@@ -1053,6 +1115,20 @@ const rootProbeNote = computed(() => {
           </n-button>
         </div>
       </details>
+
+      <div class="row" style="margin-top: 6px">
+        <n-button
+          size="small"
+          type="primary"
+          secondary
+          :loading="ccSyncBusy"
+          :disabled="ccSyncBusy"
+          @click="syncFromCookieCloud"
+        >
+          从 CookieCloud 同步（网易+QQ）
+        </n-button>
+        <span class="hint">地址 / UUID / 密钥在「设置」页配置；同步成功后下方登录状态标签会自动刷新。</span>
+      </div>
 
       <p class="hint">
         当前登录状态：
@@ -1380,6 +1456,36 @@ const rootProbeNote = computed(() => {
 
       <p class="hint">
         保存只提交改动过的键（当前：{{ changedKeys.length ? changedKeys.join(', ') : '无' }}）；后端按白名单合并，没提交的键保持原值。
+      </p>
+
+      <n-divider style="margin: 6px 0" />
+      <h4 class="sub">CookieCloud 同步（网易 + QQ 登录态）</h4>
+      <div class="grid">
+        <label class="field">
+          <span class="label">CookieCloud 地址（cookiecloud_url）</span>
+          <n-input v-model:value="form.cc_url" size="small" :placeholder="DEFAULT_CC_URL" />
+          <span class="hint">服务端地址；清空保存后后端回落到默认 {{ DEFAULT_CC_URL }}。</span>
+        </label>
+        <label class="field">
+          <span class="label">UUID（cookiecloud_uuid）</span>
+          <n-input v-model:value="form.cc_uuid" size="small" placeholder="CookieCloud 的同步 UUID" />
+          <span class="hint">CookieCloud 网页「同步页」上显示的 UUID。</span>
+        </label>
+        <label class="field">
+          <span class="label">密钥（cookiecloud_key）</span>
+          <n-input
+            v-model:value="form.cc_key"
+            type="password"
+            show-password-on="click"
+            size="small"
+            placeholder="同步口令，不回显"
+          />
+          <span class="hint">{{ settings.cc_key_ready ? '已配置（不回显，重新输入可覆盖）' : '未配置' }}；留空保存不会清除已配置的密钥。</span>
+        </label>
+      </div>
+      <p class="hint">
+        三项与上方共用「保存」按钮（settings-update 的 cookiecloud_url / cookiecloud_uuid / cookiecloud_key）；
+        配好后到「扫码登录」卡片点「从 CookieCloud 同步」。
       </p>
 
       <n-divider style="margin: 6px 0" />

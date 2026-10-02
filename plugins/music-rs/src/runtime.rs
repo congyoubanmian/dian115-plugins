@@ -25,7 +25,7 @@ use crate::protocol::OpError;
 use crate::raw::{self, RawPayload};
 use crate::store::{self, LoadResult, PutIds};
 use crate::util;
-use crate::{download, netease, qq, tasks};
+use crate::{cookiecloud, download, netease, qq, tasks};
 
 /// 当前状态文档的 schema 版本。识别"这是不是本插件的状态文档"就靠它。
 pub const STATE_SCHEMA: u32 = 1;
@@ -351,9 +351,11 @@ impl Runtime {
     /// | `qr-create` | `source` | [`crate::netease::qr_create`] / [`crate::qq::qr_create`](QQ 返回 [`crate::qq::QR_UNAVAILABLE`]) |
     /// | `qr-poll` | `source` / `key` | [`crate::netease::qr_poll`] / [`crate::qq::qr_poll`] |
     /// | `qq-cookie-paste` | `cookie`(浏览器复制的 Cookie 头) | [`crate::qq::save_cookie_string`] |
+    /// | `netease-cookie-paste` | `cookie`(浏览器复制的 Cookie 头) | [`crate::netease::save_cookie_string`] |
+    /// | `cookiecloud-sync` | —(URL/UUID/口令从 KV 设置取) | [`crate::cookiecloud::action_cookiecloud_sync`] |
     /// | `login-status` | `source` | [`crate::netease::login_status`] / [`crate::qq::login_status`] |
     /// | `download` | `source` / `song_id` / `name` / `singers` / `album` / `level` | [`crate::download::request_download`] |
-    /// | `settings-update` | `input` 对象(可含 `qq_cookie`) | [`crate::download::settings_update`] + [`crate::qq::save_cookie_string`] |
+    /// | `settings-update` | `input` 对象(可含 `qq_cookie`/`netease_cookie`) | [`crate::download::settings_update`] + [`crate::qq::save_cookie_string`]; 保存结果回填 `qq_login`/`netease_login` 键(响应键名不含 "cookie" 子串, 见 `settings-update` 分支注释) |
     /// | `task-retry` | `id` | [`crate::tasks::retry`] |
     /// | `task-clear` | — | [`crate::tasks::clear_finished`] |
     /// | `archive` | — | [`crate::tasks::clear_finished`] + 清日志 |
@@ -414,14 +416,19 @@ impl Runtime {
                 Ok(action_result(outcome))
             }
             "settings-update" => {
-                // 可选的 `qq_cookie` / `netease_cookie`: 宿主剥离外部响应的 set-cookie
-                // (host-call-v2.md §3), 扫码成功也拿不到登录 Cookie, 允许粘贴随设置一起入库。
+                // 可选的 `qq_cookie` / `netease_cookie`(输入键不受宿主校验): 宿主剥离
+                // 外部响应的 set-cookie(host-call-v2.md §3), 扫码成功也拿不到登录
+                // Cookie, 允许粘贴随设置一起入库。
+                // 保存结果回填到 `qq_login` / `netease_login` 键 —— 宿主(2026-09-30)
+                // 递归拒绝 action 响应里键名含 "cookie" 子串的整个响应(见
+                // [`crate::cookiecloud`] 模块头), 键名不能沿用输入里的 `*_cookie`;
+                // 值侧只有 saved/logged_in/uin/has_key 等布尔与账号标识, 不回显凭据。
                 let pasted_qq = input.get("qq_cookie").and_then(Value::as_str).map(str::to_string);
                 let pasted_ne =
                     input.get("netease_cookie").and_then(Value::as_str).map(str::to_string);
                 let mut value = self.settings_update(&input);
                 if let Some(raw) = pasted_qq {
-                    value["qq_cookie"] = match qq::save_cookie_string(&raw) {
+                    value["qq_login"] = match qq::save_cookie_string(&raw) {
                         Ok(info) => {
                             self.bump("succeeded", "QQ cookie 已保存");
                             info
@@ -433,7 +440,7 @@ impl Runtime {
                     };
                 }
                 if let Some(raw) = pasted_ne {
-                    value["netease_cookie"] = match netease::save_cookie_string(&raw) {
+                    value["netease_login"] = match netease::save_cookie_string(&raw) {
                         Ok(info) => {
                             self.bump("succeeded", "网易云 cookie 已保存");
                             info
@@ -457,6 +464,27 @@ impl Runtime {
                 let outcome = netease::save_cookie_string(&input_str(&input, "cookie"));
                 if outcome.is_ok() {
                     self.bump("succeeded", "网易云 cookie 已保存");
+                }
+                Ok(action_result(outcome))
+            }
+            "cookiecloud-sync" => {
+                // 无入参: URL/UUID/口令都从 KV 设置里取(cookiecloud.rs)。
+                // 结果键名避开宿主 2026-09-30 的 "cookie" 键名校验(见 cookiecloud.rs)。
+                let outcome = cookiecloud::action_cookiecloud_sync();
+                match &outcome {
+                    Ok(value) => {
+                        let netease_logged = value["netease"]["logged_in"].as_bool().unwrap_or(false);
+                        let qq_logged = value["qq"]["logged_in"].as_bool().unwrap_or(false);
+                        self.bump(
+                            "succeeded",
+                            &format!(
+                                "已从 CookieCloud 同步登录态(网易云 {}, QQ {})",
+                                if netease_logged { "已登录" } else { "未登录" },
+                                if qq_logged { "已登录" } else { "未登录" },
+                            ),
+                        );
+                    }
+                    Err(err) => self.bump("failed", &format!("CookieCloud 同步失败: {err}")),
                 }
                 Ok(action_result(outcome))
             }

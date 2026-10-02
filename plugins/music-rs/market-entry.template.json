@@ -1,12 +1,12 @@
 {
   "id": "music.rs",
   "name": "音乐下载（Rust 版）",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "description": "网易云/QQ 音乐扫码登录、搜索与音质自选取链；无 sidecar，由宿主代理下载（本地暂存 → CD2 入库），任务状态落 KV 队列并支持 Telegram 回调重试。",
   "author": "congyoubanmian",
   "homepage": "https://github.com/congyoubanmian/dian115-plugins",
-  "package_url": "https://github.com/congyoubanmian/douban-center-wasm/releases/download/music-rs-v0.3.3/music.rs-0.3.3.d115p",
-  "sha256": "2dcce1c31767d565db77a71afc76be2244b33079fb5990bd0c4d6284589925d0",
+  "package_url": "https://github.com/congyoubanmian/douban-center-wasm/releases/download/music-rs-v0.3.4/music.rs-0.3.4.d115p",
+  "sha256": "e920b798dec96451e7dfc2dd3ea0dedfe34f6fcfa524755c915c22ae559c97da",
   "runtime": {
     "kind": "wasm",
     "protocol": "dian115:wasm@1",
@@ -148,6 +148,14 @@
         ],
         "proxy_mode": "system",
         "reason": "QQ 登录重定向链落点（oauth2.0/login_jump）：qqPollQR 成功后最多 8 跳跟随回跳、收集 QQ 音乐 cookie"
+      },
+      {
+        "origin": "http://127.0.0.1:8088",
+        "methods": [
+          "GET"
+        ],
+        "proxy_mode": "direct",
+        "reason": "本机 CookieCloud 服务: 拉取加密同步数据解出网易云/QQ 登录 cookie"
       }
     ]
   },

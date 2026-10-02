@@ -14,6 +14,7 @@
 //! | [`clock`] | 经宿主 WASI 取墙钟时间与休眠 |
 //! | [`raw`] | Go `encoding/json` 结构体解码语义 |
 //! | [`netease`] / [`qq`] | 网易云 / QQ 音乐: 搜索、取链、扫码登录 |
+//! | [`cookiecloud`] | CookieCloud 同步登录(0.3.4): 拉取本机服务 → 解密 → 按域合并网易云/QQ 登录态 |
 //! | [`download`] | 宿主代下载两段式管线(取链 → 暂存 → 轮询 → 定名 → 复制 → 通知) |
 //! | [`tasks`] | KV 任务队列(KV `tasks`)+ Telegram 回调重试 |
 //!
@@ -41,6 +42,7 @@
 pub mod abi;
 pub mod arena;
 pub mod clock;
+pub mod cookiecloud;
 pub mod download;
 pub mod host;
 pub mod netease;
