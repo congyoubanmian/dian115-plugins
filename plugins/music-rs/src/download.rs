@@ -461,21 +461,23 @@ pub fn probe_roots() -> RootsProbe {
 pub fn effective_staging(settings: &Settings, probe: &RootsProbe) -> (Option<String>, Vec<String>) {
     let mut warnings = Vec::new();
     let configured = normalize_dir(&settings.staging_dir);
-    if !configured.is_empty() && best_root(probe, &configured).is_some() {
+    if !configured.is_empty() {
+        // 0.3.5: 直接信任已配置的暂存目录。宿主的 downloads broker 才是最终裁判
+        // (目标非法会在任务 error 里给出明确原因), 不再因 files/roots 视图
+        // (官方无字段契约的 GenericHostObject) 对不上而无限期搁置整个队列。
+        if best_root(probe, &configured).is_none() {
+            warnings.push(format!(
+                "staging_dir {configured} 未命中宿主文件根视图, 按配置直试(以 downloads broker 校验为准)"
+            ));
+        }
         return (Some(configured), warnings);
     }
     if let Some(root) = probe.roots.iter().find(|root| root.local && root.writable) {
         let fallback = join_dir(&root.path, "音乐下载");
-        warnings.push(format!(
-            "staging_dir {} 不在本地可写根内(排除 CD2 后), 本次回退到 {}",
-            settings.staging_dir, fallback
-        ));
+        warnings.push(format!("staging_dir 未配置, 回退到本地可写根下 {fallback}"));
         return (Some(fallback), warnings);
     }
-    warnings.push(format!(
-        "staging_dir {} 不在本地可写根内, 且宿主未返回任何本地可写根",
-        settings.staging_dir
-    ));
+    warnings.push("staging_dir 未配置且宿主未返回可识别的本地可写根".to_string());
     (None, warnings)
 }
 
@@ -1550,7 +1552,8 @@ mod tests {
             ],
         };
         let (dir, warnings) = effective_staging(&settings, &probe);
-        assert_eq!(dir.as_deref(), Some("/volume1/music/音乐下载"));
+        // 0.3.5: 已配置(CD2 默认值)就按配置直试, roots 不匹配只警告不拦截。
+        assert_eq!(dir.as_deref(), Some(DEFAULT_MUSIC_DIR));
         assert_eq!(warnings.len(), 1, "{warnings:?}");
 
         // 默认路径在本地根下 → 原样使用。
@@ -1568,13 +1571,20 @@ mod tests {
         assert_eq!(dir.as_deref(), Some(DEFAULT_MUSIC_DIR));
         assert!(warnings.is_empty());
 
-        // 只有 CD2 根 → 无可用暂存目录。
+        // 只有 CD2 根但已配置 → 仍按配置直试(downloads broker 会给出最终裁决)。
         let probe = RootsProbe {
             ok: true,
             error: String::new(),
             roots: vec![Root { path: "/mnt/cd2".into(), name: "CD2".into(), local: false, writable: true }],
         };
         let (dir, warnings) = effective_staging(&settings, &probe);
+        assert_eq!(dir.as_deref(), Some(DEFAULT_MUSIC_DIR));
+        assert_eq!(warnings.len(), 1);
+
+        // 未配置 + 只有 CD2 根 → None。
+        let mut empty = settings.clone();
+        empty.staging_dir = String::new();
+        let (dir, warnings) = effective_staging(&empty, &probe);
         assert_eq!(dir, None);
         assert_eq!(warnings.len(), 1);
     }
