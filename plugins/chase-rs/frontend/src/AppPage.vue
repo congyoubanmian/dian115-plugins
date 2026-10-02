@@ -720,6 +720,11 @@ async function copyDiagnostics() {
           <n-collapse-item title="端点探针与原文样本" name="diag">
             <div class="chase-probes">
               <probe-panel
+                endpoint="emby/instances"
+                :probe="debug.emby_instances"
+                hint="Emby 实例列表现场; 「200 但解析为空」时看原文分辨是字段没认出还是宿主没配实例。"
+              />
+              <probe-panel
                 endpoint="emby/episodes"
                 :probe="debug.emby_episodes"
                 hint="Emby 已有集数的解析现场; 结构未识别时该轮零写入(不猜集号)。"

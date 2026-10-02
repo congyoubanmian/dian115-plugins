@@ -455,6 +455,7 @@ impl Runtime {
                         intent.tmdb_id,
                         intent.season,
                         selected.proxy_id,
+                        (intent.total_known > 0).then_some(intent.total_known),
                         &self.state.settings.probe.emby_episodes_shape,
                         remaining.min(3),
                     ) {
@@ -729,16 +730,36 @@ impl Runtime {
         self.run_seq += 1;
         let now = clock::now_rfc3339();
 
-        // ① 实例列表(强类型, 顺便刷新界面下拉)
-        match emby::fetch_instances() {
-            Ok(instances) => {
+        // ① 实例列表(强类型, 顺便刷新界面下拉); 原文样本落 state.debug ——
+        // 真实宿主出现过「200 但解析为空」: 字段没认出还是宿主没配实例, 只有原文能分辨。
+        let instances_snapshot: ProbeSnapshot;
+        match emby::fetch_instances_detailed() {
+            Ok((instances, status, raw)) => {
                 self.remember_instances(&instances);
-                self.state.record_attempt("emby.instances", "(无参数)", 200, "ok");
+                let shape = format!("instances={}", instances.len());
+                self.state.record_attempt("emby.instances", "(无参数)", status, &shape);
+                instances_snapshot = ProbeSnapshot {
+                    status: "ok".to_string(),
+                    shape,
+                    params_tried: vec!["(无参数)".to_string()],
+                    http_status: status,
+                    sample: raw::sample_text(&raw, SAMPLE_MAX),
+                    at: now.clone(),
+                };
             }
             Err(failure) => {
                 self.record_failure("probe.emby.instances", &failure, FailSlot::None);
+                instances_snapshot = ProbeSnapshot {
+                    status: failure.kind().to_string(),
+                    shape: "(未识别)".to_string(),
+                    params_tried: vec!["(无参数)".to_string()],
+                    http_status: failure.http_status,
+                    sample: failure.sample(),
+                    at: now.clone(),
+                };
             }
         }
+        self.state.debug.emby_instances = instances_snapshot;
         let settings = self.state.settings.clone();
         let selected = self.selected_instance(&settings);
 
@@ -749,12 +770,12 @@ impl Runtime {
             .items
             .iter()
             .find(|item| item.tmdb_id > 0)
-            .map(|item| (item.tmdb_id, item.season))
+            .map(|item| (item.tmdb_id, item.season, item.total_known))
             .or_else(|| {
                 intents::fetch_page(1, 0)
                     .ok()
                     .and_then(|fetched| fetched.page.items.into_iter().find(|item| item.tmdb_id > 0))
-                    .map(|item| (item.tmdb_id, item.season))
+                    .map(|item| (item.tmdb_id, item.season, item.total_known))
             });
 
         let mut emby_shape = String::new();
@@ -765,13 +786,15 @@ impl Runtime {
         let params_tried: Vec<String>;
 
         match (selected, sample) {
-            (Some(selected), Some((tmdb_id, season))) => {
+            (Some(selected), Some((tmdb_id, season, total_known))) => {
+                // 宿主明示 total_episodes 必填; total 未知时才省略(基本必 400, 仅兜底)。
+                let total = (total_known > 0).then_some(total_known);
                 let mut tried = Vec::new();
                 let mut last_failure: Option<ParseFailure> = None;
                 let mut success: Option<(String, i32, String)> = None;
-                for query in emby::candidates(tmdb_id, season, selected.proxy_id) {
+                for query in emby::candidates(tmdb_id, season, selected.proxy_id, total) {
                     tried.push(query.params_label());
-                    match host::get(&query.path()) {
+                    match query.execute() {
                         Ok(response) if response.status < 400 => {
                             match emby::parse_coverage(&response.raw) {
                                 Ok(coverage) => {
@@ -1226,6 +1249,7 @@ impl Runtime {
                             intent.tmdb_id,
                             intent.season,
                             selected.proxy_id,
+                            (intent.total_known > 0).then_some(intent.total_known),
                             &self.state.settings.probe.emby_episodes_shape,
                             remaining.min(3) as u8,
                         ) {
@@ -1837,9 +1861,13 @@ mod tests {
     }
 
     fn calendar_body() -> Vec<u8> {
-        r#"{"items":[{"tmdb_id":1396,"season":5,"episode":1,"title":"绝命毒师",
-                       "air_date":"2026-10-01","air_time":"12:00"}]}"#.as_bytes()
-            .to_vec()
+        // air_date 相对「今天」动态生成(宿主时区 +08:00): 窗口是前视的 [今天, 今天+N],
+        // 硬编码日期的夹具活不过当天——2026-10-01 写死的版本在 10-02 凌晨就炸了。
+        let today = clock::local_date(480);
+        format!(
+            r#"{{"items":[{{"tmdb_id":1396,"season":5,"episode":1,"title":"绝命毒师","air_date":"{today}","air_time":"12:00"}}]}}"#
+        )
+        .into_bytes()
     }
 
     fn tmdb_body() -> Vec<u8> {

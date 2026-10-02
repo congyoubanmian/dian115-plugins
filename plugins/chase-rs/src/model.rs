@@ -347,6 +347,9 @@ pub struct DebugError {
 pub struct DebugState {
     pub updated_at: String,
     pub emby_episodes: ProbeSnapshot,
+    /// 实例列表的现场(含 ≤2048 字节原文)——真实宿主出现过「200 但解析为空」,
+    /// 是字段没认出还是宿主没配实例, 只有原文能分辨。
+    pub emby_instances: ProbeSnapshot,
     pub air_calendar: ProbeSnapshot,
     /// 订阅池列表的失败现场(解析失败时的 ≤2048 字节原文)。
     pub pool_intents: ProbeSnapshot,
@@ -359,6 +362,7 @@ impl DebugState {
         DebugState {
             updated_at: String::new(),
             emby_episodes: ProbeSnapshot::never(),
+            emby_instances: ProbeSnapshot::never(),
             air_calendar: ProbeSnapshot::never(),
             pool_intents: ProbeSnapshot::never(),
             attempts: Vec::new(),

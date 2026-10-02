@@ -3,7 +3,7 @@
   "schema_version": 1,
   "id": "chase.rs",
   "name": "追剧管家（Rust 版）",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "小时级对齐「订阅池里的剧集订阅」与「Emby 已有集数」：只对可解析的条目做只增 PATCH total_episodes，并产出追剧日历与当天一次的 Telegram 日报；减方向只给建议，从不写。",
   "default_locale": "zh-CN",
   "publisher": {

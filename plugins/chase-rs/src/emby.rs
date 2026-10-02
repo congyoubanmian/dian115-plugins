@@ -30,7 +30,7 @@ pub const INSTANCES_PATH: &str = "/api/plugin-host/emby/instances";
 pub const EPISODES_PATH: &str = "/api/plugin-host/emby/episodes";
 
 /// 实例列表的响应字段候选(强类型是 `items`)。
-const LIST_KEYS: &[&str] = &["items", "instances", "data", "list"];
+const LIST_KEYS: &[&str] = &["items", "instances", "data", "list", "result", "rows"];
 
 /// 集列表字段候选(根对象下探一层)。
 const COVERAGE_KEYS: &[&str] = &[
@@ -93,15 +93,20 @@ pub fn parse_instances(raw: &[u8]) -> Result<Vec<Instance>, String> {
     let mut instances = Vec::new();
     for element in array {
         let Some(obj) = element.as_object() else { continue };
-        let Some(id) = raw::first_i64(obj, &["id", "proxy_id"]) else { continue };
+        let Some(id) = raw::first_i64(obj, &["id", "proxy_id", "instance_id", "emby_id"]) else { continue };
         if id < 0 {
             continue;
         }
         instances.push(Instance {
             id,
-            name: raw::first_string(obj, &["name", "title"]).unwrap_or_default(),
+            name: raw::first_string(obj, &["name", "title", "label"]).unwrap_or_default(),
             is_default: raw::first_bool(obj, &["is_default", "default"]),
-            key_ready: raw::first_bool(obj, &["api_key_configured", "has_key", "configured"]),
+            key_ready: raw::first_bool(obj, &[
+                "api_key_configured",
+                "has_key",
+                "configured",
+                "key_configured",
+            ]),
         });
     }
     Ok(instances)
@@ -163,6 +168,14 @@ pub fn selection_from_settings(proxy_id: i64) -> Option<Selection> {
 
 /// 拉取实例列表。
 pub fn fetch_instances() -> Result<Vec<Instance>, ParseFailure> {
+    fetch_instances_detailed().map(|(instances, _, _)| instances)
+}
+
+/// 拉取实例列表并保留原始响应(HTTP 状态 + 原文, 供探测快照落 `state.debug`)。
+///
+/// 真实宿主上出现过「200 但解析结果为空」——那是"字段没认出"还是"宿主真的没配实例"
+/// 无法从解析结果区分, 所以探测路径用这个版本把原文样本留下来。
+pub fn fetch_instances_detailed() -> Result<(Vec<Instance>, i32, Vec<u8>), ParseFailure> {
     let response = host::get(INSTANCES_PATH)
         .map_err(|err| ParseFailure::transport(format!("Emby 实例请求失败: {err}")))?;
     if response.status >= 400 {
@@ -173,81 +186,139 @@ pub fn fetch_instances() -> Result<Vec<Instance>, ParseFailure> {
         ));
     }
     parse_instances(&response.raw)
+        .map(|instances| (instances, response.status, response.raw.clone()))
         .map_err(|message| ParseFailure::http(response.status, response.raw.clone(), message))
 }
 
 // ─────────────────────────── episodes ───────────────────────────
 
-/// 一次 `emby/episodes` 请求的参数组合(候选矩阵 M1/M2/M3)。
+/// 一次 `emby/episodes` 请求的参数组合(候选矩阵 V1-V5)。
+///
+/// 真实宿主(2026-10-02 探测)对缺参请求回 400 且点名
+/// `{"error":"tmdb_id and total_episodes are required"}` —— 所以每个变体都带
+/// `total_episodes`(V5 用备选参数名 `total`), 并保留 GET 查询串之外的一条 POST
+/// JSON body 路径(V4): 宿主若从 body 取参, GET 永远 400 同一个错。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EpisodeQuery {
     /// `None` = 省略 `proxy_id`(实例 id 为 0 的旧版单实例)。
     pub proxy_id: Option<i64>,
     pub tmdb_id: i64,
     pub season: i64,
-    /// 1 = `tmdb_id`+`season`; 2 = `tmdb_id`+`season_number`; 3 = `tmdbId`+`season`。
+    /// 订阅已知总集数; `None` = 省略总数参数(宿主必填, 省略基本必 400, 仅兜底)。
+    pub total: Option<i64>,
+    /// 1-5 见 [`candidates`]。
     pub variant: u8,
 }
 
 impl EpisodeQuery {
-    /// 请求路径(参数全是数字, 无需转义)。
+    /// 该变体的 (tmdb 参数名, season 参数名, 总数参数名)。
+    fn keys(&self) -> (&'static str, &'static str, &'static str) {
+        match self.variant {
+            2 => ("tmdb_id", "season_number", "total_episodes"),
+            3 => ("tmdbId", "season", "total_episodes"),
+            5 => ("tmdb_id", "season", "total"),
+            _ => ("tmdb_id", "season", "total_episodes"),
+        }
+    }
+
+    /// 是否走 POST body(其余变体一律 GET 查询串)。
+    fn is_post(&self) -> bool {
+        self.variant == 4
+    }
+
+    /// GET 变体的请求路径(参数全是数字, 无需转义)。
     pub fn path(&self) -> String {
-        let (id_key, season_key) = match self.variant {
-            2 => ("tmdb_id", "season_number"),
-            3 => ("tmdbId", "season"),
-            _ => ("tmdb_id", "season"),
-        };
+        let (id_key, season_key, total_key) = self.keys();
         let mut path = String::from(EPISODES_PATH);
         path.push('?');
-        let mut first = true;
         if let Some(proxy_id) = self.proxy_id {
-            path.push_str(&format!("proxy_id={proxy_id}"));
-            first = false;
-        }
-        if !first {
-            path.push('&');
+            path.push_str(&format!("proxy_id={proxy_id}&"));
         }
         path.push_str(&format!("{id_key}={}&{season_key}={}", self.tmdb_id, self.season));
+        if let Some(total) = self.total {
+            path.push_str(&format!("&{total_key}={total}"));
+        }
         path
+    }
+
+    /// POST 变体(V4)的 JSON body; GET 变体返回 `None`。
+    pub fn body(&self) -> Option<Vec<u8>> {
+        if !self.is_post() {
+            return None;
+        }
+        let mut object = serde_json::Map::new();
+        object.insert("tmdb_id".to_string(), self.tmdb_id.into());
+        object.insert("season".to_string(), self.season.into());
+        if let Some(total) = self.total {
+            object.insert("total_episodes".to_string(), total.into());
+        }
+        if let Some(proxy_id) = self.proxy_id {
+            object.insert("proxy_id".to_string(), proxy_id.into());
+        }
+        serde_json::to_vec(&object).ok()
+    }
+
+    /// 执行该变体(GET 查询串或 POST body)。
+    pub fn execute(&self) -> Result<crate::host::HttpResponse, crate::host::HostError> {
+        match self.body() {
+            Some(body) => crate::host::send(
+                "POST",
+                EPISODES_PATH,
+                Some(&body),
+                &[("accept", "application/json")],
+            ),
+            None => crate::host::get(&self.path()),
+        }
     }
 
     /// 参数名列表(写进形状指纹与 debug.attempts[].params)。
     pub fn params_label(&self) -> String {
-        let (id_key, season_key) = match self.variant {
-            2 => ("tmdb_id", "season_number"),
-            3 => ("tmdbId", "season"),
-            _ => ("tmdb_id", "season"),
-        };
+        let (id_key, season_key, total_key) = self.keys();
+        let prefix = if self.is_post() { "POST:" } else { "" };
         match self.proxy_id {
-            Some(_) => format!("proxy_id,{id_key},{season_key}"),
-            None => format!("{id_key},{season_key}"),
+            Some(_) => format!("{prefix}proxy_id,{id_key},{season_key},{total_key}"),
+            None => format!("{prefix}{id_key},{season_key},{total_key}"),
         }
     }
 
-    /// 完整指纹的 `params=` 段。
+    /// 完整指纹的 `params=` 段(带变体号, 缓存命中时按它直接调用)。
     pub fn shape_prefix(&self) -> String {
-        format!("params={}", self.params_label())
+        format!("params={};v={}", self.params_label(), self.variant)
     }
 }
 
-/// 参数矩阵: 按序最多试 3 个组合, 命中即停(M1 → M2 → M3)。
-pub fn candidates(tmdb_id: i64, season: i64, proxy_id: Option<i64>) -> Vec<EpisodeQuery> {
-    (1..=3)
-        .map(|variant| EpisodeQuery { proxy_id, tmdb_id, season, variant })
+/// 参数矩阵: 依可能性排序 V1 → V4 → V2 → V3 → V5, 命中即停。
+///
+/// - V1 GET `tmdb_id`+`season`+`total_episodes`(宿主 400 报错点名的参数);
+/// - V4 POST body `{tmdb_id, season, total_episodes, proxy_id?}`(宿主可能从 body 取参);
+/// - V2 GET `season_number` 变体; V3 GET `tmdbId` 驼峰变体; V5 GET `total` 变体。
+pub fn candidates(tmdb_id: i64, season: i64, proxy_id: Option<i64>, total: Option<i64>) -> Vec<EpisodeQuery> {
+    [1u8, 4, 2, 3, 5]
+        .into_iter()
+        .map(|variant| EpisodeQuery { proxy_id, tmdb_id, season, total, variant })
         .collect()
 }
 
 /// 从形状指纹里取出参数组合的变体号(缓存命中时按它直接调用)。
+///
+/// 优先认 `v=N` 段; 兼容旧指纹(无 `v=`)按参数名尾缀匹配映射到 GET 变体。
 pub fn variant_from_shape(shape: &str) -> Option<u8> {
+    if let Some(variant) = shape
+        .split(';')
+        .find_map(|segment| segment.strip_prefix("v="))
+        .and_then(|value| value.parse::<u8>().ok())
+    {
+        return if (1..=5).contains(&variant) { Some(variant) } else { None };
+    }
     let params = shape
         .split(';')
         .find_map(|segment| segment.strip_prefix("params="))?;
     let names: Vec<&str> = params.split(',').collect();
-    // 允许带或不带 proxy_id 前缀
+    // 允许带或不带 proxy_id 前缀; POST 标记没有旧指纹, 不在这里处理
     let tail: Vec<&str> = names
         .iter()
         .copied()
-        .filter(|name| *name != "proxy_id")
+        .filter(|name| *name != "proxy_id" && !name.starts_with("total"))
         .collect();
     match tail.as_slice() {
         ["tmdb_id", "season"] => Some(1),
@@ -468,11 +539,12 @@ fn missing_field_name(value: &Value) -> Option<String> {
 /// 收敛到 `settings.emby_probe_budget` / align-now 的 3 次)。返回实际发出的次数,
 /// 调用方据此记账 —— 预算必须按真实调用数扣减。
 ///
-/// 三次尝试全部失败时返回带原文的 `ParseFailure`(其 `attempts` = 实际调用数)。
+/// 全部尝试失败时返回带原文的 `ParseFailure`(其 `attempts` = 实际调用数)。
 pub fn fetch_coverage(
     tmdb_id: i64,
     season: i64,
     proxy_id: Option<i64>,
+    total: Option<i64>,
     shape_hint: &str,
     max_attempts: u8,
 ) -> Result<(Coverage, EpisodeQuery, u8), ParseFailure> {
@@ -480,21 +552,21 @@ pub fn fetch_coverage(
         // 预算已经用尽: 一次都不发(这是唯一"零调用失败"的形态)
         return Err(ParseFailure::transport("Emby 探测预算已用尽").with_attempts(0));
     }
-    let mut order = candidates(tmdb_id, season, proxy_id);
+    let mut order = candidates(tmdb_id, season, proxy_id, total);
     if let Some(variant) = variant_from_shape(shape_hint) {
-        // 指纹命中的组合排到最前(命中即停, 省掉两次无谓探测)
+        // 指纹命中的组合排到最前(命中即停, 省掉无谓探测)
         if let Some(position) = order.iter().position(|query| query.variant == variant) {
             let preferred = order.remove(position);
             order.insert(0, preferred);
         }
     }
-    order.truncate(usize::from(max_attempts.min(3)));
+    order.truncate(usize::from(max_attempts.min(5)));
 
     let mut calls: u8 = 0;
     let mut last: Option<ParseFailure> = None;
     for query in order {
         calls = calls.saturating_add(1);
-        let response = match host::get(&query.path()) {
+        let response = match query.execute() {
             Ok(response) => response,
             Err(err) => {
                 last = Some(ParseFailure::transport(format!("Emby 覆盖请求失败: {err}")));
@@ -712,27 +784,43 @@ mod tests {
 
     #[test]
     fn query_paths_and_shape_fingerprints() {
-        let queries = candidates(1396, 5, Some(3));
-        assert_eq!(queries.len(), 3);
+        let queries = candidates(1396, 5, Some(3), Some(12));
+        assert_eq!(queries.len(), 5, "矩阵 V1-V5");
+        // 顺序按可能性: V1 GET(宿主点名的参数) → V4 POST → V2 → V3 → V5
         assert_eq!(
             queries[0].path(),
-            "/api/plugin-host/emby/episodes?proxy_id=3&tmdb_id=1396&season=5"
+            "/api/plugin-host/emby/episodes?proxy_id=3&tmdb_id=1396&season=5&total_episodes=12"
         );
-        assert_eq!(
-            queries[1].path(),
-            "/api/plugin-host/emby/episodes?proxy_id=3&tmdb_id=1396&season_number=5"
-        );
+        assert!(queries[1].is_post(), "V4 是 POST body 变体");
+        assert_eq!(queries[1].body().unwrap(), br#"{"proxy_id":3,"season":5,"tmdb_id":1396,"total_episodes":12}"#.to_vec());
         assert_eq!(
             queries[2].path(),
-            "/api/plugin-host/emby/episodes?proxy_id=3&tmdbId=1396&season=5"
+            "/api/plugin-host/emby/episodes?proxy_id=3&tmdb_id=1396&season_number=5&total_episodes=12"
         );
-        // 旧版单实例: 一律省略 proxy_id
         assert_eq!(
-            candidates(1396, 5, None)[0].path(),
-            "/api/plugin-host/emby/episodes?tmdb_id=1396&season=5"
+            queries[3].path(),
+            "/api/plugin-host/emby/episodes?proxy_id=3&tmdbId=1396&season=5&total_episodes=12"
+        );
+        assert_eq!(
+            queries[4].path(),
+            "/api/plugin-host/emby/episodes?proxy_id=3&tmdb_id=1396&season=5&total=12",
+            "V5 用备选总数参数名 total"
+        );
+        // 旧版单实例: 一律省略 proxy_id; total 未知时省略总数参数
+        assert_eq!(
+            candidates(1396, 5, None, Some(12))[0].path(),
+            "/api/plugin-host/emby/episodes?tmdb_id=1396&season=5&total_episodes=12"
+        );
+        assert_eq!(
+            candidates(1396, 5, Some(3), None)[0].path(),
+            "/api/plugin-host/emby/episodes?proxy_id=3&tmdb_id=1396&season=5"
         );
 
-        assert_eq!(variant_from_shape("params=proxy_id,tmdb_id,season;list=items"), Some(1));
+        // v=N 段优先(新指纹), 参数名尾缀匹配兜底(旧指纹迁移)
+        assert_eq!(variant_from_shape("params=proxy_id,tmdb_id,season,total_episodes;v=1;list=items"), Some(1));
+        assert_eq!(variant_from_shape("params=POST:proxy_id,tmdb_id,season,total_episodes;v=4"), Some(4));
+        assert_eq!(variant_from_shape("params=proxy_id,tmdb_id,season,total;v=5"), Some(5));
+        assert_eq!(variant_from_shape("params=proxy_id,tmdb_id,season;list=items"), Some(1), "旧指纹仍映射到 V1");
         assert_eq!(variant_from_shape("params=tmdb_id,season_number;list=array"), Some(2));
         assert_eq!(variant_from_shape("params=proxy_id,tmdbId,season;list=data.items"), Some(3));
         assert_eq!(variant_from_shape("garbage"), None);
@@ -740,9 +828,24 @@ mod tests {
     }
 
     #[test]
+    fn fetch_coverage_falls_through_to_post_body_variant() {
+        // 宿主只吃 POST body: GET 全部 400 同一个错, V4 命中
+        let fake = FakeHost::new();
+        fake.route_prefix("GET", "GET /api/plugin-host/emby/episodes?", 400, br#"{"error":"tmdb_id and total_episodes are required"}"#);
+        fake.route_prefix("POST", "POST /api/plugin-host/emby/episodes", 200, &coverage_items_fixture());
+        let guard = fake.install();
+        let (coverage, query, calls) = fetch_coverage(1396, 5, Some(3), Some(12), "", 2).unwrap();
+        assert_eq!(query.variant, 4);
+        assert_eq!(calls, 2, "V1(GET) 400 后第二个就轮到 V4(POST)");
+        assert_eq!(coverage.have_max(), Some(4));
+        assert!(coverage.shape.starts_with("params=POST:proxy_id,tmdb_id,season,total_episodes;v=4"), "{}", coverage.shape);
+        drop(guard);
+    }
+
+    #[test]
     fn fetch_coverage_uses_shape_hint_first_and_probes_on_failure() {
         let fake = FakeHost::new();
-        // M2(season_number)才是对的: 指纹命中时 1 次调用就够
+        // V2(season_number)才是对的: 指纹命中时 1 次调用就够
         fake.route_prefix(
             "GET",
             "GET /api/plugin-host/emby/episodes?proxy_id=3&tmdb_id=1396&season_number",
@@ -753,9 +856,15 @@ mod tests {
         fake.route_prefix("GET", "GET /api/plugin-host/emby/episodes?", 200, br#"{"count":3}"#);
         let guard = fake.install();
 
-        let (coverage, query, calls) =
-            fetch_coverage(1396, 5, Some(3), "params=proxy_id,tmdb_id,season_number;list=items", 3)
-                .unwrap();
+        let (coverage, query, calls) = fetch_coverage(
+            1396,
+            5,
+            Some(3),
+            Some(12),
+            "params=proxy_id,tmdb_id,season_number;list=items",
+            3,
+        )
+        .unwrap();
         assert_eq!(query.variant, 2);
         assert_eq!(coverage.have_max(), Some(4));
         assert_eq!(calls, 1);
@@ -771,7 +880,7 @@ mod tests {
         fake.route_prefix("GET", "GET /api/plugin-host/emby/episodes?", 200, br#"{"count":3}"#);
         let guard = fake.install();
         let before = crate::host::observed_calls();
-        let failure = fetch_coverage(1396, 5, Some(3), "", 1).unwrap_err();
+        let failure = fetch_coverage(1396, 5, Some(3), None, "", 1).unwrap_err();
         assert_eq!(failure.attempts, 1);
         assert_eq!(crate::host::observed_calls() - before, 1, "预算 1 → 只许 1 次 host.call");
         drop(guard);
@@ -780,20 +889,21 @@ mod tests {
         let fake = FakeHost::new();
         let guard = fake.install();
         let before = crate::host::observed_calls();
-        let failure = fetch_coverage(1396, 5, Some(3), "", 0).unwrap_err();
+        let failure = fetch_coverage(1396, 5, Some(3), None, "", 0).unwrap_err();
         assert_eq!(failure.attempts, 0);
         assert_eq!(crate::host::observed_calls() - before, 0);
         assert!(failure.message.contains("预算"), "{}", failure.message);
         drop(guard);
 
-        // 预算 9 → 最多 3 次(矩阵只有 3 个组合)
+        // 预算 9 → 最多 5 次(矩阵有 5 个组合; POST 变体由具体 route 决定成败)
         let fake = FakeHost::new();
         fake.route_prefix("GET", "GET /api/plugin-host/emby/episodes?", 200, br#"{"count":3}"#);
+        fake.route_prefix("POST", "POST /api/plugin-host/emby/episodes", 200, br#"{"count":9}"#);
         let guard = fake.install();
         let before = crate::host::observed_calls();
-        let failure = fetch_coverage(1396, 5, None, "", 9).unwrap_err();
-        assert_eq!(failure.attempts, 3);
-        assert_eq!(crate::host::observed_calls() - before, 3);
+        let failure = fetch_coverage(1396, 5, None, Some(12), "", 9).unwrap_err();
+        assert_eq!(failure.attempts, 5);
+        assert_eq!(crate::host::observed_calls() - before, 5);
         drop(guard);
     }
 
@@ -801,19 +911,21 @@ mod tests {
     fn fetch_coverage_reports_failure_with_raw_sample() {
         let fake = FakeHost::new();
         fake.route_prefix("GET", "GET /api/plugin-host/emby/episodes?", 200, b"<html>nope</html>");
+        fake.route_prefix("POST", "POST /api/plugin-host/emby/episodes", 200, b"<html>nope</html>");
         let guard = fake.install();
-        let failure = fetch_coverage(1396, 5, Some(3), "", 3).unwrap_err();
+        let failure = fetch_coverage(1396, 5, Some(3), None, "", 3).unwrap_err();
         assert_eq!(failure.http_status, 200);
         assert_eq!(failure.kind(), "unparsed");
-        assert_eq!(failure.attempts, 3, "三次尝试都试过");
+        assert_eq!(failure.attempts, 3, "预算 3 就只试 3 个变体");
         assert!(failure.message.contains("未识别"), "{}", failure.message);
         assert!(failure.sample().contains("nope"));
         drop(guard);
 
         let fake = FakeHost::new();
         fake.route_prefix("GET", "GET /api/plugin-host/emby/episodes?", 503, b"");
+        fake.route_prefix("POST", "POST /api/plugin-host/emby/episodes", 503, b"");
         let guard = fake.install();
-        let failure = fetch_coverage(1396, 5, None, "", 3).unwrap_err();
+        let failure = fetch_coverage(1396, 5, None, None, "", 3).unwrap_err();
         assert_eq!(failure.http_status, 503);
         assert_eq!(failure.kind(), "http_error");
         drop(guard);
@@ -958,6 +1070,7 @@ mod tests {
             1396,
             5,
             Some(3),
+            Some(12),
             "params=proxy_id,tmdb_id,season_number;list=items",
             3,
         )
@@ -965,7 +1078,11 @@ mod tests {
         assert_eq!(calls, 2, "指纹失效后要退回矩阵重探一次");
         assert_eq!(query.variant, 1);
         assert_eq!(coverage.have_max(), Some(3));
-        assert!(coverage.shape.starts_with("params=proxy_id,tmdb_id,season;"), "{}", coverage.shape);
+        assert!(
+            coverage.shape.starts_with("params=proxy_id,tmdb_id,season,total_episodes;v=1;"),
+            "{}",
+            coverage.shape
+        );
         assert_eq!(crate::host::observed_calls() - before, 2);
         drop(guard);
     }
@@ -975,9 +1092,9 @@ mod tests {
         let fake = FakeHost::new();
         fake.fail_all(true);
         let guard = fake.install();
-        let failure = fetch_coverage(1396, 5, Some(3), "", 3).unwrap_err();
+        let failure = fetch_coverage(1396, 5, Some(3), None, "", 3).unwrap_err();
         assert_eq!(failure.kind(), "http_error", "传输层失败也归 http_error");
-        assert_eq!(failure.attempts, 3, "每个候选都要记一次尝试");
+        assert_eq!(failure.attempts, 3, "预算 3: 每个候选都要记一次尝试");
         assert!(failure.message.contains("Emby 覆盖请求失败"), "{}", failure.message);
         assert!(failure.sample().is_empty(), "传输失败没有原文可留");
         drop(guard);

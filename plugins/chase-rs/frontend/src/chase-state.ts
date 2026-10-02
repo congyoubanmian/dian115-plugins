@@ -114,6 +114,7 @@ export interface AppState {
   debug?: {
     updated_at?: string
     emby_episodes?: ProbeSnapshot
+    emby_instances?: ProbeSnapshot
     air_calendar?: ProbeSnapshot
     /** 规格外扩展槽: 订阅池列表解析失败时的原文现场。 */
     pool_intents?: ProbeSnapshot
