@@ -3,7 +3,7 @@
   "schema_version": 1,
   "id": "music.rs",
   "name": "音乐下载（Rust 版）",
-  "version": "0.3.9",
+  "version": "0.3.10",
   "description": "网易云/QQ 音乐扫码登录、搜索与音质自选取链；无 sidecar，由宿主代理下载（本地暂存 → CD2 入库），任务状态落 KV 队列并支持 Telegram 回调重试。",
   "default_locale": "zh-CN",
   "publisher": {
@@ -78,6 +78,16 @@
         "method": "POST",
         "path": "/api/notifications/plugin",
         "reason": "下载尝试用尽失败时推送错误通知（标题含歌名，带 retry:<短id> 重试按钮）"
+      },
+      {
+        "method": "GET",
+        "path": "/api/local-files",
+        "reason": "列出插件工作区里的暂存文件, 定位宿主代下载的真实落盘路径(含去重后缀)"
+      },
+      {
+        "method": "DELETE",
+        "path": "/api/local-files",
+        "reason": "清理已复制入库的暂存文件与重试残留"
       }
     ],
     "network": [

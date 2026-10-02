@@ -45,6 +45,11 @@ pub const MAX_ACTIVE_CAP: u32 = 16;
 pub const DEFAULT_COOKIECLOUD_URL: &str = "http://127.0.0.1:8088";
 
 const FILES_ROOTS: &str = "/api/plugin-host/files/roots";
+
+/// 0.3.10: 宿主文件管理器里插件工作区(ai_workspace)对应的容器路径。
+/// 下载 job 的响应是无字段契约的 GenericHostObject, 真实落盘文件名还可能带
+/// 宿主去重后缀("id (1).part"), 所以用文件列表按任务前缀定位, 不猜 job 字段。
+const WORKSPACE_DIR: &str = "/dian115AI";
 const FILES_ENTRIES: &str = "/api/plugin-host/files/entries";
 
 // ── 诊断留档(0.3.7): files/roots 与 files/entries 都是官方无字段契约的
@@ -823,6 +828,68 @@ pub fn job_state(value: &Value) -> JobState {
 }
 
 /// 从 job 响应里取暂存文件路径(取不到时调用方按 `<staging>/<短id>.part` 兜底)。
+/// 列工作区目录, 返回以 `prefix` 开头的最新暂存文件真实路径(含宿主去重后缀)。
+fn resolve_staged(prefix: &str) -> Option<String> {
+    let query = format!("/api/local-files?path={}", netease::query_escape(WORKSPACE_DIR));
+    let (status, body) = host_roundtrip("GET", &query, None, None).ok()?;
+    if !(200..300).contains(&status) {
+        return None;
+    }
+    let value: Value = serde_json::from_slice(&body).ok()?;
+    let mut best: Option<(String, String)> = None;
+    for entry in value.get("entries").and_then(Value::as_array).map(Vec::as_slice).unwrap_or(&[]) {
+        if entry.get("is_dir").and_then(Value::as_bool).unwrap_or(true) {
+            continue;
+        }
+        let name = entry.get("name").and_then(Value::as_str).unwrap_or("");
+        let path = entry.get("path").and_then(Value::as_str).unwrap_or("");
+        if path.is_empty() || !name.starts_with(prefix) {
+            continue;
+        }
+        let mod_time = entry.get("mod_time").and_then(Value::as_str).unwrap_or("");
+        if best.as_ref().map_or(true, |(_, best_time): &(String, String)| mod_time > best_time.as_str()) {
+            best = Some((path.to_string(), mod_time.to_string()));
+        }
+    }
+    best.map(|(path, _)| path)
+}
+
+/// 删除工作区里以 `prefix` 开头的全部暂存文件(入库成功后的清理, 尽力而为)。
+fn cleanup_staged(prefix: &str) -> Result<usize, String> {
+    let query = format!("/api/local-files?path={}", netease::query_escape(WORKSPACE_DIR));
+    let (status, body) = host_roundtrip("GET", &query, None, None)?;
+    if !(200..300).contains(&status) {
+        return Err(http_error("GET", "/api/local-files", status, &body));
+    }
+    let value: Value = serde_json::from_slice(&body).map_err(|err| format!("列表解析失败: {err}"))?;
+    let paths: Vec<String> = value
+        .get("entries")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or(&[])
+        .iter()
+        .filter(|entry| {
+            !entry.get("is_dir").and_then(Value::as_bool).unwrap_or(true)
+                && entry
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .map_or(false, |name| name.starts_with(prefix))
+        })
+        .filter_map(|entry| entry.get("path").and_then(Value::as_str).map(str::to_string))
+        .collect();
+    if paths.is_empty() {
+        return Ok(0);
+    }
+    let count = paths.len();
+    let body = serde_json::to_vec(&json!({"paths": paths})).unwrap_or_default();
+    let key = idem_key("clean", prefix, 1);
+    let (status, response) = host_roundtrip("DELETE", "/api/local-files", Some(&body), Some(&key))?;
+    if !(200..300).contains(&status) {
+        return Err(http_error("DELETE", "/api/local-files", status, &response));
+    }
+    Ok(count)
+}
+
 pub fn job_result_path(value: &Value) -> Option<String> {
     let mut containers = vec![value.clone()];
     for key in ["result", "data"] {
@@ -1018,11 +1085,9 @@ fn advance_downloading(
         JobState::Pending => {}
         JobState::Failed(error) => fail_task(settings, task, error, report),
         JobState::Succeeded => {
-            let staged = match job_result_path(&value) {
+            let _ = staging;
+            let staged = match job_result_path(&value).or_else(|| resolve_staged(&task.id)) {
                 Some(path) => path,
-                None if !staging.is_empty() => {
-                    join_dir(staging, &format!("{}.part", task.id))
-                }
                 None => {
                     fail_task(
                         settings,
@@ -1077,9 +1142,17 @@ fn advance_copying(
             task.error.clear();
             task.updated_ms = tasks::now_ms();
             report.completed.push(task.id.clone());
-            report
-                .messages
-                .push(format!("任务 {} 完成: {}", task.id, task.out_name));
+            // 0.3.10: 入库成功后清理工作区里该任务的全部暂存副本(含 (N) 去重残留)。
+            let staged_note = task.staged_path.clone();
+            match cleanup_staged(&task.id) {
+                Ok(count) if count > 0 => report
+                    .messages
+                    .push(format!("任务 {} 完成: {}; 清理暂存 {count} 个", task.id, task.out_name)),
+                _ => report
+                    .messages
+                    .push(format!("任务 {} 完成: {}", task.id, task.out_name)),
+            }
+            let _ = staged_note;
         }
         Err(err) => {
             // 复制失败只重试复制(暂存文件已定名), 不重新下载; 次数计入总尝试。
@@ -1141,7 +1214,7 @@ pub fn pump(ids: &mut PutIds) -> Result<Value, String> {
     for task in queue.iter_mut() {
         match task.status.as_str() {
             tasks::STATUS_DOWNLOADING => {
-                advance_downloading(&settings, &staging_dir, task, &mut report)
+                advance_downloading(&settings, "", task, &mut report)
             }
             tasks::STATUS_COPYING => {
                 advance_copying(&settings, &staging_dir, task, &mut report)

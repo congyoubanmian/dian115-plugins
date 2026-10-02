@@ -1,12 +1,12 @@
 {
   "id": "music.rs",
   "name": "音乐下载（Rust 版）",
-  "version": "0.3.9",
+  "version": "0.3.10",
   "description": "网易云/QQ 音乐扫码登录、搜索与音质自选取链；无 sidecar，由宿主代理下载（本地暂存 → CD2 入库），任务状态落 KV 队列并支持 Telegram 回调重试。",
   "author": "congyoubanmian",
   "homepage": "https://github.com/congyoubanmian/dian115-plugins",
-  "package_url": "https://github.com/congyoubanmian/douban-center-wasm/releases/download/music-rs-v0.3.9/music.rs-0.3.9.d115p",
-  "sha256": "57fcd937d67821637571d56805746a6782604aa9fc1f69a6022aa6b756e2b22b",
+  "package_url": "https://github.com/congyoubanmian/douban-center-wasm/releases/download/music-rs-v0.3.10/music.rs-0.3.10.d115p",
+  "sha256": "d09e0644f0c096b4e813840b4ec9009b3c517b75860b0db34837a6400d217988",
   "runtime": {
     "kind": "wasm",
     "protocol": "dian115:wasm@1",
@@ -65,6 +65,16 @@
         "method": "POST",
         "path": "/api/notifications/plugin",
         "reason": "下载尝试用尽失败时推送错误通知（标题含歌名，带 retry:<短id> 重试按钮）"
+      },
+      {
+        "method": "GET",
+        "path": "/api/local-files",
+        "reason": "列出插件工作区里的暂存文件, 定位宿主代下载的真实落盘路径(含去重后缀)"
+      },
+      {
+        "method": "DELETE",
+        "path": "/api/local-files",
+        "reason": "清理已复制入库的暂存文件与重试残留"
       }
     ],
     "network": [
