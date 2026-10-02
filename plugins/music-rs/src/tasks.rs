@@ -80,6 +80,9 @@ pub struct Task {
     /// 目标文件名 `"{singers} - {name}.{ext}"`(取链拿到真实扩展名后更新)。
     #[serde(default)]
     pub out_name: String,
+    /// 0.3.8: 下载 job 上报的暂存文件绝对路径(rename/copy 的锚点)。
+    #[serde(default)]
+    pub staged_path: String,
     /// [`STATUS_QUEUED`] / [`STATUS_DOWNLOADING`] / [`STATUS_COPYING`] /
     /// [`STATUS_DONE`] / [`STATUS_FAILED`]。
     #[serde(default)]
