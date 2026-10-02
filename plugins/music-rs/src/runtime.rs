@@ -311,7 +311,7 @@ impl Runtime {
         Ok(json!({
             "state_version": version,
             "etag": etag,
-            "state": self.state_doc(),
+            "state": sanitize_state(self.state_doc()),
         }))
     }
 
@@ -542,6 +542,35 @@ fn login_summary() -> Value {
         netease::login_status().unwrap_or_else(|err| json!({"logged_in": false, "error": err}));
     let qq = qq::login_status().unwrap_or_else(|err| json!({"logged_in": false, "error": err}));
     json!({"netease": netease, "qq": qq})
+}
+
+/// 递归清除任何会被宿主判定为"绝对路径"的字符串(与 douban-rs 的 sanitize_state 同一宿主
+/// 行为): 宿主安全过滤遇到以 "/" 开头的字符串会把**整个 state 响应**以 502 拒绝,
+/// 表现为 UI 一直报 runtime_protocol_error。settings/roots 等已知路径字段在
+/// [`crate::download::display_path`] 里已转成无斜杠形态, 这里是兜底 —— 主要兜住
+/// 任务 error、日志消息等运行期才产生、可能混入绝对路径的字符串。
+pub fn sanitize_state(value: Value) -> Value {
+    match value {
+        Value::String(s) => {
+            if looks_like_abs_path(&s) {
+                Value::String(String::new())
+            } else {
+                Value::String(s)
+            }
+        }
+        Value::Array(items) => Value::Array(items.into_iter().map(sanitize_state).collect()),
+        Value::Object(map) => Value::Object(
+            map.into_iter()
+                .map(|(k, v)| (k, sanitize_state(v)))
+                .collect(),
+        ),
+        other => other,
+    }
+}
+
+/// 与 douban-rs `looksLikeAbsPath` 一致: len>=2 且以 "/" 开头但不以 "//" 开头。
+pub fn looks_like_abs_path(s: &str) -> bool {
+    s.len() >= 2 && s.starts_with('/') && !s.starts_with("//")
 }
 
 /// 取字符串参数(缺失/非字符串 → 空串, 骨架阶段不做严格类型校验)。

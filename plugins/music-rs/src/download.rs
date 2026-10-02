@@ -127,11 +127,31 @@ pub fn save_settings(ids: &mut PutIds, settings: &Settings) -> Result<(), String
     store::put_json(ids, SETTINGS_KEY, settings).map_err(|err| err.to_string())
 }
 
+/// state 视图里的路径展示形态: 宿主安全过滤会拒绝包含"绝对路径"字符串的整个 state 响应
+/// (以 "/" 开头即触发, douban-rs sanitize_state 的同一宿主行为), 所以对用户可见的
+/// 路径一律去掉开头的 "/", 保存时再用 [`normalize_path`] 补回。
+pub fn display_path(path: &str) -> String {
+    path.trim_start_matches('/').to_string()
+}
+
+/// settings-update 输入归一化: 允许用户存不带开头 "/" 的路径, 内部一律还原成绝对路径。
+pub fn normalize_path(path: &str) -> String {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    if trimmed.starts_with('/') {
+        trimmed.to_string()
+    } else {
+        format!("/{trimmed}")
+    }
+}
+
 /// 设置的可展示形态(state 响应 / settings-update 返回)。
 pub fn settings_view(settings: &Settings) -> Value {
     json!({
-        "staging_dir": settings.staging_dir,
-        "target_dir": settings.target_dir,
+        "staging_dir": display_path(&settings.staging_dir),
+        "target_dir": display_path(&settings.target_dir),
         "quality": settings.quality,
         "max_active": settings.max_active,
         "notify_on_fail": settings.notify_on_fail,
@@ -154,7 +174,12 @@ pub fn settings_update(ids: &mut PutIds, patch: &Map<String, Value>) -> Result<V
         if let Some(Value::String(text)) = patch.get(key) {
             let text = text.trim();
             if !text.is_empty() {
-                *target = text.to_string();
+                let value = if key == "quality" {
+                    text.to_string()
+                } else {
+                    normalize_path(text)
+                };
+                *target = value;
             }
         }
     }
@@ -434,7 +459,7 @@ pub fn state_probe() -> Value {
         .take(50)
         .map(|root| {
             json!({
-                "path": root.path,
+                "path": display_path(&root.path),
                 "name": root.name,
                 "local": root.local,
                 "writable": root.writable,
@@ -444,9 +469,9 @@ pub fn state_probe() -> Value {
     json!({
         "ok": probe.ok,
         "error": probe.error,
-        "staging_dir": settings.staging_dir,
-        "staging_dir_effective": effective,
-        "target_dir": settings.target_dir,
+        "staging_dir": display_path(&settings.staging_dir),
+        "staging_dir_effective": effective.as_deref().map(display_path),
+        "target_dir": display_path(&settings.target_dir),
         "warnings": warnings,
         "roots": roots,
     })
@@ -1127,6 +1152,29 @@ mod tests {
     use std::collections::{BTreeMap, HashMap};
     use std::rc::Rc;
 
+    /// 宿主会拒绝包含绝对路径字符串的整个 state 响应: settings 视图必须无开头 "/",
+    /// 且 settings-update 能把无斜杠输入还原回绝对路径(往返一致)。
+    #[test]
+    fn settings_path_view_has_no_leading_slash_and_roundtrips() {
+        let mut settings = Settings::default();
+        settings.staging_dir = "/media/music-dl-staging".to_string();
+        settings.target_dir = "/CloudNAS/115open/音乐/音乐下载".to_string();
+        let view = settings_view(&settings);
+        assert_eq!(view["staging_dir"], "media/music-dl-staging");
+        assert_eq!(view["target_dir"], "CloudNAS/115open/音乐/音乐下载");
+        assert_eq!(normalize_path("CloudNAS/115open/音乐/音乐下载"), settings.target_dir);
+        assert_eq!(normalize_path("/CloudNAS/115open/音乐/音乐下载"), settings.target_dir);
+        assert_eq!(normalize_path("  "), "");
+        // 兜底清洗: 任何以 "/" 开头的字符串(如任务 error/日志里整串就是路径)必须被清空;
+        // "//" 开头与路径只出现在中间的不受影响(与 douban-rs 同一宿主规则)。
+        let dirty = serde_json::json!({"error": "/media/a.part", "keep": "//scheme", "msg": "copy /media/a.part 失败", "n": 1});
+        let clean = crate::runtime::sanitize_state(dirty);
+        assert_eq!(clean["error"], "");
+        assert_eq!(clean["keep"], "//scheme");
+        assert_eq!(clean["msg"], "copy /media/a.part 失败");
+        assert_eq!(clean["n"], 1);
+    }
+
     /// 假宿主的 job 结局。
     #[derive(Debug, Clone)]
     enum JobOutcome {
@@ -1529,16 +1577,18 @@ mod tests {
             "unknown": "ignored",
         });
         let view = settings_update(&mut ids, patch.as_object().unwrap()).unwrap();
-        assert_eq!(view["staging_dir"], "/data/dl");
-        assert_eq!(view["target_dir"], "/mnt/target");
+        // 0.3.1 起 state 视图里的路径不再带开头 "/"(宿主安全过滤), 保存侧归一化回绝对路径。
+        assert_eq!(view["staging_dir"], "data/dl");
+        assert_eq!(view["target_dir"], "mnt/target");
         assert_eq!(view["quality"], "lossless");
         assert_eq!(view["max_active"], DEFAULT_MAX_ACTIVE, "0 视为非法, 回默认");
         assert_eq!(view["notify_on_fail"], false);
         assert!(view.get("unknown").is_none());
 
-        // 落 KV 后重新读出。
+        // 落 KV 后重新读出(内部存储保持绝对路径)。
         let reloaded = load_settings();
         assert_eq!(reloaded.staging_dir, "/data/dl");
+        assert_eq!(reloaded.target_dir, "/mnt/target");
         assert_eq!(reloaded.quality, "lossless");
         assert!(!reloaded.notify_on_fail);
         drop(fake);
