@@ -1,14 +1,15 @@
 <script setup lang="ts">
 // 音乐下载(Rust 版)插件界面 —— Federation 模块 `./AppPage`(见 vite.config.ts / manifest)。
 //
-// 布局与交互习惯沿用 plugins/music-dl/src/AppPage.vue: 顶部扫码登录卡片 + 搜索/任务/设置
-// 三个分页 + 底部记录区。**数据通道换成本插件的 wasm 运行时**:
+// 布局与交互习惯沿用 plugins/music-dl/src/AppPage.vue: 顶部扫码登录卡片 + 搜索/我的歌单/任务/设置
+// 四个分页 + 底部记录区。**数据通道换成本插件的 wasm 运行时**:
 //   - 状态只读 `props.runtimeState`(宿主注入), 宿主没给时用 `props.api.getState()` 兜底;
 //   - 动作一律走 `props.api.invokeAction`, 每次动作后 `await props.api.refresh()`;
 //   - 不直接 fetch, 也没有 sidecar(旧版 UI 的 agent-get/agent-post 与 sidecar 回环地址已移除)。
 //
 // action 名与入参对齐 `src/runtime.rs` 的 action 分发表:
 //   qr-create{source} / qr-poll{source,key} / search{source,query,page}
+//   / playlists{source} / playlist-songs{source,id,page,page_size}
 //   / download{source,song_id,name,singers,album,level} / settings-update{patch}
 //   / task-retry{id} / task-clear{}
 // 返回形状是 `{result:{status,message,data}}`(见 runtime.rs 的 `action_result`)。
@@ -331,8 +332,34 @@ function resetQr() {
   qr.value = null
   qrStatus.value = ''
   qrMessage.value = ''
-  qrImageFailed.value = false
-  qrError.value = ''
+}
+
+// ── 手动粘贴 Cookie(宿主 broker 剥离外部响应的 Set-Cookie, 网易/QQ 扫码都拿不到登录态) ──
+const cookieText = ref('')
+const pasteBusy = ref(false)
+
+async function pasteCookie() {
+  const raw = cookieText.value.trim()
+  if (!raw) {
+    message.warning('请先粘贴 Cookie 头（浏览器 F12 → Network → 任意请求 → 请求头里的 Cookie 整行）')
+    return
+  }
+  pasteBusy.value = true
+  try {
+    const key = loginSource.value === 'qq' ? 'qq_cookie' : 'netease_cookie'
+    const result = await invoke('settings-update', { [key]: raw })
+    const info = (result[key] || {}) as Record<string, unknown>
+    if (info.status === 'failed') {
+      message.error(String(info.message || 'Cookie 保存失败'))
+    } else {
+      message.success(`${sourceName(loginSource.value)} Cookie 已保存`)
+      cookieText.value = ''
+    }
+  } catch (error: unknown) {
+    message.error(String((error as { message?: string })?.message || error))
+  } finally {
+    pasteBusy.value = false
+  }
 }
 
 async function createQr(src: string) {
@@ -402,7 +429,12 @@ async function pollQr() {
       qrStatus.value = 'success'
       stopQrPolling()
       qr.value = null
-      message.success('登录成功')
+      if (data.logged_in === true) {
+        message.success('登录成功')
+      } else {
+        // 宿主剥离 Set-Cookie: 扫码成功但登录态没拿到, 后端 message 里带了引导文案
+        message.warning(String(data.message || '扫码成功，但未能取得登录 Cookie；请改用下方「手动粘贴 Cookie」'))
+      }
       await refreshState()
       return
     }
@@ -518,7 +550,7 @@ async function download(song: Song) {
       level: qualityOf(song),
     })
     if (result.status === 'failed') {
-      message.error(String(result.message || '下载失败'))
+      message.error(loginHint(String(result.message || '下载失败')))
       return
     }
     const data = (result.data || {}) as Record<string, any>
@@ -535,7 +567,175 @@ async function download(song: Song) {
   }
 }
 
-// ─────────────────────────── ③ 任务列表(runtime.rs: task-retry / task-clear) ───────────────────────────
+// ─────────────────────────── ③ 我的歌单(runtime.rs: playlists / playlist-songs) ───────────────────────────
+//
+// 交互照搬 plugins/music-dl/src/AppPage.vue 的歌单页: 卡片列表(name/count/creator) → 点开分页曲目
+// (每页 100, 加载更多) → 每首歌独立音质下拉(选项来自后端给的 `qualities`, 缺省第一档) → 整单逐首入队。
+// 调用换成 invoke('playlists', {source}) / invoke('playlist-songs', {source,id,page,page_size});
+// 后端只落地网易云(runtime.rs:643-655), 其他来源报「该来源暂不支持歌单，先支持网易云」;
+// 未登录报「未登录或登录态失效」(netease.rs:883), 前端补一句"去登录卡扫码"。
+
+/** 歌单卡片(netease.rs `playlists` 的返回项)。 */
+interface Playlist {
+  id?: string
+  name?: string
+  cover?: string
+  count?: number
+  creator?: string
+}
+
+const PLAYLIST_PAGE_SIZE = 100
+/** 未登录报错的关键字(netease.rs `netease_account` 的文案)。 */
+const NOT_LOGIN_KEYWORD = '未登录'
+
+const playlists = ref<Playlist[]>([])
+const playlistsLoading = ref(false)
+const playlistView = ref<{ id: string; name: string } | null>(null)
+const plName = ref('')
+const plSongs = ref<Song[]>([])
+const plTotal = ref(0)
+const plPage = ref(1)
+const plLoading = ref(false)
+const plBatchBusy = ref(false)
+
+/** 接口报「未登录或登录态失效」时, 把"去哪扫码"一起说清楚。 */
+function loginHint(text: string): string {
+  return text.includes(NOT_LOGIN_KEYWORD) ? `${text} —— 先在上方「扫码登录」卡片扫码登录` : text
+}
+
+function switchTab(id: string) {
+  tab.value = id
+  if (id !== 'playlists') return
+  if (source.value !== 'netease') {
+    message.warning('该来源暂不支持歌单，先支持网易云')
+    return
+  }
+  // 懒加载: 第一次点到这个 tab 才拉歌单, 之后不重复拉(想重拉点「刷新」)。
+  if (!playlists.value.length && !playlistView.value && !playlistsLoading.value) void loadPlaylists()
+}
+
+function switchPlaylistSource(src: string) {
+  if (source.value === src) return
+  switchSearchSource(src) // 与搜索页共用同一个 source, 换来源时搜索结果一并清掉
+  playlists.value = []
+  closePlaylistView()
+  if (src !== 'netease') message.warning('该来源暂不支持歌单，先支持网易云')
+  else void loadPlaylists()
+}
+
+async function loadPlaylists() {
+  if (source.value !== 'netease') {
+    message.warning('该来源暂不支持歌单，先支持网易云')
+    return
+  }
+  playlistsLoading.value = true
+  try {
+    const result = await invoke('playlists', { source: source.value })
+    if (result.status === 'failed') {
+      message.error(loginHint(String(result.message || '歌单获取失败')))
+      return
+    }
+    const data = (result.data || {}) as Record<string, any>
+    playlists.value = listOf<Playlist>(data.playlists)
+    if (!playlists.value.length) message.info('没有取到歌单（可能还没登录）')
+  } catch (error: unknown) {
+    message.error(loginHint(String((error as { message?: string })?.message || error || '歌单获取失败')))
+  } finally {
+    playlistsLoading.value = false
+  }
+}
+
+function closePlaylistView() {
+  playlistView.value = null
+  plName.value = ''
+  plSongs.value = []
+  plTotal.value = 0
+  plPage.value = 1
+}
+
+async function openPlaylist(playlist: Playlist) {
+  const id = String(playlist.id ?? '')
+  if (!id) return
+  playlistView.value = { id, name: String(playlist.name || '') }
+  plName.value = String(playlist.name || '')
+  plSongs.value = []
+  plTotal.value = Number(playlist.count) || 0
+  plPage.value = 1
+  await fetchPlaylistSongs(1)
+}
+
+async function fetchPlaylistSongs(page: number) {
+  const view = playlistView.value
+  if (!view) return
+  plLoading.value = true
+  try {
+    const result = await invoke('playlist-songs', {
+      source: source.value,
+      id: view.id,
+      page,
+      page_size: PLAYLIST_PAGE_SIZE,
+    })
+    if (result.status === 'failed') {
+      message.error(loginHint(String(result.message || '歌单内容获取失败')))
+      return
+    }
+    const data = (result.data || {}) as Record<string, any>
+    const songs = listOf<Song>(data.songs)
+    plSongs.value = page > 1 ? [...plSongs.value, ...songs] : songs
+    plPage.value = page
+    if (data.name) plName.value = String(data.name)
+    if (typeof data.total === 'number') plTotal.value = data.total
+  } catch (error: unknown) {
+    message.error(loginHint(String((error as { message?: string })?.message || error || '歌单内容获取失败')))
+  } finally {
+    plLoading.value = false
+  }
+}
+
+/** 整单下载: 按每行当前选中的档位逐首入队(入参形状与 download() 一致, 音质走 `level`), 进度去「下载任务」看。 */
+async function downloadPlaylistAll() {
+  if (!plSongs.value.length) return
+  plBatchBusy.value = true
+  let queued = 0
+  let loginBlocked = false
+  const failures: string[] = []
+  try {
+    for (const song of plSongs.value) {
+      const key = String(song.id ?? '')
+      try {
+        const result = await invoke('download', {
+          source: song.source || source.value,
+          song_id: key,
+          name: song.name || '',
+          singers: song.singers || '',
+          album: song.album || '',
+          level: qualityOf(song),
+        })
+        if (result.status === 'failed') {
+          const text = String(result.message || '下载失败')
+          if (text.includes(NOT_LOGIN_KEYWORD)) {
+            loginBlocked = true
+            break // 登录态问题逐首都会失败, 直接停下提示扫码
+          }
+          failures.push(`${song.name || key}：${text}`)
+          continue
+        }
+        queued += 1
+      } catch (error: unknown) {
+        failures.push(`${song.name || key}：${String((error as { message?: string })?.message || error)}`)
+      }
+    }
+    if (loginBlocked) message.error('未登录或登录态失效 —— 先在上方「扫码登录」卡片扫码，再回来整单下载')
+    if (queued > 0) message.success(`已入队 ${queued} 首下载，进度去「下载任务」tab 看`)
+    if (failures.length) {
+      message.warning(`有 ${failures.length} 首没入队：${failures.slice(0, 3).join('；')}${failures.length > 3 ? '…' : ''}`)
+    }
+  } finally {
+    plBatchBusy.value = false
+  }
+}
+
+// ─────────────────────────── ④ 任务列表(runtime.rs: task-retry / task-clear) ───────────────────────────
 
 const taskBusy = ref('')
 
@@ -639,7 +839,7 @@ watch(
 
 onBeforeUnmount(stopTaskPolling)
 
-// ─────────────────────────── ④ 设置(runtime.rs: settings-update) ───────────────────────────
+// ─────────────────────────── ⑤ 设置(runtime.rs: settings-update) ───────────────────────────
 
 interface SettingsForm {
   staging_dir: string
@@ -839,8 +1039,23 @@ const rootProbeNote = computed(() => {
         </p>
       </div>
 
+      <details class="paste-cookie">
+        <summary>手动粘贴 Cookie（宿主会剥离扫码返回的登录 Cookie，扫码成功也存不下登录态时用这个）</summary>
+        <n-input
+          v-model:value="cookieText"
+          type="textarea"
+          :rows="3"
+          :placeholder="`浏览器登录 ${loginSource === 'qq' ? 'y.qq.com' : 'music.163.com'} 后，F12 → Network → 任选一个请求 → 复制请求头里的 Cookie 整行粘贴到这里`"
+        />
+        <div class="row" style="margin-top: 6px">
+          <n-button size="small" type="primary" :loading="pasteBusy" @click="pasteCookie">
+            保存 {{ sourceName(loginSource) }} Cookie
+          </n-button>
+        </div>
+      </details>
+
       <p class="hint">
-        登录态由扫码结果写入宿主 KV（本版没有手填 Cookie 的入口）。当前登录状态：
+        当前登录状态：
         <n-tag
           v-for="item in loginTags"
           :key="item.key"
@@ -861,13 +1076,14 @@ const rootProbeNote = computed(() => {
       <button
         v-for="item in [
           { id: 'search', text: '搜索' },
+          { id: 'playlists', text: '我的歌单' },
           { id: 'tasks', text: `下载任务${pendingTasks.length ? ` (${pendingTasks.length})` : ''}` },
           { id: 'settings', text: '设置' },
         ]"
         :key="item.id"
         class="tabbtn"
         :class="{ on: tab === item.id }"
-        @click="tab = item.id"
+        @click="switchTab(item.id)"
       >
         {{ item.text }}
       </button>
@@ -941,7 +1157,121 @@ const rootProbeNote = computed(() => {
       </p>
     </section>
 
-    <!-- ③ 下载任务 -->
+    <!-- ③ 我的歌单 -->
+    <section v-else-if="tab === 'playlists'" class="card">
+      <!-- 歌单卡片列表 -->
+      <template v-if="!playlistView">
+        <div class="row">
+          <h3 style="margin: 0">我的歌单</h3>
+          <n-button
+            v-for="item in sources"
+            :key="item.id"
+            size="small"
+            :type="source === item.id ? 'primary' : 'default'"
+            @click="switchPlaylistSource(item.id)"
+          >
+            {{ item.name }}
+          </n-button>
+          <n-button size="small" secondary :loading="playlistsLoading" :disabled="source !== 'netease'" @click="loadPlaylists">
+            刷新
+          </n-button>
+          <n-tag
+            v-for="item in loginTags"
+            :key="`pl-${item.key}`"
+            size="small"
+            :type="item.ok ? 'success' : 'default'"
+            :bordered="false"
+          >
+            {{ item.name }} {{ item.ok ? '已登录' : '未登录' }}
+          </n-tag>
+        </div>
+
+        <!-- 与 runtime.rs:646 的后端文案一致 -->
+        <n-alert v-if="source !== 'netease'" type="warning" :show-icon="true" class="alert" title="该来源暂不支持歌单，先支持网易云">
+          歌单只接了网易云（后端 `playlists` / `playlist-songs` 仅落地 netease）。切回网易云，或去「搜索」页按歌搜。
+        </n-alert>
+        <template v-else>
+          <div v-if="playlists.length" class="plgrid">
+            <button v-for="playlist in playlists" :key="playlist.id" class="plcard" @click="openPlaylist(playlist)">
+              <img v-if="playlist.cover" :src="playlist.cover" referrerpolicy="no-referrer" alt="" />
+              <div class="plname">{{ playlist.name || '—' }}</div>
+              <div class="plcount">{{ Number(playlist.count) || 0 }} 首{{ playlist.creator ? ` · ${playlist.creator}` : '' }}</div>
+            </button>
+          </div>
+          <p v-else-if="playlistsLoading" class="hint">歌单加载中…</p>
+          <p v-else class="hint">还没有歌单：未登录就先在上方「扫码登录」卡片扫码，然后点「刷新」。</p>
+        </template>
+      </template>
+
+      <!-- 歌单曲目分页列表 -->
+      <template v-else>
+        <div class="row">
+          <n-button size="small" secondary @click="closePlaylistView">← 返回歌单</n-button>
+          <h3 style="margin: 0">{{ plName || '歌单' }}（{{ plTotal }} 首）</h3>
+          <span class="spacer" />
+          <n-button
+            size="small"
+            type="primary"
+            :loading="plBatchBusy"
+            :disabled="!plSongs.length || plLoading"
+            @click="downloadPlaylistAll"
+          >
+            整单下载（{{ plSongs.length }}）
+          </n-button>
+        </div>
+
+        <table class="tbl">
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>歌曲</th>
+              <th>歌手</th>
+              <th>专辑</th>
+              <th>音质</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="(song, index) in plSongs" :key="`${song.id}-${index}`">
+              <td class="dim">{{ (plPage - 1) * PLAYLIST_PAGE_SIZE + index + 1 }}</td>
+              <td>{{ song.name || '—' }}</td>
+              <td>{{ song.singers || '—' }}</td>
+              <td class="dim">{{ song.album || '—' }}</td>
+              <td>
+                <!-- 原生 select: 与搜索页一致(选项来自歌曲自带的 qualities, 缺省第一档) -->
+                <select
+                  class="sel"
+                  :value="qualityOf(song)"
+                  @change="setSongQuality(song, ($event.target as HTMLSelectElement).value)"
+                >
+                  <option v-for="value in qualitiesFor(song.source || source, song)" :key="value" :value="value">
+                    {{ qualityLabel(value) }}
+                  </option>
+                </select>
+              </td>
+              <td>
+                <n-button size="tiny" type="primary" :loading="submitting === String(song.id)" @click="download(song)">
+                  下载
+                </n-button>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+
+        <div v-if="plSongs.length && plSongs.length < plTotal" class="row" style="justify-content: center">
+          <n-button size="small" :loading="plLoading" @click="fetchPlaylistSongs(plPage + 1)">
+            加载更多（已载 {{ plSongs.length }}/{{ plTotal }}）
+          </n-button>
+        </div>
+        <p v-else-if="plLoading" class="hint">歌单内容加载中…</p>
+        <p v-else-if="!plSongs.length" class="hint">没有取到歌曲。</p>
+        <p class="hint">
+          「整单下载」按每行当前选中的音质逐首入队（去重规则同搜索页），只是提交排队，进度去「下载任务」tab 看。
+        </p>
+      </template>
+    </section>
+
+    <!-- ④ 下载任务 -->
     <section v-else-if="tab === 'tasks'" class="card">
       <div class="row">
         <h3 style="margin: 0">下载任务</h3>
@@ -999,7 +1329,7 @@ const rootProbeNote = computed(() => {
       </p>
     </section>
 
-    <!-- ④ 设置 -->
+    <!-- ⑤ 设置 -->
     <section v-else class="card">
       <div class="row">
         <h3 style="margin: 0">设置</h3>
@@ -1082,7 +1412,7 @@ const rootProbeNote = computed(() => {
       <p v-else class="hint">宿主没有返回任何文件根（state.roots.roots 为空）。</p>
     </section>
 
-    <!-- ⑤ 运行日志 -->
+    <!-- ⑥ 运行日志 -->
     <section class="card">
       <div class="row">
         <h3 style="margin: 0">运行日志</h3>
@@ -1208,6 +1538,38 @@ p {
   color: var(--dian-text-primary);
   max-width: 100%;
 }
+.plgrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 10px;
+}
+.plcard {
+  display: grid;
+  gap: 4px;
+  padding: 8px;
+  text-align: left;
+  border: 1px solid var(--dian-border);
+  border-radius: 10px;
+  background: var(--dian-surface);
+  cursor: pointer;
+  color: var(--dian-text-primary);
+}
+.plcard img {
+  width: 100%;
+  aspect-ratio: 1;
+  object-fit: cover;
+  border-radius: 8px;
+}
+.plname {
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.plcount {
+  font-size: 12px;
+  color: var(--dian-text-muted);
+}
 .qr {
   display: grid;
   justify-items: center;
@@ -1296,4 +1658,9 @@ code {
     padding: 2px 0;
   }
 }
+
+.paste-cookie { margin: 10px 0 4px; }
+.paste-cookie summary { cursor: pointer; font-size: 12px; opacity: .75; user-select: none; }
+.paste-cookie .row { margin-top: 6px; }
+
 </style>

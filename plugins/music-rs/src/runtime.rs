@@ -346,6 +346,8 @@ impl Runtime {
     /// |-----------|------|----------|
     /// | `search` | `source` / `query` / `page` | [`crate::netease::search`] / [`crate::qq::search`] |
     /// | `song-url` | `source` / `song_id` / `level` | [`crate::netease::song_url`] / [`crate::qq::song_url`] |
+    /// | `playlists` | `source` | [`crate::netease::playlists`](仅网易云; 其他来源报"该来源暂不支持歌单") |
+    /// | `playlist-songs` | `source` / `id` / `page` / `page_size` | [`crate::netease::playlist_songs`](仅网易云; `page_size` 缺省 100) |
     /// | `qr-create` | `source` | [`crate::netease::qr_create`] / [`crate::qq::qr_create`](QQ 返回 [`crate::qq::QR_UNAVAILABLE`]) |
     /// | `qr-poll` | `source` / `key` | [`crate::netease::qr_poll`] / [`crate::qq::qr_poll`] |
     /// | `qq-cookie-paste` | `cookie`(浏览器复制的 Cookie 头) | [`crate::qq::save_cookie_string`] |
@@ -379,6 +381,13 @@ impl Runtime {
                 &input_str(&input, "song_id"),
                 &input_str(&input, "level"),
             ))),
+            "playlists" => Ok(action_result(playlists(&source))),
+            "playlist-songs" => Ok(action_result(playlist_songs(
+                &source,
+                &input_str(&input, "id"),
+                input_u32(&input, "page", 1),
+                input_u32(&input, "page_size", 100),
+            ))),
             "qr-create" => Ok(action_result(qr_create(&source))),
             "qr-poll" => Ok(action_result(qr_poll(&source, &input_str(&input, "key")))),
             "login-status" => Ok(action_result(login_status(&source))),
@@ -405,11 +414,13 @@ impl Runtime {
                 Ok(action_result(outcome))
             }
             "settings-update" => {
-                // 可选的 `qq_cookie`: 宿主剥离 set-cookie 导致 QQ 扫码不可用,
-                // 允许把粘贴的 cookie 随设置一起写入 KV cookies.qq。
-                let pasted = input.get("qq_cookie").and_then(Value::as_str).map(str::to_string);
+                // 可选的 `qq_cookie` / `netease_cookie`: 宿主剥离外部响应的 set-cookie
+                // (host-call-v2.md §3), 扫码成功也拿不到登录 Cookie, 允许粘贴随设置一起入库。
+                let pasted_qq = input.get("qq_cookie").and_then(Value::as_str).map(str::to_string);
+                let pasted_ne =
+                    input.get("netease_cookie").and_then(Value::as_str).map(str::to_string);
                 let mut value = self.settings_update(&input);
-                if let Some(raw) = pasted {
+                if let Some(raw) = pasted_qq {
                     value["qq_cookie"] = match qq::save_cookie_string(&raw) {
                         Ok(info) => {
                             self.bump("succeeded", "QQ cookie 已保存");
@@ -421,12 +432,31 @@ impl Runtime {
                         }
                     };
                 }
+                if let Some(raw) = pasted_ne {
+                    value["netease_cookie"] = match netease::save_cookie_string(&raw) {
+                        Ok(info) => {
+                            self.bump("succeeded", "网易云 cookie 已保存");
+                            info
+                        }
+                        Err(err) => {
+                            self.bump("failed", &format!("网易云 cookie 保存失败: {err}"));
+                            json!({"status": "failed", "message": err})
+                        }
+                    };
+                }
                 Ok(value)
             }
             "qq-cookie-paste" => {
                 let outcome = qq::save_cookie_string(&input_str(&input, "cookie"));
                 if outcome.is_ok() {
                     self.bump("succeeded", "QQ cookie 已保存");
+                }
+                Ok(action_result(outcome))
+            }
+            "netease-cookie-paste" => {
+                let outcome = netease::save_cookie_string(&input_str(&input, "cookie"));
+                if outcome.is_ok() {
+                    self.bump("succeeded", "网易云 cookie 已保存");
                 }
                 Ok(action_result(outcome))
             }
@@ -627,6 +657,22 @@ fn login_status(source: &str) -> Result<Value, String> {
         "netease" => netease::login_status(),
         "qq" => qq::login_status(),
         _ => Err(format!("未知音乐源: {source}")),
+    }
+}
+
+/// 按来源路由歌单列表(仅网易云; 其他来源是业务失败, 不是协议错误)。
+fn playlists(source: &str) -> Result<Value, String> {
+    match source {
+        "netease" => netease::playlists(),
+        _ => Err("该来源暂不支持歌单，先支持网易云".to_string()),
+    }
+}
+
+/// 按来源路由歌单歌曲页(仅网易云; 其他来源是业务失败, 不是协议错误)。
+fn playlist_songs(source: &str, id: &str, page: u32, page_size: u32) -> Result<Value, String> {
+    match source {
+        "netease" => netease::playlist_songs(id, page, page_size),
+        _ => Err("该来源暂不支持歌单，先支持网易云".to_string()),
     }
 }
 

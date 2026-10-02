@@ -12,6 +12,8 @@
 //! | [`qr_poll`] | `netease.go:196` `neteaseQRPoll` | `https://interface.music.163.com/api/login/qrcode/client/login` |
 //! | [`search`] | `netease.go:63` `neteaseSearch` | `https://music.163.com/api/cloudsearch/pc` |
 //! | [`song_url`] | `netease.go:112` `neteaseSongURL` | `https://interface3.music.163.com/eapi/song/enhance/player/url/v1` |
+//! | [`playlists`] | (Go 版无对应; sidecar `server.mjs:293` `neteasePlaylists`) | `https://music.163.com/api/user/playlist` |
+//! | [`playlist_songs`] | (Go 版无对应; sidecar `server.mjs:310` `neteasePlaylistSongs`) | `https://music.163.com/api/v6/playlist/detail` 与 `/api/v3/song/detail` |
 //! | [`login_status`] | (Go 版直接读 `state.sessions["netease"]`) | 无网络请求 |
 //!
 //! # 协议细节的出处
@@ -62,11 +64,16 @@
 //!   判空), 这里读同一个 KV 键返回 `{"logged_in", "has_music_u"}`。
 //! - **错误文案**: Go 的 `json.Unmarshal` 错误文本换成 serde 的文本
 //!   (`搜索解析失败: <serde 错误>`), 前缀与中文文案保持不变。
+//! - **歌单链路的 cookie 头**: sidecar 回放整份 cookie jar(`cookieOf('netease')`),
+//!   插件沿用 [`cookie_header`] 的固定前缀 + `MUSIC_U` + `__csrf_token`(与取链一致,
+//!   宿主契约不回显其余 cookie); 歌单歌曲的 `id` 是字符串(sidecar 的 `String(t.id)`),
+//!   `page_size` 字段名按本插件契约用下划线(sidecar 是 `pageSize`)。
 //!
 //! # 测试
 //!
 //! 不联网的纯函数向量测试在 `tests/netease.rs`(AES-ECB 已知向量、eapi params、
-//! cookie 字符串解析、表单编码、音质阶梯)。
+//! cookie 字符串解析、表单编码、音质阶梯); 歌单的 qualities 推导与歌曲映射在
+//! `tests/netease_playlists.rs`([`qualities_for_level`] 各分支 + 固定 JSON 夹具)。
 
 use std::collections::BTreeMap;
 use std::sync::Mutex;
@@ -101,6 +108,15 @@ pub const QR_UNIKEY_URL: &str = "https://interface.music.163.com/api/login/qrcod
 pub const QR_LOGIN_URL: &str = "https://interface.music.163.com/api/login/qrcode/client/login";
 /// eapi 取链(Go `netease.go:133`)。
 pub const SONG_URL_API: &str = "https://interface3.music.163.com/eapi/song/enhance/player/url/v1";
+/// 登录账号查询(sidecar `server.mjs:282` `neteaseAccount`; 明文 API + cookie)。
+pub const ACCOUNT_URL: &str = "https://music.163.com/api/nuser/account/get";
+/// 用户歌单列表(sidecar `server.mjs:297` `neteasePlaylists`)。
+pub const USER_PLAYLIST_URL: &str = "https://music.163.com/api/user/playlist";
+/// 歌单详情(sidecar `server.mjs:312` `neteasePlaylistSongs`; `n=0` 拿全量 trackIds,
+/// 不受 1000 截断)。
+pub const PLAYLIST_DETAIL_URL: &str = "https://music.163.com/api/v6/playlist/detail";
+/// 歌曲详情批量(sidecar `server.mjs:328` `neteasePlaylistSongs`; 每 200 个 id 一批)。
+pub const SONG_DETAIL_URL: &str = "https://music.163.com/api/v3/song/detail";
 
 /// 通用 UA(Go `main.go:15` `chromeUA` = sidecar `server.mjs:18` `UA`)。
 pub const CHROME_UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36";
@@ -261,6 +277,23 @@ pub fn level_ladder(level: &str) -> &'static [&'static str] {
     &LEVELS[start..]
 }
 
+/// 歌单歌曲的候选音质(sidecar `server.mjs:340-341`)。
+///
+/// `max_level` 在升序表 [`LEVELS_ASCENDING`] 里的位次决定保留多少档:
+/// `maxIdx = LEVELS_ASCENDING.indexOf(max_level)`, 命中时返回
+/// `LEVELS_ASCENDING[0..=maxIdx]` 的反转(高在前), 未命中(含空串)返回空表。
+/// 与 JS 的 `indexOf` 一样区分大小写; 注意取的是**升序表**而非 [`LEVELS`]
+/// (两表对 `dolby` 的位次不同, 各自照抄来源)。
+pub fn qualities_for_level(max_level: &str) -> Vec<&'static str> {
+    let max_index = match LEVELS_ASCENDING.iter().position(|level| *level == max_level) {
+        Some(index) => index,
+        None => return Vec::new(),
+    };
+    let mut qualities: Vec<&'static str> = LEVELS_ASCENDING[..=max_index].to_vec();
+    qualities.reverse();
+    qualities
+}
+
 // ─────────────────────────── 表单编码 ───────────────────────────
 
 /// Go `url.QueryEscape`: RFC 3986 unreserved(`A-Za-z0-9-_.~`)原样, 空格转 `+`,
@@ -375,6 +408,37 @@ fn put_ids() -> std::sync::MutexGuard<'static, store::PutIds> {
     IDS.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
+/// 手动粘贴的 Cookie 头(`netease-cookie-paste` / `settings-update` 的 `netease_cookie`)。
+///
+/// 宿主 broker 剥离外部响应的 set-cookie(host-call-v2.md §3), 而扫码端点 803 的
+/// body 通常不带 cookie —— 扫码在插件里拿不到登录态, 手动粘贴是可靠替代:
+/// 浏览器登录 music.163.com 后复制 Cookie 头粘贴进来。逐对解析并只保留已知
+/// 网易云 cookie 名; 至少要有 `MUSIC_U`(或 `MUSIC_A`)才视为有效登录态。
+pub fn save_cookie_string(raw: &str) -> Result<Value, String> {
+    let parsed = parse_cookie_string(raw);
+    let mut jar = BTreeMap::new();
+    for (name, value) in parsed {
+        if NETEASE_COOKIE_NAMES.contains(&name.as_str()) && !value.is_empty() {
+            jar.insert(name, value);
+        }
+    }
+    let has_login = jar.get("MUSIC_U").map_or(false, |v| !v.is_empty())
+        || jar.get("MUSIC_A").map_or(false, |v| !v.is_empty());
+    if !has_login {
+        return Err(
+            "未找到 MUSIC_U(或 MUSIC_A); 请确认复制的是已登录 music.163.com 的 Cookie 头".to_string(),
+        );
+    }
+    save_cookies(&jar)?;
+    Ok(json!({"saved": jar.len(), "logged_in": true}))
+}
+
+/// 手动粘贴白名单: 已知的网易云 cookie 名。
+pub const NETEASE_COOKIE_NAMES: [&str; 10] = [
+    "MUSIC_U", "MUSIC_A", "MUSIC_A_T", "MUSIC_R_T", "MUSIC_SNS", "NMTID", "__csrf",
+    "__csrf_token", "_ntes_nuid", "_ntes_nnid",
+];
+
 /// 合并写入会话 cookie(键 [`COOKIE_KEY`])。
 ///
 /// 合并语义对齐 sidecar `server.mjs:158`(旧值保留、新值覆盖), 不是 Go
@@ -462,6 +526,32 @@ fn set_cookie_lines(response: &HostCallResponse) -> Vec<String> {
         }
     }
     lines
+}
+
+/// GET 请求(与 [`post_form`] 同一宿主链路; 无请求体, 序列化时按 omitempty 省略)。
+fn get_url(url: &str, headers: BTreeMap<String, String>) -> Result<HostCallResponse, String> {
+    let mut request = HostCallRequest::new("GET", url);
+    request.headers = headers;
+    host::call(&request).map_err(|err| err.to_string())
+}
+
+/// 歌单链路 GET 的请求头(sidecar `server.mjs:297-302/312-316`: referer + UA +
+/// cookie + IP 头, **不带** content-type)。
+fn playlist_headers() -> BTreeMap<String, String> {
+    let mut headers = BTreeMap::new();
+    headers.insert("referer".to_string(), MUSIC_REFERER.to_string());
+    headers.insert("user-agent".to_string(), CHROME_UA.to_string());
+    headers.insert("cookie".to_string(), cookie_header(&load_cookies()));
+    headers.extend(ip_headers());
+    headers
+}
+
+/// 歌单链路 POST 的请求头: 在 [`playlist_headers`] 上补 content-type
+/// (sidecar `server.mjs:282-288/326-332` 的 POST 形态)。
+fn playlist_form_headers() -> BTreeMap<String, String> {
+    let mut headers = playlist_headers();
+    headers.insert("content-type".to_string(), FORM_CONTENT_TYPE.to_string());
+    headers
 }
 
 // ─────────────────────────── 响应结构 ───────────────────────────
@@ -559,6 +649,84 @@ struct SongUrlItem {
     size: Option<i64>,
 }
 
+/// 歌单链路的响应字段同样 `Option` + `#[serde(default)]`; `nuser/account/get` 与
+/// `/api/v6/playlist/detail` 在未登录/参数非法时返回不带业务字段的 `{"code":...}`,
+/// 解出来按零值走"未登录/空歌单"分支(sidecar 的 `j?.profile?.userId` 可选链语义)。
+#[derive(Debug, Default, Deserialize)]
+struct AccountResponse {
+    #[serde(default)]
+    profile: Option<AccountProfile>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct AccountProfile {
+    #[serde(default, rename = "userId")]
+    user_id: Option<i64>,
+    #[serde(default)]
+    nickname: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct UserPlaylistResponse {
+    /// `j?.playlist || []`: 缺失/`null` → 空列表。
+    #[serde(default)]
+    playlist: Option<Vec<UserPlaylist>>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct UserPlaylist {
+    #[serde(default)]
+    id: Option<i64>,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default, rename = "coverImgUrl")]
+    cover_img_url: Option<String>,
+    #[serde(default, rename = "trackCount")]
+    track_count: Option<i64>,
+    #[serde(default)]
+    creator: Option<UserPlaylistCreator>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct UserPlaylistCreator {
+    #[serde(default)]
+    nickname: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct PlaylistDetailResponse {
+    /// sidecar 的 `j?.playlist || j?.result || {}`: v6 响应可能落在任一字段。
+    #[serde(default)]
+    playlist: Option<PlaylistInfo>,
+    #[serde(default)]
+    result: Option<PlaylistInfo>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct PlaylistInfo {
+    #[serde(default)]
+    name: Option<String>,
+    /// `pl.trackCount ?? ids.length`: `??` 只认 null/undefined, 0 也是值。
+    #[serde(default, rename = "trackCount")]
+    track_count: Option<i64>,
+    #[serde(default, rename = "trackIds")]
+    track_ids: Option<Vec<PlaylistTrackId>>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct PlaylistTrackId {
+    #[serde(default)]
+    id: Option<i64>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct SongDetailResponse {
+    /// 每首歌整体留作 [`Value`], 由 [`playlist_song_from_value`] 纯函数映射
+    /// (便于固定夹具测试)。
+    #[serde(default)]
+    songs: Option<Vec<Value>>,
+}
+
 // ─────────────────────────── 入口 ───────────────────────────
 
 /// 扫码创建(Go `netease.go:171` `neteaseQRCreate`): 返回 `{key, qr_content}`。
@@ -616,9 +784,22 @@ pub fn qr_poll(key: &str) -> Result<Value, String> {
                 cookies.insert(name, value);
             }
         }
-        // Go `netease.go:225` 忽略落盘错误(登录态以 KV 为准, 失败不改变本次结果)。
-        let _ = save_cookies(&cookies);
-        result["logged_in"] = Value::Bool(true);
+        let has_login = cookies.get("MUSIC_U").map_or(false, |v| !v.is_empty())
+            || cookies.get("MUSIC_A").map_or(false, |v| !v.is_empty());
+        if has_login {
+            // Go `netease.go:225` 忽略落盘错误(登录态以 KV 为准, 失败不改变本次结果)。
+            let _ = save_cookies(&cookies);
+            result["logged_in"] = Value::Bool(true);
+        } else {
+            // 宿主 broker 剥离 set-cookie, 该端点 803 的 body 又通常不带 cookie:
+            // 扫码成功但登录态拿不到。绝不静默保存空表冒充登录成功。
+            result["logged_in"] = Value::Bool(false);
+            result["message"] = Value::String(
+                "扫码成功，但宿主代理剥离了登录 Cookie，无法自动保存登录态。请在浏览器登录 \
+                 music.163.com 后复制 Cookie 头，用登录卡的「手动粘贴 Cookie」完成登录。"
+                    .to_string(),
+            );
+        }
     }
     Ok(result)
 }
@@ -728,6 +909,219 @@ pub fn login_status() -> Result<Value, String> {
         "logged_in": !cookies.is_empty(),
         "has_music_u": cookies.contains_key("MUSIC_U"),
     }))
+}
+
+// ─────────────────────────── 歌单 ───────────────────────────
+
+/// 登录账号(sidecar `server.mjs:281-291` `neteaseAccount`): POST 空 body 拿
+/// `profile.userId`。返回 `(uid, nickname)`; uid 缺失(未登录/登录态失效)报
+/// "未登录或登录态失效"(sidecar 的 `if (!uid)` 分支)。
+fn netease_account() -> Result<(i64, String), String> {
+    let response = post_form(ACCOUNT_URL, playlist_form_headers(), "")?;
+    let body = store::decode_body(&response).unwrap_or_default();
+    let parsed: AccountResponse =
+        serde_json::from_slice(&body).map_err(|err| format!("账号解析失败: {err}"))?;
+    let profile = parsed.profile.unwrap_or_default();
+    let user_id = profile.user_id.unwrap_or_default();
+    if user_id == 0 {
+        return Err("未登录或登录态失效".to_string());
+    }
+    Ok((user_id, profile.nickname.unwrap_or_default()))
+}
+
+/// 我的歌单列表(sidecar `server.mjs:293-307` `neteasePlaylists`)。
+///
+/// 先 [`netease_account`] 拿 uid, 再从 offset 0 起按 100 一页翻 `user/playlist`
+/// (上限 2000, 不足 100 条提前停)。返回 `{playlists, count}`; `id` 是字符串
+/// (sidecar 的 `String(p.id)`), `creator` 取歌单创建者昵称, 缺失时回退登录昵称。
+pub fn playlists() -> Result<Value, String> {
+    let (uid, nickname) = netease_account()?;
+    let mut out: Vec<Value> = Vec::new();
+    let mut offset: u64 = 0;
+    while offset < 2000 {
+        let url =
+            format!("{USER_PLAYLIST_URL}?uid={uid}&limit=100&offset={offset}&includeVideo=true");
+        let response = get_url(&url, playlist_headers())?;
+        let body = store::decode_body(&response).unwrap_or_default();
+        let parsed: UserPlaylistResponse =
+            serde_json::from_slice(&body).map_err(|err| format!("歌单解析失败: {err}"))?;
+        let list = parsed.playlist.unwrap_or_default();
+        let fetched = list.len();
+        for item in &list {
+            // `p.creator?.nickname || nickname`: 空串/缺失都回退登录昵称。
+            let creator = item
+                .creator
+                .as_ref()
+                .and_then(|creator| creator.nickname.as_deref())
+                .filter(|creator| !creator.is_empty())
+                .unwrap_or(nickname.as_str());
+            out.push(json!({
+                "id": item.id.map(|value| value.to_string()).unwrap_or_default(),
+                "name": item.name.clone().unwrap_or_default(),
+                "cover": item.cover_img_url.clone().unwrap_or_default(),
+                "count": item.track_count.unwrap_or_default(),
+                "creator": creator,
+            }));
+        }
+        if fetched < 100 {
+            break;
+        }
+        offset += 100;
+    }
+    let count = out.len();
+    Ok(json!({ "playlists": out, "count": count }))
+}
+
+/// 歌单的歌曲页(sidecar `server.mjs:310-349` `neteasePlaylistSongs`)。
+///
+/// 先 GET v6 `playlist/detail?n=0` 拿全量 `trackIds` + `trackCount` + `name`,
+/// 按 `page`/`page_size` 切片(`page` 从 1 起), 再每 200 个 id 一批 POST v3
+/// `song/detail` 换详情。返回 `{name, total, page, page_size, songs}`。
+pub fn playlist_songs(id: &str, page: u32, page_size: u32) -> Result<Value, String> {
+    let url = format!("{PLAYLIST_DETAIL_URL}?id={}&n=0", query_escape(id));
+    let response = get_url(&url, playlist_headers())?;
+    let body = store::decode_body(&response).unwrap_or_default();
+    let parsed: PlaylistDetailResponse =
+        serde_json::from_slice(&body).map_err(|err| format!("歌单详情解析失败: {err}"))?;
+    let info = parsed.playlist.or(parsed.result).unwrap_or_default();
+    let ids: Vec<i64> = info
+        .track_ids
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|track| track.id)
+        .collect();
+    let total = info.track_count.unwrap_or(ids.len() as i64);
+    let name = info.name.unwrap_or_default();
+
+    // `ids.slice(start, start + pageSize)`, `start = (page - 1) * pageSize`;
+    // 起点为负(JS 会落到空页)或越界都按空页处理。
+    let start = i64::from(page).saturating_sub(1).saturating_mul(i64::from(page_size));
+    if start < 0 {
+        return Ok(playlist_page(&name, total, page, page_size, Vec::new()));
+    }
+    let start = (start as usize).min(ids.len());
+    let end = start.saturating_add(page_size as usize).min(ids.len());
+    let page_ids = &ids[start..end];
+    if page_ids.is_empty() {
+        return Ok(playlist_page(&name, total, page, page_size, Vec::new()));
+    }
+
+    let mut tracks: Vec<Value> = Vec::new();
+    for chunk in page_ids.chunks(200) {
+        // `c=[{"id":..},..]&ids=[..,..]`(sidecar `server.mjs:326-333`)。
+        let c = serde_json::to_string(
+            &chunk.iter().map(|value| json!({ "id": value })).collect::<Vec<_>>(),
+        )
+        .unwrap_or_default();
+        let ids_text = chunk.iter().map(i64::to_string).collect::<Vec<_>>().join(",");
+        let form = format!("c={}&ids=[{}]", query_escape(&c), ids_text);
+        let response = post_form(SONG_DETAIL_URL, playlist_form_headers(), &form)?;
+        let body = store::decode_body(&response).unwrap_or_default();
+        let parsed: SongDetailResponse =
+            serde_json::from_slice(&body).map_err(|err| format!("歌曲详情解析失败: {err}"))?;
+        tracks.extend(parsed.songs.unwrap_or_default());
+    }
+
+    let songs: Vec<Value> = tracks.iter().map(playlist_song_from_value).collect();
+    Ok(playlist_page(&name, total, page, page_size, songs))
+}
+
+/// 歌曲页的返回形状(`page_size` 按本插件契约用下划线, sidecar 是 `pageSize`)。
+fn playlist_page(name: &str, total: i64, page: u32, page_size: u32, songs: Vec<Value>) -> Value {
+    json!({
+        "name": name,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "songs": songs,
+    })
+}
+
+/// sidecar `server.mjs:331-345` 的歌曲映射: 把 v3 `song/detail` 的一首歌转成
+/// 插件契约形状。纯函数, 供 [`playlist_songs`] 与固定夹具测试(`tests/netease_playlists.rs`)共用。
+///
+/// JS 语义逐条对照(`||` 对空串/0 也回退, `??` 只对 null/undefined):
+/// - `id` = `String(t.id)`;
+/// - `singers` = `t.ar`(假值时回退 `t.artists`)逐个 `name` 用 `/` 连接;
+/// - `album`/`cover` = `(t.al || t.album)` 的 `name`/`picUrl`;
+/// - `duration_ms` = `t.dt`(0/缺失回退 `t.duration`);
+/// - `max_level` = `privilege.maxBrLevel || privilege.downloadMaxBrLevel || ''`;
+/// - `qualities` = [`qualities_for_level`](`max_level`)。
+pub fn playlist_song_from_value(song: &Value) -> Value {
+    let artists = array_field(song, "ar").or_else(|| array_field(song, "artists"));
+    let singers = artists
+        .map(|artists| {
+            artists
+                .iter()
+                .filter_map(|artist| artist.get("name").and_then(Value::as_str))
+                .collect::<Vec<&str>>()
+                .join("/")
+        })
+        .unwrap_or_default();
+    // `(t.al || t.album)`: al 是对象(含空对象)就用 al, 否则 album。
+    let album = object_field(song, "al").or_else(|| object_field(song, "album"));
+    let album_name = album.and_then(|album| truthy_string(album, "name")).unwrap_or_default();
+    let cover = album.and_then(|album| truthy_string(album, "picUrl")).unwrap_or_default();
+    // `t.dt || t.duration || 0`: dt 为 0 时回退 duration。
+    let duration_ms = number_field(song, "dt")
+        .filter(|value| *value != 0)
+        .or_else(|| number_field(song, "duration"))
+        .unwrap_or(0);
+    // `priv.maxBrLevel || priv.downloadMaxBrLevel || ''`。
+    let privilege = object_field(song, "privilege");
+    let max_level = privilege
+        .and_then(|privilege| truthy_string(privilege, "maxBrLevel"))
+        .or_else(|| privilege.and_then(|privilege| truthy_string(privilege, "downloadMaxBrLevel")))
+        .unwrap_or_default()
+        .to_string();
+    let id = match song.get("id") {
+        Some(Value::Number(number)) => number.to_string(),
+        Some(Value::String(text)) => text.clone(),
+        _ => String::new(),
+    };
+    json!({
+        "id": id,
+        "name": song.get("name").and_then(Value::as_str).unwrap_or_default(),
+        "singers": singers,
+        "album": album_name,
+        "cover": cover,
+        "duration_ms": duration_ms,
+        "source": "netease",
+        "max_level": max_level,
+        "qualities": qualities_for_level(&max_level),
+    })
+}
+
+/// JS `x.y || fallback` 的对象语义: 只有对象(含空对象)算真值, `null`/缺失/其他类型都算未命中。
+fn object_field<'a>(value: &'a Value, key: &str) -> Option<&'a Map<String, Value>> {
+    match value.get(key) {
+        Some(Value::Object(map)) => Some(map),
+        _ => None,
+    }
+}
+
+/// JS `x.y || fallback` 的数组语义: 只有数组(含空数组)算真值。
+fn array_field<'a>(value: &'a Value, key: &str) -> Option<&'a Vec<Value>> {
+    match value.get(key) {
+        Some(Value::Array(items)) => Some(items),
+        _ => None,
+    }
+}
+
+/// JS 字符串 `a || b`: 空串/缺失/非字符串都算未命中。
+fn truthy_string<'a>(map: &'a Map<String, Value>, key: &str) -> Option<&'a str> {
+    match map.get(key) {
+        Some(Value::String(text)) if !text.is_empty() => Some(text),
+        _ => None,
+    }
+}
+
+/// JS 数值 `a || b`: 缺失/非数值算未命中(0 的回退由调用方按 `||` 语义处理)。
+fn number_field(value: &Value, key: &str) -> Option<i64> {
+    match value.get(key) {
+        Some(Value::Number(number)) => number.as_i64(),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
