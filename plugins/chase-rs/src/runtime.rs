@@ -791,6 +791,9 @@ impl Runtime {
                 let total = (total_known > 0).then_some(total_known);
                 let mut tried = Vec::new();
                 let mut last_failure: Option<ParseFailure> = None;
+                // 「200 但结构未识别」的现场比后面的 400 更有排障价值(参数已经对了,
+                // 差的是字段名)——留着第一个, 不被矩阵后续变体的 400 覆盖。
+                let mut best_unparsed: Option<ParseFailure> = None;
                 let mut success: Option<(String, i32, String)> = None;
                 for query in emby::candidates(tmdb_id, season, selected.proxy_id, total) {
                     tried.push(query.params_label());
@@ -820,11 +823,15 @@ impl Runtime {
                                         response.status,
                                         "unparsed",
                                     );
-                                    last_failure = Some(ParseFailure::http(
+                                    let failure = ParseFailure::http(
                                         response.status,
                                         response.raw.clone(),
                                         message,
-                                    ));
+                                    );
+                                    if best_unparsed.is_none() {
+                                        best_unparsed = Some(failure.clone());
+                                    }
+                                    last_failure = Some(failure);
                                 }
                             }
                         }
@@ -863,7 +870,8 @@ impl Runtime {
                         emby_sample = sample;
                     }
                     None => {
-                        let failure = last_failure
+                        let failure = best_unparsed
+                            .or(last_failure)
                             .unwrap_or_else(|| ParseFailure::transport("没有可用的 Emby 探测参数"));
                         emby_status = failure.kind().to_string();
                         emby_http = failure.http_status;

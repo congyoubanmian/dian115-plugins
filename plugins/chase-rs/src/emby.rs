@@ -41,9 +41,19 @@ const COVERAGE_KEYS: &[&str] = &[
     "have",
     "present",
     "data",
+    "list",
+    "rows",
+    "episode_numbers",
 ];
 /// `data` 还要再下探一层这些键(规格里的 `data` 再下探一层 items/episodes)。
-const COVERAGE_DEEP_KEYS: &[&str] = &["items", "episodes", "existing", "existing_episodes"];
+const COVERAGE_DEEP_KEYS: &[&str] = &[
+    "items",
+    "episodes",
+    "existing",
+    "existing_episodes",
+    "list",
+    "episode_numbers",
+];
 /// 单集序号的字段候选。
 const INDEX_KEYS: &[&str] = &[
     "index_number",
@@ -54,7 +64,7 @@ const INDEX_KEYS: &[&str] = &[
     "number",
 ];
 /// 显式缺集列表的字段候选。
-const MISSING_KEYS: &[&str] = &["missing", "missing_episodes", "absent", "lack", "gaps"];
+const MISSING_KEYS: &[&str] = &["missing", "missing_episodes", "absent", "lack", "gaps", "missing_numbers"];
 /// 数值兜底字段候选(仅当同时存在显式缺集列表时才认)。
 const COUNT_KEYS: &[&str] = &["episode_count", "existing_count", "have_count", "count"];
 
@@ -840,6 +850,20 @@ mod tests {
         assert_eq!(coverage.have_max(), Some(4));
         assert!(coverage.shape.starts_with("params=POST:proxy_id,tmdb_id,season,total_episodes;v=4"), "{}", coverage.shape);
         drop(guard);
+    }
+
+    #[test]
+    fn coverage_accepts_plain_number_lists() {
+        // v0.1.2 新增候选: 裸集号数组字段(真实宿主 200 响应的疑似形态)
+        let coverage = parse_coverage(br#"{"episode_numbers":[1,2,3]}"#).unwrap();
+        assert_eq!(coverage.have_max(), Some(3));
+        assert_eq!(coverage.shape, "list=episode_numbers;index=n/a;missing=n/a");
+        let nested = parse_coverage(br#"{"data":{"episode_numbers":["4","5"]}}"#).unwrap();
+        assert_eq!(nested.have_max(), Some(5));
+        let missing = parse_coverage(br#"{"missing_numbers":[7,9]}"#).unwrap();
+        assert_eq!(missing.missing_max(), Some(9));
+        let list = parse_coverage(br#"{"data":{"list":[2,4]}}"#).unwrap();
+        assert_eq!(list.have_max(), Some(4));
     }
 
     #[test]
