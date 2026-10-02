@@ -315,6 +315,15 @@ fn join_dir(dir: &str, name: &str) -> String {
 }
 
 /// 取路径最后一段(文件名)。
+/// 取父目录(不含末尾 '/'; 无 '/' 时返回空串)。锚定 job 上报的绝对路径用。
+fn parent_dir(path: &str) -> String {
+    match path.rfind('/') {
+        Some(index) if index > 0 => path[..index].to_string(),
+        Some(_) => String::new(),
+        None => String::new(),
+    }
+}
+
 fn file_name_of(path: &str) -> String {
     path.trim_end_matches('/').rsplit('/').next().unwrap_or("").to_string()
 }
@@ -342,6 +351,9 @@ pub struct RootsProbe {
     pub ok: bool,
     pub error: String,
     pub roots: Vec<Root>,
+    /// roots 原始条目(0.3.8): 宿主真实形状是 data.items[] 里带 root_id/root_entry_ref/
+    /// alias/backend/capabilities, 引用链(parent_ref)只能从这里取。
+    pub items: Vec<Value>,
 }
 
 /// 在对象(或 `data`/`result` 里的一层嵌套对象)中取第一个非空字符串字段。
@@ -441,7 +453,7 @@ pub fn probe_roots() -> RootsProbe {
     let (status, body) = match host_roundtrip("GET", FILES_ROOTS, None, None) {
         Ok(out) => out,
         Err(err) => {
-            return RootsProbe { ok: false, error: err, roots: Vec::new() };
+            return RootsProbe { ok: false, error: err, roots: Vec::new(), items: Vec::new() };
         }
     };
     if !(200..300).contains(&status) {
@@ -449,6 +461,7 @@ pub fn probe_roots() -> RootsProbe {
             ok: false,
             error: http_error("GET", FILES_ROOTS, status, &body),
             roots: Vec::new(),
+            items: Vec::new(),
         };
     }
     *DIAG_ROOTS_RAW.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = diag_b64(&body);
@@ -459,11 +472,13 @@ pub fn probe_roots() -> RootsProbe {
                 ok: false,
                 error: format!("GET {FILES_ROOTS} 响应不是 JSON: {err}"),
                 roots: Vec::new(),
+                items: Vec::new(),
             };
         }
     };
     let roots = extract_array(&value).iter().filter_map(parse_root).collect();
-    RootsProbe { ok: true, error: String::new(), roots }
+    let items = extract_array(&value);
+    RootsProbe { ok: true, error: String::new(), roots, items }
 }
 
 /// 依据探测结果决定本次 pump 实际使用的暂存目录。
@@ -568,63 +583,55 @@ fn find_ref(value: &Value, depth: u8) -> Option<String> {
     None
 }
 
-/// 列暂存目录并取 parent_ref; 404 → `Missing`。
-fn entries_parent_ref(staging: &str) -> Result<ParentRef, String> {
-    let path = format!("{FILES_ENTRIES}?path={}", netease::query_escape(staging));
-    let (status, body) = host_roundtrip("GET", &path, None, None)?;
-    *DIAG_ENTRIES.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) =
-        (u16::try_from(status).unwrap_or_default(), diag_b64(&body));
-    if status == 404 {
-        return Ok(ParentRef::Missing);
+/// 0.3.8: 宿主向插件开放的文件根是"工作区"模型(roots 返回 data.items[], 每项含
+/// root_id / root_entry_ref / alias / backend / capabilities), entries/directories
+/// 都要求 root_id 语义(官方无字段契约)。因此暂存直接放**本地可写工作区根**下,
+/// parent_ref 取 root_entry_ref, 免去 entries/directories 的引用链; 暂存文件的
+/// 真实路径以 downloads job 的上报为准(见 Task::staged_path), 后续 rename/copy
+/// 全部锚定该路径。
+fn workspace_parent_ref(probe: &RootsProbe) -> Result<String, String> {
+    let empty = serde_json::Map::new();
+    for item in &probe.items {
+        let map = item.as_object().unwrap_or(&empty);
+        let backend = first_str(map, &["backend", "kind", "type"])
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        if CLOUD_MARKERS.iter().any(|marker| backend.contains(marker)) {
+            continue;
+        }
+        let caps = item
+            .get("capabilities")
+            .and_then(Value::as_array)
+            .map(|list| {
+                list.iter().filter_map(Value::as_str).map(str::to_string).collect::<Vec<String>>()
+            })
+            .unwrap_or_default();
+        let writable = caps.iter().any(|cap| cap.contains("write"));
+        if !backend.is_empty() && !writable {
+            continue;
+        }
+        let reference =
+            first_str(map, &["root_entry_ref", "entry_ref", "ref", "root_ref"]).unwrap_or_default();
+        if !reference.is_empty() {
+            return Ok(reference);
+        }
     }
-    if !(200..300).contains(&status) {
-        return Err(http_error("GET", &path, status, &body));
-    }
-    let value: Value = serde_json::from_slice(&body)
-        .map_err(|err| format!("GET {FILES_ENTRIES} 响应不是 JSON: {err}"))?;
-    Ok(match find_ref(&value, 0) {
-        Some(reference) if !reference.is_empty() => ParentRef::Found(reference),
-        _ => ParentRef::Missing,
-    })
-}
-
-/// 建目录(`POST /api/plugin-host/files/directories {path}`); 已存在视为成功。
-fn create_directory(dir: &str) -> Result<(), String> {
-    let body = serde_json::to_vec(&json!({"path": dir})).unwrap_or_default();
-    let key = format!("mr-dl-mkdir-{:016x}", fnv_hash(dir.as_bytes()));
-    let (status, body) = host_roundtrip("POST", FILES_DIRECTORIES, Some(&body), Some(&key))?;
-    if (200..300).contains(&status) || status == 409 {
-        return Ok(());
-    }
-    let text = util::trunc(&body).to_ascii_lowercase();
-    if text.contains("exist") || text.contains("已存在") {
-        return Ok(());
-    }
-    Err(http_error("POST", FILES_DIRECTORIES, status, &body))
-}
-
-fn fnv_hash(bytes: &[u8]) -> u64 {
-    let mut hash = 0xcbf2_9ce4_8422_2325u64;
-    for byte in bytes {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    hash
-}
-
-/// 确保暂存目录存在并返回其 parent_ref(首次 pump 自动建目录)。
-fn ensure_staging(staging: &str) -> Result<String, String> {
-    match entries_parent_ref(staging)? {
-        ParentRef::Found(reference) => return Ok(reference),
-        ParentRef::Missing => {}
-    }
-    create_directory(staging)?;
-    match entries_parent_ref(staging)? {
-        ParentRef::Found(reference) => Ok(reference),
-        ParentRef::Missing => Err(format!(
-            "GET {FILES_ENTRIES} 未返回 parent_ref(path={staging}), 无法提交宿主下载"
-        )),
-    }
+    let seen: Vec<String> = probe
+        .items
+        .iter()
+        .map(|item| {
+            let map = item.as_object().unwrap_or(&empty);
+            format!(
+                "{}({})",
+                first_str(map, &["alias", "name"]).unwrap_or_default(),
+                first_str(map, &["backend"]).unwrap_or_default()
+            )
+        })
+        .collect();
+    Err(format!(
+        "宿主未向插件开放本地可写工作区根(roots: [{}]); 请在宿主侧为插件开放本地文件根",
+        seen.join(", ")
+    ))
 }
 
 // ─────────────────────────── 两段式操作 ───────────────────────────
@@ -1026,6 +1033,7 @@ fn advance_downloading(
                     return;
                 }
             };
+            task.staged_path = staged.clone();
             let target_name = task.out_name.clone();
             if file_name_of(&staged) != target_name {
                 if let Err(err) =
@@ -1051,16 +1059,17 @@ fn advance_copying(
     task: &mut Task,
     report: &mut PumpReport,
 ) {
-    if staging.is_empty() || task.out_name.is_empty() {
+    let _ = staging;
+    if task.staged_path.is_empty() || task.out_name.is_empty() {
         fail_task(
             settings,
             task,
-            "缺少暂存目录或目标文件名, 无法复制".to_string(),
+            "缺少暂存文件路径或目标文件名, 无法复制".to_string(),
             report,
         );
         return;
     }
-    let staged = join_dir(staging, &task.out_name);
+    let staged = join_dir(&parent_dir(&task.staged_path), &task.out_name);
     match copy_to_cd2(&task.id, &staged, &settings.target_dir, task.attempts) {
         Ok(_) => {
             task.status = tasks::STATUS_DONE.to_string();
@@ -1159,7 +1168,7 @@ pub fn pump(ids: &mut PutIds) -> Result<Value, String> {
                     .messages
                     .push(format!("{} 个排队任务无法启动: {reason}", queued_ids.len()));
             }
-            Some(dir) => match ensure_staging(dir) {
+            Some(_dir) => match workspace_parent_ref(&probe) {
                 Ok(parent_ref) => {
                     let cap = settings.max_active.max(1) as usize;
                     for id in queued_ids {
@@ -1180,12 +1189,12 @@ pub fn pump(ids: &mut PutIds) -> Result<Value, String> {
                         if task.status == tasks::STATUS_DOWNLOADING {
                             // 取链后立即发起, 发起后立即轮询一次: 宿主任务可能本轮就完成,
                             // 能在一轮里做完的尽量做完(下一次 cron 是 5 分钟后)。
-                            advance_downloading(&settings, &staging_dir, task, &mut report);
+                            advance_downloading(&settings, "", task, &mut report);
                         }
                     }
                 }
                 Err(err) => {
-                    let reason = format!("暂存目录 {dir} 不可用: {err}");
+                    let reason = format!("宿主工作区根不可用: {err}");
                     // 0.3.7: 阻塞原因落到每个排队任务的 error, UI 不再只能看到干等的 queued。
                     for task in queue.iter_mut() {
                         if task.status == tasks::STATUS_QUEUED && task.error != reason {
@@ -1378,13 +1387,13 @@ mod tests {
                 );
             }
             if path == FILES_ROOTS {
+                // 0.3.8: 换成宿主真实形状(data.items[] + root_id/root_entry_ref/capabilities)。
                 return json_response(
                     200,
-                    r#"{"roots":[
-                        {"path":"/CloudNAS/115open/音乐","name":"音乐","backend":"local","writable":true},
-                        {"path":"/mnt/cd2","name":"CD2","backend":"cd2","writable":true}
-                    ]}"#
-                    .as_bytes(),
+                    br#"{"data":{"items":[
+                        {"root_id":"root_test_ws","alias":"ai_workspace","root_entry_ref":"fe_test_ws_root","name":"AI workspace","backend":"local","capabilities":["files.local.read","files.local.write"]},
+                        {"root_id":"root_test_cd2","alias":"cloud","root_entry_ref":"fe_test_cd2","name":"CD2","backend":"cd2","capabilities":["files.cloud.read"]}
+                    ]}}"#,
                 );
             }
             if path.starts_with(FILES_ENTRIES) {
@@ -1460,11 +1469,11 @@ mod tests {
         assert_eq!(summary["failed"].as_array().unwrap().len(), 0);
 
         let state = fake.borrow();
-        assert!(state.created_dir, "首次 pump 必须自动建暂存目录");
-        assert_eq!(state.entries_calls, 2, "第一次 entries 404 后建目录再查一次");
+        // 0.3.8: 不再走 entries/directories 引用链, 暂存直接放工作区根。
+        assert!(!state.created_dir, "0.3.8 起不再自动建暂存子目录");
         assert_eq!(state.downloads.len(), 1);
         assert_eq!(state.downloads[0]["name"], format!("{task_id}.part"));
-        assert_eq!(state.downloads[0]["parent_ref"], "dir-ref-7");
+        assert_eq!(state.downloads[0]["parent_ref"], "fe_test_ws_root");
         assert_eq!(state.downloads[0]["url"], "https://cdn.example.com/song.flac");
         assert_eq!(state.renames.len(), 1);
         assert_eq!(
@@ -1579,6 +1588,7 @@ mod tests {
         let probe = RootsProbe {
             ok: true,
             error: String::new(),
+            items: Vec::new(),
             roots: vec![
                 Root { path: "/CloudNAS/115open/音乐".into(), name: "音乐".into(), local: false, writable: true },
                 Root { path: "/volume1/music".into(), name: "本地".into(), local: true, writable: true },
@@ -1593,6 +1603,7 @@ mod tests {
         let probe = RootsProbe {
             ok: true,
             error: String::new(),
+            items: Vec::new(),
             roots: vec![Root {
                 path: "/CloudNAS/115open/音乐".into(),
                 name: "音乐".into(),
@@ -1608,6 +1619,7 @@ mod tests {
         let probe = RootsProbe {
             ok: true,
             error: String::new(),
+            items: Vec::new(),
             roots: vec![Root { path: "/mnt/cd2".into(), name: "CD2".into(), local: false, writable: true }],
         };
         let (dir, warnings) = effective_staging(&settings, &probe);
