@@ -68,6 +68,66 @@ const MISSING_KEYS: &[&str] = &["missing", "missing_episodes", "absent", "lack",
 /// 数值兜底字段候选(仅当同时存在显式缺集列表时才认)。
 const COUNT_KEYS: &[&str] = &["episode_count", "existing_count", "have_count", "count"];
 
+/// 区间式覆盖的字段候选(真实宿主 2026-10-02 实测: `covered_episodes` 是 `"1-24"`
+/// 这样的**区间串**而不是数组; `needed_episodes` 同构, 空串 = 没有缺口)。
+const RANGE_HAVE_KEYS: &[&str] = &["covered_episodes", "episodes_covered", "have_episodes"];
+const RANGE_MISSING_KEYS: &[&str] = &["needed_episodes", "episodes_needed", "required_episodes"];
+/// 单段区间与整个集合的膨胀上限(防畸形输入把内存打爆)。
+const RANGE_SEGMENT_MAX: i64 = 2_000;
+const RANGE_SET_MAX: usize = 10_000;
+
+/// 解析区间串: `""`、`"5"`、`"1-24"`、`"1,3,5-7"`。
+/// 非法段(解析失败/倒序/超上限)返回 `None` —— 整体视为未识别, 不猜。
+fn parse_episode_ranges(text: &str) -> Option<BTreeSet<i64>> {
+    let mut set = BTreeSet::new();
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return Some(set);
+    }
+    for segment in trimmed.split(',') {
+        let segment = segment.trim();
+        if segment.is_empty() {
+            continue;
+        }
+        let (start, end) = match segment.split_once('-') {
+            Some((left, right)) => {
+                let start = left.trim().parse::<i64>().ok()?;
+                let end = right.trim().parse::<i64>().ok()?;
+                (start, end)
+            }
+            None => {
+                let single = segment.parse::<i64>().ok()?;
+                (single, single)
+            }
+        };
+        if start < 0 || end < start || end - start > RANGE_SEGMENT_MAX {
+            return None;
+        }
+        for episode in start..=end {
+            set.insert(episode);
+            if set.len() > RANGE_SET_MAX {
+                return None;
+            }
+        }
+    }
+    Some(set)
+}
+
+/// 一个集集合的值: 区间串、整数/数字串数组、或单个数字。
+fn episode_set_of(value: &Value) -> Option<BTreeSet<i64>> {
+    match value {
+        Value::String(text) => parse_episode_ranges(text),
+        Value::Array(items) => {
+            let mut set = BTreeSet::new();
+            for element in items {
+                set.insert(raw::loose_i64(element)?);
+            }
+            Some(set)
+        }
+        other => raw::loose_i64(other).map(|single| BTreeSet::from([single])),
+    }
+}
+
 // ─────────────────────────── instances ───────────────────────────
 
 /// 一个可用的 Emby 实例(只保留选择与展示需要的字段)。
@@ -402,6 +462,33 @@ impl Coverage {
 /// (那里才是"这三次探测全部未识别"的判定点, 也是排障时看到的那一条)。
 pub fn parse_coverage(raw: &[u8]) -> Result<Coverage, String> {
     let value = raw::decode_json(raw)?;
+
+    // 区间式契约(实测宿主形态)优先: `covered_episodes:"1-24"` / `needed_episodes:""`。
+    // 两个字段是纯字符串, 命中即建 Coverage; 值解析不了(畸形区间)则落回后面的数组路径。
+    for source in [value.as_object(), raw::descend(&value, &["data"]).and_then(Value::as_object)] {
+        let Some(obj) = source else { continue };
+        let range_have = raw::first_of(obj, RANGE_HAVE_KEYS).and_then(episode_set_of);
+        let range_missing = raw::first_of(obj, RANGE_MISSING_KEYS).and_then(episode_set_of);
+        if range_have.is_some() || range_missing.is_some() {
+            let have_name = RANGE_HAVE_KEYS
+                .iter()
+                .copied()
+                .find(|key| obj.contains_key(*key))
+                .unwrap_or("n/a");
+            let missing_name = RANGE_MISSING_KEYS
+                .iter()
+                .copied()
+                .find(|key| obj.contains_key(*key))
+                .unwrap_or("n/a");
+            return Ok(Coverage {
+                have: range_have,
+                missing: range_missing,
+                count_hint: None,
+                shape: format!("list={have_name};index=range;missing={missing_name}"),
+            });
+        }
+    }
+
     let located = locate_container(&value);
 
     // `locate_container` 只在真的命中"集列表"字段时才返回, 所以这里直接遍历它:
@@ -864,6 +951,43 @@ mod tests {
         assert_eq!(missing.missing_max(), Some(9));
         let list = parse_coverage(br#"{"data":{"list":[2,4]}}"#).unwrap();
         assert_eq!(list.have_max(), Some(4));
+    }
+
+    /// v0.1.3: 真实宿主(2026-10-02)实测的区间串契约, 原样钉死。
+    #[test]
+    fn coverage_parses_the_range_contract_from_the_live_host() {
+        let coverage = parse_coverage(
+            br#"{"complete":true,"covered_episodes":"1-24","needed_episodes":"","proxy_id":1,"season":1,"tmdb_id":286988,"total_episodes":24}"#,
+        )
+        .unwrap();
+        assert_eq!(coverage.have_max(), Some(24));
+        assert_eq!(coverage.have_count(), Some(24));
+        assert!(coverage.covers_range(1, 24), "已齐 1-24");
+        assert_eq!(coverage.gap_max(24), 0, "没有超出订阅总集数的缺口");
+        assert_eq!(coverage.shape, "list=covered_episodes;index=range;missing=needed_episodes");
+
+        // 缺口方向: 空覆盖 + 缺 1-24
+        let empty = parse_coverage(br#"{"complete":false,"covered_episodes":"","needed_episodes":"1-24"}"#).unwrap();
+        assert_eq!(empty.have_count(), Some(0), "空串 = 一集都没有(已知事实)");
+        assert_eq!(empty.missing_max(), Some(24));
+        assert_eq!(empty.gap_max(10), 24);
+
+        // 多段区间 + data 下探 + 数组形态的宽容
+        let multi = parse_coverage(br#"{"covered_episodes":"1,3,5-7"}"#).unwrap();
+        assert_eq!(multi.have_count(), Some(5));
+        assert!(!multi.covers_range(1, 2), "缺 2");
+        let nested = parse_coverage(br#"{"data":{"needed_episodes":"9-12"}}"#).unwrap();
+        assert_eq!(nested.missing_max(), Some(12));
+        let as_array = parse_coverage(br#"{"covered_episodes":["1","2"]}"#).unwrap();
+        assert_eq!(as_array.have_max(), Some(2));
+    }
+
+    #[test]
+    fn range_contract_rejects_malformed_segments() {
+        // 畸形区间: 整体未识别, 但允许落回数组路径(这里没有数组字段 → Err)
+        assert!(parse_coverage(br#"{"covered_episodes":"1-2-3"}"#).is_err());
+        assert!(parse_coverage(br#"{"covered_episodes":"5-1"}"#).is_err());
+        assert!(parse_coverage(br#"{"covered_episodes":"x"}"#).is_err());
     }
 
     #[test]
