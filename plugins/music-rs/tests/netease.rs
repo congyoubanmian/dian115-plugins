@@ -91,16 +91,12 @@ fn aes_ecb_pads_like_go_netease() {
 /// `header` **故意不闭合**。
 #[test]
 fn song_url_payload_matches_go_literal() {
+    // 0.3.9: 对齐 agent 验证形态 —— header 闭合、无 requestId; serde_json 按字典序
+    // 序列化键(encodeType/header/ids/level), header 字符串内部保持 agent 的插入序。
     assert_eq!(
         song_url_payload("1234567", "lossless", 12_345_678).to_string(),
-        r#"{"encodeType":"flac","header":"{\"os\":\"pc\",\"appver\":\"\",\"osver\":\"\",\"deviceId\":\"pyncm!\",\"requestId\":\"12345678\"","ids":["1234567"],"level":"lossless"}"#
+        r#"{"encodeType":"flac","header":"{\"os\":\"pc\",\"appver\":\"\",\"osver\":\"\",\"deviceId\":\"pyncm!\"}","ids":["1234567"],"level":"lossless"}"#
     );
-    assert_eq!(
-        song_url_payload("42", "sky", 99).to_string(),
-        r#"{"encodeType":"flac","header":"{\"os\":\"pc\",\"appver\":\"\",\"osver\":\"\",\"deviceId\":\"pyncm!\",\"requestId\":\"99\"","ids":["42"],"immerseType":"c51","level":"sky"}"#
-    );
-    // 只有 sky 档带 immerseType
-    assert!(!song_url_payload("42", "hires", 1).to_string().contains("immerseType"));
 }
 
 /// eapi params 的完整向量(288 字节密文的 hex): 由 node 与 python+openssl 两条
@@ -108,14 +104,14 @@ fn song_url_payload_matches_go_literal() {
 #[test]
 fn eapi_params_matches_independent_vector_lossless() {
     let payload = song_url_payload("1234567", "lossless", 12_345_678);
-    assert_eq!(eapi_params(SONG_URL_API, &payload), "2dcd3f9164274be9684609a30cf01c8870bd128c4d47dd3865d380f5eb875479fa90b329e9614f79e79598f37dc2edb487f00d1bc4c9b24cd57e6c318b9073567565d994ef3a89f5356c243f90d8099d485db260fa577059c3e1cfbfb3b6e9c157e2dbb5c19220c20ee55de2b6b8e0c0da6346d00362771113455a98a163207c96112551674ef2aa3cf342cbd2c6898dc9d0cef9466d31342b8410534bd998db9f2aa4909c0280a8118ce0a66739f41b6976bf4cbfa0405996d90f5b8cb47026f8997f10496c0a8397376d458f5cca2610a0539d2879e747a180d6fe471ae7f3dbb39474742fb80c6e996943b37bae3f4fb2ac41ad68c8c70aa2f2235c2fafa4e0d8eab7cfa6f127d96b60b7658a1c0453c09ac34f2cca70c91a99d4f7738811");
+    assert_eq!(eapi_params(SONG_URL_API, &payload), "fa90b329e9614f79e79598f37dc2edb487f00d1bc4c9b24cd57e6c318b9073567565d994ef3a89f5356c243f90d8099d485db260fa577059c3e1cfbfb3b6e9c157e2dbb5c19220c20ee55de2b6b8e0c0da6346d00362771113455a98a163207c96112551674ef2aa3cf342cbd2c6898dc9d0cef9466d31342b8410534bd998db9f2aa4909c0280a8118ce0a66739f41bc797a6fe0b212d422c65ff9455a72495b5bb081ca938d77a54f3545cf154b30c98ec9e76c2d6875c725d5ae263a612d9de7805c0dfccb1f188670bb9f39a0f2c692e1d1edb8ff6147deaf8ce756a2acab87438d666951bf2416c46f70cc794e9");
 }
 
-/// `sky` 档的 payload 多一个 `immerseType`(Go `netease.go:129-131`), 密文随之不同。
+/// 0.3.9 起 sky 不再带 `immerseType`(对齐 agent 形态), 与 lossless 仅 level 值不同。
 #[test]
 fn eapi_params_matches_independent_vector_sky() {
     let payload = song_url_payload("42", "sky", 99);
-    assert_eq!(eapi_params(SONG_URL_API, &payload), "2dcd3f9164274be9684609a30cf01c8870bd128c4d47dd3865d380f5eb875479fa90b329e9614f79e79598f37dc2edb487f00d1bc4c9b24cd57e6c318b9073567565d994ef3a89f5356c243f90d8099d485db260fa577059c3e1cfbfb3b6e9c157e2dbb5c19220c20ee55de2b6b8e0c0da6346d00362771113455a98a163207c96112551674ef2aa3cf342cbd2c6898dc9d0cef9466d31342b8410534bd998db9f2aa4909c0280a8118ce0a66739f41b6976bf4cbfa0405996d90f5b8cb47026251b84850bf159b9030d316875f8483f5e884fa0e019b148454f0014ff94b230032925f5ff5dbc72ed67368ce1d85582096d8f3341c573246fb45fce933f4c85bfe5ab3dd94ba25b329b97caa8b03411b8e097e9d59550e0dfd207c0dc711c10c641479355e60e143b282b473946d6b0");
+    assert_eq!(eapi_params(SONG_URL_API, &payload), "fa90b329e9614f79e79598f37dc2edb487f00d1bc4c9b24cd57e6c318b9073567565d994ef3a89f5356c243f90d8099d485db260fa577059c3e1cfbfb3b6e9c157e2dbb5c19220c20ee55de2b6b8e0c0da6346d00362771113455a98a163207c96112551674ef2aa3cf342cbd2c6898dc9d0cef9466d31342b8410534bd998db9f2aa4909c0280a8118ce0a66739f41b5830b791208a4f12ea2872c174fac2b850d41794fdba57c36ee78ee82ab0503741b06992913ecb850787550925a650ddb02165b196d2fcdeb7fc1ebdcb5ba63d77bfe2fbbcfc5958fe7c3665b4f3839a");
     assert_ne!(eapi_params(SONG_URL_API, &payload), eapi_params(SONG_URL_API, &song_url_payload("42", "hires", 99)));
 }
 
@@ -131,9 +127,10 @@ fn eapi_params_replaces_only_the_first_eapi_segment() {
     // 不能拿 `eapi_params("https://x/api/a/eapi/b")` 当参照 —— 这个参照串自己也含
     // `/eapi/`, 会被同一条规则改写成 `https://x/api/a/api/b`, 断言对正确实现不成立
     // (只有"全量替换"的错误实现才过得去)。
+    // 0.3.9: eapi_path 只取 pathname(去 scheme+host), 且第二处 /eapi/ 保持原样。
     assert_eq!(
         eapi_path("https://x/eapi/a/eapi/b"),
-        "https://x/api/a/eapi/b",
+        "/api/a/eapi/b",
         "第二处 /eapi/ 必须保持原样"
     );
 }

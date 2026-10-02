@@ -88,6 +88,7 @@ use md5::{Digest, Md5};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
+use crate::util;
 use crate::clock;
 use crate::host::{self, HostCallRequest, HostCallResponse};
 use crate::store;
@@ -205,15 +206,26 @@ pub fn aes_ecb_encrypt(data: &[u8], key: &[u8]) -> Result<Vec<u8>, String> {
 
 /// Go `netease.go:33` `strings.Replace(apiURL, "/eapi/", "/api/", 1)`: 只换第一处。
 pub fn eapi_path(api_url: &str) -> String {
-    match api_url.find("/eapi/") {
+    // 0.3.9: 对齐 agent `fetch-worker.mjs:38` 的 `u.pathname.replace(...)` ——
+    // 只取 pathname(去掉 scheme+host)再替换 /eapi/。Go 版在整条 URL 上替换,
+    // digest 与密文里的 path 都带上了 "https://interface3.music.163.com",
+    // 真机表现为 8 档全部 200 却取不到链接(从未在 broker 下验证过)。
+    let pathname = match api_url.find("://") {
+        Some(scheme_end) => match api_url[scheme_end + 3..].find('/') {
+            Some(offset) => &api_url[scheme_end + 3 + offset..],
+            None => "/",
+        },
+        None => api_url,
+    };
+    match pathname.find("/eapi/") {
         Some(index) => {
-            let mut out = String::with_capacity(api_url.len());
-            out.push_str(&api_url[..index]);
+            let mut out = String::with_capacity(pathname.len());
+            out.push_str(&pathname[..index]);
             out.push_str("/api/");
-            out.push_str(&api_url[index + "/eapi/".len()..]);
+            out.push_str(&pathname[index + "/eapi/".len()..]);
             out
         }
-        None => api_url.to_string(),
+        None => pathname.to_string(),
     }
 }
 
@@ -248,22 +260,21 @@ pub fn eapi_params(api_url: &str, payload: &Value) -> String {
 
 /// 取链 payload(Go `netease.go:120-131`)。
 ///
-/// `header` 是**故意不闭合**的 JSON 文本(Go 原样拼接): 末尾只有
-/// `"requestId":"N"` 而没有右花括号 —— 服务端接受这个形态, 移植时不要"顺手修好"。
-/// `request_id` 由调用方给出(生产用 [`request_id`])。
-pub fn song_url_payload(song_id: &str, level: &str, request_id: u64) -> Value {
-    let header = format!(
-        "{{\"os\":\"pc\",\"appver\":\"\",\"osver\":\"\",\"deviceId\":\"pyncm!\",\"requestId\":\"{request_id}\""
-    );
-    let mut payload = Map::new();
-    payload.insert("ids".to_string(), json!([song_id]));
-    payload.insert("level".to_string(), Value::String(level.to_string()));
-    payload.insert("encodeType".to_string(), Value::String("flac".to_string()));
-    payload.insert("header".to_string(), Value::String(header));
-    if level == "sky" {
-        payload.insert("immerseType".to_string(), Value::String("c51".to_string()));
-    }
-    Value::Object(payload)
+/// 0.3.9: 对齐 music-agent `fetch-worker.mjs:85-88` 的**真机验证过**形态 ——
+/// header 是闭合 JSON(`{"os":"pc","appver":"","osver":"","deviceId":"pyncm!"}`),
+/// 无 requestId、无 immerseType。Go 版的"故意不闭合 + requestId"形态从未在
+/// broker 下验证过, 真机表现为 8 档全 200 却全部取不到链接(疑似被风控)。
+/// `request_id` 参数保留以稳定调用方签名, 不再进 payload。
+pub fn song_url_payload(song_id: &str, level: &str, _request_id: u64) -> Value {
+    // 字面量而非 json! 宏: 保住 agent 的字段插入序(os/appver/osver/deviceId),
+    // json! 宏会按 serde_json 的 BTreeMap 字典序输出, 改变密文字节。
+    let header = r#"{"os":"pc","appver":"","osver":"","deviceId":"pyncm!"}"#.to_string();
+    json!({
+        "ids": [song_id],
+        "level": level,
+        "encodeType": "flac",
+        "header": header,
+    })
 }
 
 /// Go `netease.go:127` 的 `time.Now().UnixNano() % 1e8`: 纳秒时间戳的后 8 位。
@@ -869,12 +880,14 @@ pub fn song_url(song_id: &str, level: &str) -> Result<SongUrl, String> {
     let mut headers = base_headers(CHROME_UA);
     headers.insert("cookie".to_string(), cookie_header(&load_cookies()));
 
+    let mut last_body: Vec<u8> = Vec::new();
     for current in level_ladder(level) {
         let payload = song_url_payload(song_id, current, request_id(clock::now_unix_nanos()));
         let params = eapi_params(SONG_URL_API, &payload);
         let form = form_encode(&[("params", params.as_str())]);
         let response = post_form(SONG_URL_API, headers.clone(), &form)?;
         let body = store::decode_body(&response).unwrap_or_default();
+        last_body = body.clone();
         let out: SongUrlResponse = match serde_json::from_slice(&body) {
             Ok(out) => out,
             // Go `netease.go:158`: 解不出来就试下一档。
@@ -897,7 +910,12 @@ pub fn song_url(song_id: &str, level: &str) -> Result<SongUrl, String> {
             size: item.size.unwrap_or_default(),
         });
     }
-    Err("所有音质均未获取到链接（需要 SVIP 且歌曲有对应音源）".to_string())
+    {
+            let tail = util::trunc(&last_body);
+            Err(format!(
+                "所有音质均未获取到链接（需要 SVIP 且歌曲有对应音源）; 最后响应: {tail}"
+            ))
+        }
 }
 
 /// 登录态查询: 从 KV 读会话 cookie 是否还在(Go 版从 `state.sessions["netease"]` 读)。
@@ -1152,9 +1170,11 @@ mod tests {
 
     #[test]
     fn eapi_path_replaces_first_segment_only() {
-        assert_eq!(eapi_path("https://x/eapi/a"), "https://x/api/a");
-        assert_eq!(eapi_path("https://x/eapi/a/eapi/b"), "https://x/api/a/eapi/b");
-        assert_eq!(eapi_path("https://x/api/a"), "https://x/api/a");
+        // 0.3.9: 只取 pathname(agent 语义), 不再保留 scheme+host。
+        assert_eq!(eapi_path("https://x/eapi/a"), "/api/a");
+        assert_eq!(eapi_path("https://x/eapi/a/eapi/b"), "/api/a/eapi/b");
+        assert_eq!(eapi_path("https://x/api/a"), "/api/a");
+        assert_eq!(eapi_path("/eapi/a"), "/api/a");
         assert_eq!(eapi_path(""), "");
     }
 
