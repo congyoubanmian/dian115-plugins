@@ -10,6 +10,7 @@
 // action 名与入参对齐 `src/runtime.rs` 的 action 分发表:
 //   qr-create{source} / qr-poll{source,key} / search{source,query,page}
 //   / playlists{source} / playlist-songs{source,id,page,page_size}
+//   / playlist-queue-all{source,id,quality,batch_pages,next_page}(整单分批入队)
 //   / download{source,song_id,name,singers,album,level} / settings-update{patch}
 //   / task-retry{id} / task-clear{} / pump{}
 // 返回形状是 `{result:{status,message,data}}`(见 runtime.rs 的 `action_result`)。
@@ -575,7 +576,15 @@ function setSongQuality(song: Song, value: string) {
 
 const submitting = ref('')
 
-async function download(song: Song) {
+/**
+ * 单曲入队(搜索页 / 歌单曲目行)。
+ *
+ * 失败一律就地处理并返回 false: 业务 failed 与协议层失败(运行时重启窗口等 invoke reject)
+ * 都被 try/catch 吞下, **绝不向外抛异常** —— 这样即便被逐首循环调用也不会中断整批,
+ * 调用方只需按返回值累计"N 首失败, 可重试"。当前页面除后端分批的整单下载外没有逐首循环,
+ * 单曲按钮失败只弹一条错误。
+ */
+async function download(song: Song): Promise<boolean> {
   const key = String(song.id ?? '')
   submitting.value = key
   try {
@@ -589,7 +598,7 @@ async function download(song: Song) {
     })
     if (result.status === 'failed') {
       message.error(loginHint(String(result.message || '下载失败')))
-      return
+      return false
     }
     const data = (result.data || {}) as Record<string, any>
     const deduped = data.deduped === true
@@ -598,8 +607,10 @@ async function download(song: Song) {
         ? `队列里已有同一首（${qualityLabel(String(data.quality || qualityOf(song)))}），已复用任务 ${data.task_id || ''}`
         : `已入队: ${song.name || key} · ${qualityLabel(String(data.quality || qualityOf(song)))}`,
     )
+    return true
   } catch (error: unknown) {
     message.error(String((error as { message?: string })?.message || '下载失败'))
+    return false
   } finally {
     submitting.value = ''
   }
@@ -608,8 +619,9 @@ async function download(song: Song) {
 // ─────────────────────────── ③ 我的歌单(runtime.rs: playlists / playlist-songs) ───────────────────────────
 //
 // 交互照搬 plugins/music-dl/src/AppPage.vue 的歌单页: 卡片列表(name/count/creator) → 点开分页曲目
-// (每页 100, 加载更多) → 每首歌独立音质下拉(选项来自后端给的 `qualities`, 缺省第一档) → 整单逐首入队。
+// (每页 100, 加载更多; 仅用于浏览) → 每首歌独立音质下拉(浏览用) → 整单入队。
 // 调用换成 invoke('playlists', {source}) / invoke('playlist-songs', {source,id,page,page_size});
+// 「整单下载」走 `playlist-queue-all` 后端分批翻页入队(见 downloadPlaylistAll), 与已加载的曲目条数解耦。
 // 后端只落地网易云(runtime.rs:643-655), 其他来源报「该来源暂不支持歌单，先支持网易云」;
 // 未登录报「未登录或登录态失效」(netease.rs:883), 前端补一句"去登录卡扫码"。
 
@@ -635,6 +647,12 @@ const plTotal = ref(0)
 const plPage = ref(1)
 const plLoading = ref(false)
 const plBatchBusy = ref(false)
+/** 整单下载统一音质(后端 `quality` 入参); 与每行浏览用的下拉互不影响。 */
+const plBatchQuality = ref('jymaster')
+/** 整单入队的进行中/结束文案("已入队 X 首(去重 Y), 进度 Z/total")。 */
+const plBatchProgress = ref('')
+/** 每轮 `playlist-queue-all` 翻的页数(5 页 = 500 首; 后端缺省 5、上限 10)。 */
+const PLAYLIST_BATCH_PAGES = 5
 
 /** 接口报「未登录或登录态失效」时, 把"去哪扫码"一起说清楚。 */
 function loginHint(text: string): string {
@@ -730,47 +748,84 @@ async function fetchPlaylistSongs(page: number) {
   }
 }
 
-/** 整单下载: 按每行当前选中的档位逐首入队(入参形状与 download() 一致, 音质走 `level`), 进度去「下载任务」看。 */
+/**
+ * 整单下载(0.3.14): 循环调 `playlist-queue-all` 让后端分批翻页整单入队。
+ *
+ * 每轮固定 `batch_pages=5`(500 首)、统一 `quality`; 后端返回 `{queued,deduped,total_seen,next_page,has_more}`,
+ * `has_more` 为 true 就带着上一轮的 `next_page` 继续下一轮, 取尽(has_more=false)或某轮业务失败即停。
+ * 每轮之间不人为延时(action 自身串行, 后端逐页取歌也串行)。
+ *
+ * 与歌单曲目列表的分页浏览**完全解耦**: 这里不再读 `plSongs`, 只认歌单 id,
+ * 所以不需要先把 100 首「加载更多」到底 —— 100 首限制由此解除。
+ * 全程按钮 loading; 结束(完成或失败)都弹汇总, 业务失败时已入队的不丢。
+ */
 async function downloadPlaylistAll() {
-  if (!plSongs.value.length) return
+  const view = playlistView.value
+  if (!view) {
+    message.warning('请先打开一个歌单')
+    return
+  }
   plBatchBusy.value = true
+  plBatchProgress.value = ''
+  // total 来自歌单卡片/接口的整单数量(与已加载条数无关); 拿不到就只显示进度分子。
+  const total = plTotal.value > 0 ? plTotal.value : 0
   let queued = 0
-  let loginBlocked = false
-  const failures: string[] = []
+  let deduped = 0
+  let seen = 0
+  let nextPage = 1
+  let stopped = ''
   try {
-    for (const song of plSongs.value) {
-      const key = String(song.id ?? '')
+    for (;;) {
+      let result: RuntimeCallback['result'] = {}
       try {
-        const result = await invoke('download', {
-          source: song.source || source.value,
-          song_id: key,
-          name: song.name || '',
-          singers: song.singers || '',
-          album: song.album || '',
-          level: qualityOf(song),
+        result = await invoke('playlist-queue-all', {
+          source: 'netease',
+          id: view.id,
+          quality: plBatchQuality.value,
+          batch_pages: PLAYLIST_BATCH_PAGES,
+          next_page: nextPage,
         })
-        if (result.status === 'failed') {
-          const text = String(result.message || '下载失败')
-          if (text.includes(NOT_LOGIN_KEYWORD)) {
-            loginBlocked = true
-            break // 登录态问题逐首都会失败, 直接停下提示扫码
-          }
-          failures.push(`${song.name || key}：${text}`)
-          continue
-        }
-        queued += 1
       } catch (error: unknown) {
-        failures.push(`${song.name || key}：${String((error as { message?: string })?.message || error)}`)
+        // 协议层失败(运行时重启窗口等): 结束循环, 已入队的不丢。
+        stopped = String((error as { message?: string })?.message || error || '整单入队请求失败')
+        break
       }
+      const data = (result.data || {}) as Record<string, any>
+      // 业务失败也会回传已入队计数: 先累加再判失败, 保证「已入队不丢」。
+      queued += Number(data.queued) || 0
+      deduped += Number(data.deduped) || 0
+      seen += Number(data.total_seen) || 0
+      plBatchProgress.value = batchProgressText(queued, deduped, seen, total)
+      if (result.status === 'failed') {
+        stopped = String(result.message || '整单入队失败')
+        break
+      }
+      if (data.has_more !== true) break // 取尽: 后端说没有下一页了
+      const cursor = Number(data.next_page)
+      if (!Number.isFinite(cursor) || cursor <= nextPage) {
+        // 防御: 后端没按 next_page 前进时避免同页无限重复请求(正常后端 next_page 恒指向下一页)。
+        stopped = '入队游标没有前进(后端未按 next_page 续跑), 已停止以免重复请求'
+        break
+      }
+      nextPage = cursor
     }
-    if (loginBlocked) message.error('未登录或登录态失效 —— 先在上方「扫码登录」卡片扫码，再回来整单下载')
-    if (queued > 0) message.success(`已入队 ${queued} 首下载，进度去「下载任务」tab 看`)
-    if (failures.length) {
-      message.warning(`有 ${failures.length} 首没入队：${failures.slice(0, 3).join('；')}${failures.length > 3 ? '…' : ''}`)
+    if (stopped) {
+      message.error(`${loginHint(stopped)}；已入队 ${queued} 首(去重 ${deduped})，未完成的可重试`)
+    } else {
+      message.success(
+        `整单入队完成：新增 ${queued} 首，去重 ${deduped} 首${
+          seen > 0 ? `（共处理 ${seen}${total > 0 ? `/${total}` : ''} 首）` : ''
+        }，进度去「下载任务」tab 看`,
+      )
     }
   } finally {
     plBatchBusy.value = false
   }
+}
+
+/** "已入队 X 首(去重 Y), 进度 Z/total"(total 未知时只给分子)。 */
+function batchProgressText(queued: number, deduped: number, seen: number, total: number): string {
+  return `已入队 ${queued} 首(去重 ${deduped}), 进度 ${seen}${total > 0 ? `/${total}` : ''}`
 }
 
 // ─────────────────────────── ④ 任务列表(runtime.rs: task-retry / task-clear / pump) ───────────────────────────
@@ -1314,16 +1369,23 @@ const rootProbeNote = computed(() => {
           <n-button size="small" secondary @click="closePlaylistView">← 返回歌单</n-button>
           <h3 style="margin: 0">{{ plName || '歌单' }}（{{ plTotal }} 首）</h3>
           <span class="spacer" />
+          <select v-model="plBatchQuality" class="sel" :disabled="plBatchBusy" title="整单下载统一音质">
+            <option v-for="value in qualitiesFor('netease')" :key="value" :value="value">
+              {{ qualityLabel(value) }}
+            </option>
+          </select>
           <n-button
             size="small"
             type="primary"
             :loading="plBatchBusy"
-            :disabled="!plSongs.length || plLoading"
+            :disabled="plBatchBusy || !playlistView"
             @click="downloadPlaylistAll"
           >
-            整单下载（{{ plSongs.length }}）
+            整单下载{{ plTotal > 0 ? `（共 ${plTotal} 首）` : '' }}
           </n-button>
         </div>
+
+        <p v-if="plBatchBusy || plBatchProgress" class="hint">{{ plBatchProgress || '整单入队中…' }}</p>
 
         <table class="tbl">
           <thead>
@@ -1371,7 +1433,8 @@ const rootProbeNote = computed(() => {
         <p v-else-if="plLoading" class="hint">歌单内容加载中…</p>
         <p v-else-if="!plSongs.length" class="hint">没有取到歌曲。</p>
         <p class="hint">
-          「整单下载」按每行当前选中的音质逐首入队（去重规则同搜索页），只是提交排队，进度去「下载任务」tab 看。
+          「整单下载」按右上角选的统一音质，让后端分批翻页把整张歌单入队（去重规则同搜索页）——不依赖上面已加载的
+          条数，所以 100 首以上的歌单也能一次下完；每批 500 首，期间按钮保持 loading。只是提交排队，进度去「下载任务」tab 看。
         </p>
       </template>
     </section>

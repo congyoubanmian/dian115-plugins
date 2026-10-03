@@ -348,6 +348,7 @@ impl Runtime {
     /// | `song-url` | `source` / `song_id` / `level` | [`crate::netease::song_url`] / [`crate::qq::song_url`] |
     /// | `playlists` | `source` | [`crate::netease::playlists`](仅网易云; 其他来源报"该来源暂不支持歌单") |
     /// | `playlist-songs` | `source` / `id` / `page` / `page_size` | [`crate::netease::playlist_songs`](仅网易云; `page_size` 缺省 100) |
+    /// | `playlist-queue-all` | `source` / `id` / `quality` / `batch_pages` / `next_page` | [`crate::download::playlist_queue_all`](整单入队: 每页 100 首走索引去重; `batch_pages` 缺省 5 上限 10; `next_page` 缺省 1 作为续批游标; 页面失败是业务 failed 并回传 `next_page`) |
     /// | `qr-create` | `source` | [`crate::netease::qr_create`] / [`crate::qq::qr_create`](QQ 返回 [`crate::qq::QR_UNAVAILABLE`]) |
     /// | `qr-poll` | `source` / `key` | [`crate::netease::qr_poll`] / [`crate::qq::qr_poll`] |
     /// | `qq-cookie-paste` | `cookie`(浏览器复制的 Cookie 头) | [`crate::qq::save_cookie_string`] |
@@ -391,6 +392,40 @@ impl Runtime {
                 input_u32(&input, "page", 1),
                 input_u32(&input, "page_size", 100),
             ))),
+            "playlist-queue-all" => {
+                // 0.3.14: 整单全量入队(每页 100 首, 走索引去重)。页面级失败是业务
+                // failed, 响应自带已入队计数与 `next_page`; 这里直接把函数产出的
+                // action result 返回, 不再经 action_result 二次包裹(会丢部分数据)。
+                // `next_page` 是续批游标: 大歌单分多批时把上一批返回的 next_page 传回来,
+                // 从该页继续, 不会重复处理已经入队的页。
+                let outcome = download::playlist_queue_all(
+                    &mut self.put_ids,
+                    &download::PlaylistQueueRequest {
+                        source: source.clone(),
+                        playlist_id: input_str(&input, "id"),
+                        quality: input_str(&input, "quality"),
+                        batch_pages: input_u32(
+                            &input,
+                            "batch_pages",
+                            download::PLAYLIST_QUEUE_DEFAULT_PAGES,
+                        ),
+                        next_page: input_u32(&input, "next_page", 1),
+                    },
+                );
+                if outcome["status"] == "succeeded" {
+                    let data = &outcome["data"];
+                    self.bump(
+                        "succeeded",
+                        &format!(
+                            "歌单入队: 新增 {} 首, 去重 {} 首",
+                            data["queued"], data["deduped"]
+                        ),
+                    );
+                } else {
+                    self.bump("failed", &format!("歌单入队失败: {}", outcome["message"]));
+                }
+                Ok(outcome)
+            }
             "qr-create" => Ok(action_result(qr_create(&source))),
             "qr-poll" => Ok(action_result(qr_poll(&source, &input_str(&input, "key")))),
             "login-status" => Ok(action_result(login_status(&source))),
@@ -726,4 +761,54 @@ fn invalid_action() -> OpError {
 
 fn invalid_event() -> OpError {
     OpError::new("invalid event payload")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::raw::RawPayload;
+
+    /// `playlist-queue-all` 已挂在分发表上: 非网易云来源是**业务 failed**(不是
+    /// `unknown_action`), 且不触碰存储(校验在取页之前返回)。
+    #[test]
+    fn playlist_queue_all_action_is_wired() {
+        let mut runtime = Runtime::new();
+        let payload_value = json!({
+            "id": "playlist-queue-all",
+            "input": {"source": "qq", "id": "42", "quality": "lossless", "batch_pages": 5}
+        });
+        let result = runtime.action("inv-1", RawPayload::Value(&payload_value)).unwrap();
+        assert_ne!(result["code"], "unknown_action", "action 未挂载: {result}");
+        assert_eq!(result["status"], "failed");
+        assert!(
+            result["message"].as_str().unwrap().contains("暂不支持歌单"),
+            "{result}"
+        );
+    }
+
+    /// 未知 action 仍然是 `unknown_action`(挂载没有把兜底分支吃掉)。
+    #[test]
+    fn unknown_action_still_falls_through() {
+        let mut runtime = Runtime::new();
+        let payload_value = json!({"id": "no-such-action"});
+        let result = runtime.action("inv-2", RawPayload::Value(&payload_value)).unwrap();
+        assert_eq!(result["code"], "unknown_action");
+    }
+
+    /// 续批游标 `next_page` 从 action 入参透传到取页: 本机无宿主网络, 第 6 页取歌必然
+    /// 失败, 失败响应里的 `next_page` 应恰是请求的起始页(而不是硬编码的 1)。
+    #[test]
+    fn playlist_queue_all_action_passes_next_page() {
+        let mut runtime = Runtime::new();
+        let payload_value = json!({
+            "id": "playlist-queue-all",
+            "input": {"source": "netease", "id": "42", "quality": "lossless", "batch_pages": 5, "next_page": 6}
+        });
+        let result = runtime.action("inv-3", RawPayload::Value(&payload_value)).unwrap();
+        assert_eq!(result["status"], "failed", "无宿主网络应取页失败: {result}");
+        assert_eq!(
+            result["data"]["next_page"], 6,
+            "续批游标应透传到取页起点: {result}"
+        );
+    }
 }

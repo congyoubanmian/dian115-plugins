@@ -29,11 +29,11 @@
 //!
 //! | 项 | 上界 | 依据 |
 //! |----|------|------|
-//! | **idx 索引** `tasks.idx` | **条目 252 B × 条数**; 队列 200 条 = **49.2 KB** | 一条只带 `id`/`status`/`name`/`singers`/`quality`/`error`(截 120 B)/`updated_ms`; 由 [`crate::tasks::TaskIndexEntry`] 定义 |
+//! | **idx 索引** `tasks.idx` | **条目 289 B × 条数**; 队列 200 条 = **56.4 KB** | 一条只带 `id`/`status`/`source`/`song_id`(0.3.14 入队去重需要)/`name`/`singers`/`quality`/`error`(截 120 B)/`updated_ms`; 由 [`crate::tasks::TaskIndexEntry`] 定义 |
 //! | **在途完整记录** `task.<id>` | **951 B × 在途条数**; 稳态在途 `<= max_active`(封顶 16 条 = **14.9 KB**), 但轮询阶段**不按 `max_active` 截断**, 真实上界是索引里 `downloading`/`copying` 的条目数 | 完整 [`crate::tasks::Task`]](含 `job_ref`/`staged_path`/`out_name`/`album`/未截断的 `error`) |
 //! | **单曲取链工作集** | **一首**, 不是一阶梯 | [`netease::song_url`] 的 8 档阶梯逐档释放: 每档的 `payload`/`params`/`form`/`response`/`body` 都在该次迭代结束即 drop, 跨档只留 200 B 的 `last_tail`(错误文案尾巴) |
 //!
-//! 合计**约 65 KB**(200 条队列 + 在途打满 + 一首取链), 加上宿主响应体的瞬时副本
+//! 合计**约 72 KB**(200 条队列 + 在途打满 + 一首取链), 加上宿主响应体的瞬时副本
 //! (`host.call` 上限 [`crate::host::MAX_HOST_RESPONSE`] 8 MB, 但实际响应是 KB 级
 //! 的 job/entries 列表)与 [`crate::arena`] 的 32 MB 帧上限(= 宿主帧上限, 不是本模块的用量)。
 //!
@@ -48,7 +48,7 @@
 //! 守住这条性质。
 //!
 //! 换句话说: **峰值 = f(在途条数, 单曲工作集), 而不是 f(队列总长)**; 队列变长
-//! 只会让 `tasks.idx` 这一个键变长(条目恒 252 B), 而不会把 N 份完整记录同时拉进内存。
+//! 只会让 `tasks.idx` 这一个键变长(条目恒 289 B), 而不会把 N 份完整记录同时拉进内存。
 //!
 //! 另有三处"每轮固定"的瞬时开销: `probe_roots` 的响应 + `resolve_staged`/
 //! `cleanup_staged` 的 `/api/local-files` `Value` 树(工作区目录大小, 与队列无关)、
@@ -1026,6 +1026,183 @@ pub fn request_download(ids: &mut PutIds, request: &DownloadRequest) -> Result<V
     }))
 }
 
+// ─────────────────────── 歌单整单入队 (0.3.14) ───────────────────────
+
+/// action `playlist-queue-all` 每批最多翻的页数上限。
+/// 前台 action 超时 60s: 每页约 1 次 v6 detail(GET) + 1 次 v3 detail(POST, ~200ms),
+/// 10 页(1000 首)也只有约 20 次网络往返, 预算充足。
+pub const PLAYLIST_QUEUE_MAX_PAGES: u32 = 10;
+
+/// action `playlist-queue-all` 的 `batch_pages` 缺省值(5 页 = 500 首)。
+pub const PLAYLIST_QUEUE_DEFAULT_PAGES: u32 = 5;
+
+/// 歌单每页取歌数(与 [`netease::playlist_songs`] 一页 100 首一致)。
+pub const PLAYLIST_PAGE_SIZE: u32 = 100;
+
+/// action `playlist-queue-all` 的入参。
+#[derive(Debug, Clone, Default)]
+pub struct PlaylistQueueRequest {
+    pub source: String,
+    /// 歌单 id。
+    pub playlist_id: String,
+    /// 统一音质(空 → KV 设置里的默认音质)。
+    pub quality: String,
+    /// 本批最多翻页数(缺省 [`PLAYLIST_QUEUE_DEFAULT_PAGES`], 上限 [`PLAYLIST_QUEUE_MAX_PAGES`])。
+    pub batch_pages: u32,
+    /// 本批从第几页开始(缺省 1)。用于消费上一次返回的 `next_page` 续跑大歌单,
+    /// 否则每批都会从头重复入队前几页。
+    pub next_page: u32,
+}
+
+/// 整单入队的计数(响应的 `data` 字段来源)。
+#[derive(Debug, Default, Clone, Copy)]
+struct QueueCounts {
+    queued: u64,
+    deduped: u64,
+    total_seen: u64,
+    skipped: u64,
+}
+
+/// 组装 action result(`status` 在顶层, 计数在 `data` 下)。
+fn queue_all_result(counts: QueueCounts, next_page: u32, has_more: bool, error: Option<String>) -> Value {
+    let data = json!({
+        "queued": counts.queued,
+        "deduped": counts.deduped,
+        "total_seen": counts.total_seen,
+        "skipped": counts.skipped,
+        "next_page": next_page,
+        "has_more": has_more,
+    });
+    match error {
+        Some(message) => json!({"status": "failed", "message": message, "data": data}),
+        None => json!({"status": "succeeded", "data": data}),
+    }
+}
+
+/// 歌单整单入队核心(可注入取页器, 便于测试)。
+///
+/// 从 `start_page` 起逐页调用 `fetch(page, page_size)`; 对每首歌走 [`tasks::enqueue`](与
+/// `download` 同一条入队路径, 索引去重, 统一 `quality`)。处理满 `batch_pages` 页, 或翻到
+/// 页接口 `total`(整单曲目数)所指的末尾(`page * page_size >= total`)即停;
+/// 仅在 `total` 缺失时退回"当页不满 [`PLAYLIST_PAGE_SIZE`]"的保守判定。
+/// **页面级失败是业务失败**: 返回已完成的 `next_page`
+/// 与错误文案, 已入队的不回滚。`next_page` 是"下次该取的页号"(错误时即失败那一页,
+/// 全部满页时是 `start_page + batch_pages`)。
+fn queue_playlist_pages<F>(
+    ids: &mut PutIds,
+    source: &str,
+    quality: &str,
+    start_page: u32,
+    batch_pages: u32,
+    mut fetch: F,
+) -> Value
+where
+    F: FnMut(u32, u32) -> Result<Value, String>,
+{
+    let start_page = start_page.max(1);
+    let counts = &mut QueueCounts::default();
+    // 本批处理 [start_page, start_page + batch_pages) 这些页。
+    let end_page = start_page.saturating_add(batch_pages);
+    let mut page = start_page;
+    while page < end_page {
+        match fetch(page, PLAYLIST_PAGE_SIZE) {
+            Ok(value) => {
+                let songs = value
+                    .get("songs")
+                    .and_then(Value::as_array)
+                    .cloned()
+                    .unwrap_or_default();
+                counts.total_seen += songs.len() as u64;
+                for song in &songs {
+                    let song_id =
+                        song.get("id").and_then(Value::as_str).unwrap_or("").trim().to_string();
+                    if song_id.is_empty() {
+                        counts.skipped += 1;
+                        continue;
+                    }
+                    let new_task = tasks::NewTask {
+                        source: source.to_string(),
+                        song_id,
+                        name: song.get("name").and_then(Value::as_str).unwrap_or("").to_string(),
+                        singers: song
+                            .get("singers")
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .to_string(),
+                        album: song.get("album").and_then(Value::as_str).unwrap_or("").to_string(),
+                        quality: quality.to_string(),
+                    };
+                    // 单首入队失败(如单条分片写入失败)不拖垮整批: 记账跳过, 继续后面的歌。
+                    match tasks::enqueue(ids, &new_task) {
+                        Ok(outcome) if outcome.deduped => counts.deduped += 1,
+                        Ok(_) => counts.queued += 1,
+                        Err(_) => counts.skipped += 1,
+                    }
+                }
+                // 取尽判定以页接口恒带的 `total`(整单曲目数)为准, 而非当页条数:
+                // `song/detail` 会因下架/无版权/无效 id 少返曲目, 满页也可能不足 100 首,
+                // 只看 `songs.len()` 会把这样的页误判成最后一页, 后续页静默丢失。
+                // 本页覆盖到的曲目序号上界是 `page * PLAYLIST_PAGE_SIZE`, 一旦 >= total
+                // 就已翻到整单末尾(与前端 `plSongs.length < plTotal` 的权威判定一致)。
+                let total = value.get("total").and_then(Value::as_i64).unwrap_or(0);
+                let page_end = u64::from(page) * u64::from(PLAYLIST_PAGE_SIZE);
+                let exhausted = if total > 0 {
+                    page_end >= total as u64
+                } else {
+                    // 没有 total(异常/旧接口)才退回当页条数判定, 保持有界。
+                    songs.len() < PLAYLIST_PAGE_SIZE as usize
+                };
+                if exhausted {
+                    // 取尽: 已覆盖整单全部曲目, 歌单到底了。
+                    return queue_all_result(*counts, page + 1, false, None);
+                }
+                page += 1;
+            }
+            Err(err) => {
+                let message = format!("第 {page} 页取歌失败: {err}");
+                return queue_all_result(*counts, page, true, Some(message));
+            }
+        }
+    }
+    // 处理满 batch_pages 页且末页仍是满页: 后面可能还有, 让调用方从 end_page 续跑。
+    queue_all_result(*counts, end_page, true, None)
+}
+
+/// action `playlist-queue-all`: 把网易云歌单从 `next_page` 起的 `batch_pages` 页整单入队。
+///
+/// 入参校验失败或页面取歌失败都是**业务 failed**(不是协议 error, 宿主不该重投):
+/// - 非网易云来源 → `该来源暂不支持歌单`;
+/// - 缺歌单 id → `缺少歌单 id`; 音质与设置都空 → `缺少音质`;
+/// - 某页接口失败 → 返回"第 N 页取歌失败"与**已入队计数 + 失败页号**, 不回滚已入队的。
+///
+/// `batch_pages` 会夹到 `[1, PLAYLIST_QUEUE_MAX_PAGES]`; `next_page` 缺省/0 视为从第 1 页
+/// 开始。大歌单(> `batch_pages` 页)靠返回的 `next_page` 续跑, 不会重复处理已经入队的页。
+pub fn playlist_queue_all(ids: &mut PutIds, request: &PlaylistQueueRequest) -> Value {
+    let source = request.source.trim();
+    if source != "netease" {
+        return queue_all_result(
+            QueueCounts::default(),
+            1,
+            false,
+            Some("该来源暂不支持歌单，先支持网易云".to_string()),
+        );
+    }
+    let playlist_id = request.playlist_id.trim().to_string();
+    if playlist_id.is_empty() {
+        return queue_all_result(QueueCounts::default(), 1, false, Some("缺少歌单 id".to_string()));
+    }
+    let level = request.quality.trim();
+    let quality = if level.is_empty() { load_settings().quality } else { level.to_string() };
+    if quality.trim().is_empty() {
+        return queue_all_result(QueueCounts::default(), 1, false, Some("缺少音质".to_string()));
+    }
+    let batch_pages = request.batch_pages.clamp(1, PLAYLIST_QUEUE_MAX_PAGES);
+    let start_page = request.next_page.max(1);
+    queue_playlist_pages(ids, source, quality.trim(), start_page, batch_pages, |page, size| {
+        netease::playlist_songs(&playlist_id, page, size)
+    })
+}
+
 // ─────────────────────────── pump ───────────────────────────
 
 /// 一次 pump 的摘要(报告给 job/action 调用方)。
@@ -1761,6 +1938,231 @@ mod tests {
         }
     }
 
+    // ─────────────── playlist-queue-all (0.3.14) ───────────────
+
+    /// 造一页 `playlist_songs` 形状的返回: `ids` 每首一个歌曲对象。
+    /// `total` 是**整个歌单**的曲目数(页接口每页恒带, 是取尽判定的权威字段),
+    /// 不是当页条数——当页可以因 `song/detail` 少返而不足 `ids` 应给出的数量。
+    fn songs_page(total: usize, ids: &[String]) -> Value {
+        let songs: Vec<Value> = ids
+            .iter()
+            .map(|id| {
+                json!({
+                    "id": id,
+                    "name": format!("歌{id}"),
+                    "singers": "歌手",
+                    "album": "专辑",
+                    "source": "netease",
+                })
+            })
+            .collect();
+        json!({"name": "歌单", "total": total, "page": 1, "page_size": 100, "songs": songs})
+    }
+
+    /// 顺序 id 列表(`prefix` + 序号), 用来凑满页(100 首触发继续翻页)。
+    fn ids_range(prefix: &str, count: usize) -> Vec<String> {
+        (0..count).map(|index| format!("{prefix}{index}")).collect()
+    }
+
+    /// 整批入队走到"取尽"(末页不满 100 首): 计数正确、`has_more=false`。
+    #[test]
+    fn playlist_queue_all_pages_until_exhausted() {
+        let _fake = install_pipeline_host(JobOutcome::Succeeded);
+        let mut ids = PutIds::new();
+        let pages = vec![
+            songs_page(230, &ids_range("a", 100)),
+            songs_page(230, &ids_range("b", 100)),
+            songs_page(230, &ids_range("c", 30)),
+        ];
+        let result = queue_playlist_pages(&mut ids, "netease", "lossless", 1, 5, |page, _size| {
+            Ok(pages[(page - 1) as usize].clone())
+        });
+        assert_eq!(result["status"], "succeeded");
+        assert_eq!(result["data"]["queued"], 230);
+        assert_eq!(result["data"]["deduped"], 0);
+        assert_eq!(result["data"]["total_seen"], 230);
+        assert_eq!(result["data"]["skipped"], 0);
+        assert_eq!(result["data"]["next_page"], 4);
+        assert_eq!(result["data"]["has_more"], false);
+        // 每首都落了分片(不回滚/不丢)。
+        assert_eq!(tasks::load_index().len(), 230);
+    }
+
+    /// 去重沿用索引路径: 跨页重复的歌算 `deduped`, 不重复建任务。
+    #[test]
+    fn playlist_queue_all_dedupes_repeat_across_pages() {
+        let _fake = install_pipeline_host(JobOutcome::Succeeded);
+        let mut ids = PutIds::new();
+        let first = ids_range("a", 100);
+        // 第二页只有 1 首, 且与第一页第 0 首重复; 不满 100 → 取尽。
+        let pages = vec![songs_page(101, &first), songs_page(101, &[first[0].clone()])];
+        let result = queue_playlist_pages(&mut ids, "netease", "lossless", 1, 5, |page, _size| {
+            Ok(pages[(page - 1) as usize].clone())
+        });
+        assert_eq!(result["status"], "succeeded");
+        assert_eq!(result["data"]["queued"], 100, "跨页重复不该新建: {result}");
+        assert_eq!(result["data"]["deduped"], 1);
+        assert_eq!(result["data"]["total_seen"], 101);
+        assert_eq!(result["data"]["has_more"], false);
+        assert_eq!(tasks::load_index().len(), 100);
+    }
+
+    /// 满 `batch_pages` 页且末页仍是满页: `has_more=true`, `next_page` 指向下一批起点。
+    #[test]
+    fn playlist_queue_all_stops_at_batch_pages() {
+        let _fake = install_pipeline_host(JobOutcome::Succeeded);
+        let mut ids = PutIds::new();
+        let pages = vec![
+            songs_page(300, &ids_range("a", 100)),
+            songs_page(300, &ids_range("b", 100)),
+            songs_page(300, &ids_range("c", 100)),
+        ];
+        let result = queue_playlist_pages(&mut ids, "netease", "lossless", 1, 2, |page, _size| {
+            Ok(pages[(page - 1) as usize].clone())
+        });
+        assert_eq!(result["status"], "succeeded");
+        assert_eq!(result["data"]["queued"], 200, "只处理参数给定的 2 页");
+        assert_eq!(result["data"]["next_page"], 3);
+        assert_eq!(result["data"]["has_more"], true);
+        assert_eq!(tasks::load_index().len(), 200);
+    }
+
+    /// 续批游标: 7 页歌单 + `batch_pages=5`, 第一批返回 `next_page=6/has_more=true`;
+    /// 带 `next_page=6` 续跑能取到尾页(7), 且**不会重复入队**前 5 页。
+    #[test]
+    fn playlist_queue_all_resumes_from_next_page_without_duplicates() {
+        let _fake = install_pipeline_host(JobOutcome::Succeeded);
+        let mut ids = PutIds::new();
+        // 7 页: 前 6 页满 100, 尾页 30(<100 → 取尽)。
+        let pages: Vec<Value> = (1..=6)
+            .map(|page| songs_page(630, &ids_range(&format!("p{page}-"), 100)))
+            .chain(std::iter::once(songs_page(630, &ids_range("p7-", 30))))
+            .collect();
+        let fetch = |page: u32, _size: u32| Ok(pages[(page - 1) as usize].clone());
+
+        // 第一批: 从第 1 页起处理 5 页, 末页仍是满页 → 交还续批游标 6。
+        let first = queue_playlist_pages(&mut ids, "netease", "lossless", 1, 5, fetch);
+        assert_eq!(first["status"], "succeeded");
+        assert_eq!(first["data"]["queued"], 500, "只处理第 1~5 页: {first}");
+        assert_eq!(first["data"]["next_page"], 6);
+        assert_eq!(first["data"]["has_more"], true);
+        assert_eq!(tasks::load_index().len(), 500);
+
+        // 第二批: 从返回的 next_page=6 续跑, 取到第 6 页(满)、第 7 页(30, 取尽)。
+        let second = queue_playlist_pages(&mut ids, "netease", "lossless", 6, 5, fetch);
+        assert_eq!(second["status"], "succeeded");
+        assert_eq!(second["data"]["queued"], 130, "第 6~7 页: {second}");
+        assert_eq!(second["data"]["total_seen"], 130);
+        assert_eq!(second["data"]["deduped"], 0, "续跑不碰已入队的前 5 页");
+        assert_eq!(second["data"]["next_page"], 8);
+        assert_eq!(second["data"]["has_more"], false);
+
+        // 全量 630 首, 且第一页那首只出现一次(续跑没有重复入队)。
+        let index = tasks::load_index();
+        assert_eq!(index.len(), 630);
+        assert_eq!(index.iter().filter(|entry| entry.song_id == "p1-0").count(), 1);
+        assert_eq!(index.iter().filter(|entry| entry.song_id == "p7-29").count(), 1);
+    }
+
+    /// 回归(满页少返, 下架/无版权/无效 id): 当页因 `song/detail` 少返只剩 97 首, 但
+    /// `total`(整单 300 首)表明后面还有页 —— 不能把 97 < 100 误判成取尽, 必须继续翻到第 3 页。
+    #[test]
+    fn playlist_queue_all_full_page_with_short_songs_keeps_paging() {
+        let _fake = install_pipeline_host(JobOutcome::Succeeded);
+        let mut ids = PutIds::new();
+        // 整单 300 首: 第 1、2 页本该各 100, 第 2 页因无效 id 只回 97; 第 3 页是尾页 100。
+        let pages = vec![
+            songs_page(300, &ids_range("a", 100)),
+            songs_page(300, &ids_range("b", 97)),
+            songs_page(300, &ids_range("c", 100)),
+        ];
+        let result = queue_playlist_pages(&mut ids, "netease", "lossless", 1, 5, |page, _size| {
+            Ok(pages[(page - 1) as usize].clone())
+        });
+        assert_eq!(result["status"], "succeeded");
+        assert_eq!(result["data"]["total_seen"], 297, "第 2 页少返的 3 首不该截断后续页: {result}");
+        assert_eq!(result["data"]["queued"], 297);
+        assert_eq!(result["data"]["next_page"], 4);
+        assert_eq!(result["data"]["has_more"], false, "page 3 覆盖 300 首即整单末尾");
+        // 第 3 页确实入了队(97 < 100 未被误判为取尽)。
+        let index = tasks::load_index();
+        assert_eq!(index.len(), 297);
+        assert_eq!(index.iter().filter(|entry| entry.song_id == "c99").count(), 1);
+    }
+
+    /// `total` 缺失(旧接口/异常返回)才退回当页条数判定: 不满 100 首即视为取尽。
+    #[test]
+    fn playlist_queue_all_without_total_falls_back_to_page_size() {
+        let _fake = install_pipeline_host(JobOutcome::Succeeded);
+        let mut ids = PutIds::new();
+        // 无 `total` 字段, 每页 100 首: 翻满 batch_pages 后交还续批游标。
+        let result = queue_playlist_pages(&mut ids, "netease", "lossless", 1, 2, |page, _size| {
+            let songs: Vec<Value> = ids_range(&format!("p{page}-"), 100)
+                .iter()
+                .map(|id| json!({"id": id, "name": "歌", "singers": "s", "album": "al"}))
+                .collect();
+            Ok(json!({"name": "歌单", "page": page, "page_size": 100, "songs": songs}))
+        });
+        assert_eq!(result["data"]["queued"], 200);
+        assert_eq!(result["data"]["next_page"], 3);
+        assert_eq!(result["data"]["has_more"], true, "无 total: 满页应继续翻: {result}");
+    }
+
+    /// 页面接口失败: **业务 failed**(不是协议错误), 回传已入队计数与失败页号, 不回滚。
+    #[test]
+    fn playlist_queue_all_page_error_returns_partial() {
+        let _fake = install_pipeline_host(JobOutcome::Succeeded);
+        let mut ids = PutIds::new();
+        let result = queue_playlist_pages(&mut ids, "netease", "lossless", 1, 5, |page, _size| {
+            if page == 2 {
+                return Err("network boom".to_string());
+            }
+            Ok(songs_page(200, &ids_range("a", 100)))
+        });
+        assert_eq!(result["status"], "failed", "页面失败是业务 failed: {result}");
+        assert!(result["message"].as_str().unwrap().contains("第 2 页"), "{result}");
+        assert_eq!(result["data"]["queued"], 100);
+        assert_eq!(result["data"]["total_seen"], 100);
+        assert_eq!(result["data"]["next_page"], 2, "失败页号即下次续跑起点");
+        assert_eq!(result["data"]["has_more"], true);
+        // 已入队的 100 首不因后面的失败回滚。
+        assert_eq!(tasks::load_index().len(), 100);
+    }
+
+    /// 入参校验: 非网易云来源 / 缺歌单 id 都是业务 failed, 且不发任何网络请求
+    /// (wrapper 在调 `netease::playlist_songs` 前就返回)。
+    #[test]
+    fn playlist_queue_all_validates_input() {
+        let _fake = install_pipeline_host(JobOutcome::Succeeded);
+        let mut ids = PutIds::new();
+        let qq = playlist_queue_all(
+            &mut ids,
+            &PlaylistQueueRequest {
+                source: "qq".to_string(),
+                playlist_id: "42".to_string(),
+                quality: "lossless".to_string(),
+                batch_pages: 5,
+                next_page: 1,
+            },
+        );
+        assert_eq!(qq["status"], "failed");
+        assert!(qq["message"].as_str().unwrap().contains("暂不支持歌单"), "{qq}");
+
+        let missing = playlist_queue_all(
+            &mut ids,
+            &PlaylistQueueRequest {
+                source: "netease".to_string(),
+                playlist_id: "  ".to_string(),
+                quality: "lossless".to_string(),
+                batch_pages: 5,
+                next_page: 1,
+            },
+        );
+        assert_eq!(missing["status"], "failed");
+        assert!(missing["message"].as_str().unwrap().contains("缺少歌单 id"), "{missing}");
+        assert_eq!(tasks::load_index().len(), 0);
+    }
+
     #[test]
     fn pump_runs_full_pipeline_and_names_output() {
         let fake = install_pipeline_host(JobOutcome::Succeeded);
@@ -1953,6 +2355,8 @@ mod tests {
         // 索引条目: `error` 撑满 IDX_ERROR_LIMIT(这是它唯一可能变大的字段)。
         let idx = tasks::TaskIndexEntry {
             id: "a1b2c3d4".to_string(),
+            source: "netease".to_string(),
+            song_id: "12345".to_string(),
             status: tasks::STATUS_QUEUED.to_string(),
             name: "晴天".to_string(),
             singers: "周杰伦".to_string(),
@@ -1988,9 +2392,11 @@ mod tests {
             "索引条目({idx_bytes}B)相对完整记录({full_bytes}B)没有小到一半以下"
         );
         // 字节级上界: error 撑满时也只有这个量级, 不再随文本长度线性增长。
+        // 0.3.14 索引新增 `source`/`song_id` 两个短字段(入队去重需要), 上界从
+        // 256B 抬到 320B; 实测约 289B(error 撑满 IDX_ERROR_LIMIT 时)。
         assert!(
-            idx_bytes <= 256,
-            "索引条目 {idx_bytes}B 超过 256B 上界, 模块头的 KB 估算需要更新"
+            idx_bytes <= 320,
+            "索引条目 {idx_bytes}B 超过 320B 上界, 模块头的 KB 估算需要更新"
         );
         // 200 条(state 展示上限)仍只有几十 KB。
         let idx_200 = 200 * idx_bytes;

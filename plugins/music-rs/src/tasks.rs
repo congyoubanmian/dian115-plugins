@@ -6,10 +6,11 @@
 //! **全部**任务(真机上 40+ 条)读进 `Vec<Task>` 落盘。manifest 限 `memory_mb=128`
 //! 且不得放宽, 真机表现为 wasm 被 SIGKILL(收尾未执行), 因此改成「单曲加载-处理-释放」:
 //!
-//! - `tasks.idx`: 紧凑数组 `[{id,status,name,singers,quality,error,updated_ms}]`,
-//!   **UI state 的唯一数据源**(只截最近 [`STATE_TASKS_LIMIT`] 条)。一条约 120~200 字节,
+//! - `tasks.idx`: 紧凑数组 `[{id,status,source,song_id,name,singers,quality,error,updated_ms}]`,
+//!   **UI state 的唯一数据源**(只截最近 [`STATE_TASKS_LIMIT`] 条)。一条约 180~290 字节,
 //!   200 条上限 → 几十 KB, 与整条队列的完整记录(每条含 `job_ref`/`staged_path` 等)
-//! 差两个数量级。
+//! 差两个数量级。0.3.14 起额外带 `source`/`song_id`(入队去重所需的最小字段), 因此
+//! 单条比 0.3.12 略大, 但仍是常数上界, 见 `download::tests::audit_measured_index_and_record_sizes`。
 //! - `task.<id>`: 完整 [`Task`] 记录, **只在推进那一条时**读进来, 处理完立刻 drop。
 //!
 //! pump 的一次调用因此只同时持有: `idx` + 在途任务条数(稳态 `<= settings.max_active`;
@@ -217,6 +218,11 @@ pub struct TaskIndexEntry {
     pub id: String,
     #[serde(default)]
     pub status: String,
+    /// 0.3.14: 入队去重所需的最小字段(不再逐条读完整记录)。
+    #[serde(default)]
+    pub source: String,
+    #[serde(default)]
+    pub song_id: String,
     #[serde(default)]
     pub name: String,
     #[serde(default)]
@@ -235,6 +241,8 @@ impl TaskIndexEntry {
     pub fn of(task: &Task) -> TaskIndexEntry {
         TaskIndexEntry {
             id: task.id.clone(),
+            source: task.source.clone(),
+            song_id: task.song_id.clone(),
             status: task.status.clone(),
             name: task.name.clone(),
             singers: task.singers.clone(),
@@ -438,12 +446,22 @@ pub fn allocate_id<I: AsRef<str>>(existing: &[I], seed: &str) -> String {
 
 /// 入队(去重: 同 `source+song_id+quality` 的 queued/downloading/copying 任务直接复用)。
 ///
-/// 去重**必须读完整记录**: 索引里没有 `source`/`song_id`, 所以这里对索引里
-/// `queued`/`downloading`/`copying` 的**全部**条目逐条读 `task.<id>` 做精确匹配
-/// (命中即返回)。因此读条数是 O(在途 + 排队) —— `queued` 也算 active, 命中越晚读得越多,
-/// 最坏是「待下载队列长度 + 在途数」, 会随待下载队列长度线性增长。已完结(done/failed)
-/// 的条目**一条都不读**(它们不在筛选里), 所以与整队终态记录数无关。
-/// 注: 该路径不在 pump 内(本插件的 pump 不调 enqueue), 不影响 pump 的读取上界。
+/// # 0.3.14: 去重走索引, 存储调用数与队列长度无关
+///
+/// 索引条目自带 `source`/`song_id`/`quality`(见 [`TaskIndexEntry`]), 因此去重只需
+/// **读一次 `tasks.idx`** 在内存里筛 `queued`/`downloading`/`copying` 的条目, **不再逐条
+/// 读 `task.<id>`**。常规路径的 storage 调用固定为:
+/// 迁移快查 1 次(GET `tasks`) + 读索引 1 次(GET `tasks.idx`) + 写分片 1 次(PUT)
+/// + 写索引 1 次(PUT); 命中复用时不写, 只多读命中那**一条**完整记录返回给调用方。
+/// 因此批量入队(如 `playlist-queue-all`)的总读次数与**已排队条数无关**,
+/// 只随**本次处理的歌曲数**线性增长。对比 0.3.12 的 O(在途 + 排队) 次读。
+///
+/// # 一次性自愈(老索引)
+///
+/// 0.3.14 之前写下的索引条目没有 `source`(迁移产物与旧版都会如此)。若发现**进行中**的
+/// 条目缺 `source`, 只读**缺字段的那些** `task.<id>` 补齐索引并写回一次(`healed`); 之后
+/// 该索引不再缺字段, 自愈不会再次发生。缺 `source` 的终态条目不会被读(去重不关心它们),
+/// 会保持缺字段直到被清理 —— 这是有意的: 自愈只服务去重, 代价只在首次。
 pub fn enqueue(ids: &mut PutIds, request: &NewTask) -> Result<EnqueueOutcome, String> {
     if request.source.trim().is_empty() {
         return Err("缺少音乐来源".to_string());
@@ -456,23 +474,52 @@ pub fn enqueue(ids: &mut PutIds, request: &NewTask) -> Result<EnqueueOutcome, St
     }
     ensure_migrated(ids)?;
 
-    // ① 先在索引里筛"可能进行中"的 id(只读一个键)。
+    // ① 读一次索引(唯一的一次数组读)。
     let index = load_index();
-    let active: Vec<String> = index
-        .iter()
-        .filter(|entry| matches!(entry.status.as_str(), STATUS_QUEUED | STATUS_DOWNLOADING | STATUS_COPYING))
-        .map(|entry| entry.id.clone())
-        .collect();
 
-    // ② 逐条读完整记录做精确匹配; 找到就复用(不再往下走)。
-    for task_id in &active {
-        let Some(task) = load_task(task_id) else { continue };
-        if task.source == request.source
-            && task.song_id == request.song_id
-            && task.quality == request.quality
+    // ② 0.3.14: 直接用索引去重(索引带 source/song_id/quality), 不再逐条读完整记录 ——
+    //    批量入队从 O(队列) 次读降为常数次。老索引条目缺 source 时自愈一次:
+    //    只读缺字段的那些记录, 顺手把索引条目补齐。
+    let mut index = index;
+    let mut healed = false;
+    let mut stale_ids: Vec<String> = Vec::new();
+    for entry in index.iter_mut() {
+        if entry.source.is_empty()
+            && matches!(entry.status.as_str(), STATUS_QUEUED | STATUS_DOWNLOADING | STATUS_COPYING)
         {
-            return Ok(EnqueueOutcome { task, deduped: true });
+            stale_ids.push(entry.id.clone());
         }
+    }
+    for entry_id in &stale_ids {
+        if let Some(task) = load_task(entry_id) {
+            for entry in index.iter_mut() {
+                if entry.id == *entry_id {
+                    entry.source = task.source.clone();
+                    entry.song_id = task.song_id.clone();
+                    // 分片里确实有 source 才算补齐(否则写回也不会改变索引,
+                    // 无谓地反复触发自愈写)。
+                    if !task.source.is_empty() {
+                        healed = true;
+                    }
+                }
+            }
+        }
+    }
+    if healed {
+        sort_index(&mut index);
+        save_index(ids, &index)?;
+    }
+    if let Some(hit) = index.iter().find(|entry| {
+        matches!(entry.status.as_str(), STATUS_QUEUED | STATUS_DOWNLOADING | STATUS_COPYING)
+            && entry.source == request.source
+            && entry.song_id == request.song_id
+            && entry.quality == request.quality
+    }) {
+        let task_id = hit.id.clone();
+        let Some(task) = load_task(&task_id) else {
+            return Err(format!("去重命中但分片缺失: {task_id}"));
+        };
+        return Ok(EnqueueOutcome { task, deduped: true });
     }
 
     // ③ 新建: id 必须避开**全队列**已有的 id(不只是进行中的), 暂存文件名靠它唯一。
@@ -497,7 +544,6 @@ pub fn enqueue(ids: &mut PutIds, request: &NewTask) -> Result<EnqueueOutcome, St
         ..Task::default()
     };
     save_task(ids, &task)?;
-    let mut index = index;
     index.push(TaskIndexEntry::of(&task));
     sort_index(&mut index);
     save_index(ids, &index)?;
@@ -689,12 +735,26 @@ mod tests {
         static FAKE_KV: RefCell<HashMap<String, (Vec<u8>, u64)>> = RefCell::new(HashMap::new());
         /// 让假宿主对指定 storage 键的 DELETE 返回 500(测删除失败时的索引一致性)。
         static FAIL_DELETE_KEY: RefCell<Option<String>> = RefCell::new(None);
+        /// 0.3.14 审计: 假宿主收到的每一次 storage GET 的键。用例自行清空后
+        /// 跑一段操作, 用来断言"去重读次数与队列长度无关"。
+        static STORAGE_GETS: RefCell<Vec<String>> = RefCell::new(Vec::new());
+    }
+
+    /// 清空 GET 计数(审计用例在摆好初始队列后、断言前调用)。
+    fn reset_get_count() {
+        STORAGE_GETS.with(|gets| gets.borrow_mut().clear());
+    }
+
+    /// 自上次 [`reset_get_count`] 以来假宿主收到的 storage GET 次数。
+    fn get_count() -> usize {
+        STORAGE_GETS.with(|gets| gets.borrow().len())
     }
 
     /// 装一个只处理 `/api/plugin-runtime/storage/:key` 的宿主替身。
     fn install_fake_kv_host() {
         FAKE_KV.with(|kv| kv.borrow_mut().clear());
         FAIL_DELETE_KEY.with(|f| *f.borrow_mut() = None);
+        STORAGE_GETS.with(|gets| gets.borrow_mut().clear());
         crate::host::testhost::install(Box::new(|request: &HostCallRequest| {
             let key = request
                 .path
@@ -703,6 +763,7 @@ mod tests {
                 .to_string();
             match request.method.as_str() {
                 "GET" => {
+                    STORAGE_GETS.with(|gets| gets.borrow_mut().push(key.clone()));
                     let found = FAKE_KV.with(|kv| kv.borrow().get(&key).cloned());
                     match found {
                         Some((value, revision)) => Ok(HostCallResponse {
@@ -982,6 +1043,120 @@ mod tests {
         assert_ne!(third.task.id, first.task.id);
         assert_eq!(load_index().len(), 2, "索引两条");
         assert!(load_task(&third.task.id).is_some(), "新任务也要有完整记录");
+    }
+
+    /// 0.3.14 存储调用审计: 一次"新歌入队"的 storage **GET 次数不随已排队条数增长**。
+    ///
+    /// 旧实现(0.3.12)对索引里全部进行中条目逐条读 `task.<id>` 做精确匹配, GET 次数
+    /// 随待下载队列线性增长; 索引带上 `source`/`song_id` 后, 常规路径固定为
+    /// 「迁移快查 1 次 + 读索引 1 次」两次 GET。这里用 5 条 vs 30 条排队做对照。
+    #[test]
+    fn enqueue_get_count_is_constant_in_queue_length() {
+        fn measure_new_enqueue_gets(queued: usize) -> usize {
+            install_fake_kv_host();
+            let mut ids = PutIds::new();
+            for index in 0..queued {
+                // 每首不同的 song_id, 保证都是"新建"(索引条目都带 source)。
+                enqueue(&mut ids, &request("netease", &format!("old-{index}"), "lossless")).unwrap();
+            }
+            assert_eq!(load_index().len(), queued);
+            reset_get_count();
+            let outcome = enqueue(&mut ids, &request("netease", "brand-new", "lossless")).unwrap();
+            assert!(!outcome.deduped);
+            get_count()
+        }
+
+        let short = measure_new_enqueue_gets(5);
+        let long = measure_new_enqueue_gets(30);
+        assert_eq!(
+            short, long,
+            "入队 GET 次数随队列长度变化: 5 条={short}, 30 条={long}"
+        );
+        // 常规新歌入队的 GET 组成(与队列长度无关): 迁移快查 `tasks` 1 + 读索引 `tasks.idx` 1
+        // + 两次 PUT 各一次 ETag 预读(store::put 先读后写)2 = 4。关键不是这个常数本身,
+        // 而是它不随已排队条数增长。
+        assert_eq!(short, 4, "常规新歌入队 GET 次数 = 4(tasks + tasks.idx + 两次 PUT 预读)");
+    }
+
+    /// 审计续: **去重命中**的 GET 次数同样与队列长度无关(这正是 0.3.12 里 O(队列) 的路径)。
+    ///
+    /// 命中一首都只读一次索引 + 命中那一条完整记录; 无论目标排在第 5 还是第 30 位,
+    /// 都不再像旧实现那样把前面所有进行中条目逐条读出来。
+    #[test]
+    fn enqueue_dedup_hit_get_count_is_constant_in_queue_length() {
+        fn measure_dedup_gets(queued: usize, target: &str) -> usize {
+            install_fake_kv_host();
+            let mut ids = PutIds::new();
+            for index in 0..queued {
+                enqueue(&mut ids, &request("netease", &format!("s{index}"), "lossless")).unwrap();
+            }
+            reset_get_count();
+            let outcome = enqueue(&mut ids, &request("netease", target, "lossless")).unwrap();
+            assert!(outcome.deduped, "目标 {target} 应命中");
+            get_count()
+        }
+        let short = measure_dedup_gets(5, "s0");
+        let long = measure_dedup_gets(30, "s0");
+        assert_eq!(short, long, "去重命中 GET 次数随队列长度变化: 5 条={short}, 30 条={long}");
+        // 迁移快查 + 读索引 + 读命中那一条完整记录。
+        assert_eq!(short, 3, "去重命中 GET 次数 = 3(tasks + tasks.idx + task.<id>)");
+    }
+
+    /// 0.3.14 自愈: 老索引条目缺 `source`/`song_id` 时, 首次入队读缺字段的分片补齐索引;
+    /// 之后索引不再缺字段, 自愈**不会**再次发生(第二次入队的 GET 回到常规路径)。
+    #[test]
+    fn enqueue_heals_stale_index_once_then_dedupes() {
+        install_fake_kv_host();
+        let mut ids = PutIds::new();
+        // 分片里有完整信息, 但索引条目是"老形态": 缺 source/song_id。
+        let task = Task {
+            id: "old1".to_string(),
+            source: "netease".to_string(),
+            song_id: "77".to_string(),
+            quality: "lossless".to_string(),
+            status: STATUS_QUEUED.to_string(),
+            updated_ms: 1,
+            ..Task::default()
+        };
+        save_task(&mut ids, &task).unwrap();
+        save_index(
+            &mut ids,
+            &[TaskIndexEntry {
+                id: "old1".to_string(),
+                status: STATUS_QUEUED.to_string(),
+                quality: "lossless".to_string(),
+                updated_ms: 1,
+                ..TaskIndexEntry::default()
+            }],
+        )
+        .unwrap();
+
+        reset_get_count();
+        let first = enqueue(&mut ids, &request("netease", "77", "lossless")).unwrap();
+        assert!(first.deduped, "补齐 source 后必须命中同 source+song_id+quality");
+        assert_eq!(first.task.id, "old1");
+        let healed_gets = get_count();
+        // 迁移快查 + 读索引 + 读缺字段那一条分片(自愈) + 自愈写回索引的 ETag 预读
+        // + 命中后再读该分片返回调用方 = 5。
+        assert_eq!(healed_gets, 5, "首次自愈的读次数应为 5: {healed_gets}");
+
+        // 索引条目已补齐(自愈写回)。
+        let entry = load_index().into_iter().find(|e| e.id == "old1").unwrap();
+        assert_eq!(entry.source, "netease");
+        assert_eq!(entry.song_id, "77");
+
+        // 第二次: 索引不再缺字段, 回到"迁移快查 + 读索引 + 读命中那一条"常规路径,
+        // 少掉自愈那次多读与写回 —— 自愈只发生一次。
+        reset_get_count();
+        let second = enqueue(&mut ids, &request("netease", "77", "lossless")).unwrap();
+        assert!(second.deduped);
+        assert_eq!(second.task.id, "old1");
+        assert_eq!(get_count(), 3, "第二次不该再读缺字段分片: {}", get_count());
+        assert!(
+            healed_gets > get_count(),
+            "自愈必须是一次性开销: 首次 {healed_gets} > 常规 {}",
+            get_count()
+        );
     }
 
     /// 分片下 retry: 只读 `task.<id>` 一条, 重置后索引同步回排队态。
