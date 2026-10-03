@@ -236,6 +236,7 @@ mod tests {
             emby_have_count: to,
             gap_max: to,
             target_upper: 0,
+            target_known: false,
             from_total: from,
             to_total: to,
             action: action.to_string(),

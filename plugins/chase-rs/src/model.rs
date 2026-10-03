@@ -13,10 +13,12 @@
 //! | `trim_suggestions` | 减方向**只读**建议(≤50 条, 永不触发写) |
 //! | `calendar` | 追剧日历(≤8 天, 每天 ≤20 条) |
 //! | `daily` | 日报去重账(同一自然日只成功记一次) |
-//! | `debug` | 三个探测端点的快照 + 尝试 + 错误(原文 ≤2048 字节) |
+//! | `debug` | 四个探测端点(含 TMDB 目标)的快照 + 尝试 + 错误(原文 ≤2048 字节) |
 //! | `stats` | 界面概览计数 |
 //! | `logs` | 自持日志(≤50 条, 消息 ≤400 字节) |
 //! | `emby_instances` | 最近一次成功解析的 Emby 实例列表(界面设置抽屉的下拉数据源) |
+//! | `probe_book` | 跨轮的 (实例, 剧, 季) 探测记账: 公平排队 + 失败负缓存 |
+//! | `tmdb_targets` | 最近成功取到的该季 TMDB 目标(前台 align-now 复用, 零新增 host.call) |
 //!
 //! 两处**对规格的显式扩展**(都是规格正文要求的界面/行为所必需, 见各自的注释):
 //! `settings.dry_run`(规格 `uiSections` ⑥ 的 dry-run 开关)与
@@ -74,8 +76,10 @@ pub const CATCH_UP_DEFAULT: u16 = 7;
 pub const PROBE_BUDGET_DEFAULT: u16 = 120;
 /// 目标集数的硬上限(元数据异常的保护阈值, 见规格 ⑥)。
 pub const TARGET_UPPER_LIMIT: i64 = 2000;
-/// 单个季的目标集数兜底(取不到 TMDB 时的保守上限)。
-pub const TARGET_FALLBACK_LIMIT: i64 = 2000;
+/// `probe_book` 上限(每轮探测记账保留的 (实例, 剧, 季) 条数)。
+pub const PROBE_BOOK_MAX: usize = 200;
+/// `tmdb_targets` 上限(与 `align.items` 同量级: 一次 job 最多判定 50 条)。
+pub const TMDB_TARGETS_MAX: usize = 50;
 
 // ─────────────────────────── settings ───────────────────────────
 
@@ -123,8 +127,15 @@ pub struct Settings {
     pub max_raise_per_run: u8,
     /// 追剧日历向前看多少天。
     pub catch_up_days: u16,
-    /// 单轮 Emby 探测次数上限。
+    /// 单轮 Emby 覆盖 + TMDB 目标探测的 host.call 总上限(两条取数共用一份预算,
+    /// 见 `runtime::job_align` 的记账: 每条条目通常 Emby 1 次 + TMDB 1 次 = 2 次)。
     pub emby_probe_budget: u16,
+    /// 小时 job 是否自动补订(默认开)。
+    ///
+    /// 关掉后 job 只判定不写 PATCH(界面里的 `align-now` 是手动动作, 不受此开关限制)。
+    /// 缺键/null 都落回 `true`(旧状态文档没有这个键, 必须是向后兼容的 true)。
+    #[serde(default = "default_true", deserialize_with = "deserialize_auto_bump")]
+    pub auto_bump: bool,
     /// 只判定不发 PATCH(界面开关; 规格 `uiSections` ⑥)。
     pub dry_run: bool,
     /// 是否把 `needed_episodes` / `covered_episodes` 一起写回。
@@ -144,12 +155,27 @@ impl Default for Settings {
             max_raise_per_run: RAISE_DEFAULT,
             catch_up_days: CATCH_UP_DEFAULT,
             emby_probe_budget: PROBE_BUDGET_DEFAULT,
+            auto_bump: true,
             dry_run: false,
             write_episode_strings: false,
             report: ReportSettings::default(),
             probe: ProbeSettings::default(),
         }
     }
+}
+
+/// `auto_bump` 的缺省值: 默认开(与 `enabled`/`dry_run` 一起构成"装好即自动补订")。
+fn default_true() -> bool {
+    true
+}
+
+/// `auto_bump` 的反序列化: 缺键走 `#[serde(default)]`(true), **显式 null 也落回 true**
+/// (宿主/旧前端可能写 `null`; 不能因为 null 就把自动补订静默关掉), 布尔值原样。
+fn deserialize_auto_bump<'de, D>(deserializer: D) -> Result<bool, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Option::<bool>::deserialize(deserializer)?.unwrap_or(true))
 }
 
 impl Settings {
@@ -185,9 +211,15 @@ pub struct AlignItem {
     pub emby_have_count: i64,
     /// 缺口上沿 = max(0, emby_have_max - total_known)。
     pub gap_max: i64,
-    /// 该季的 TMDB 目标集数(没取到 = 0)。align-now 连同 Emby 覆盖一起复用这一行,
-    /// 就不必为同一季再花一次 host.call, 也不会退化成"只按 Emby 缺口"判定。
+    /// 该季的 TMDB 目标集数(取不到 = 0, 但 [`AlignItem::target_known`] 为 false)。
+    /// align-now 连同 Emby 覆盖一起复用这一行, 就不必为同一季再花一次 host.call,
+    /// 也不会退化成"只按 Emby 缺口"判定。
     pub target_upper: i64,
+    /// 目标是否真的取到了: TMDB 明确给出该季集数时为 true(明确 0 集也算)。
+    /// `false` 表示"未知", 界面/文案必须显示未知而不是 0 —— 0 不得冒充
+    /// `total_known`。旧文档缺这个键时按 `false` 读(配合 `target_upper > 0`
+    /// 兜底, 见 runtime 的 `cached_coverage`)。
+    pub target_known: bool,
     pub from_total: i64,
     pub to_total: i64,
     /// `patched` | `dry-run` | `skipped` | `failed`。
@@ -210,6 +242,10 @@ pub struct AlignState {
     pub patched: u16,
     pub skipped: u16,
     pub failed: u16,
+    /// Emby 侧明确"该季 0 集/未收录"的条目数(既不算失败也不算无缺口, 见 align.rs)。
+    pub absent: u16,
+    /// 本轮因探测预算/墙钟/负缓存没能探测、留到下一轮优先补探的条目数。
+    pub pending_probe: u16,
     pub last_error: String,
     pub items: Vec<AlignItem>,
 }
@@ -325,12 +361,41 @@ pub struct DebugAttempt {
     pub at: String,
 }
 
-/// 一条错误记录。
+/// 一条错误的记录。
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DebugError {
     pub step: String,
     pub message: String,
+    pub at: String,
+}
+
+/// 每个 (实例, 剧, 季) 上一次 Emby 覆盖探测的记账(跨轮, 用于公平性与负缓存)。
+///
+/// 一轮探测预算/墙钟用尽时, 被跳过的条目下轮必须先探(不能每轮都从池头开始);
+/// 解析失败的条目在 [`PROBE_NEGATIVE_TTL`](crate::runtime::PROBE_NEGATIVE_TTL_SECS)
+/// 内不再重复烧 host.call。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ProbeBookEntry {
+    /// `"{proxy_id}:{tmdb_id}:{season}"`(与 runtime 的轮内缓存键同构)。
+    pub key: String,
+    /// 上一次记账时刻(RFC3339)。
+    pub at: String,
+    /// Emby 探测结果: `ok` | `failed` | `absent` | `budget` | `time` | `limit`。
+    pub emby: String,
+    /// TMDB 目标取数结果: `ok` | `cached` | `unknown`。
+    pub target: String,
+}
+
+/// 一次成功取到的该季 TMDB 目标(前台 align-now 复用, 零新增 host.call)。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TmdbTarget {
+    pub tmdb_id: i64,
+    pub season: i64,
+    /// TMDB 明确给出的该季集数(可为 0)。
+    pub episode_count: i64,
     pub at: String,
 }
 
@@ -353,6 +418,9 @@ pub struct DebugState {
     pub air_calendar: ProbeSnapshot,
     /// 订阅池列表的失败现场(解析失败时的 ≤2048 字节原文)。
     pub pool_intents: ProbeSnapshot,
+    /// TMDB 目标(`GET /api/tmdb/tv/:id`)的现场: 参数/HTTP 状态/原文样本,
+    /// 让"该季目标取不到"在诊断面板一键可见(而不是只看 last_errors 的 ≤10 条)。
+    pub tmdb_target: ProbeSnapshot,
     pub attempts: Vec<DebugAttempt>,
     pub last_errors: Vec<DebugError>,
 }
@@ -365,6 +433,7 @@ impl DebugState {
             emby_instances: ProbeSnapshot::never(),
             air_calendar: ProbeSnapshot::never(),
             pool_intents: ProbeSnapshot::never(),
+            tmdb_target: ProbeSnapshot::never(),
             attempts: Vec::new(),
             last_errors: Vec::new(),
         }
@@ -441,6 +510,10 @@ pub struct StateDoc {
     pub stats: StatsState,
     pub logs: Vec<LogEntry>,
     pub emby_instances: Vec<EmbyInstanceView>,
+    /// 跨轮的探测记账(公平性 + 失败负缓存), 见 [`ProbeBookEntry`]。
+    pub probe_book: Vec<ProbeBookEntry>,
+    /// 最近一次成功取到的该季 TMDB 目标(align-now 复用, 零新增 host.call)。
+    pub tmdb_targets: Vec<TmdbTarget>,
 }
 
 impl Default for StateDoc {
@@ -466,7 +539,39 @@ impl StateDoc {
             stats: StatsState::default(),
             logs: Vec::new(),
             emby_instances: Vec::new(),
+            probe_book: Vec::new(),
+            tmdb_targets: Vec::new(),
         }
+    }
+
+    /// 记下/更新该季的 TMDB 目标(成功取数时调用; ≤ [`TMDB_TARGETS_MAX`] 条)。
+    pub fn remember_tmdb_target(&mut self, tmdb_id: i64, season: i64, episode_count: i64, at: &str) {
+        self.tmdb_targets
+            .retain(|target| !(target.tmdb_id == tmdb_id && target.season == season));
+        self.tmdb_targets.push(TmdbTarget {
+            tmdb_id,
+            season,
+            episode_count: episode_count.max(0),
+            at: at.to_string(),
+        });
+        let len = self.tmdb_targets.len();
+        if len > TMDB_TARGETS_MAX {
+            self.tmdb_targets.drain(..len - TMDB_TARGETS_MAX);
+        }
+    }
+
+    /// 取该季最近一次成功记录的目标(不做新鲜度判断, 由调用方决定窗口)。
+    pub fn tmdb_target_of(&self, tmdb_id: i64, season: i64) -> Option<&TmdbTarget> {
+        self.tmdb_targets
+            .iter()
+            .rev()
+            .find(|target| target.tmdb_id == tmdb_id && target.season == season)
+    }
+
+    /// 忘记该季的目标(本轮取数失败时调用: 不拿旧值冒充"取到了")。
+    pub fn forget_tmdb_target(&mut self, tmdb_id: i64, season: i64) {
+        self.tmdb_targets
+            .retain(|target| !(target.tmdb_id == tmdb_id && target.season == season));
     }
 
     /// 认得出是本插件的状态文档吗(认不出就禁止落盘, 避免默认值覆盖用户数据)。
@@ -536,15 +641,20 @@ impl StateDoc {
         trim_tail(&mut self.debug.last_errors, DEBUG_ERRORS_MAX);
         trim_tail(&mut self.logs, LOGS_MAX);
         trim_tail(&mut self.emby_instances, INSTANCES_MAX);
+        trim_tail(&mut self.probe_book, PROBE_BOOK_MAX);
+        trim_tail(&mut self.tmdb_targets, TMDB_TARGETS_MAX);
         self.debug.emby_episodes.sample =
             raw::truncate_bytes(&self.debug.emby_episodes.sample, SAMPLE_MAX).to_string();
         self.debug.air_calendar.sample =
             raw::truncate_bytes(&self.debug.air_calendar.sample, SAMPLE_MAX).to_string();
         self.debug.pool_intents.sample =
             raw::truncate_bytes(&self.debug.pool_intents.sample, SAMPLE_MAX).to_string();
+        self.debug.tmdb_target.sample =
+            raw::truncate_bytes(&self.debug.tmdb_target.sample, SAMPLE_MAX).to_string();
         trim_tail(&mut self.debug.emby_episodes.params_tried, 8);
         trim_tail(&mut self.debug.air_calendar.params_tried, 8);
         trim_tail(&mut self.debug.pool_intents.params_tried, 8);
+        trim_tail(&mut self.debug.tmdb_target.params_tried, 8);
         for item in &mut self.align.items {
             item.reason = raw::truncate_bytes(&item.reason, LOG_MESSAGE_MAX).to_string();
             item.title = raw::truncate_bytes(&item.title, 120).to_string();
@@ -588,11 +698,12 @@ impl StateDoc {
 }
 
 impl DebugState {
-    /// 释放三个探测样本占用的空间(仍超限时的降级手段)。
+    /// 释放探测样本占用的空间(仍超限时的降级手段)。
     pub fn sample_free(&mut self) {
         self.emby_episodes.sample.clear();
         self.air_calendar.sample.clear();
         self.pool_intents.sample.clear();
+        self.tmdb_target.sample.clear();
     }
 }
 
@@ -618,9 +729,66 @@ mod tests {
         assert_eq!(settings.emby_probe_budget, 120);
         assert_eq!(settings.emby_proxy_id, -1);
         assert!(settings.enabled);
+        assert!(settings.auto_bump, "自动补订默认开");
         assert!(!settings.dry_run);
         assert_eq!(settings.report.hour, 9);
         assert_eq!(settings.report.tz_offset_minutes, 480);
+    }
+
+    #[test]
+    fn auto_bump_is_true_by_default_and_null_means_true() {
+        // 缺键 → true(旧文档向后兼容)
+        let legacy: Settings = serde_json::from_str(r#"{"enabled":false}"#).unwrap();
+        assert!(legacy.auto_bump, "缺键必须落回 true");
+        // 显式 null → true(不能因为 null 静默关掉自动补订)
+        let nulled: Settings = serde_json::from_str(r#"{"auto_bump":null}"#).unwrap();
+        assert!(nulled.auto_bump, "null 视为 true");
+        // 明确布尔原样(可关)
+        let off: Settings = serde_json::from_str(r#"{"auto_bump":false}"#).unwrap();
+        assert!(!off.auto_bump);
+        let on: Settings = serde_json::from_str(r#"{"auto_bump":true}"#).unwrap();
+        assert!(on.auto_bump);
+        // 序列化出来是明确布尔(不是 null)
+        let text = serde_json::to_string(&Settings::default()).unwrap();
+        assert!(text.contains(r#""auto_bump":true"#), "{text}");
+    }
+
+    #[test]
+    fn tmdb_target_book_remembers_updates_and_forgets() {
+        let mut doc = StateDoc::new();
+        doc.remember_tmdb_target(1396, 5, 16, "2026-10-04T00:00:00Z");
+        doc.remember_tmdb_target(1399, 1, 10, "2026-10-04T00:00:00Z");
+        assert_eq!(doc.tmdb_target_of(1396, 5).unwrap().episode_count, 16);
+        // 同一季再次成功 → 更新而不是重复
+        doc.remember_tmdb_target(1396, 5, 17, "2026-10-04T01:00:00Z");
+        assert_eq!(doc.tmdb_targets.len(), 2);
+        assert_eq!(doc.tmdb_target_of(1396, 5).unwrap().episode_count, 17);
+        // 取数失败 → 忘掉该季(不拿旧值冒充)
+        doc.forget_tmdb_target(1396, 5);
+        assert!(doc.tmdb_target_of(1396, 5).is_none());
+        assert!(doc.tmdb_target_of(1399, 1).is_some());
+        // 上限裁剪: 只留最新的 50 条
+        for index in 0..80 {
+            doc.remember_tmdb_target(index, 1, 12, "2026-10-04T02:00:00Z");
+        }
+        doc.enforce_limits();
+        assert_eq!(doc.tmdb_targets.len(), TMDB_TARGETS_MAX);
+        assert!(doc.tmdb_targets.iter().all(|target| target.tmdb_id != 1399), "最旧的被裁掉");
+    }
+
+    #[test]
+    fn probe_book_is_bounded_on_persist() {
+        let mut doc = StateDoc::new();
+        for index in 0..(PROBE_BOOK_MAX + 20) {
+            doc.probe_book.push(ProbeBookEntry {
+                key: format!("3:{index}:1"),
+                at: "2026-10-04T00:00:00Z".to_string(),
+                emby: "ok".to_string(),
+                target: "ok".to_string(),
+            });
+        }
+        doc.enforce_limits();
+        assert_eq!(doc.probe_book.len(), PROBE_BOOK_MAX);
     }
 
     #[test]

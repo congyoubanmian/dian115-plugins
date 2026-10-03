@@ -55,6 +55,9 @@ pub const ALIGN_NOW_PATCH_LIMIT: u8 = 5;
 pub const ALIGN_NOW_PROBE_LIMIT: u8 = 3;
 /// align-now 复用的缓存新鲜度(6 小时)。
 pub const CACHE_FRESH_SECS: i64 = 6 * 3600;
+/// Emby 探测失败后的负缓存窗口(6 小时): 一个结构认不出的端点在窗口内不再每小时
+/// 重复烧 host.call(见 `state.probe_book`)。
+pub const PROBE_NEGATIVE_TTL_SECS: i64 = 6 * 3600;
 /// align-now 只读 1 页, 大小为 50(规格: `limit=50`)。
 pub const ALIGN_NOW_PAGE_SIZE: u32 = 50;
 
@@ -84,6 +87,8 @@ enum FailSlot {
     Calendar,
     /// 订阅池列表: 规格的不变量要求它解析失败时也留 ≤2048 字节原文(该条本轮零写入)。
     Intents,
+    /// TMDB 该季集数(probe-dump 的第四步)。
+    TmdbTarget,
     None,
 }
 
@@ -94,11 +99,68 @@ struct Counters {
     intents_seen: u16,
     matched: u16,
     patched: u16,
+    /// 判定为跳过、且**不是**"未收录判定跳过"的条目数: absent 是独立计数桶,
+    /// 404 未收录与 200+空季两条路径的"跳过 N 条/未收录 M 条"口径必须一致(实测缺陷)。
     skipped: u16,
     failed: u16,
+    /// Emby 明确"该季 0 集/未收录"的条目数(独立分类: 不计 failed/unknown_shape,
+    /// 未收录的那次判定跳过也不重复计 skipped)。
+    absent: u16,
     gap_total: u32,
     aligned: u32,
     unknown_shape: u32,
+}
+
+/// 该季 TMDB 目标的取数结果: 数值 + 是否真的取到 + 取不到的原因。
+///
+/// `value = 0` 且 `known = false` 表示"没取到"(预算/HTTP/解析/传输失败),
+/// 判定层与文案必须据此显示"目标未知", 绝不能让 0 冒充"TMDB 说 0 集"
+/// 或订阅里的 `total_episodes_known`。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+struct TargetUpper {
+    value: i64,
+    known: bool,
+    note: &'static str,
+}
+
+/// 一次 TMDB 目标取数: 结果 + 真实花掉的 host.call 次数(预算按这个扣)。
+struct TargetFetch {
+    value: TargetUpper,
+    attempts: u8,
+}
+
+impl TargetUpper {
+    fn known(value: i64) -> Self {
+        TargetUpper { value: value.max(0), known: true, note: "" }
+    }
+
+    fn unknown(note: &'static str) -> Self {
+        TargetUpper { value: 0, known: false, note }
+    }
+}
+
+/// 轮内/跨轮共用的探测键: `"{proxy_id}:{tmdb_id}:{season}"`。
+fn probe_key(proxy_id: Option<i64>, tmdb_id: i64, season: i64) -> String {
+    format!("{}:{}:{}", proxy_id.unwrap_or(0), tmdb_id, season)
+}
+
+/// 该条目本轮排在哪里: 上轮被预算/墙钟/补订上限挡下的先探, 从没探过的其次,
+/// 最近探过的最后; 负缓存(近期探测失败)最末并直接跳过。
+///
+/// 数组下标稳定排序, 同优先级保持订阅池原顺序。
+fn probe_priority(book: &BTreeMap<String, model::ProbeBookEntry>, key: &str) -> u8 {
+    match book.get(key) {
+        Some(entry) if entry.emby == "budget" || entry.emby == "time" || entry.emby == "limit" => 1,
+        // Emby 探到了、TMDB 目标没轮到(预算见底): 也算欠账, 下轮先补目标。
+        Some(entry) if entry.target == "budget" => 1,
+        None => 2,
+        Some(entry) if entry.emby == "ok" => 3,
+        Some(entry) if entry.emby == "failed" && is_fresh(&entry.at, PROBE_NEGATIVE_TTL_SECS) => 4,
+        // 失败事实太旧 / absent 等: 当"没探过"重新排队(未收录的剧可能已被用户补进库)。
+        // 注意 absent 必须是**有正文证据**的未收录(见 emby::failure_is_absent):
+        // 空正文 404 这类端点整体故障现在归 failed, 走上面的 6 小时负缓存。
+        Some(_) => 2,
+    }
 }
 
 /// 插件运行时。
@@ -409,6 +471,7 @@ impl Runtime {
         let patch_limit = settings.max_patch_per_run.min(ALIGN_NOW_PATCH_LIMIT);
         let mut probe_calls: u8 = 0;
         let mut patches: u8 = 0;
+        let mut pending_probe: u16 = 0;
         let mut items: Vec<AlignItem> = Vec::new();
         let mut planned = 0usize;
 
@@ -431,11 +494,25 @@ impl Runtime {
             // 直接作废(否则会拿上一季的 have_max 判定并 PATCH, 连探测都省了)。
             let cached = cache
                 .get(&(intent.id, intent.tmdb_id, intent.season))
-                .filter(|(at, _, _, _)| is_fresh(at, CACHE_FRESH_SECS))
+                .filter(|entry| is_fresh(&entry.0, CACHE_FRESH_SECS))
                 .cloned();
+            // 该条这一轮用的 TMDB 目标(缓存行里的 / 整点 job 留下的目标书 / 未知)。
+            let target_state: TargetUpper;
             let evidence = match cached {
-                Some((_, have_max, have_count, target_upper)) => {
-                    Evidence::from_cache(intent.total_known, have_max, have_count, target_upper)
+                Some((_, have_max, have_count, target_upper, target_known)) => {
+                    let mut evidence =
+                        Evidence::from_cache(intent.total_known, have_max, have_count, target_upper);
+                    // 旧文档缺 target_known 时用 target_upper > 0 兜底(见 cached_coverage)
+                    evidence.target_known = target_known;
+                    if !target_known && evidence.target_note.is_empty() {
+                        evidence.target_note = "缓存行没记到该季目标";
+                    }
+                    target_state = TargetUpper {
+                        value: evidence.target_upper,
+                        known: evidence.target_known,
+                        note: evidence.target_note,
+                    };
+                    evidence
                 }
                 None => {
                     let remaining = ALIGN_NOW_PROBE_LIMIT.saturating_sub(probe_calls);
@@ -444,7 +521,9 @@ impl Runtime {
                         continue;
                     };
                     if remaining == 0 {
+                        // 前台只有 3 次探测额度: 没轮到的条目记成"下轮优先"。
                         counters.skipped = counters.skipped.saturating_add(1);
+                        pending_probe = pending_probe.saturating_add(1);
                         continue;
                     }
                     if clock::now_unix_secs() > deadline {
@@ -476,10 +555,46 @@ impl Runtime {
                                 sample: String::new(),
                                 at: now.clone(),
                             };
-                            Evidence::from_coverage(intent.total_known, &coverage, 0)
+                            // 实测条目也用状态里最近一次成功取到的该季目标(探测量全给
+                            // Emby, 前台不新增 host.call); 没有就是未知 —— 不再假装成 0,
+                            // 更不能拿订阅的 total_known 顶替。
+                            target_state = self.fresh_tmdb_target(intent.tmdb_id, intent.season);
+                            let mut evidence = Evidence::from_coverage(
+                                intent.total_known,
+                                &coverage,
+                                target_state.value,
+                            );
+                            evidence.target_known = target_state.known;
+                            evidence.target_note = target_state.note;
+                            evidence
                         }
                         Err(failure) => {
                             probe_calls = probe_calls.saturating_add(failure.attempts);
+                            if emby::failure_is_absent(&failure) {
+                                // 「Emby 里没有该剧/该季」独立分类: 不计失败/结构未识别。
+                                // 行级 action 与整点 job 的同一事实保持一致(都是 failed)——
+                                // 前端按"动作词 + 措辞"打徽章, 两条路径给同一个事实必须同徽章,
+                                // 不允许立即对齐的行退化成通用的「跳过」(实测缺陷)。
+                                counters.absent = counters.absent.saturating_add(1);
+                                items.push(item_of(
+                                    intent,
+                                    Decision {
+                                        action: align::ACTION_FAILED,
+                                        from_total: intent.total_known,
+                                        to_total: intent.total_known,
+                                        have_max: -1,
+                                        have_count: 0,
+                                        gap_max: 0,
+                                        reason: format!(
+                                            "Emby 未收录该剧/该季(非结构错误): {}",
+                                            failure.message
+                                        ),
+                                    },
+                                    &now,
+                                    TargetUpper::unknown("未收录"),
+                                ));
+                                continue;
+                            }
                             counters.failed = counters.failed.saturating_add(1);
                             counters.unknown_shape = counters.unknown_shape.saturating_add(1);
                             self.record_failure("align-now.emby.episodes", &failure, FailSlot::Emby);
@@ -495,8 +610,7 @@ impl Runtime {
                                     reason: failure.message.clone(),
                                 },
                                 &now,
-                                // 实测路径: 该条这轮没有 TMDB 目标(探测量都给 Emby 了)
-                                0,
+                                TargetUpper::unknown("覆盖探测失败"),
                             ));
                             continue;
                         }
@@ -504,6 +618,14 @@ impl Runtime {
                 }
             };
 
+            // absent 是独立计数桶(既不算失败也不算无缺口): 未收录行的**判定跳过**
+            // 不再额外计一次 skipped —— 404 未收录那条 continue 路径本来就只计 absent,
+            // 两条路径的"跳过 N 条/未收录 M 条"必须口径一致(实测缺陷)。
+            // (因补订上限/开关挡下的写仍照旧计 skipped: 那是另一次跳过事件。)
+            let absent_row = coverage_is_absent(&evidence);
+            if absent_row {
+                counters.absent = counters.absent.saturating_add(1);
+            }
             let decision = align::decide(&evidence, &settings, settings.dry_run);
             counters.matched = counters.matched.saturating_add(1);
             counters.gap_total = counters.gap_total.saturating_add(decision.gap_max.max(0) as u32);
@@ -519,7 +641,7 @@ impl Runtime {
                                 ..decision.clone()
                             },
                             &now,
-                            evidence.target_upper,
+                            target_state,
                         ));
                         continue;
                     }
@@ -536,16 +658,19 @@ impl Runtime {
                     } else {
                         counters.failed = counters.failed.saturating_add(1);
                     }
-                    items.push(item_of(intent, outcome, &now, evidence.target_upper));
+                    items.push(item_of(intent, outcome, &now, target_state));
                 }
                 align::ACTION_DRY_RUN => {
                     planned += 1;
                     counters.aligned = counters.aligned.saturating_add(1);
-                    items.push(item_of(intent, decision, &now, evidence.target_upper));
+                    items.push(item_of(intent, decision, &now, target_state));
                 }
                 _ => {
-                    counters.skipped = counters.skipped.saturating_add(1);
-                    items.push(item_of(intent, decision, &now, evidence.target_upper));
+                    // 未收录行只进 absent 桶, 不再重复进 skipped(口径与 404 路径一致)。
+                    if !absent_row {
+                        counters.skipped = counters.skipped.saturating_add(1);
+                    }
+                    items.push(item_of(intent, decision, &now, target_state));
                 }
             }
         }
@@ -558,6 +683,8 @@ impl Runtime {
         self.state.align.patched = counters.patched;
         self.state.align.skipped = counters.skipped;
         self.state.align.failed = counters.failed;
+        self.state.align.absent = counters.absent;
+        self.state.align.pending_probe = pending_probe;
         self.state.align.items = items;
         self.state.stats.tv_intents = counters.intents_seen as u32;
         self.state.stats.matched = counters.matched as u32;
@@ -565,8 +692,10 @@ impl Runtime {
         self.state.stats.gap_total = counters.gap_total;
         self.state.stats.unknown_shape = counters.unknown_shape;
         self.state.status = "accepted".to_string();
-        self.state.last_message =
-            format!("立即对齐: 补订 {} 条, 跳过 {} 条", counters.patched, counters.skipped);
+        self.state.last_message = format!(
+            "立即对齐: 补订 {} 条, 跳过 {} 条, 未收录 {} 条",
+            counters.patched, counters.skipped, counters.absent
+        );
         self.state.last_run = clock::now_rfc3339();
         self.state.bump_revision();
 
@@ -577,6 +706,7 @@ impl Runtime {
                 "planned": planned,
                 "patched": counters.patched,
                 "skipped": counters.skipped,
+                "absent": counters.absent,
                 "budget_hit": true,
                 "persisted": false,
                 "message": format!("已达 {}s 预算, 本轮提前结束", ALIGN_NOW_BUDGET_SECS)
@@ -588,6 +718,7 @@ impl Runtime {
             "planned": planned,
             "patched": counters.patched,
             "skipped": counters.skipped,
+            "absent": counters.absent,
             "budget_hit": false,
             "persisted": false,
             "message": message
@@ -651,6 +782,25 @@ impl Runtime {
             if let Some(value) = input.get("write_episode_strings").and_then(Value::as_bool) {
                 settings.write_episode_strings = value;
                 changed.push("write_episode_strings".to_string());
+            }
+            // 自动补订开关: 显式 null 当作"未提供"(保持现值), 布尔值才改 ——
+            // 与文档里 `auto_bump` 默认 true 的语义一致(老文档缺字段也是 true)。
+            if let Some(value) = input.get("auto_bump") {
+                match value.as_bool() {
+                    Some(value) => {
+                        settings.auto_bump = value;
+                        changed.push("auto_bump".to_string());
+                    }
+                    None if value.is_null() => {}
+                    None => {
+                        // 布尔开关收到非布尔值: 明确报错(不静默当成 false 或 true),
+                        // 前端按 status=failed 弹错误提示。
+                        return json!({
+                            "status": "failed",
+                            "message": "auto_bump 必须是布尔值(true/false)"
+                        })
+                    }
+                }
             }
             if let Some(value) = input.get("emby_proxy_id").and_then(raw::loose_i64) {
                 settings.emby_proxy_id = value;
@@ -934,9 +1084,109 @@ impl Runtime {
             sample: calendar_sample.clone(),
             at: now.clone(),
         };
+        // ④ TMDB 该季集数: 走与 job 完全相同的路径(带 raw_episode_counts=true), 让
+        // "取不到"在诊断面板里可见, 而不是界面上一个沉默的 0。
+        let mut tmdb_status = "skipped".to_string();
+        let mut tmdb_shape = String::new();
+        let mut tmdb_http = 0i32;
+        let mut tmdb_sample = String::new();
+        match sample {
+            Some((tmdb_id, season, _)) => {
+                let path = format!("/api/tmdb/tv/{tmdb_id}?raw_episode_counts=true");
+                let label = format!("id={tmdb_id}&season={season}&raw=1");
+                match host::get(&path) {
+                    Ok(response) if response.status < 400 => {
+                        match align::parse_target_upper(&response.raw, season) {
+                            Ok(target) => {
+                                tmdb_status = "ok".to_string();
+                                tmdb_shape = format!("season={season} episode_count={target}");
+                                tmdb_http = response.status;
+                                tmdb_sample = raw::sample_text(&response.raw, SAMPLE_MAX);
+                                self.state.record_attempt(
+                                    "tmdb.tv",
+                                    &label,
+                                    response.status,
+                                    &tmdb_shape,
+                                );
+                                self.state.remember_tmdb_target(tmdb_id, season, target, &now);
+                            }
+                            Err(message) => {
+                                tmdb_status = "unparsed".to_string();
+                                tmdb_shape = format!("season={season} 取不到(见样本)");
+                                tmdb_http = response.status;
+                                tmdb_sample = raw::sample_text(&response.raw, SAMPLE_MAX);
+                                self.state.record_attempt(
+                                    "tmdb.tv",
+                                    &label,
+                                    response.status,
+                                    "unparsed",
+                                );
+                                self.record_failure(
+                                    "probe.tmdb.tv",
+                                    &ParseFailure::http(
+                                        response.status,
+                                        response.raw.clone(),
+                                        message,
+                                    ),
+                                    FailSlot::TmdbTarget,
+                                );
+                            }
+                        }
+                    }
+                    Ok(response) => {
+                        tmdb_status = "http_error".to_string();
+                        tmdb_http = response.status;
+                        tmdb_sample = raw::sample_text(&response.raw, SAMPLE_MAX);
+                        self.state.record_attempt(
+                            "tmdb.tv",
+                            &label,
+                            response.status,
+                            "http_error",
+                        );
+                        self.record_failure(
+                            "probe.tmdb.tv",
+                            &ParseFailure::http(
+                                response.status,
+                                response.raw.clone(),
+                                format!("TMDB HTTP {}", response.status),
+                            ),
+                            FailSlot::TmdbTarget,
+                        );
+                    }
+                    Err(err) => {
+                        tmdb_status = "transport_error".to_string();
+                        self.state.record_attempt(
+                            "tmdb.tv",
+                            &label,
+                            0,
+                            &format!("transport_error: {err}"),
+                        );
+                        self.record_failure(
+                            "probe.tmdb.tv",
+                            &ParseFailure::transport(format!("TMDB 请求失败: {err}")),
+                            FailSlot::TmdbTarget,
+                        );
+                    }
+                }
+            }
+            None => {
+                tmdb_sample = "没有可用的 TMDB 剧集样本; 先让订阅池里有 tv 条目".to_string();
+                self.state.record_error("probe.tmdb.tv", &tmdb_sample);
+            }
+        }
+        self.state.debug.tmdb_target = ProbeSnapshot {
+            status: tmdb_status.clone(),
+            shape: tmdb_shape.clone(),
+            params_tried: vec!["raw_episode_counts=true".to_string()],
+            http_status: tmdb_http,
+            sample: tmdb_sample.clone(),
+            at: now.clone(),
+        };
         self.state.debug.updated_at = now.clone();
 
-        let message = format!("探测完成: emby={emby_status}, calendar={calendar_status}");
+        let message = format!(
+            "探测完成: emby={emby_status}, calendar={calendar_status}, tmdb={tmdb_status}"
+        );
         self.state.status = "accepted".to_string();
         self.state.last_message = message.clone();
         self.state.last_run = now;
@@ -956,6 +1206,12 @@ impl Runtime {
                 "shape": calendar_shape,
                 "http_status": calendar_http,
                 "sample_preview": raw::truncate_bytes(&calendar_sample, 200).to_string()
+            },
+            "tmdb": {
+                "shape": tmdb_shape,
+                "http_status": tmdb_http,
+                "status": tmdb_status,
+                "sample_preview": raw::truncate_bytes(&tmdb_sample, 200).to_string()
             },
             "state_version": format!("state-v{}", self.state.revision)
         })
@@ -1134,18 +1390,66 @@ impl Runtime {
         // 同一个 (实例, 剧, 季) 本轮只探一次; 失败过的也一样 —— 否则一个结构认不出的
         // 端点会被每一条同剧条目各烧掉最多 3 次 host.call。
         let mut failed_keys: BTreeSet<String> = BTreeSet::new();
-        let mut target_cache: BTreeMap<(i64, i64), i64> = BTreeMap::new();
+        // 目标缓存按 (剧, 季): 一轮里同一季只取一次 TMDB(预算按真实 host.call 扣)。
+        let mut target_cache: BTreeMap<(i64, i64), TargetUpper> = BTreeMap::new();
+        // 探测记账: Emby 覆盖 + TMDB 目标**共用** settings.emby_probe_budget 次 host.call。
+        // 每条条目的常见成本 = Emby 1 次(形状指纹命中即停) + TMDB 1 次 = 2 次,
+        // 所以默认 120 的预算足够覆盖 50 条(50×2 = 100 ≤ 120); 形状未识别时 Emby
+        // 最多试 3 次, 超出的条目会被预算/墙钟挡下并留给下一轮优先补探。
         let mut probes: u16 = 0;
         // 与 `patch_limit`(u8)同型: 直接比大小, 不做隐式转换。
         let mut patches: u8 = 0;
         let mut budget_hit = false;
+        // 本轮没探到、留给下一轮优先补探的条目数(可见字段 `align.pending_probe`)。
+        let mut pending_probe: u16 = 0;
+        // TMDB 取数的成败记账: 全失败时在 last_error/日报里给一条可见结论。
+        let mut target_calls: u16 = 0;
+        let mut target_ok: u16 = 0;
+        let mut degraded: Option<String> = None;
+        // 跨轮探测记账: 上轮被预算/墙钟挡下的条目这轮先探; 近期失败的条目负缓存。
+        let book: BTreeMap<String, model::ProbeBookEntry> = self
+            .state
+            .probe_book
+            .iter()
+            .map(|entry| (entry.key.clone(), entry.clone()))
+            .collect();
+        let mut book_updates: BTreeMap<String, (String, String)> = BTreeMap::new();
 
         if selection.is_some() {
-            'align: for intent in &pool {
+            // 排序(稳定): 上轮被预算/墙钟/补订上限挡下的先探, 从没探过的其次, 最近
+            // 探过的最后; 负缓存条目排在最末, 由循环直接跳过(见 probe_priority)。
+            let proxy = selection.as_ref().and_then(|selected| selected.proxy_id);
+            let mut order: Vec<usize> = (0..pool.len()).collect();
+            order.sort_by_key(|index| {
+                let intent = &pool[*index];
+                if intent.media_type != intents::MEDIA_TYPE || !intent.actionable() {
+                    return 0;
+                }
+                probe_priority(&book, &probe_key(proxy, intent.tmdb_id, intent.season))
+            });
+
+            // 墙钟/预算提前结束时, 把还没轮到的条目记成"下轮优先"。
+            macro_rules! defer_rest {
+                ($from:expr) => {{
+                    for later in $from..order.len() {
+                        let intent = &pool[order[later]];
+                        if intent.media_type == intents::MEDIA_TYPE && intent.actionable() {
+                            pending_probe = pending_probe.saturating_add(1);
+                            book_updates
+                                .entry(probe_key(proxy, intent.tmdb_id, intent.season))
+                                .or_insert(("time".to_string(), "unknown".to_string()));
+                        }
+                    }
+                }};
+            }
+
+            for position in 0..order.len() {
+                let intent = &pool[order[position]];
+                let maybe_selected = selection.as_ref();
                 if intent.media_type != intents::MEDIA_TYPE {
                     continue;
                 }
-                let Some(selected) = selection.as_ref() else { break };
+                let Some(selected) = maybe_selected else { break };
                 if !intent.actionable() {
                     counters.skipped = counters.skipped.saturating_add(1);
                     push_align_item(
@@ -1162,44 +1466,25 @@ impl Runtime {
                                 reason: format!("状态 {} 不参与补订", display_state(&intent.state)),
                             },
                             &now,
-                            0,
-                        ),
-                    );
-                    continue;
-                }
-                if patches >= patch_limit {
-                    counters.skipped = counters.skipped.saturating_add(1);
-                    push_align_item(
-                        &mut items,
-                        item_of(
-                            intent,
-                            Decision {
-                                action: align::ACTION_SKIPPED,
-                                from_total: intent.total_known,
-                                to_total: intent.total_known,
-                                have_max: -1,
-                                have_count: -1,
-                                gap_max: 0,
-                                reason: format!("已达单轮补订上限 {patch_limit} 条"),
-                            },
-                            &now,
-                            0,
+                            TargetUpper::unknown("未探测"),
                         ),
                     );
                     continue;
                 }
                 if clock::now_unix_secs() > deadline {
                     budget_hit = true;
-                    break 'align;
+                    defer_rest!(position);
+                    break;
                 }
 
                 // ⑤ Emby 覆盖(同 (实例, 剧, 季) 只探一次)
-                let key = format!(
-                    "{}:{}:{}",
-                    selected.proxy_id.unwrap_or(0),
-                    intent.tmdb_id,
-                    intent.season
-                );
+                let key = probe_key(selected.proxy_id, intent.tmdb_id, intent.season);
+                // 探测结果记账(写进跨轮 probe_book): Emby 侧默认 ok(失败/未收录
+                // 都在下面 continue 之前写了各自状态), 探到空季时改记 absent;
+                // 目标侧先当"未知"再被真实结果覆盖。
+                let mut book_emby = "ok";
+                // 目标侧状态(ok/cached/unknown)在各条取数路径里赋值。
+                let book_target;
                 let coverage = match coverage_cache.get(&key) {
                     Some(coverage) => coverage.clone(),
                     None => {
@@ -1219,14 +1504,51 @@ impl Runtime {
                                         reason: "同一剧集本轮已探测失败, 不重复消耗预算".to_string(),
                                     },
                                     &now,
-                                    0,
+                                    TargetUpper::unknown("同一剧集本轮已探测失败"),
                                 ),
                             );
                             continue;
                         }
+                        // 跨轮负缓存: 6 小时内不重复烧同一个认不出的端点(根因: 每小时 3 次白烧)。
+                        // 这类条目**不**计入 pending_probe —— 下一轮它仍然会被负缓存跳过,
+                        // 「待探测」只统计"下轮会优先补探"的条目。
+                        //
+                        // 关键: 命中负缓存时**不**写 book_updates(那边合并时会把 at 刷成
+                        // 本轮 now)—— 一刷 at 就等于 TTL 永不过期, 认不出的端点会被永久跳过,
+                        // `probe_priority` 里"失败事实太旧就重新排队"的分支也就成了死代码。
+                        // 负缓存的 at 只在**真的又探了一次**时由探测结果刷新(见下面各分支)。
+                        if let Some(entry) = book.get(&key) {
+                            if entry.emby == "failed" && is_fresh(&entry.at, PROBE_NEGATIVE_TTL_SECS) {
+                                counters.skipped = counters.skipped.saturating_add(1);
+                                push_align_item(
+                                    &mut items,
+                                    item_of(
+                                        intent,
+                                        Decision {
+                                            action: align::ACTION_SKIPPED,
+                                            from_total: intent.total_known,
+                                            to_total: intent.total_known,
+                                            have_max: -1,
+                                            have_count: -1,
+                                            gap_max: 0,
+                                            reason: format!(
+                                                "该季上次 Emby 探测失败(负缓存 {} 小时内), 本轮不重复消耗预算",
+                                                PROBE_NEGATIVE_TTL_SECS / 3600
+                                            ),
+                                        },
+                                        &now,
+                                        TargetUpper::unknown("探测失败负缓存"),
+                                    ),
+                                );
+                                continue;
+                            }
+                        }
                         let remaining = settings.emby_probe_budget.saturating_sub(probes);
                         if remaining == 0 {
                             counters.skipped = counters.skipped.saturating_add(1);
+                            pending_probe = pending_probe.saturating_add(1);
+                            book_updates
+                                .insert(key.clone(), ("budget".to_string(), "unknown".to_string()));
                             push_align_item(
                                 &mut items,
                                 item_of(
@@ -1239,19 +1561,20 @@ impl Runtime {
                                         have_count: -1,
                                         gap_max: 0,
                                         reason: format!(
-                                            "Emby 探测预算用尽({})",
+                                            "Emby 探测预算用尽({} 次 host.call): 本轮跳过, 下轮优先",
                                             settings.emby_probe_budget
                                         ),
                                     },
                                     &now,
-                                    0,
+                                    TargetUpper::unknown("预算用尽"),
                                 ),
                             );
                             continue;
                         }
                         if clock::now_unix_secs() > deadline {
                             budget_hit = true;
-                            break 'align;
+                            defer_rest!(position);
+                            break;
                         }
                         match emby::fetch_coverage(
                             intent.tmdb_id,
@@ -1286,8 +1609,31 @@ impl Runtime {
                                 // 该条零写入 + 原文留档, 继续下一条
                                 probes = probes.saturating_add(u16::from(failure.attempts));
                                 failed_keys.insert(key.clone());
-                                counters.failed = counters.failed.saturating_add(1);
-                                counters.unknown_shape = counters.unknown_shape.saturating_add(1);
+                                // 「Emby 明确回答没有该剧/该季」(404 或带"不存在"类原文的
+                                // 4xx) 与「结构认不出/传输失败」分开归类: 前者是可信事实,
+                                // 记 absent 并按"未探过"在下一轮重新排队(剧可能已被补进库),
+                                // 后者才烧 unknown_shape 并进 6 小时负缓存。
+                                let absent = emby::failure_is_absent(&failure);
+                                if absent {
+                                    counters.absent = counters.absent.saturating_add(1);
+                                    book_updates.insert(
+                                        key.clone(),
+                                        ("absent".to_string(), "unknown".to_string()),
+                                    );
+                                } else {
+                                    counters.failed = counters.failed.saturating_add(1);
+                                    counters.unknown_shape =
+                                        counters.unknown_shape.saturating_add(1);
+                                    book_updates.insert(
+                                        key.clone(),
+                                        ("failed".to_string(), "unknown".to_string()),
+                                    );
+                                }
+                                let reason = if absent {
+                                    format!("Emby 未收录该剧/该季(非结构错误): {}", failure.message)
+                                } else {
+                                    failure.message.clone()
+                                };
                                 self.record_failure("job.emby.episodes", &failure, FailSlot::Emby);
                                 push_align_item(
                                     &mut items,
@@ -1300,10 +1646,14 @@ impl Runtime {
                                             have_max: -1,
                                             have_count: -1,
                                             gap_max: 0,
-                                            reason: failure.message.clone(),
+                                            reason,
                                         },
                                         &now,
-                                        0,
+                                        TargetUpper::unknown(if absent {
+                                            "Emby 未收录"
+                                        } else {
+                                            "覆盖探测失败"
+                                        }),
                                     ),
                                 );
                                 continue;
@@ -1313,29 +1663,118 @@ impl Runtime {
                 };
                 counters.matched = counters.matched.saturating_add(1);
 
-                // ⑥ 目标上限: 该季 TMDB 集数(取不到就 0, 只靠 Emby 缺口)
-                let target_upper = match target_cache.get(&(intent.tmdb_id, intent.season)) {
-                    Some(target) => *target,
+                // ⑥ 目标上限: 该季 TMDB 集数。与 Emby 覆盖**共用**预算; 缓存(本轮按
+                // (剧,季), 跨轮按 tmdb_targets)命中的不额外花 host.call。取不到时诚实记
+                // "未知" —— 不再拿订阅的 total_known 或整剧集数顶替。
+                let mut stop_after = false;
+                let target_state = match target_cache.get(&(intent.tmdb_id, intent.season)) {
+                    Some(cached) => {
+                        book_target = if cached.known { "ok" } else { "unknown" };
+                        cached.clone()
+                    }
                     None => {
-                        if clock::now_unix_secs() > deadline {
+                        let remaining = settings.emby_probe_budget.saturating_sub(probes);
+                        if remaining == 0 {
+                            // 预算见底只剩 Emby 那次: 目标记未知, 但**不跳过该条** ——
+                            // Emby 缺口本身仍是可信证据, 不能被目标取数挡住; 下轮优先补目标。
+                            pending_probe = pending_probe.saturating_add(1);
+                            book_target = "budget";
+                            TargetUpper::unknown("TMDB 目标取数预算用尽")
+                        } else if clock::now_unix_secs() > deadline {
                             budget_hit = true;
-                            break 'align;
+                            defer_rest!(position);
+                            stop_after = true;
+                            book_target = "time";
+                            TargetUpper::unknown("时间预算用尽")
+                        } else {
+                            // 6 小时内整点 job 取到过的同一季目标: 不重复烧 host.call。
+                            let cached_target = self
+                                .state
+                                .tmdb_target_of(intent.tmdb_id, intent.season)
+                                .filter(|target| is_fresh(&target.at, CACHE_FRESH_SECS))
+                                .map(|target| target.episode_count);
+                            if let Some(count) = cached_target {
+                                book_target = "cached";
+                                TargetUpper::known(count)
+                            } else {
+                                let target = self.fetch_target_upper(intent.tmdb_id, intent.season);
+                                probes = probes.saturating_add(u16::from(target.attempts));
+                                target_calls = target_calls.saturating_add(1);
+                                book_target = if target.value.known { "ok" } else { "unknown" };
+                                if target.value.known {
+                                    target_ok = target_ok.saturating_add(1);
+                                    self.state.remember_tmdb_target(
+                                        intent.tmdb_id,
+                                        intent.season,
+                                        target.value.value,
+                                        &now,
+                                    );
+                                } else {
+                                    self.state.forget_tmdb_target(intent.tmdb_id, intent.season);
+                                }
+                                target.value
+                            }
                         }
-                        let target = self.fetch_target_upper(intent.tmdb_id, intent.season);
-                        target_cache.insert((intent.tmdb_id, intent.season), target);
-                        target
                     }
                 };
+                target_cache.insert((intent.tmdb_id, intent.season), target_state.clone());
+                if stop_after {
+                    break;
+                }
 
-                let evidence =
-                    Evidence::from_coverage(intent.total_known, &coverage, target_upper);
+                let mut evidence = Evidence::from_coverage(
+                    intent.total_known,
+                    &coverage,
+                    target_state.value,
+                );
+                evidence.target_known = target_state.known;
+                evidence.target_note = target_state.note;
+                // 「探到了, 但 Emby 该季一集都没有」单独计数(既不是失败, 也不是无缺口);
+                // 下一轮按"未探过"重新排队(剧可能已被用户补进库)。
+                // 计数口径: 未收录行的**判定跳过**不再额外计一次 skipped —— 404 未收录
+                // 那条 continue 路径本来就只计 absent, 两条路径的"跳过 N 条/未收录 M 条"
+                // 必须口径一致(实测缺陷)。因上限/开关挡下的写照旧计 skipped。
+                let absent_row = coverage_is_absent(&evidence);
+                if absent_row {
+                    counters.absent = counters.absent.saturating_add(1);
+                    book_emby = "absent";
+                }
+                book_updates
+                    .entry(key.clone())
+                    .and_modify(|entry| {
+                        entry.0 = book_emby.to_string();
+                        entry.1 = book_target.to_string();
+                    })
+                    .or_insert((book_emby.to_string(), book_target.to_string()));
+
                 let decision = align::decide(&evidence, &settings, settings.dry_run);
                 counters.gap_total =
                     counters.gap_total.saturating_add(decision.gap_max.max(0) as u32);
 
                 match decision.action {
                     align::ACTION_PATCHED => {
-                        if patches >= patch_limit {
+                        // 自动补订总开关: 默认 true(缺字段/null 都当 true, 老文档兼容)。
+                        // 关掉后只给"本来会补订"的理由, 绝不写宿主。
+                        if !settings.auto_bump {
+                            counters.skipped = counters.skipped.saturating_add(1);
+                            push_align_item(
+                                &mut items,
+                                item_of(
+                                    intent,
+                                    Decision {
+                                        action: align::ACTION_SKIPPED,
+                                        reason: format!(
+                                            "自动补订已关闭(auto_bump=false): 本可补订到 {} 集, 未写",
+                                            decision.to_total
+                                        ),
+                                        ..decision.clone()
+                                    },
+                                    &now,
+                                    target_state.clone(),
+                                ),
+                            );
+                        } else if patches >= patch_limit {
+                            // 探测本身没被挡(只挡写): 不计入 pending_probe, 下一轮直接写。
                             counters.skipped = counters.skipped.saturating_add(1);
                             push_align_item(
                                 &mut items,
@@ -1347,7 +1786,7 @@ impl Runtime {
                                         ..decision.clone()
                                     },
                                     &now,
-                                    target_upper,
+                                    target_state.clone(),
                                 ),
                             );
                         } else {
@@ -1360,16 +1799,28 @@ impl Runtime {
                                 // 非 200 记 failed: 本轮不重试, 下一小时再来
                                 counters.failed = counters.failed.saturating_add(1);
                             }
-                            push_align_item(&mut items, item_of(intent, outcome, &now, target_upper));
+                            push_align_item(
+                                &mut items,
+                                item_of(intent, outcome, &now, target_state.clone()),
+                            );
                         }
                     }
                     align::ACTION_DRY_RUN => {
                         counters.aligned = counters.aligned.saturating_add(1);
-                        push_align_item(&mut items, item_of(intent, decision, &now, target_upper));
+                        push_align_item(
+                            &mut items,
+                            item_of(intent, decision, &now, target_state.clone()),
+                        );
                     }
                     _ => {
-                        counters.skipped = counters.skipped.saturating_add(1);
-                        push_align_item(&mut items, item_of(intent, decision, &now, target_upper));
+                        // 未收录行只进 absent 桶, 不再重复进 skipped(口径与 404 路径一致)。
+                        if !absent_row {
+                            counters.skipped = counters.skipped.saturating_add(1);
+                        }
+                        push_align_item(
+                            &mut items,
+                            item_of(intent, decision, &now, target_state.clone()),
+                        );
                     }
                 }
 
@@ -1377,7 +1828,7 @@ impl Runtime {
                 if align::should_suggest_trim(
                     intent.total_known,
                     &coverage,
-                    target_upper,
+                    target_state.value,
                     intent.trim_candidate(),
                 ) {
                     trims.push(TrimSuggestion {
@@ -1387,12 +1838,50 @@ impl Runtime {
                         title: intent.title.clone(),
                         total_known: intent.total_known,
                         emby_have_max: coverage.have_max().unwrap_or(-1),
-                        target_upper,
-                        reason: align::trim_reason(intent.total_known, target_upper),
+                        target_upper: target_state.value,
+                        reason: align::trim_reason(intent.total_known, target_state.value),
                         at: now.clone(),
                     });
                 }
             }
+        }
+
+        // 跨轮探测记账合并: 保留旧条目, 本轮结果覆盖之; 按时间升序保留最近的
+        // PROBE_BOOK_MAX 条(越新越可能有用)。
+        //
+        // `at` 只对**本轮真的写了 book_updates 的键**刷新成本轮 now —— 也就是只对
+        // "真的又探了一次(成功/失败/未收录/预算/时间)"的条目刷新。命中负缓存而
+        // 整轮跳过的条目**不**进 book_updates, 于是它保留旧 at, 6 小时 TTL 到点后
+        // `probe_priority` 会把"失败事实太旧"的条目当没探过重新排队(否则一刷 at
+        // 就是永不过期, 认不出的端点会被永久跳过)。
+        {
+            let mut merged: BTreeMap<String, model::ProbeBookEntry> = book.clone();
+            for (key, (emby_status, target_status)) in book_updates {
+                merged.insert(
+                    key.clone(),
+                    model::ProbeBookEntry {
+                        key,
+                        at: now.clone(),
+                        emby: emby_status,
+                        target: target_status,
+                    },
+                );
+            }
+            let mut entries: Vec<model::ProbeBookEntry> = merged.into_values().collect();
+            entries.sort_by(|a, b| a.at.cmp(&b.at).then_with(|| a.key.cmp(&b.key)));
+            if entries.len() > model::PROBE_BOOK_MAX {
+                let drop_count = entries.len() - model::PROBE_BOOK_MAX;
+                entries.drain(0..drop_count);
+            }
+            self.state.probe_book = entries;
+        }
+
+        // 本轮 TMDB 目标全灭时给一条可见结论(根因①: 以前静默按 0 处理)。
+        if target_calls > 0 && target_ok == 0 {
+            degraded = Some(format!(
+                "本轮 TMDB 目标不可用: {} 次取数全部失败, 追更判定降级为仅 Emby 缺口(目标记未知)",
+                target_calls
+            ));
         }
 
         // 落账(计数 + 逐条结果)
@@ -1403,14 +1892,23 @@ impl Runtime {
         self.state.align.patched = counters.patched;
         self.state.align.skipped = counters.skipped;
         self.state.align.failed = counters.failed;
+        self.state.align.absent = counters.absent;
+        self.state.align.pending_probe = pending_probe;
         // 有逐条失败就记第一条; 整段 Emby 跳过(没有逐条失败)时记「本轮未对齐: <原因>」,
-        // 这条字符串会被日报段③当作"首个原因"回显(规格 ⑤ 降级 4)。
-        self.state.align.last_error = items
+        // 这条字符串会被日报段③当作"首个原因"回显(规格 ⑤ 降级 4)。TMDB 目标全灭时
+        // 把降级结论接在后面, 保证它一定能被用户看到(根因①: 以前是静默按 0 处理)。
+        let first_error = items
             .iter()
             .find(|item| item.action == align::ACTION_FAILED)
             .map(|item| item.reason.clone())
             .or_else(|| alignment_blocked.clone())
             .unwrap_or_default();
+        self.state.align.last_error = match (first_error.is_empty(), degraded.clone()) {
+            (false, Some(note)) => format!("{first_error}; {note}"),
+            (false, None) => first_error,
+            (true, Some(note)) => note,
+            (true, None) => String::new(),
+        };
         self.state.align.items = items;
         self.state.trim_suggestions = trims;
         self.state.stats.matched = counters.matched as u32;
@@ -1423,17 +1921,22 @@ impl Runtime {
 
         // ⑪ 落盘
         let message = format!(
-            "对齐完成: 订阅 {} 条, 判定 {} 条, 补订 {} 条, 跳过 {} 条, 失败 {} 条{}",
+            "对齐完成: 订阅 {} 条, 判定 {} 条, 补订 {} 条, 跳过 {} 条, 失败 {} 条, 未收录 {} 条, 待探测 {} 条{}",
             counters.intents_seen,
             counters.matched,
             counters.patched,
             counters.skipped,
             counters.failed,
+            counters.absent,
+            pending_probe,
             if budget_hit { " (时间预算用尽)" } else { "" }
         );
         self.state.status = "accepted".to_string();
         self.state.last_message = message.clone();
         self.state.log("info", &message);
+        if let Some(note) = degraded.as_ref() {
+            self.state.log("warning", note);
+        }
         self.persist_quietly();
 
         json!({
@@ -1445,6 +1948,9 @@ impl Runtime {
             "patched": counters.patched,
             "skipped": counters.skipped,
             "failed": counters.failed,
+            "absent": counters.absent,
+            "pending_probe": pending_probe,
+            "target_calls": target_calls,
             "budget_hit": budget_hit,
             "report": report
         })
@@ -1558,6 +2064,11 @@ impl Runtime {
                 snapshot.sample = sample;
                 self.state.debug.pool_intents = snapshot;
             }
+            FailSlot::TmdbTarget => {
+                let mut snapshot = snapshot;
+                snapshot.sample = sample;
+                self.state.debug.tmdb_target = snapshot;
+            }
             FailSlot::None => {}
         }
     }
@@ -1583,7 +2094,7 @@ impl Runtime {
     /// 键里必须带 tmdb_id/season: 订阅的剧/季在 6 小时窗口内被改过时, 只按
     /// intent_id 命中就会拿**上一季**的 have_max(和目标)去判定并 PATCH, 而且
     /// 因为"缓存命中"连 Emby 都不再探测。
-    fn cached_coverage(&self) -> BTreeMap<(i64, i64, i64), (String, i64, i64, i64)> {
+    fn cached_coverage(&self) -> BTreeMap<(i64, i64, i64), (String, i64, i64, i64, bool)> {
         self.state
             .align
             .items
@@ -1596,54 +2107,66 @@ impl Runtime {
                         item.emby_have_max,
                         item.emby_have_count,
                         item.target_upper,
+                        // 老文档没有这个字段: 反序列化默认 false, 但 target_upper > 0 的旧行
+                        // 显然取到过目标 —— 用 > 0 兜底, 免得把已知目标当成未知。
+                        item.target_known || item.target_upper > 0,
                     ),
                 )
             })
             .collect()
     }
 
-    /// ⑥ 该季 TMDB 集数; 失败记 debug 并返回 0(只用 Emby 缺口判定)。
-    fn fetch_target_upper(&mut self, tmdb_id: i64, season: i64) -> i64 {
-        let path = format!("/api/tmdb/tv/{tmdb_id}");
-        match host::get(&path) {
+    /// ⑥ 该季 TMDB 集数。带 `raw_episode_counts=true`(不套宿主保存的集数修正规则),
+    /// 并把每一次取数(含传输层/RPC 失败)都记进 debug.attempts —— 根因①的要点就是
+    /// 以前失败时一条尝试都不留, 界面上看不出"是没取还是取到 0"。
+    fn fetch_target_upper(&mut self, tmdb_id: i64, season: i64) -> TargetFetch {
+        let path = format!("/api/tmdb/tv/{tmdb_id}?raw_episode_counts=true");
+        let label = format!("id={tmdb_id}&season={season}&raw=1");
+        // 每次取数恰好 1 次 host.call(预算按这个扣; 三个失败分支也一样)。
+        let attempts: u8 = 1;
+        let value = match host::get(&path) {
             Ok(response) if response.status < 400 => {
                 match align::parse_target_upper(&response.raw, season) {
                     Ok(target) => {
                         self.state.record_attempt(
                             "tmdb.tv",
-                            &format!("id={tmdb_id}&season={season}"),
+                            &label,
                             response.status,
                             &format!("target={target}"),
                         );
-                        target
+                        TargetUpper::known(target)
                     }
                     Err(message) => {
-                        self.state.record_attempt(
-                            "tmdb.tv",
-                            &format!("id={tmdb_id}&season={season}"),
-                            response.status,
-                            "unparsed",
-                        );
+                        self.state.record_attempt("tmdb.tv", &label, response.status, "unparsed");
                         self.state.record_error("job.tmdb", &message);
-                        0
+                        TargetUpper::unknown("该季在 TMDB 详情里取不到")
                     }
                 }
             }
             Ok(response) => {
                 let message = format!("TMDB HTTP {}", response.status);
-                self.state.record_attempt(
-                    "tmdb.tv",
-                    &format!("id={tmdb_id}&season={season}"),
-                    response.status,
-                    "http_error",
-                );
+                self.state
+                    .record_attempt("tmdb.tv", &label, response.status, "http_error");
                 self.state.record_error("job.tmdb", &message);
-                0
+                TargetUpper::unknown("TMDB 返回非 200")
             }
             Err(err) => {
-                self.state.record_error("job.tmdb", &format!("TMDB 请求失败: {err}"));
-                0
+                // 传输层/RPC 失败: 也记一次尝试, 否则 attempts 里查无此调用。
+                self.state
+                    .record_attempt("tmdb.tv", &label, 0, &format!("transport_error: {err}"));
+                self.state
+                    .record_error("job.tmdb", &format!("TMDB 请求失败: {err}"));
+                TargetUpper::unknown("TMDB 请求失败")
             }
+        };
+        TargetFetch { value, attempts }
+    }
+
+    /// 状态文档里 6 小时内新鲜的该季目标(整点 job 顺手取到的), 复用时不花 host.call。
+    fn fresh_tmdb_target(&self, tmdb_id: i64, season: i64) -> TargetUpper {
+        match self.state.tmdb_target_of(tmdb_id, season) {
+            Some(target) if is_fresh(&target.at, CACHE_FRESH_SECS) => TargetUpper::known(target.episode_count),
+            _ => TargetUpper::unknown("状态里没有该季的新鲜目标"),
         }
     }
 
@@ -1729,6 +2252,18 @@ impl Default for Runtime {
 
 // ─────────────────────────── 自由函数 ───────────────────────────
 
+/// 该条证据是否属于「探到了, 但 Emby 该季一集都没有」(未收录/未入库)。
+///
+/// 与 [`align::decide`] 里的 `have_absent` 用同一条规则: 解析成功且逐集覆盖是空集
+/// (`have_count = Some(0)`; 区间契约的 `covered_episodes:""` 就是这种形态)。
+/// 是否同时带缺集列表(`needed_episodes:"1-24"`)不影响"该季 0 集"这个已知事实 ——
+/// 所以**不**再要求 `gap_max <= 0`: 旧条件会把真实宿主那种"空覆盖 + 非空缺集列表"
+/// 的响应漏计成非 absent, 与判定层/结果列的口径打架。
+/// 缓存行也能用: absent 行的 `emby_have_max = -1 / emby_have_count = 0` 正好落在这条规则里。
+fn coverage_is_absent(evidence: &Evidence) -> bool {
+    evidence.have_max.is_none() && evidence.have_count == Some(0)
+}
+
 /// `state` payload 非法。
 fn invalid_state() -> OpError {
     OpError::new("invalid state payload")
@@ -1763,9 +2298,10 @@ impl std::error::Error for OpError {}
 
 /// 判定结果 → 状态文档里的一行。
 ///
-/// `target_upper` 是该条这一轮用的该季 TMDB 目标(没取到/还没轮到取 = 0):
-/// 它随行落进状态文档, align-now 复用缓存行时就能拿到与整点对齐相同的目标。
-fn item_of(intent: &Intent, decision: Decision, at: &str, target_upper: i64) -> AlignItem {
+/// `target` 是该条这一轮用的该季 TMDB 目标(未知时 `value = 0` 且 `known = false`):
+/// 它随行落进状态文档, align-now 复用缓存行时就能拿到与整点对齐相同的目标,
+/// 同时把"取不到"与"TMDB 说 0 集"分得清清楚楚。
+fn item_of(intent: &Intent, decision: Decision, at: &str, target: TargetUpper) -> AlignItem {
     AlignItem {
         intent_id: intent.id,
         tmdb_id: intent.tmdb_id,
@@ -1775,7 +2311,8 @@ fn item_of(intent: &Intent, decision: Decision, at: &str, target_upper: i64) -> 
         emby_have_max: decision.have_max,
         emby_have_count: decision.have_count,
         gap_max: decision.gap_max,
-        target_upper: target_upper.max(0),
+        target_upper: target.value.max(0),
+        target_known: target.known,
         from_total: decision.from_total,
         to_total: decision.to_total,
         action: decision.action.to_string(),
@@ -3049,6 +3586,78 @@ mod tests {
         drop(guard);
     }
 
+    /// 同一「Emby 未收录该剧/该季」事实, 立即对齐的行级 action 必须与整点 job 一致
+    /// (都是 failed): 前端按动作词 + 措辞打徽章, 旧实现 align-now 记 skipped,
+    /// 前端 absent 判定只认 failed → 结果行只显示通用的「跳过」(实测缺陷)。
+    #[test]
+    fn align_now_marks_an_absent_show_with_the_same_action_as_the_job() {
+        let fake = FakeHost::new();
+        fake.set("state", br#"{"schema_version":1,"revision":4,"settings":{"emby_proxy_id":3}}"#);
+        fake.route_prefix(
+            "GET",
+            "GET /api/subscribe/pool/intents?",
+            200,
+            &one_intent_pool(41, 1396, 5, 16),
+        );
+        fake.route_prefix(
+            "GET",
+            "GET /api/plugin-host/emby/episodes?",
+            404,
+            r#"{"error":"没有该剧"}"#.as_bytes(),
+        );
+        fake.route_prefix("PATCH", "PATCH /api/subscribe/pool/intents/", 200, b"{}");
+        let guard = fake.install();
+        let mut runtime = Runtime::new();
+        runtime.ensure_loaded();
+        let result = action(&mut runtime, "align-now", json!({}));
+        assert_eq!(result["status"], "accepted", "{result}");
+        assert_eq!(result["absent"], 1, "{result}");
+        // align-now 的结果 JSON 没有 failed 计数(未收录单列 absent), 只有行级 action;
+        // 这里断言行级 action 与 job 一致, 计数语义不受影响。
+        assert_eq!(result["skipped"], 0, "{result}");
+        let item = &runtime.state_doc().align.items[0];
+        assert_eq!(
+            item.action, "failed",
+            "job 里同一事实是 failed, align-now 不许退化成 skipped: {}",
+            item.reason
+        );
+        assert!(item.reason.contains("Emby 未收录该剧/该季"), "{}", item.reason);
+        assert_eq!(item.emby_have_count, 0, "未收录 = 已知 0 集");
+        drop(guard);
+    }
+
+    /// align-now 的 200+空季同样只进 absent 桶: absent 与 skipped 互不重叠,
+    /// 与 404 路径、与整点 job 三条路径口径一致(实测缺陷)。
+    #[test]
+    fn align_now_counts_an_empty_season_only_once() {
+        let fake = FakeHost::new();
+        fake.set("state", br#"{"schema_version":1,"revision":4,"settings":{"emby_proxy_id":3}}"#);
+        fake.route_prefix(
+            "GET",
+            "GET /api/subscribe/pool/intents?",
+            200,
+            &one_intent_pool(41, 1396, 5, 16),
+        );
+        fake.route_prefix(
+            "GET",
+            "GET /api/plugin-host/emby/episodes?",
+            200,
+            br#"{"complete":false,"covered_episodes":"","needed_episodes":"1-24"}"#,
+        );
+        fake.route_prefix("PATCH", "PATCH /api/subscribe/pool/intents/", 200, b"{}");
+        let guard = fake.install();
+        let mut runtime = Runtime::new();
+        runtime.ensure_loaded();
+        let result = action(&mut runtime, "align-now", json!({}));
+        assert_eq!(result["status"], "accepted", "{result}");
+        assert_eq!(result["absent"], 1, "{result}");
+        assert_eq!(result["skipped"], 0, "未收录不该重复计入跳过: {result}");
+        let item = &runtime.state_doc().align.items[0];
+        assert!(item.reason.contains("Emby 该季 0 集"), "{}", item.reason);
+        assert_eq!(item.emby_have_count, 0);
+        drop(guard);
+    }
+
     /// 拿不到实例列表、配置又是"跟随宿主默认"(-1)时不猜: 零探测、零写入、可读原因。
     #[test]
     fn align_now_without_a_list_and_a_default_pin_degrades_without_writes() {
@@ -3452,5 +4061,578 @@ mod tests {
         assert!(!is_fresh("garbage", CACHE_FRESH_SECS), "认不出就不新鲜");
         assert!(!is_fresh("", CACHE_FRESH_SECS));
         assert!(!is_fresh(&clock::rfc3339_from_unix(now + 3600), CACHE_FRESH_SECS), "未来不算新鲜");
+    }
+
+    // ── 单条 tv 的验收夹具 ──
+
+    /// 一条 tv 订阅的池子(要验"这条的归类"时只放一条, 断言不必挑行)。
+    fn one_intent_pool(id: i64, tmdb_id: i64, season: i64, total: i64) -> Vec<u8> {
+        format!(
+            r#"{{"code":"ok","data":[{{"id":{id},"tmdb_id":{tmdb_id},"season":{season},
+               "media_type":"tv","title":"剧{id}","total_episodes_known":{total},
+               "state":"partial"}}],"counts":{{}}}}"#
+        )
+        .into_bytes()
+    }
+
+    /// 指定 Emby 覆盖原文与 TMDB 详情原文的单条宿主替身。
+    fn one_intent_host(episodes: &[u8], tmdb: &[u8]) -> FakeHost {
+        let fake = FakeHost::new();
+        fake.route_prefix(
+            "GET",
+            "GET /api/subscribe/pool/intents?",
+            200,
+            &one_intent_pool(41, 1396, 5, 16),
+        );
+        fake.route_prefix("GET", "GET /api/plugin-host/emby/instances", 200, &instances_body());
+        fake.route_prefix("GET", "GET /api/plugin-host/emby/episodes?", 200, episodes);
+        fake.route_prefix("GET", "GET /api/subscribe/air-calendar", 200, &calendar_body());
+        fake.route_prefix("GET", "GET /api/tmdb/tv/", 200, tmdb);
+        fake.route_prefix("PATCH", "PATCH /api/subscribe/pool/intents/", 200, b"{}");
+        fake
+    }
+
+    // ── 验收 1: 目标未知必须诚实, 且取数要留痕 ──
+
+    /// TMDB 取不到该季目标: `target_upper = 0` + `target_known = false`,
+    /// 文案写「未知(原因)」, attempts/last_errors 里有 TMDB 的失败记录, 本轮有可见结论。
+    /// (根因①: 以前失败时一条尝试都不记, 界面上就是"沉默的 0"。)
+    #[test]
+    fn unavailable_tmdb_target_stays_unknown_and_is_recorded() {
+        let fake = FakeHost::new();
+        fake.route_prefix(
+            "GET",
+            "GET /api/subscribe/pool/intents?",
+            200,
+            &one_intent_pool(41, 1396, 5, 10),
+        );
+        fake.route_prefix("GET", "GET /api/plugin-host/emby/instances", 200, &instances_body());
+        fake.route_prefix("GET", "GET /api/plugin-host/emby/episodes?", 200, &episodes_body());
+        fake.route_prefix("GET", "GET /api/subscribe/air-calendar", 200, &calendar_body());
+        // TMDB 该季取数全部 500: 这不是"TMDB 说 0 集", 是"取不到"
+        fake.route_prefix("GET", "GET /api/tmdb/tv/", 500, br#"{"error":"tmdb down"}"#);
+        fake.route_prefix("PATCH", "PATCH /api/subscribe/pool/intents/", 200, b"{}");
+        let guard = fake.install();
+        let mut runtime = Runtime::new();
+        runtime.ensure_loaded();
+        let result = job(&mut runtime, "align");
+        let doc = stored(&fake);
+
+        let item = &doc.align.items[0];
+        assert_eq!(item.target_upper, 0, "取不到就诚实写 0, 不许拿订阅集数/整剧集数顶替");
+        assert!(!item.target_known, "0 集与'取不到'必须靠 target_known 分开");
+        assert!(item.reason.contains("未知("), "{}", item.reason);
+        assert!(!item.reason.contains("TMDB 目标 0 集"), "{}", item.reason);
+        // Emby 缺口(12 > 10)照旧补订: 目标未知不该拖累可信证据
+        assert_eq!(result["patched"], 1, "{result}");
+        assert_eq!(result["target_calls"], 1, "{result}");
+        // 取数留痕: 状态码 + 步骤, 界面上能分清"没取"与"取到 0"
+        assert!(
+            doc.debug
+                .attempts
+                .iter()
+                .any(|attempt| attempt.endpoint == "tmdb.tv" && attempt.http_status == 500),
+            "{:?}",
+            doc.debug.attempts
+        );
+        assert!(
+            doc.debug.last_errors.iter().any(|error| error.step == "job.tmdb"),
+            "{:?}",
+            doc.debug.last_errors
+        );
+        assert!(
+            doc.align.last_error.contains("本轮 TMDB 目标不可用"),
+            "{}",
+            doc.align.last_error
+        );
+        drop(guard);
+    }
+
+    // ── 验收 2: auto_bump 显式默认 true ──
+
+    #[test]
+    fn auto_bump_defaults_true_and_false_never_writes() {
+        // 老文档没有 auto_bump 字段 → true, 照常补订(向后兼容)
+        let (fake, mut runtime) = harness();
+        let guard = fake.install();
+        runtime.ensure_loaded();
+        assert!(runtime.state_doc().settings.auto_bump, "缺字段必须当 true");
+        let result = job(&mut runtime, "align");
+        assert_eq!(result["patched"], 2, "{result}");
+        drop(guard);
+
+        // settings-update 显式关掉 → 零 PATCH, 但给出"本可补订"的理由
+        let (fake, mut runtime) = harness();
+        let guard = fake.install();
+        runtime.ensure_loaded();
+        let updated = action(&mut runtime, "settings-update", json!({"auto_bump": false}));
+        assert_eq!(updated["status"], "succeeded", "{updated}");
+        assert!(
+            updated["changed"].as_array().unwrap().iter().any(|key| key == "auto_bump"),
+            "{updated}"
+        );
+        let result = job(&mut runtime, "align");
+        assert_eq!(result["patched"], 0, "{result}");
+        assert!(fake.patches().is_empty(), "关了自动补订就绝不许写宿主");
+        let doc = stored(&fake);
+        assert!(!doc.settings.auto_bump);
+        assert!(
+            doc.align.items.iter().any(|item| item.reason.contains("auto_bump=false")),
+            "{:?}",
+            doc.align.items.iter().map(|item| &item.reason).collect::<Vec<_>>()
+        );
+        // 显式 null = 未提供(保持现值); 非布尔值 → rejected
+        let updated = action(&mut runtime, "settings-update", json!({"auto_bump": null}));
+        assert_eq!(updated["status"], "succeeded", "{updated}");
+        assert!(!runtime.state_doc().settings.auto_bump, "null 不该改现值");
+        let updated = action(&mut runtime, "settings-update", json!({"auto_bump": "yes"}));
+        assert_eq!(updated["status"], "failed", "{updated}");
+        assert!(!runtime.state_doc().settings.auto_bump, "非法值不该改动设置");
+        drop(guard);
+    }
+
+    // ── 验收 3: 「覆盖未知」「Emby 未收录」「无缺口(已核实)」三分 ──
+
+    #[test]
+    fn unknown_coverage_absent_and_no_gap_are_three_distinct_outcomes() {
+        // (a) 覆盖未知: 响应只有缺集列表(没有逐集覆盖), 目标也取不到 → 「覆盖未知(…)」
+        let fake = one_intent_host(br#"{"missing":[9]}"#, br#"{"seasons":[]}"#);
+        let guard = fake.install();
+        let mut runtime = Runtime::new();
+        runtime.ensure_loaded();
+        let result = job(&mut runtime, "align");
+        let doc = stored(&fake);
+        let item = &doc.align.items[0];
+        assert_eq!(item.action, "skipped", "{}", item.reason);
+        assert!(item.reason.contains("覆盖未知"), "{}", item.reason);
+        assert!(
+            !item.reason.contains("无缺口"),
+            "把'没探到'说成'已核实'是根因⑨: {}",
+            item.reason
+        );
+        assert_eq!(result["absent"], 0, "{result}");
+        drop(guard);
+
+        // (b) Emby 该季 0 集(探到了空集) → 单独归类「Emby 该季 0 集」, 既不是未知也不是无缺口
+        let fake = one_intent_host(
+            br#"{"items":[]}"#,
+            br#"{"seasons":[{"season_number":5,"episode_count":16}]}"#,
+        );
+        let guard = fake.install();
+        let mut runtime = Runtime::new();
+        runtime.ensure_loaded();
+        let result = job(&mut runtime, "align");
+        let doc = stored(&fake);
+        let item = &doc.align.items[0];
+        assert_eq!(item.action, "skipped", "{}", item.reason);
+        assert!(item.reason.contains("Emby 该季 0 集"), "{}", item.reason);
+        assert!(!item.reason.contains("覆盖未知"), "{}", item.reason);
+        assert!(!item.reason.contains("无缺口"), "{}", item.reason);
+        assert_eq!(doc.align.absent, 1);
+        assert_eq!(result["absent"], 1, "{result}");
+        // absent 与 skipped 互不重叠: 200+空季只进 absent 桶(与 404 路径口径一致)
+        assert_eq!(result["skipped"], 0, "未收录不该重复计入跳过: {result}");
+        assert_eq!(doc.align.skipped, 0);
+        drop(guard);
+
+        // (c) 覆盖已核实且目标已取到 → 只有这一种能说「无缺口」
+        let fake = one_intent_host(
+            br#"{"items":[{"index_number":1},{"index_number":16}]}"#,
+            br#"{"seasons":[{"season_number":5,"episode_count":16}]}"#,
+        );
+        let guard = fake.install();
+        let mut runtime = Runtime::new();
+        runtime.ensure_loaded();
+        let result = job(&mut runtime, "align");
+        let doc = stored(&fake);
+        let item = &doc.align.items[0];
+        assert!(item.reason.contains("无缺口: 订阅 16 集, Emby 已有 16 集, TMDB 目标 16 集"), "{}", item.reason);
+        assert!(item.target_known, "取到了目标就得标 true");
+        assert_eq!(result["absent"], 0, "{result}");
+        drop(guard);
+
+        // (d) Emby 明确"没有该剧"(404 + 原文) → 未收录, 不计 failed/unknown_shape
+        let fake = FakeHost::new();
+        fake.route_prefix(
+            "GET",
+            "GET /api/subscribe/pool/intents?",
+            200,
+            &one_intent_pool(41, 1396, 5, 16),
+        );
+        fake.route_prefix("GET", "GET /api/plugin-host/emby/instances", 200, &instances_body());
+        fake.route_prefix(
+            "GET",
+            "GET /api/plugin-host/emby/episodes?",
+            404,
+            r#"{"error":"没有该剧"}"#.as_bytes(),
+        );
+        fake.route_prefix("GET", "GET /api/subscribe/air-calendar", 200, &calendar_body());
+        fake.route_prefix("GET", "GET /api/tmdb/tv/", 200, br#"{"seasons":[]}"#);
+        let guard = fake.install();
+        let mut runtime = Runtime::new();
+        runtime.ensure_loaded();
+        let result = job(&mut runtime, "align");
+        let doc = stored(&fake);
+        let item = &doc.align.items[0];
+        assert!(item.reason.contains("Emby 未收录该剧/该季"), "{}", item.reason);
+        assert_eq!(
+            item.action, "failed",
+            "行级 action 是前端 absent 徽章的判据之一, 两条路径必须一致: {}",
+            item.reason
+        );
+        assert_eq!(result["absent"], 1, "{result}");
+        assert_eq!(result["failed"], 0, "未收录不是失败/结构未识别: {result}");
+        assert_eq!(doc.align.failed, 0);
+        assert_eq!(doc.align.absent, 1);
+        // absent 与 skipped 互不重叠: 404 未收录只进 absent 桶
+        assert_eq!(result["skipped"], 0, "未收录不该重复计入跳过: {result}");
+        assert_eq!(doc.align.skipped, 0);
+        drop(guard);
+    }
+
+    /// 端点整体 404(空正文)不许被当成"整池未收录": 空正文没有"不存在"的证据,
+    /// 必须按失败处理 —— 进 6 小时负缓存(第二轮零调用), 失败在 last_error 里可见。
+    /// (旧实现: 整池报"未收录", absent 条目按"没探过"每小时重探, last_error 看不到失败。)
+    #[test]
+    fn empty_body_404_is_a_failure_not_an_absent_pool() {
+        let fake = FakeHost::new();
+        fake.route_prefix("GET", "GET /api/subscribe/pool/intents?", 200, &intents_body());
+        fake.route_prefix("GET", "GET /api/plugin-host/emby/instances", 200, &instances_body());
+        // 宿主路由/权限变更的形态: 该端点整体 404 且空正文
+        fake.route_prefix("GET", "GET /api/plugin-host/emby/episodes?", 404, b"");
+        fake.route_prefix("GET", "GET /api/subscribe/air-calendar", 200, &calendar_body());
+        fake.route_prefix("GET", "GET /api/tmdb/tv/", 200, &tmdb_body());
+        let guard = fake.install();
+        let emby_calls = |fake: &FakeHost| {
+            fake.business_paths()
+                .into_iter()
+                .filter(|path| path.contains("/api/plugin-host/emby/episodes"))
+                .count()
+        };
+        let t0: u64 = 1_800_000_000_000_000_000;
+        clock::testhooks::set_now(Some(t0));
+
+        let mut runtime = Runtime::new();
+        runtime.ensure_loaded();
+        let result = job(&mut runtime, "align");
+        assert_eq!(result["absent"], 0, "空正文 404 没有'不存在'证据, 不是未收录: {result}");
+        assert_eq!(result["failed"], 2, "两条 tv 都要记失败: {result}");
+        let doc = stored(&fake);
+        assert!(
+            doc.align.last_error.contains("HTTP 404"),
+            "失败必须出现在 last_error 里: {:?}",
+            doc.align.last_error
+        );
+        assert!(
+            doc.align.items.iter().all(|item| !item.reason.contains("未收录")),
+            "{:?}",
+            doc.align.items.iter().map(|item| &item.reason).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            doc.probe_book.iter().filter(|entry| entry.emby == "failed").count(),
+            2,
+            "失败要进负缓存, 而不是按'没探过'排队: {:?}",
+            doc.probe_book
+        );
+        let calls_after_first = emby_calls(&fake);
+
+        // 第二轮 = 1 小时后: 6 小时负缓存命中 → 0 次 Emby 调用(旧实现 absent 会重探整池)
+        clock::testhooks::set_now(Some(t0 + 3_600 * 1_000_000_000));
+        let mut next = Runtime::new();
+        next.ensure_loaded();
+        let result = job(&mut next, "align");
+        assert_eq!(result["failed"], 0, "负缓存命中不再计失败: {result}");
+        assert_eq!(
+            emby_calls(&fake),
+            calls_after_first,
+            "6 小时内不许对整池重复烧探测预算"
+        );
+        clock::testhooks::set_now(None);
+        drop(guard);
+    }
+
+    /// 实测宿主的区间契约回归: `covered_episodes:""` + `needed_episodes:"1-24"`。
+    ///
+    /// 探测成功 → 「Emby 该季 0 集(未收录/未入库)」; 旧实现把"空覆盖 + 非空缺集列表"
+    /// 报成「覆盖未知(本季未探测成功)」(探测其实成功), 同一行与结果列的「该季 0 集」
+    /// 自相矛盾, 且 absent 计数漏掉它。
+    #[test]
+    fn range_contract_empty_covered_is_absent_not_unknown() {
+        let fake = one_intent_host(
+            br#"{"complete":false,"covered_episodes":"","needed_episodes":"1-24"}"#,
+            br#"{"seasons":[]}"#,
+        );
+        let guard = fake.install();
+        let mut runtime = Runtime::new();
+        runtime.ensure_loaded();
+        let result = job(&mut runtime, "align");
+        let doc = stored(&fake);
+        let item = &doc.align.items[0];
+        assert_eq!(item.action, "skipped", "{}", item.reason);
+        assert!(item.reason.contains("Emby 该季 0 集"), "{}", item.reason);
+        assert!(
+            !item.reason.contains("覆盖未知"),
+            "探测成功, 不许报覆盖未知: {}",
+            item.reason
+        );
+        assert!(
+            !item.reason.contains("本季未探测成功"),
+            "探测其实成功, 这句是假话: {}",
+            item.reason
+        );
+        // 结果列口径: have_max 未知(-1, 不冒充 0)但 count = 0(已知 0 条) → 「该季 0 集」;
+        // 与 reason 的「Emby 该季 0 集」/ 前端徽章的「未收录/未入库」同一结论。
+        assert_eq!(item.emby_have_max, -1);
+        assert_eq!(item.emby_have_count, 0);
+        assert_eq!(doc.align.absent, 1, "空覆盖要按未收录/未入库计数");
+        assert_eq!(result["absent"], 1, "{result}");
+        // 计数口径: absent 与 skipped 互不重叠(404 路径同样只计 absent, 见验收 3(d))
+        assert_eq!(result["skipped"], 0, "未收录不该重复计入跳过: {result}");
+        assert_eq!(doc.align.skipped, 0);
+        let entry = doc
+            .probe_book
+            .iter()
+            .find(|entry| entry.key == "3:1396:5")
+            .expect("本轮探测必须记账");
+        assert_eq!(entry.emby, "absent", "{entry:?}");
+        drop(guard);
+    }
+
+    /// 负缓存(结构认不出的端点)不许"跳过时刷新 at", 否则 6 小时 TTL 永不过期:
+    /// 认不出的端点被永久跳过, `probe_priority` 的"失败事实太旧"分支成死代码。
+    /// (实测: 第二轮 0 次 Emby 调用而 at 被刷新; 对照实验把 at 改成 7 小时前 → 重探 3 次。)
+    #[test]
+    fn negative_cache_skip_keeps_at_and_expires_after_ttl() {
+        let fake = one_intent_host(br#"{"nonsense":true}"#, br#"{"seasons":[]}"#);
+        let guard = fake.install();
+        let emby_calls = |fake: &FakeHost| {
+            fake.business_paths()
+                .into_iter()
+                .filter(|path| path.contains("/api/plugin-host/emby/episodes"))
+                .count()
+        };
+        // 固定时钟: at 的断言必须精确, 不能依赖真实时间。
+        let t0: u64 = 1_800_000_000_000_000_000;
+        clock::testhooks::set_now(Some(t0));
+
+        // 第一轮: 200 但形状全认不出 → 3 次调用全失败, 记入 6 小时负缓存
+        let mut runtime = Runtime::new();
+        runtime.ensure_loaded();
+        let result = job(&mut runtime, "align");
+        assert_eq!(result["failed"], 1, "{result}");
+        let calls_after_first = emby_calls(&fake);
+        assert_eq!(calls_after_first, 3, "形状组合全试一遍: 3 次 Emby 调用");
+        let doc = stored(&fake);
+        let key = "3:1396:5";
+        let first = doc
+            .probe_book
+            .iter()
+            .find(|entry| entry.key == key)
+            .expect("首轮失败必须记账")
+            .clone();
+        assert_eq!(first.emby, "failed");
+        assert_eq!(first.at, clock::rfc3339_from_unix(1_800_000_000));
+
+        // 第二轮 = 1 小时后: 命中负缓存 → 0 次 Emby 调用, 且 at 必须保持首轮时刻
+        clock::testhooks::set_now(Some(t0 + 3_600 * 1_000_000_000));
+        let mut second_round = Runtime::new();
+        second_round.ensure_loaded();
+        let result = job(&mut second_round, "align");
+        assert_eq!(result["failed"], 0, "负缓存命中不该再计失败: {result}");
+        assert_eq!(
+            emby_calls(&fake),
+            calls_after_first,
+            "6 小时内不许重复烧认不出的端点"
+        );
+        let doc = stored(&fake);
+        let second = doc
+            .probe_book
+            .iter()
+            .find(|entry| entry.key == key)
+            .expect("记账跨轮保留")
+            .clone();
+        assert_eq!(
+            second.at, first.at,
+            "跳过时把 at 刷成本轮 now 就等于 TTL 永不过期(实测根因)"
+        );
+        assert_eq!(second.emby, "failed");
+        assert!(
+            doc.align.items[0].reason.contains("负缓存"),
+            "{}",
+            doc.align.items[0].reason
+        );
+
+        // 第三轮 = 7 小时后: 失败事实太旧 → 重新排队, 又探 3 次, at 刷新到本轮
+        clock::testhooks::set_now(Some(t0 + 7 * 3_600 * 1_000_000_000));
+        let mut third_round = Runtime::new();
+        third_round.ensure_loaded();
+        let result = job(&mut third_round, "align");
+        assert_eq!(result["failed"], 1, "{result}");
+        assert_eq!(
+            emby_calls(&fake) - calls_after_first,
+            3,
+            "超 6 小时后必须重新探测(对照实验实测 3 次)"
+        );
+        let doc = stored(&fake);
+        let third = doc
+            .probe_book
+            .iter()
+            .find(|entry| entry.key == key)
+            .expect("记账")
+            .clone();
+        assert_eq!(third.emby, "failed");
+        assert_ne!(third.at, second.at, "重探后 at 必须刷新");
+        assert_eq!(
+            third.at,
+            clock::rfc3339_from_unix(1_800_000_000 + 7 * 3_600)
+        );
+        clock::testhooks::set_now(None);
+        drop(guard);
+    }
+
+    /// 覆盖已核实但 TMDB 目标未知: 行里不许说「无缺口」(模块头三类互斥要求
+    /// "无缺口 = 覆盖已核实且目标已取到"); 同一份证据在目标已知时会 PATCH,
+    /// 所以这一行本可能藏着缺口, 前端也不该打 no-gap 徽章。
+    #[test]
+    fn verified_coverage_with_unknown_target_is_not_no_gap() {
+        let fake = one_intent_host(
+            br#"{"items":[{"index_number":1},{"index_number":16}]}"#,
+            br#"{"seasons":[]}"#, // 该季在 TMDB 详情里取不到 → 目标未知
+        );
+        let guard = fake.install();
+        let mut runtime = Runtime::new();
+        runtime.ensure_loaded();
+        let result = job(&mut runtime, "align");
+        let doc = stored(&fake);
+        let item = &doc.align.items[0];
+        assert_eq!(item.action, "skipped", "{}", item.reason);
+        assert!(!item.target_known, "目标取不到必须诚实标未知");
+        assert_eq!(item.target_upper, 0);
+        assert!(
+            !item.reason.contains("无缺口"),
+            "目标未知却报无缺口 = 与三类互斥矛盾: {}",
+            item.reason
+        );
+        assert!(
+            item.reason.contains("覆盖已核实但目标未知"),
+            "{}",
+            item.reason
+        );
+        assert!(item.reason.contains("未参与判定"), "{}", item.reason);
+        assert_eq!(result["absent"], 0, "{result}");
+        drop(guard);
+    }
+
+    // ── 验收 4: 被预算挡下的条目下一轮先探, 「待探测 N 条」可见 ──
+
+    #[test]
+    fn budget_starved_entries_are_probed_first_next_round() {
+        let mut entries = Vec::new();
+        for index in 0..3 {
+            entries.push(format!(
+                r#"{{"id":{},"tmdb_id":{},"season":1,"media_type":"tv","title":"剧{index}",
+                   "total_episodes_known":1,"state":"partial"}}"#,
+                index + 1,
+                1396 + index
+            ));
+        }
+        let body = format!(r#"{{"code":"ok","data":[{}],"counts":{{}}}}"#, entries.join(","));
+        let fake = FakeHost::new();
+        fake.route_prefix("GET", "GET /api/subscribe/pool/intents?", 200, body.as_bytes());
+        fake.route_prefix("GET", "GET /api/plugin-host/emby/instances", 200, &instances_body());
+        fake.route_prefix("GET", "GET /api/plugin-host/emby/episodes?", 200, &episodes_body());
+        fake.route_prefix("GET", "GET /api/subscribe/air-calendar", 200, &calendar_body());
+        fake.route_prefix("GET", "GET /api/tmdb/tv/", 200, br#"{"seasons":[]}"#);
+        fake.route_prefix("PATCH", "PATCH /api/subscribe/pool/intents/", 200, b"{}");
+        let guard = fake.install();
+        let mut runtime = Runtime::new();
+        runtime.ensure_loaded();
+        // 预算 2 = 每条的常见成本(1 Emby + 1 TMDB) × 1 条
+        let _ = action(&mut runtime, "settings-update", json!({"emby_probe_budget": 2}));
+
+        let result = job(&mut runtime, "align");
+        assert_eq!(result["matched"], 1, "{result}");
+        assert_eq!(result["pending_probe"], 2, "{result}");
+        let doc = stored(&fake);
+        assert_eq!(doc.align.pending_probe, 2, "state 里必须有可见的「待探测 N 条」");
+        assert_eq!(
+            doc.probe_book.iter().filter(|entry| entry.emby == "budget").count(),
+            2,
+            "被预算挡下的条目要记进跨轮探测账簿: {:?}",
+            doc.probe_book
+        );
+
+        // 第二轮: 上轮没探到的两条必须排在池头的条目之前(同一个替身, 状态跨轮复用)
+        let mut next = Runtime::new();
+        next.ensure_loaded();
+        let _ = job(&mut next, "align");
+        let emby_calls: Vec<String> = fake
+            .business_paths()
+            .into_iter()
+            .filter(|path| path.contains("/api/plugin-host/emby/episodes"))
+            .collect();
+        assert_eq!(emby_calls.len(), 2, "两轮各探中一条: {emby_calls:?}");
+        assert!(
+            emby_calls[1].contains("1397"),
+            "第二轮必须先探上轮被预算挡下的条目(1397), 而不是又回到池头 1396: {emby_calls:?}"
+        );
+        assert!(
+            !emby_calls[1].contains("1396"),
+            "池头条目已经探过, 不该霸占下一轮预算: {emby_calls:?}"
+        );
+        let doc = stored(&fake);
+        assert_eq!(doc.probe_book.len(), 3, "{:?}", doc.probe_book);
+        drop(guard);
+    }
+
+    // ── 验收 5: 默认预算 120 覆盖 50 条(1 Emby + 1 TMDB / 条) ──
+
+    /// 条目的常见成本 = 1 次 Emby(形状指纹命中即停)+ 1 次 TMDB(按季缓存,
+    /// 同一季只取一次), 所以 50 条 = 50 + 50 = 100 次 ≤ 120。旧代码里 TMDB
+    /// 取数**不**计入预算, 所以"预算用尽"的账根本对不上(根因⑩)。
+    #[test]
+    fn default_budget_covers_fifty_entries_with_emby_and_tmdb() {
+        let mut entries = Vec::new();
+        for index in 0..50 {
+            entries.push(format!(
+                r#"{{"id":{},"tmdb_id":{},"season":1,"media_type":"tv","title":"剧{index}",
+                   "total_episodes_known":1,"state":"partial"}}"#,
+                index + 1,
+                1000 + index
+            ));
+        }
+        let body = format!(r#"{{"code":"ok","data":[{}],"counts":{{}}}}"#, entries.join(","));
+        let fake = FakeHost::new();
+        fake.route_prefix("GET", "GET /api/subscribe/pool/intents?", 200, body.as_bytes());
+        fake.route_prefix("GET", "GET /api/plugin-host/emby/instances", 200, &instances_body());
+        fake.route_prefix("GET", "GET /api/plugin-host/emby/episodes?", 200, &episodes_body());
+        fake.route_prefix("GET", "GET /api/subscribe/air-calendar", 200, &calendar_body());
+        fake.route_prefix("GET", "GET /api/tmdb/tv/", 200, br#"{"seasons":[]}"#);
+        fake.route_prefix("PATCH", "PATCH /api/subscribe/pool/intents/", 200, b"{}");
+        let guard = fake.install();
+        let mut runtime = Runtime::new();
+        runtime.ensure_loaded();
+
+        let result = job(&mut runtime, "align");
+        assert_eq!(result["matched"], 50, "{result}");
+        assert_eq!(result["pending_probe"], 0, "{result}");
+        let paths = fake.business_paths();
+        let emby_calls = paths.iter().filter(|path| path.contains("/api/plugin-host/emby/episodes")).count();
+        let tmdb_calls = paths.iter().filter(|path| path.contains("/api/tmdb/tv/")).count();
+        assert_eq!(emby_calls, 50, "50 条各 1 次 Emby: {emby_calls}");
+        assert_eq!(tmdb_calls, 50, "50 条各 1 次 TMDB: {tmdb_calls}");
+        assert!(emby_calls + tmdb_calls <= 120, "总取数必须落在默认预算内");
+        let doc = stored(&fake);
+        assert!(
+            doc.align.items.iter().all(|item| !item.reason.contains("预算用尽")),
+            "预算 120 不该有人被挡: {:?}",
+            doc.align
+                .items
+                .iter()
+                .map(|item| &item.reason)
+                .filter(|reason| reason.contains("预算用尽"))
+                .collect::<Vec<_>>()
+        );
+        drop(guard);
     }
 }

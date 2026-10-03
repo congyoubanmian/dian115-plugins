@@ -62,8 +62,12 @@ const previewState = reactive({
         gap_max: 0,
         from_total: 5,
         to_total: 5,
+        // 「无缺口」要求目标也取到: 目标未知的行后端文案是「覆盖已核实但目标未知」,
+        // 预览数据也得同形, 免得演示里出现"无缺口 + 目标未知"的自相矛盾。
+        target_upper: 5,
+        target_known: true,
         action: 'skipped',
-        reason: '无缺口: 订阅 5 集, Emby 已有 5 集, TMDB 目标 0 集',
+        reason: '无缺口: 订阅 5 集, Emby 已有 5 集, TMDB 目标 5 集',
         at: '2026-10-01T09:00:00Z',
       },
     ],

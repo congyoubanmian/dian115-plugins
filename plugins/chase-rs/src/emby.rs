@@ -421,6 +421,37 @@ impl Coverage {
         self.have.as_ref().map(|set| set.len() as i64)
     }
 
+    /// 该季在 Emby 侧一集都没有(探到了空集): 未收录/未入库, 不是"无缺口"。
+    ///
+    /// 只读判定, 不改任何解析路径: `have == Some(空集)`(区间契约里的空覆盖串
+    /// `covered_episodes:""` 或空数组)。是否同时带缺集列表(`needed_episodes:"1-24"`)
+    /// 不影响这个已知事实 —— 缺集列表只是补充证据, 空覆盖仍然是"0 集"。
+    /// (解析器把"命中了集列表字段但列表为空"记成 `Some(空集)` 而不是 `None`,
+    /// 所以这里能把它与"响应里根本没有逐集信息"严格分开。)
+    pub fn is_absent(&self) -> bool {
+        self.have.as_ref().map(BTreeSet::is_empty).unwrap_or(false)
+    }
+
+    /// 覆盖未知([`Coverage::have_max`] 为 `None`)时的可读原因。
+    ///
+    /// `have_max = None` 有两种来源, 文案必须分开:
+    ///
+    /// - `have = Some(空集)`: 解析成功且逐集覆盖**就是空的**(区间契约的
+    ///   `covered_episodes:""`)。这是"该季 0 集"的已知事实, 判定层按
+    ///   「Emby 该季 0 集」归类, 不走"覆盖未知"; 这里仍给一句真话兜底 ——
+    ///   **绝不返回空串**: 空串曾让判定层用"本季未探测成功"这种假话顶上
+    ///   (实测缺陷: 探测其实成功, 只是没有逐集明细)。
+    /// - `have = None`: 真的没解析出逐集覆盖, 才是"覆盖未知"。
+    pub fn unknown_note(&self) -> &'static str {
+        if self.have.is_some() {
+            "响应里的逐集覆盖是空集(该季 0 集), 没有更细的逐集明细"
+        } else if self.missing.is_some() {
+            "响应只有缺集列表, 没有逐集覆盖"
+        } else {
+            "响应里没有逐集覆盖字段"
+        }
+    }
+
     /// 明示缺集的最大集号。
     pub fn missing_max(&self) -> Option<i64> {
         self.missing.as_ref().and_then(|set| set.iter().next_back().copied())
@@ -627,6 +658,39 @@ fn missing_field_name(value: &Value) -> Option<String> {
         }
     }
     None
+}
+
+/// 「Emby 里没有这部剧/这一季」的独立分类(只读判定, 绝不改解析路径)。
+///
+/// 宿主对该端点的业务结构没有契约(openapi-v1.yaml:4332-4352 响应是
+/// `GenericHostObject`), "没有该剧"既可能回 404/400、也可能回 200 + 空覆盖:
+/// - 200 + 空覆盖由 [`Coverage::is_absent`] 判定;
+/// - HTTP 失败只有**正文明确**说"不存在/未收录/not found"时才归到这一类 ——
+///   400 参数错误、500 服务端错误等维持 `failed`(不能把宿主故障说成"没有该剧")。
+///
+/// **空正文的 404 不算证据**: 宿主路由/权限变更让整个端点 404 时同样回空 404,
+/// 若一律判"未收录", 整池都会被误报成未收录 —— 而且 absent 条目在 probe_book 里
+/// 按"没探过"重新排队(不进 6 小时负缓存), 每小时对每条重复烧探测预算,
+/// `last_error` 里也看不到失败。没有正文证据就按失败处理(进负缓存)。
+pub fn failure_is_absent(failure: &ParseFailure) -> bool {
+    if failure.http_status != 404 && failure.http_status < 400 {
+        return false;
+    }
+    if failure.raw.is_empty() {
+        return false;
+    }
+    let text = String::from_utf8_lossy(&failure.raw).to_ascii_lowercase();
+    const MARKERS: [&str; 8] = [
+        "没有该剧",
+        "该剧不存在",
+        "不存在",
+        "未收录",
+        "未找到",
+        "not found",
+        "no such",
+        "not exist",
+    ];
+    MARKERS.iter().any(|marker| text.contains(marker))
 }
 
 /// 拉取一次覆盖。
@@ -1246,5 +1310,91 @@ mod tests {
         assert!(failure.message.contains("Emby 覆盖请求失败"), "{}", failure.message);
         assert!(failure.sample().is_empty(), "传输失败没有原文可留");
         drop(guard);
+    }
+
+    // ── 「Emby 没有这部剧/这一季」的独立分类(只读) ──
+
+    #[test]
+    fn is_absent_only_for_a_known_empty_season() {
+        // 200 + 空逐集列表 → 探到了空集
+        let empty = parse_coverage(br#"{"items":[]}"#).unwrap();
+        assert_eq!(empty.have, Some(BTreeSet::new()));
+        assert_eq!(empty.have_count(), Some(0));
+        assert!(empty.is_absent());
+        // 裸空数组同样算"探到了空"
+        assert!(parse_coverage(b"[]").unwrap().is_absent());
+        // 实测宿主的区间契约: covered_episodes 与 needed_episodes 都是空串
+        let ranges = parse_coverage(br#"{"covered_episodes":"","needed_episodes":""}"#).unwrap();
+        assert_eq!(ranges.have, Some(BTreeSet::new()));
+        assert!(ranges.is_absent());
+        // 实测宿主形态: 空覆盖 + 非空缺集列表(needed_episodes:"1-24")同样是
+        // "该季 0 集"的已知事实 —— 缺集列表只是补充证据, 不能据此把探测成功
+        // 说成"覆盖未知"(判定层旧实现就是这么报的, 已修)。
+        let empty_covered_with_needed =
+            parse_coverage(br#"{"complete":false,"covered_episodes":"","needed_episodes":"1-24"}"#)
+                .unwrap();
+        assert!(empty_covered_with_needed.is_absent());
+        assert_eq!(empty_covered_with_needed.have_count(), Some(0));
+        // have_max 为 None 的两种来源都必须有真话兜底: 空串曾让判定层用
+        // "本季未探测成功"顶上(探测其实成功), 这里钉死绝不返回空串。
+        assert!(
+            !empty_covered_with_needed.unknown_note().is_empty(),
+            "空覆盖也要给可读原因, 空串会变成假话的温床"
+        );
+        assert!(
+            empty_covered_with_needed.unknown_note().contains("空集"),
+            "{}",
+            empty_covered_with_needed.unknown_note()
+        );
+        // 有集号 → 不是 absent
+        assert!(!parse_coverage(br#"{"items":[{"index_number":1}]}"#).unwrap().is_absent());
+        assert!(!parse_coverage(br#"{"covered_episodes":"1-24","needed_episodes":""}"#)
+            .unwrap()
+            .is_absent());
+        // 只有缺集列表(没有逐集覆盖) → 是"未知", 不是"空"
+        let missing_only = parse_coverage(br#"{"missing":[12]}"#).unwrap();
+        assert_eq!(missing_only.have, None);
+        assert!(!missing_only.is_absent());
+        assert_eq!(missing_only.unknown_note(), "响应只有缺集列表, 没有逐集覆盖");
+        // `{"missing":[]}` 走区间路径时同样没有逐集覆盖 → 未知
+        let empty_missing = parse_coverage(br#"{"missing":[]}"#).unwrap();
+        assert!(!empty_missing.is_absent());
+        assert_eq!(empty_missing.unknown_note(), "响应只有缺集列表, 没有逐集覆盖");
+    }
+
+    #[test]
+    fn failure_is_absent_only_with_explicit_evidence() {
+        // 404 空正文: **没有证据**, 按失败处理 —— 宿主路由/权限整体 404 时也是空正文,
+        // 判成"未收录"会让整池误报、不进负缓存、每小时重复烧预算(实测缺陷)。
+        assert!(!failure_is_absent(&ParseFailure::http(404, Vec::new(), "Emby 覆盖 HTTP 404")));
+        // 404 正文明确"不存在" → 才是未收录
+        assert!(failure_is_absent(&ParseFailure::http(
+            404,
+            br#"{"error":"no such show"}"#.to_vec(),
+            "Emby 覆盖 HTTP 404"
+        )));
+        // 400 正文明确"没有该剧" → 归未收录
+        assert!(failure_is_absent(&ParseFailure::http(
+            400,
+            r#"{"error":"没有该剧"}"#.as_bytes().to_vec(),
+            "Emby 覆盖 HTTP 400"
+        )));
+        assert!(failure_is_absent(&ParseFailure::http(
+            404,
+            br#"{"message":"Not Found"}"#.to_vec(),
+            "Emby 覆盖 HTTP 404"
+        )));
+        // 400 空正文 / 500 / 400 其它原因 → 维持 failed(不许把宿主故障说成没有该剧)
+        assert!(!failure_is_absent(&ParseFailure::http(400, Vec::new(), "Emby 覆盖 HTTP 400")));
+        assert!(!failure_is_absent(&ParseFailure::http(
+            400,
+            br#"{"error":"missing parameter total_episodes"}"#.to_vec(),
+            "Emby 覆盖 HTTP 400"
+        )));
+        assert!(!failure_is_absent(&ParseFailure::http(500, b"boom".to_vec(), "Emby 覆盖 HTTP 500")));
+        // 传输失败(无状态码)不算
+        assert!(!failure_is_absent(&ParseFailure::transport("Emby 覆盖请求失败")));
+        // 200 但结构未识别不算
+        assert!(!failure_is_absent(&ParseFailure::http(200, b"nope".to_vec(), "结构未识别")));
     }
 }

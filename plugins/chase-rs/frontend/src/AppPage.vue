@@ -35,19 +35,23 @@ import {
   Activity as ActivityIcon,
   Bug as BugIcon,
   CalendarDays as CalendarDaysIcon,
+  CircleAlert as CircleAlertIcon,
   CircleCheckBig as CircleCheckBigIcon,
+  CircleMinus as CircleMinusIcon,
+  CircleHelp as CircleHelpIcon,
   Copy as CopyIcon,
   ListChecks as ListChecksIcon,
   Play as PlayIcon,
   RefreshCw as RefreshCwIcon,
   Scissors as ScissorsIcon,
   Settings as SettingsIcon,
+  Target as TargetIcon,
+  UserX as UserXIcon,
 } from '@lucide/vue'
 import ProbePanel from './ProbePanel.vue'
 import StatTile from './StatTile.vue'
 import {
   alignActionResult,
-  alignActionTagType,
   episodeLabel,
   formatAt,
   gapRange,
@@ -56,12 +60,18 @@ import {
   localDate,
   num,
   probeFailed,
+  reasonBadge,
   seasonLabel,
+  coverageLabel,
+  coverageText,
+  targetKnown,
+  targetLabel,
   text,
   type AlignItem,
   type AppState,
   type CalendarDay,
   type HostBridge,
+  type ReasonBadge,
   type RuntimeCallback,
   type TrimSuggestion,
 } from './chase-state'
@@ -143,6 +153,36 @@ const overviewStatus = computed(() => ({
 const alignItems = computed<AlignItem[]>(() => list(align.value.items))
 const gapItems = computed(() => alignItems.value.filter(hasGap))
 
+/** 逐行预组装徽章: 分类/配色只算一次, 模板里不再重复调用。 */
+const alignRows = computed(() =>
+  alignItems.value.map((item) => ({
+    item,
+    badge: reasonBadge(item),
+    detail: alignActionResult(item),
+    targetUnknown: !targetKnown(item),
+  })),
+)
+
+/** reason 分类 → 图标(文案一律用后端给的分类词, 这里只挑图形)。 */
+function reasonIcon(kind: ReasonBadge['kind']) {
+  switch (kind) {
+    case 'patched':
+      return CircleCheckBigIcon
+    case 'no-gap':
+      return CircleMinusIcon
+    case 'unknown-coverage':
+      return CircleHelpIcon
+    case 'empty-season':
+    case 'absent':
+      return UserXIcon
+    case 'target-unknown':
+      // 覆盖已核实但目标未知: 用和目标列/子徽章同一个 Target 图标(主徽章已经是"目标未知"时不再挂重复的子徽章)。
+      return TargetIcon
+    default:
+      return CircleAlertIcon
+  }
+}
+
 /** Emby 实例名与 id: -1 跟随宿主默认, 0 旧版单实例, ≥1 指定实例(找不到就如实说)。 */
 const instanceLabel = computed(() => {
   const proxy = num(settings.value.emby_proxy_id, -1)
@@ -215,6 +255,11 @@ const probeProblem = computed(() => {
   if (probeFailed(calendarStatus)) {
     return `追剧日历结构未识别(status=${text(calendarStatus)}): 日历与日报的「今日播出」段会缺内容, 对齐不受影响。点「探测诊断」看原文样本。`
   }
+  // TMDB 目标取不到不是"结构未识别"级故障(判定降级为仅 Emby 缺口), 但必须让用户看得见。
+  const tmdbStatus = debug.value.tmdb_target?.status
+  if (tmdbStatus === 'http_error' || tmdbStatus === 'transport_error' || tmdbStatus === 'unparsed') {
+    return `TMDB 该季集数取不到(status=${text(tmdbStatus)}, http=${num(debug.value.tmdb_target?.http_status, 0)}): 结果表里目标显示「未知」, 补订按 Emby 缺口判定(不会拿订阅集数顶替)。点「探测诊断」看原文样本。`
+  }
   return ''
 })
 
@@ -232,6 +277,8 @@ const alignSummary = computed(() => ({
   patched: num(align.value.patched, 0),
   skipped: num(align.value.skipped, 0),
   failed: num(align.value.failed, 0),
+  absent: num(align.value.absent, 0),
+  pendingProbe: num(align.value.pending_probe, 0),
   pages: num(align.value.pages, 0),
   intentsSeen: num(align.value.intents_seen, 0),
   matched: num(align.value.matched, 0),
@@ -301,7 +348,13 @@ async function runAction(action: string, input: Record<string, unknown> = {}): P
       message.error(String(result.message || '操作失败'))
     } else if (action === 'align-now') {
       const note = result.budget_hit ? '(达时间预算提前结束)' : ''
-      message.success(`立即对齐完成: 补订 ${num(result.patched, 0)} 条 · 跳过 ${num(result.skipped, 0)} 条 · 失败 ${num(result.failed, 0)} 条${note}`)
+      const absent = num(result.absent, 0)
+      const absentNote = absent > 0 ? ` · 未收录 ${absent} 条` : ''
+      message.success(
+        `立即对齐完成: 补订 ${num(result.patched, 0)} 条 · 跳过 ${num(result.skipped, 0)} 条 · 失败 ${num(result.failed, 0)} 条${absentNote}${note}`,
+      )
+    } else if (action === 'probe-dump') {
+      message.success(String(result.message || '操作完成'))
     } else {
       message.success(String(result.message || '操作完成'))
     }
@@ -319,6 +372,7 @@ async function runAction(action: string, input: Record<string, unknown> = {}): P
 
 interface SettingsForm {
   enabled: boolean
+  auto_bump: boolean
   dry_run: boolean
   write_episode_strings: boolean
   emby_proxy_id: number
@@ -333,6 +387,7 @@ interface SettingsForm {
 
 const defaults: SettingsForm = {
   enabled: true,
+  auto_bump: true,
   dry_run: false,
   write_episode_strings: false,
   emby_proxy_id: -1,
@@ -353,6 +408,8 @@ function readForm(source: AppState): SettingsForm {
   const report = incoming.report || {}
   return {
     enabled: incoming.enabled !== false,
+    // 缺字段的旧文档 = true(与后端 serde 默认一致): 不能用 === true, 否则老文档会被显示成"已关闭"
+    auto_bump: incoming.auto_bump !== false,
     dry_run: incoming.dry_run === true,
     write_episode_strings: incoming.write_episode_strings === true,
     emby_proxy_id: num(incoming.emby_proxy_id, defaults.emby_proxy_id),
@@ -406,6 +463,7 @@ function buildPayload(): Record<string, unknown> {
   const payload: Record<string, unknown> = {}
   const before = baseline.value
   if (form.enabled !== before.enabled) payload.enabled = form.enabled
+  if (form.auto_bump !== before.auto_bump) payload.auto_bump = form.auto_bump
   if (form.dry_run !== before.dry_run) payload.dry_run = form.dry_run
   if (form.write_episode_strings !== before.write_episode_strings) payload.write_episode_strings = form.write_episode_strings
   if (form.emby_proxy_id !== before.emby_proxy_id) payload.emby_proxy_id = form.emby_proxy_id
@@ -453,6 +511,7 @@ const diagnosticsText = computed(() => {
     ['emby/episodes', debug.value.emby_episodes],
     ['subscribe/air-calendar', debug.value.air_calendar],
     ['subscribe/pool/intents', debug.value.pool_intents],
+    ['tmdb/tv (该季集数)', debug.value.tmdb_target],
   ]
   for (const [name, snapshot] of probes) {
     const probe = snapshot || {}
@@ -569,6 +628,18 @@ async function copyDiagnostics() {
           :note="`合计缺口 ${num(stats.gap_total, 0)} 集`"
           :tone="gapItems.length > 0 ? 'warning' : 'default'"
         />
+        <stat-tile
+          label="待探测"
+          :value="`${alignSummary.pendingProbe} 条`"
+          :note="alignSummary.pendingProbe > 0 ? '预算/时间用尽, 下轮优先补探' : '本轮没有条目被预算挡下'"
+          :tone="alignSummary.pendingProbe > 0 ? 'warning' : 'default'"
+        />
+        <stat-tile
+          label="未收录"
+          :value="`${alignSummary.absent} 条`"
+          :note="alignSummary.absent > 0 ? 'Emby 里没有这部剧/该季 0 集' : '没有未收录条目'"
+          :tone="alignSummary.absent > 0 ? 'warning' : 'default'"
+        />
         <stat-tile label="Emby 实例" :value="instanceLabel" :note="instanceNote" />
         <stat-tile label="最近对齐" :value="alignSummary.lastRunAt" :note="`上次运行 ${overviewStatus.lastRun} · revision ${overviewStatus.revision}`" />
         <stat-tile label="日报" :value="reportStatus.value" :note="reportStatus.note" :tone="reportStatus.tone" />
@@ -589,10 +660,14 @@ async function copyDiagnostics() {
           <h3><list-checks-icon class="chase-icon" />对齐结果</h3>
           <n-text depth="3">
             最近对齐 {{ alignSummary.lastRunAt }} · 补订 {{ alignSummary.patched }} / 跳过 {{ alignSummary.skipped }} / 失败
-            {{ alignSummary.failed }} · 读 {{ alignSummary.pages }} 页 / 见到 {{ alignSummary.intentsSeen }} 条 / 参与判定
-            {{ alignSummary.matched }} 条
+            {{ alignSummary.failed }} · 未收录 {{ alignSummary.absent }} · 待探测 {{ alignSummary.pendingProbe }} 条 · 读
+            {{ alignSummary.pages }} 页 / 见到 {{ alignSummary.intentsSeen }} 条 / 参与判定 {{ alignSummary.matched }} 条
           </n-text>
         </div>
+
+        <n-alert v-if="alignSummary.pendingProbe > 0" type="warning" :show-icon="true" class="chase-alert">
+          有 {{ alignSummary.pendingProbe }} 条这轮没探到(探测预算/时间用尽), 下一轮会优先补探; 不是"没有缺口"。
+        </n-alert>
 
         <n-empty v-if="alignItems.length === 0" :description="alignEmptyReason" class="chase-empty">
           <template #extra>
@@ -610,31 +685,50 @@ async function copyDiagnostics() {
                 <th>季</th>
                 <th>订阅总集数</th>
                 <th>Emby 已有</th>
+                <th>TMDB 目标</th>
                 <th>缺口集号</th>
                 <th>结果</th>
               </tr>
             </thead>
             <tbody>
-              <tr v-for="item in alignItems" :key="`${num(item.intent_id, 0)}-${num(item.season, 0)}`">
+              <tr v-for="row in alignRows" :key="`${num(row.item.intent_id, 0)}-${num(row.item.season, 0)}`">
                 <td data-label="剧集">
-                  <div class="chase-title">{{ text(item.title, `intent #${num(item.intent_id, 0)}`) }}</div>
-                  <div class="chase-sub">intent {{ num(item.intent_id, 0) }} · tmdb {{ num(item.tmdb_id, 0) }} · {{ formatAt(item.at) }}</div>
+                  <div class="chase-title">{{ text(row.item.title, `intent #${num(row.item.intent_id, 0)}`) }}</div>
+                  <div class="chase-sub">intent {{ num(row.item.intent_id, 0) }} · tmdb {{ num(row.item.tmdb_id, 0) }} · {{ formatAt(row.item.at) }}</div>
                 </td>
-                <td data-label="季">{{ seasonLabel(item.season) }}</td>
-                <td data-label="订阅总集数">{{ num(item.total_known, 0) }}</td>
+                <td data-label="季">{{ seasonLabel(row.item.season) }}</td>
+                <td data-label="订阅总集数">{{ num(row.item.total_known, 0) }}</td>
                 <td data-label="Emby 已有">
-                  <template v-if="num(item.emby_have_max, -1) >= 0">
-                    最大 {{ num(item.emby_have_max, 0) }} 集<span class="chase-sub"> ({{ num(item.emby_have_count, 0) }} 条)</span>
-                  </template>
-                  <span v-else class="chase-sub">未知(未探测)</span>
+                  <span :class="{ 'chase-sub': num(row.item.emby_have_max, -1) < 0 }">{{ coverageLabel(row.item) }}</span>
+                </td>
+                <td data-label="TMDB 目标">
+                  <span :class="{ 'chase-sub': !targetKnown(row.item) }">{{ targetLabel(row.item) }}</span>
                 </td>
                 <td data-label="缺口集号">
-                  <span :class="{ 'chase-gap': hasGap(item) }">{{ gapRange(item) }}</span>
+                  <span :class="{ 'chase-gap': hasGap(row.item) }">{{ gapRange(row.item) }}</span>
                 </td>
                 <td data-label="结果">
-                  <n-tag :type="alignActionTagType(item.action)" :bordered="false" size="small">
-                    {{ alignActionResult(item) }}
-                  </n-tag>
+                  <div class="chase-result-cell">
+                    <div class="chase-result">
+                      <n-tag :type="row.badge.tag" :bordered="false" size="small">
+                        <template #icon>
+                          <component :is="reasonIcon(row.badge.kind)" class="chase-result-icon" />
+                        </template>
+                        {{ row.badge.label }}
+                      </n-tag>
+                      <n-tag
+                        v-if="row.targetUnknown && row.badge.kind !== 'target-unknown'"
+                        type="info"
+                        :bordered="false"
+                        size="small"
+                        class="chase-tag-target"
+                      >
+                        <template #icon><target-icon class="chase-result-icon" /></template>
+                        目标未知
+                      </n-tag>
+                    </div>
+                    <div class="chase-sub">{{ row.detail }}</div>
+                  </div>
                 </td>
               </tr>
             </tbody>
@@ -702,8 +796,8 @@ async function copyDiagnostics() {
               intent_id {{ num(trim.intent_id, 0) }} · tmdb_id {{ num(trim.tmdb_id, 0) }} · season {{ seasonLabel(trim.season) }}
             </div>
             <div class="chase-sub">
-              订阅 {{ num(trim.total_known, 0) }} 集 · Emby 已有 {{ num(trim.emby_have_max, 0) }} 集 · 建议上限
-              {{ num(trim.target_upper, 0) }} 集 · {{ formatAt(trim.at) }}
+              订阅 {{ num(trim.total_known, 0) }} 集 · Emby 已有 {{ coverageText(trim.emby_have_max, undefined) }} · 建议上限
+              {{ targetLabel(trim) }} · {{ formatAt(trim.at) }}
             </div>
             <div>{{ text(trim.reason) }}</div>
           </li>
@@ -738,6 +832,11 @@ async function copyDiagnostics() {
                 endpoint="subscribe/pool/intents"
                 :probe="debug.pool_intents"
                 hint="订阅池列表的解析现场(对规格的显式扩展槽: 订阅池解析失败时原文无处安放, 所以与上面两个同形)。"
+              />
+              <probe-panel
+                endpoint="tmdb/tv (该季集数)"
+                :probe="debug.tmdb_target"
+                hint="该季 TMDB 集数的取数现场(带 raw_episode_counts=true); 取不到时对齐判定只靠 Emby 缺口, 结果表会显示「未知」。"
               />
             </div>
 
@@ -785,9 +884,15 @@ async function copyDiagnostics() {
     <n-drawer v-model:show="settingsOpen" :width="420" placement="right">
       <n-drawer-content title="追剧管家设置" closable>
         <n-form label-placement="left" :label-width="126" size="small">
-          <n-form-item label="自动补订">
+          <n-form-item label="启用插件">
             <n-switch v-model:value="form.enabled" />
             <n-text depth="3" class="chase-form-note">关掉后整点任务与「立即对齐」都不写入。</n-text>
+          </n-form-item>
+          <n-form-item label="自动补订">
+            <n-switch v-model:value="form.auto_bump" />
+            <n-text depth="3" class="chase-form-note">
+              关掉后只判定不补订(结果表标「本可补订」); 老文档缺这个键时按开着处理。
+            </n-text>
           </n-form-item>
           <n-form-item label="Emby 实例">
             <n-select v-model:value="form.emby_proxy_id" :options="instanceOptions" />
@@ -1016,6 +1121,31 @@ async function copyDiagnostics() {
 .chase-gap {
   color: var(--dian-warning);
   font-variant-numeric: tabular-nums;
+}
+
+/* 结果列: 分类徽章(+ 目标未知小徽章)一行, 详细原因另起一行 —— 窄屏下 td 是 flex,
+   这里用 grid 保证两行始终竖排 */
+.chase-result-cell {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.chase-result {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--dian-space-1);
+}
+
+/* lucide 图标默认 24px, 塞进 small 徽章要收小 */
+.chase-result-icon {
+  width: 14px;
+  height: 14px;
+}
+
+.chase-tag-target {
+  color: var(--dian-text-secondary);
 }
 
 /* ---- ③ 追剧日历 ---- */

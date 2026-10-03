@@ -15,7 +15,15 @@
 //!   (一次抬升超过配置上限说明元数据脏了, 不能盲目写);
 //! - `new_total` 再夹到 [`TARGET_UPPER_LIMIT`] 以内;
 //! - `target_upper` 只取**该季**的 TMDB 集数(见 [`parse_target_upper`]): 季缺失或
-//!   取不到 ⇒ 0(只用 Emby 缺口判定), **绝不用整部剧的 `number_of_episodes` 顶替**;
+//!   取不到 ⇒ 判定里记为 0 但**标记为未知**(不参与抬升, 也不冒充"该季 0 集"),
+//!   **绝不用整部剧的 `number_of_episodes` 顶替**, 也绝不用订阅的
+//!   `total_episodes_known` 冒充;
+//! - 跳过的文案按证据分四类(互斥): 「无缺口」(覆盖已核实**且目标已取到**)、
+//!   「覆盖未知(原因)」(`have = None`, 响应没解析出逐集覆盖)、
+//!   「Emby 该季 0 集」(解析成功且逐集覆盖是空集 —— 空覆盖串/空数组,
+//!   无论是否同时带缺集列表, 都算"探到了 0 集"的已知事实)、
+//!   「覆盖已核实但目标未知」(有覆盖、没目标 —— 同一份证据在目标已知时可能抬升,
+//!   所以这里**本可能藏着缺口**, 绝不能冒充"无缺口") —— 后三类都**不是**无缺口;
 //! - 减方向(缩小 total)永远只出现在 [`crate::model::TrimSuggestion`] 里, 不产生写请求。
 
 use crate::emby::Coverage;
@@ -25,7 +33,7 @@ use crate::model::{Settings, TARGET_UPPER_LIMIT};
 pub const ACTION_PATCHED: &str = "patched";
 /// 动作: dry-run 下判定要补但没写。
 pub const ACTION_DRY_RUN: &str = "dry-run";
-/// 动作: 跳过(无缺口 / 超上限 / 状态不参与)。
+/// 动作: 跳过(无缺口 / 覆盖未知 / 该季 0 集 / 目标未知 / 超上限 / 状态不参与)。
 pub const ACTION_SKIPPED: &str = "skipped";
 /// 动作: 失败(Emby 解析失败 / PATCH 非 200)。
 pub const ACTION_FAILED: &str = "failed";
@@ -40,12 +48,21 @@ pub struct Evidence {
     pub from_total: i64,
     /// Emby 已有集的最大集号(未知 = `None`)。
     pub have_max: Option<i64>,
-    /// Emby 已有集的条数(未知 = `None`)。
+    /// Emby 已有集的条数(未知 = `None`; 已知 0 = 探到了但该季 0 集)。
     pub have_count: Option<i64>,
     /// 缺口上沿(集号; 0 = 无缺口)。
     pub gap_max: i64,
-    /// 该季 TMDB 的目标集数(取不到 = 0)。
+    /// 该季 TMDB 的目标集数(取不到 = 0, 但 [`Evidence::target_known`] 为 false)。
     pub target_upper: i64,
+    /// 目标是否真的取到了: TMDB 明确给出该季集数时为 true(明确 0 集也算取到)。
+    ///
+    /// `target_upper == 0` 因此有两种含义 —— 「TMDB 说 0 集」与「没取到」——
+    /// 判定与文案必须靠这个标记区分, 不能把取不到当成 0 参与抬升或冒充无缺口。
+    pub target_known: bool,
+    /// 目标未知时的可读原因(空 = 未提供)。
+    pub target_note: &'static str,
+    /// 覆盖未知([`Evidence::have_max`] 为 `None`)时的可读原因(空 = 未提供)。
+    pub have_note: &'static str,
 }
 
 impl Evidence {
@@ -57,6 +74,11 @@ impl Evidence {
             have_count: coverage.have_count(),
             gap_max: coverage.gap_max(from_total),
             target_upper,
+            // 这里只知道数值: 0 一律先视为"未知", 明确取到 0 集的调用方用
+            // `target_known = true` 覆盖(见 runtime 的取数路径)。
+            target_known: target_upper > 0,
+            target_note: "",
+            have_note: coverage.unknown_note(),
         }
     }
 
@@ -65,7 +87,7 @@ impl Evidence {
     /// 缓存的**行**按 (intent_id, tmdb_id, season) 命中(见
     /// `runtime::Runtime::cached_coverage`), 所以这里把该行记录的目标集数一并带上:
     /// 固定写 0 会让 align-now 对同一季给出与整点对齐不同的目标(只用 Emby 缺口),
-    /// 而缓存行本身就有那次的 TMDB 目标。缺失/没取到仍是 0。
+    /// 而缓存行本身就有那次的 TMDB 目标。缺失/没取到仍是 0 + `target_known = false`。
     pub fn from_cache(
         from_total: i64,
         have_max: i64,
@@ -79,6 +101,9 @@ impl Evidence {
             have_count: if have_count >= 0 { Some(have_count) } else { None },
             gap_max: have_max.filter(|max| *max > from_total).unwrap_or(0),
             target_upper: target_upper.max(0),
+            target_known: target_upper > 0,
+            target_note: "",
+            have_note: if have_max.is_none() { "缓存行没有可用的覆盖值" } else { "" },
         }
     }
 }
@@ -119,6 +144,25 @@ pub fn decide(evidence: &Evidence, settings: &Settings, dry_run: bool) -> Decisi
         .max(target_upper)
         .max(evidence.have_max.unwrap_or(0).max(0))
         .min(TARGET_UPPER_LIMIT);
+    // 「该季一集都没有」: 解析成功且逐集覆盖是**空集**(`have_count = Some(0)`;
+    // 区间契约里就是 `covered_episodes:""`, emby.rs 注为"空串 = 一集都没有(已知事实)")
+    // —— 不是未知, 也不是无缺口。此时**不管**是否同时给了缺集列表
+    // (实测宿主: `needed_episodes:"1-24"`): 缺集列表只是补充证据, "探到了 0 集"
+    // 这个事实不变。旧实现要求 `gap_max <= 0` 才归此类, 于是把"探测成功且明确 0 集"
+    // 的条目(空覆盖 + 非空缺集列表)报成了「覆盖未知(本季未探测成功)」, 与结果列
+    // 的「该季 0 集」自相矛盾(实测缺陷)。
+    // 真正未知(响应没解析出逐集覆盖, `have` 为 `None`)时 `have_count` 也是 `None`,
+    // 落下面的「覆盖未知」分支 —— 两者必须分开。
+    let have_absent =
+        evidence.have_max.is_none() && evidence.have_count == Some(0);
+    // 目标未知时绝不能显示成"该季 0 集": 0 只代表"没取到", 由 target_known 区分。
+    let target_text = if evidence.target_known {
+        format!("{target_upper} 集")
+    } else if evidence.target_note.is_empty() {
+        "未知(该季取数失败)".to_string()
+    } else {
+        format!("未知({})", evidence.target_note)
+    };
 
     let base = Decision {
         action: ACTION_SKIPPED,
@@ -131,6 +175,43 @@ pub fn decide(evidence: &Evidence, settings: &Settings, dry_run: bool) -> Decisi
     };
 
     if new_total <= from_total {
+        if have_absent {
+            // 探到了但 Emby 该季没有任何集: 未收录/未入库 —— 既不算失败, 也不是无缺口。
+            return Decision {
+                reason: format!(
+                    "Emby 该季 0 集(未收录/未入库): 订阅 {from_total} 集, TMDB 目标 {target_text}"
+                ),
+                ..base
+            };
+        }
+        if evidence.have_max.is_none() {
+            // 覆盖未知: 不允许写"无缺口"(那是把"没探到"说成"已核实")。
+            // 兜底文案只说"没拿到覆盖值"这一事实 —— 绝不能替探测结果下结论
+            // (旧文案"本季未探测成功"曾在探测成功、只是没逐集覆盖时变成假话)。
+            let note = if evidence.have_note.is_empty() {
+                "本季覆盖未取到(响应没有逐集覆盖字段)"
+            } else {
+                evidence.have_note
+            };
+            return Decision {
+                reason: format!(
+                    "覆盖未知({note}): 订阅 {from_total} 集, TMDB 目标 {target_text}, 不参与判定"
+                ),
+                ..base
+            };
+        }
+        if !evidence.target_known {
+            // 覆盖已核实但**目标未知**: 不是「无缺口」。模块头的三类互斥里, "无缺口"
+            // 要求目标也取到 —— 同一份证据在目标已知时可能抬升(如 total_known < target),
+            // 也就是这一行本可能藏着缺口, 只是判据没取到。前端按措辞打徽章, 所以这里
+            // 绝不能出现「无缺口」(否则被误报成"已核实无缺口"; 实测缺陷)。
+            return Decision {
+                reason: format!(
+                    "覆盖已核实但目标未知: 订阅 {from_total} 集, Emby 已有 {have_max} 集, TMDB 目标 {target_text}, 未参与判定"
+                ),
+                ..base
+            };
+        }
         return Decision {
             reason: format!(
                 "无缺口: 订阅 {from_total} 集, Emby 已有 {have_max} 集, TMDB 目标 {target_upper} 集"
@@ -154,6 +235,20 @@ pub fn decide(evidence: &Evidence, settings: &Settings, dry_run: bool) -> Decisi
         };
     }
 
+    // 抬升时也把覆盖/目标的诚实状态带上: 覆盖未知并不意味着目标不可用。
+    let coverage_note = if have_absent {
+        "; Emby 该季 0 集".to_string()
+    } else if evidence.have_max.is_none() {
+        let note = if evidence.have_note.is_empty() {
+            "本季覆盖未取到(响应没有逐集覆盖字段)"
+        } else {
+            evidence.have_note
+        };
+        format!("; Emby 覆盖未知({note}), 未参与")
+    } else {
+        String::new()
+    };
+
     Decision {
         action: if dry_run { ACTION_DRY_RUN } else { ACTION_PATCHED },
         from_total,
@@ -161,7 +256,9 @@ pub fn decide(evidence: &Evidence, settings: &Settings, dry_run: bool) -> Decisi
         have_max,
         have_count,
         gap_max: evidence.gap_max.max(0),
-        reason: format!("抬升 {from_total} → {new_total} 集"),
+        reason: format!(
+            "抬升 {from_total} → {new_total} 集(TMDB 目标 {target_text}{coverage_note})"
+        ),
     }
 }
 
@@ -200,9 +297,10 @@ pub fn trim_reason(from_total: i64, target_upper: i64) -> String {
 /// (宿主 TMDB 代理), 但仍按防御式解析处理:
 ///
 /// 1. 顶层 `seasons[]` 里找 `season_number == season` 的那一季, 取其 `episode_count`
-///    (兜底 `number_of_episodes`);
-/// 2. 找不到该季 ⇒ `Err(原因)`: 调用方把 `target_upper` 当 0(只用 Emby 缺口判定),
-///    **绝不猜一个数字**。
+///    (兜底 `number_of_episodes`); 宿主多包一层信封(`{code, data: {...}}`)时
+///   下探 `data` 再找 —— 与同仓其它解析器(emby/intents/aircal)的容错一致;
+/// 2. 找不到该季 ⇒ `Err(原因)`: 调用方把 `target_upper` 当 0 **并标记为未知**
+///    (只用 Emby 缺口判定), **绝不猜一个数字**、绝不用订阅集数冒充。
 ///
 /// 特别注意: 顶层 `number_of_episodes` 是 `TmdbTVDetail` 里**整部剧**的集数
 /// (openapi-v1.yaml:6755 的必填字段, 与 `number_of_seasons` / `seasons` 并列),
@@ -214,8 +312,7 @@ pub fn trim_reason(from_total: i64, target_upper: i64) -> String {
 /// 返回值再夹到 `[0, TARGET_UPPER_LIMIT]`。
 pub fn parse_target_upper(raw: &[u8], season: i64) -> Result<i64, String> {
     let value = crate::raw::decode_json(raw)?;
-    let object = value
-        .as_object()
+    let object = tmdb_detail_object(&value)
         .ok_or_else(|| "TMDB 详情不是对象".to_string())?;
 
     if let Some(seasons) = object.get("seasons").and_then(serde_json::Value::as_array) {
@@ -240,6 +337,23 @@ pub fn parse_target_upper(raw: &[u8], season: i64) -> Result<i64, String> {
     Err(format!(
         "TMDB 详情缺少 seasons[](不是数组): 无法确定第 {season} 季的集数, 整剧的 number_of_episodes 不能当该季目标"
     ))
+}
+
+/// 定位 TMDB 详情对象: 优先顶层, 顶层没有 `seasons[]` 时下探一层 `data`
+/// (`{code, data: {...}}` 信封; 与 emby/intents/aircal 的容错一致)。
+///
+/// 返回顶层对象作为兜底, 让调用方按"缺 seasons[]"给出可读错误 —— 不是"不是对象"。
+fn tmdb_detail_object(value: &serde_json::Value) -> Option<&serde_json::Map<String, serde_json::Value>> {
+    let object = value.as_object()?;
+    if object.get("seasons").map(serde_json::Value::is_array).unwrap_or(false) {
+        return Some(object);
+    }
+    if let Some(inner) = object.get("data").and_then(serde_json::Value::as_object) {
+        if inner.get("seasons").map(serde_json::Value::is_array).unwrap_or(false) {
+            return Some(inner);
+        }
+    }
+    Some(object)
 }
 
 #[cfg(test)]
@@ -474,6 +588,7 @@ mod tests {
             have_count: Some(-1),
             gap_max: -3,
             target_upper: -7,
+            ..Default::default()
         };
         let decision = decide(&evidence, &settings(20), false);
         assert_eq!(decision.action, ACTION_SKIPPED);
@@ -544,6 +659,172 @@ mod tests {
             parse_target_upper(br#"{"seasons":[1,"x",{"season_number":5,"episode_count":9}]}"#, 5)
                 .unwrap(),
             9
+        );
+    }
+
+    #[test]
+    fn target_upper_accepts_a_one_layer_envelope() {
+        // 宿主多包一层 {code, data}: 与同仓其它解析器一样下探, 别让"取数恒 Err->0"。
+        let enveloped = br#"{"code":"ok","data":{"id":1396,"seasons":[{"season_number":5,"episode_count":16}]}}"#;
+        assert_eq!(parse_target_upper(enveloped, 5).unwrap(), 16);
+        // 顶层有 seasons 时仍以顶层为准(信封里是转发/目录的情况)
+        let both = br#"{"seasons":[{"season_number":5,"episode_count":16}],
+                       "data":{"seasons":[{"season_number":5,"episode_count":99}]}}"#;
+        assert_eq!(parse_target_upper(both, 5).unwrap(), 16);
+        // 信封里没有该季 → 仍然 Err, 不猜
+        assert!(parse_target_upper(
+            br#"{"code":"ok","data":{"number_of_episodes":62,"seasons":[]}}"#,
+            5
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn unknown_coverage_is_never_reported_as_no_gap() {
+        // 只有缺集列表(没有逐集覆盖)且目标也取不到 → 「覆盖未知」, 不能说无缺口
+        let missing_only = Coverage {
+            have: None,
+            missing: Some(BTreeSet::from([12])),
+            count_hint: None,
+            shape: String::new(),
+        };
+        let mut evidence = Evidence::from_coverage(10, &missing_only, 0);
+        evidence.target_note = "HTTP 错误";
+        let decision = decide(&evidence, &settings(20), false);
+        assert_eq!(decision.action, ACTION_SKIPPED);
+        assert_eq!(decision.have_max, -1);
+        assert!(decision.reason.contains("覆盖未知"), "{}", decision.reason);
+        assert!(
+            !decision.reason.contains("无缺口"),
+            "未知覆盖绝不能说成无缺口: {}",
+            decision.reason
+        );
+        assert!(decision.reason.contains("未知(HTTP 错误)"), "{}", decision.reason);
+        assert!(!decision.writes());
+
+        // 缓存里没有覆盖值(-1/-1)同理
+        let cached = Evidence::from_cache(10, -1, -1, 0);
+        let decision = decide(&cached, &settings(20), false);
+        assert!(decision.reason.contains("覆盖未知"), "{}", decision.reason);
+        assert_eq!(decision.action, ACTION_SKIPPED);
+    }
+
+    #[test]
+    fn absent_season_is_classified_apart_from_unknown_and_no_gap() {
+        // 探到了空集: have = Some(空) / have_count = 0 —— 未收录/未入库, 不是无缺口
+        let empty = coverage(&[], &[]);
+        let evidence = Evidence::from_coverage(10, &empty, 0);
+        assert_eq!(evidence.have_max, None);
+        assert_eq!(evidence.have_count, Some(0));
+        let decision = decide(&evidence, &settings(20), false);
+        assert_eq!(decision.action, ACTION_SKIPPED);
+        assert_eq!(decision.have_count, 0, "已知 0 集必须与未知 -1 区分");
+        assert!(decision.reason.contains("Emby 该季 0 集"), "{}", decision.reason);
+        assert!(!decision.reason.contains("无缺口"), "{}", decision.reason);
+        assert!(!decision.reason.contains("覆盖未知"), "{}", decision.reason);
+
+        // 有 target 时明确 0 集与未知也必须分开
+        let mut known_zero = Evidence::from_coverage(10, &coverage(&[1, 2], &[]), 0);
+        known_zero.target_known = true;
+        let decision = decide(&known_zero, &settings(20), false);
+        assert!(decision.reason.contains("TMDB 目标 0 集"), "{}", decision.reason);
+        let mut unknown = Evidence::from_coverage(10, &coverage(&[1, 2], &[]), 0);
+        unknown.target_note = "传输失败";
+        let decision = decide(&unknown, &settings(20), false);
+        // 覆盖已核实但目标未知 **不是**「无缺口」(三类互斥: 无缺口要求目标也取到)。
+        // 旧文案以「无缺口」开头, 前端 reasonBadge 会误报 no-gap 徽章 —— 实测缺陷。
+        assert!(!decision.reason.contains("无缺口"), "{}", decision.reason);
+        assert!(decision.reason.contains("目标未知"), "{}", decision.reason);
+        assert!(decision.reason.contains("未知(传输失败)"), "{}", decision.reason);
+        assert_eq!(decision.action, ACTION_SKIPPED);
+    }
+
+    #[test]
+    fn verified_coverage_with_unknown_target_is_not_reported_as_no_gap() {
+        // 同一份证据(订阅 10 / Emby 已有 12)在目标已知时是 PATCH(12 > 10):
+        let mut known = Evidence::from_coverage(10, &coverage(&[1, 2, 12], &[]), 12);
+        known.target_known = true;
+        assert_eq!(decide(&known, &settings(20), false).action, ACTION_PATCHED);
+        // 目标未知时只能跳过 —— 但跳过的理由不许冒充"已核实的无缺口": 它本可能藏缺口。
+        let unknown = Evidence::from_coverage(10, &coverage(&[1, 2, 3], &[]), 0);
+        assert_eq!(unknown.have_max, Some(3));
+        let decision = decide(&unknown, &settings(20), false);
+        assert_eq!(decision.action, ACTION_SKIPPED);
+        assert!(
+            !decision.reason.contains("无缺口"),
+            "目标未知却报无缺口 = 与模块头三类互斥矛盾: {}",
+            decision.reason
+        );
+        assert!(decision.reason.contains("覆盖已核实但目标未知"), "{}", decision.reason);
+        assert!(decision.reason.contains("未参与判定"), "{}", decision.reason);
+        // 反面: 目标真的取到时才允许说无缺口
+        let mut known_nogap = Evidence::from_coverage(10, &coverage(&[1, 2, 3], &[]), 10);
+        known_nogap.target_known = true;
+        let decision = decide(&known_nogap, &settings(20), false);
+        assert!(decision.reason.contains("无缺口: 订阅 10 集"), "{}", decision.reason);
+    }
+
+    /// 实测宿主的区间契约回归: `covered_episodes:""` + `needed_episodes:"1-24"`。
+    ///
+    /// 探测**成功**且逐集覆盖是空集(空串 = 一集都没有, 已知事实) → 归类
+    /// 「Emby 该季 0 集」; 旧实现要求 `gap_max <= 0` 才这么归类, 于是把这条报成
+    /// 「覆盖未知(本季未探测成功)」(假话), 且与结果列的「该季 0 集」自相矛盾。
+    #[test]
+    fn range_contract_empty_covered_is_known_absent_not_unknown() {
+        let raw = br#"{"complete":false,"covered_episodes":"","needed_episodes":"1-24"}"#;
+        let parsed = crate::emby::parse_coverage(raw).expect("区间契约必须解析成功");
+        assert_eq!(parsed.have_count(), Some(0), "空串 = 一集都没有(已知事实)");
+        assert_eq!(parsed.missing_max(), Some(24));
+
+        // (a) 目标未知: 不参与判定, 但归类必须是「该季 0 集」而不是「覆盖未知」
+        let evidence = Evidence::from_coverage(16, &parsed, 0);
+        assert_eq!(evidence.have_max, None);
+        assert_eq!(evidence.have_count, Some(0));
+        let decision = decide(&evidence, &settings(20), false);
+        assert_eq!(decision.action, ACTION_SKIPPED);
+        assert!(decision.reason.contains("Emby 该季 0 集"), "{}", decision.reason);
+        assert!(
+            !decision.reason.contains("覆盖未知"),
+            "探测成功, 不许报覆盖未知: {}",
+            decision.reason
+        );
+        assert!(
+            !decision.reason.contains("本季未探测成功"),
+            "探测其实成功, 这句是假话: {}",
+            decision.reason
+        );
+        // 结果列的「该季 0 集」依据: have_max = -1(未知, 不冒充 0)但 count = 0(已知 0 条),
+        // 前端 coverageText 与 reasonBadge(「Emby 该季 0 集」)因此指向同一个结论。
+        assert_eq!(decision.have_max, -1);
+        assert_eq!(decision.have_count, 0);
+
+        // (b) 目标已知且需要抬升: 补订理由里同样不许出现"覆盖未知/未探测成功"
+        let known = Evidence::from_coverage(16, &parsed, 24);
+        assert!(known.target_known);
+        let decision = decide(&known, &settings(20), false);
+        assert_eq!(decision.action, ACTION_PATCHED);
+        assert_eq!(decision.to_total, 24);
+        assert!(decision.reason.contains("TMDB 目标 24 集"), "{}", decision.reason);
+        assert!(decision.reason.contains("Emby 该季 0 集"), "{}", decision.reason);
+        assert!(!decision.reason.contains("覆盖未知"), "{}", decision.reason);
+        assert!(!decision.reason.contains("未探测成功"), "{}", decision.reason);
+
+        // (c) 只有缺集列表、真没解析出逐集覆盖(have = None)才是「覆盖未知」, 两者不得混淆
+        let missing_only = Coverage {
+            have: None,
+            missing: Some(BTreeSet::from([12])),
+            count_hint: None,
+            shape: String::new(),
+        };
+        let unknown = Evidence::from_coverage(10, &missing_only, 0);
+        assert_eq!(unknown.have_count, None, "没拿到逐集覆盖时绝不能说 0 条");
+        let decision = decide(&unknown, &settings(20), false);
+        assert!(decision.reason.contains("覆盖未知"), "{}", decision.reason);
+        assert!(!decision.reason.contains("Emby 该季 0 集"), "{}", decision.reason);
+        assert!(
+            !decision.reason.contains("未探测成功"),
+            "只说'没拿到逐集覆盖', 不替探测成败下结论: {}",
+            decision.reason
         );
     }
 }
