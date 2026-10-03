@@ -1,12 +1,12 @@
 {
   "id": "music.rs",
   "name": "音乐下载（Rust 版）",
-  "version": "0.3.12",
+  "version": "0.3.13",
   "description": "网易云/QQ 音乐扫码登录、搜索与音质自选取链；无 sidecar，由宿主代理下载（本地暂存 → CD2 入库），任务状态落 KV 队列并支持 Telegram 回调重试。",
   "author": "congyoubanmian",
   "homepage": "https://github.com/congyoubanmian/dian115-plugins",
-  "package_url": "https://github.com/congyoubanmian/douban-center-wasm/releases/download/music-rs-v0.3.12/music.rs-0.3.12.d115p",
-  "sha256": "8557ee458e9fd6c29b0b5ec16bb1a4100cb3ba8938a7206be52e38e613054490",
+  "package_url": "https://github.com/congyoubanmian/douban-center-wasm/releases/download/music-rs-v0.3.13/music.rs-0.3.13.d115p",
+  "sha256": "57d12b01556dd9d7f43a76298d2466c179f8b392969111eb2c0033c66bcda44f",
   "runtime": {
     "kind": "wasm",
     "protocol": "dian115:wasm@1",
@@ -75,6 +75,11 @@
         "method": "DELETE",
         "path": "/api/local-files",
         "reason": "清理已复制入库的暂存文件与重试残留"
+      },
+      {
+        "method": "DELETE",
+        "path": "/api/plugin-runtime/storage/:key",
+        "reason": "任务分片迁移删除旧 tasks 键、清理已完成任务的 task.<id> 分片"
       }
     ],
     "network": [
