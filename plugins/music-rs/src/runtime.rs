@@ -356,10 +356,11 @@ impl Runtime {
     /// | `login-status` | `source` | [`crate::netease::login_status`] / [`crate::qq::login_status`] |
     /// | `download` | `source` / `song_id` / `name` / `singers` / `album` / `level` | [`crate::download::request_download`] |
     /// | `settings-update` | `input` 对象(可含 `qq_cookie`/`netease_cookie`) | [`crate::download::settings_update`] + [`crate::qq::save_cookie_string`]; 保存结果回填 `qq_login`/`netease_login` 键(响应键名不含 "cookie" 子串, 见 `settings-update` 分支注释) |
-    /// | `task-retry` | `id` | [`crate::tasks::retry`] |
-    /// | `task-clear` | — | [`crate::tasks::clear_finished`] |
+    /// | `task-retry` | `id` | [`crate::tasks::retry`](/读 `task.<id>` 重置排队) |
+    /// | `task-clear` | — | [`crate::tasks::clear_finished`](/遍历索引删完结分片) |
     /// | `archive` | — | [`crate::tasks::clear_finished`] + 清日志 |
     /// | `queue-pump` | — | [`crate::tasks::queue_pump`](前台手动推进) |
+    /// | `pump` | — | [`crate::tasks::queue_pump`](/0.3.12: 与 job `queuePump` 同一入口的手动快进) |
     /// | 其他 | — | `unknown_action` |
     ///
     /// 业务失败是**正常 result**, 不是 JSON-RPC error; 只有 payload 本身非法
@@ -504,7 +505,10 @@ impl Runtime {
                 Ok(action_result(outcome))
             }
             "archive" => Ok(self.archive()),
-            "queue-pump" => {
+            "queue-pump" | "pump" => {
+                // 0.3.12: `pump` 是给 UI 的手动快进入口, 与定时 job `queuePump`
+                // 走**同一个**函数(`tasks::queue_pump` → `download::pump`) ——
+                // 单次调用只新开 1 首下载, 所以 UI 连点几次是安全的吞吐兜底。
                 let outcome = tasks::queue_pump(&mut self.put_ids);
                 if outcome.is_ok() {
                     self.bump("succeeded", "任务队列已推进");

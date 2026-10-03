@@ -47,6 +47,13 @@ pub fn go_lossy(bytes: &[u8]) -> String {
     }
 }
 
+/// 按字节上限截断(与 [`trunc`] 同一套 Go `encoding/json` 逐字节 U+FFFD 替换),
+/// 只是上限可传。`tasks` 索引的 `error` 字段用它把错误压到 120B(见
+/// [`crate::tasks::IDX_ERROR_LIMIT`])。
+pub fn trunc_to(bytes: &[u8], limit: usize) -> String {
+    go_lossy(&bytes[..bytes.len().min(limit)])
+}
+
 /// 对应 Go `mustJSON`: 序列化失败(正常不可能)时回退到固定错误响应。
 pub fn encode_or_fallback<T: Serialize>(value: &T) -> Vec<u8> {
     match serde_json::to_vec(value) {

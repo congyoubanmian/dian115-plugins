@@ -334,6 +334,25 @@ pub fn put(ids: &mut PutIds, key: &str, value: &[u8]) -> Result<(), StoreError> 
     Ok(())
 }
 
+/// 删除一个键(KV `DELETE /api/plugin-runtime/storage/:key`)。
+///
+/// 分片队列清完结任务时逐条删 `task.<id>`; 迁移成功时删旧键 `tasks`。
+/// 键不存在按成功处理(404 = 已经不在了), 与 Go 侧删除幂等的预期一致。
+pub fn delete(ids: &mut PutIds, key: &str) -> Result<(), StoreError> {
+    let request = HostCallRequest::new("DELETE", storage_path(key))
+        .with_header("accept", "application/json")
+        .with_header("idempotency-key", ids.next_key(key));
+    let response = host_call(&request)?;
+    if response.status == 404 || response.status < 400 {
+        return Ok(());
+    }
+    let detail = match decode_body(&response) {
+        Ok(raw) if !raw.is_empty() => format!(": {}", util::trunc(&raw)),
+        _ => String::new(),
+    };
+    Err(StoreError(format!("storage DELETE HTTP {}{}", response.status, detail)))
+}
+
 /// 读取状态并做 3 次重试(Go `loadStateWithRetry`)。
 ///
 /// - 读到非空值 → [`LoadResult::Loaded`];

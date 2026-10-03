@@ -18,6 +18,42 @@
 //! 队列语义(并发 `max_active`、按 `created_ms` 升序、失败消息文案)全部在 [`pump`]
 //! 里实现; 队列本体在 [`crate::tasks`]。写操作(目录/下载/改名/复制/通知)都带
 //! `Idempotency-Key`(16~128 可打印 ASCII), KV 走 ETag 乐观锁, 时间走 [`crate::clock`]。
+//!
+//! # 单次 pump 的内存上界(0.3.12 审计)
+//!
+//! wasm 线性内存**不归还 OS**: 堆的高水位由历史峰值决定, 且 static/OnceLock 的
+//! 内容只增不减。因此"一次调用用了多少"必须按**最坏情况**算, 而不是按平均值。
+//!
+//! 一次 [`pump`] 常驻的只有三项, 逐项都有字节级上界(数字来自
+//! `audit_measured_index_and_record_sizes`, 真机形态实测):
+//!
+//! | 项 | 上界 | 依据 |
+//! |----|------|------|
+//! | **idx 索引** `tasks.idx` | **条目 252 B × 条数**; 队列 200 条 = **49.2 KB** | 一条只带 `id`/`status`/`name`/`singers`/`quality`/`error`(截 120 B)/`updated_ms`; 由 [`crate::tasks::TaskIndexEntry`] 定义 |
+//! | **在途完整记录** `task.<id>` | **951 B × 在途条数**; 稳态在途 `<= max_active`(封顶 16 条 = **14.9 KB**), 但轮询阶段**不按 `max_active` 截断**, 真实上界是索引里 `downloading`/`copying` 的条目数 | 完整 [`crate::tasks::Task`]](含 `job_ref`/`staged_path`/`out_name`/`album`/未截断的 `error`) |
+//! | **单曲取链工作集** | **一首**, 不是一阶梯 | [`netease::song_url`] 的 8 档阶梯逐档释放: 每档的 `payload`/`params`/`form`/`response`/`body` 都在该次迭代结束即 drop, 跨档只留 200 B 的 `last_tail`(错误文案尾巴) |
+//!
+//! 合计**约 65 KB**(200 条队列 + 在途打满 + 一首取链), 加上宿主响应体的瞬时副本
+//! (`host.call` 上限 [`crate::host::MAX_HOST_RESPONSE`] 8 MB, 但实际响应是 KB 级
+//! 的 job/entries 列表)与 [`crate::arena`] 的 32 MB 帧上限(= 宿主帧上限, 不是本模块的用量)。
+//!
+//! ## 为什么与队列长度无关
+//!
+//! 队列里 40 条**已完结**任务的完整记录, 一次 pump **一条都不读** —— pump 只按
+//! `tasks.idx` 里的 `status` 挑出 `downloading`/`copying`/第一条 `queued` 的 id,
+//! 再按 id 去读那几条 `task.<id>`。完结记录只在 `task-clear`/`archive` 里逐条删,
+//! 那是有界的显式操作, 不在 pump 的路径上。回归测试
+//! `pump_reads_no_full_records_for_finished_queue`(40 条终态 → `task.<id>` 读取为 0)
+//! 与 `pump_reads_only_the_one_task_it_advances`(38 终态 + 1 排队 → 只读那一条)
+//! 守住这条性质。
+//!
+//! 换句话说: **峰值 = f(在途条数, 单曲工作集), 而不是 f(队列总长)**; 队列变长
+//! 只会让 `tasks.idx` 这一个键变长(条目恒 252 B), 而不会把 N 份完整记录同时拉进内存。
+//!
+//! 另有三处"每轮固定"的瞬时开销: `probe_roots` 的响应 + `resolve_staged`/
+//! `cleanup_staged` 的 `/api/local-files` `Value` 树(工作区目录大小, 与队列无关)、
+//! 以及 `pumpdiag` 落盘用的 `json!` —— 三者都在各自函数作用域内 drop, 无逃逸
+//! (不进返回值/闭包/static)。诊断 static 自身的上界见 [`DIAG_RAW_MAX_B64`]。
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
@@ -55,12 +91,47 @@ const FILES_ENTRIES: &str = "/api/plugin-host/files/entries";
 // ── 诊断留档(0.3.7): files/roots 与 files/entries 都是官方无字段契约的
 // GenericHostObject, 出入只能靠原始响应排查。pump 每轮把两处原始 HTTP 响应
 // (base64, 规避宿主对响应内容的过滤)写入 KV `pumpdiag`, 供真机诊断读取。
+//
+// **上界(0.3.12 内存审计)**: 这两个 static 在 wasm 里**永不释放** —— 线性内存不归还
+// OS, 堆高水位由历史峰值决定。因此它们的内容只增不减就是泄漏: 一次异常大的
+// `files/roots` 响应(宿主是 GenericHostObject, 条目数不由本插件决定)会把 base64
+// 后的**整份响应**钉在 static 里, 直到 worker 结束。两者都按
+// [`DIAG_RAW_MAX_B64`] 截断, 使常驻量与响应大小、也与历史峰值无关。
+//
+// - [`DIAG_ROOTS_RAW`]: `files/roots` 响应, 上限 [`DIAG_RAW_MAX_B64`] 字节;
+// - [`DIAG_ENTRIES`]: 0.3.8 起不再走 `files/entries` 引用链(改用工作区
+//   `root_entry_ref`), 全仓无写入点, 恒为 `(0, "")` —— 保留字段只为 `pumpdiag`
+//   的键形状稳定, 仍然是 0 字节。
 static DIAG_ROOTS_RAW: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
 static DIAG_ENTRIES: std::sync::Mutex<(u16, String)> = std::sync::Mutex::new((0, String::new()));
 
+/// 诊断留档单个字段的 base64 字节上限。
+///
+/// 取 8 KiB: 足够看清 `files/roots` 的字段形状(诊断只需要开头一段), 又让两个
+/// static 的常驻量恒为 <= 16 KiB —— 不再由"历史最大响应"决定。base64 不可从中间
+/// 解码, 因此按**字节**对齐到 4 的倍数再截, 保证截断后的文本仍是合法 base64。
+pub const DIAG_RAW_MAX_B64: usize = 8 * 1024;
+
+/// 把响应体编码成 base64 供诊断留档, 截断到 [`DIAG_RAW_MAX_B64`] 字节。
+///
+/// 截断标记放在**解码后**的字节里(而不是拼在 base64 文本末尾): 读档的人
+/// `base64 -d` 之后能直接看到 `...<truncated>`, 不会把标记当响应内容。
 fn diag_b64(bytes: &[u8]) -> String {
     use base64::Engine as _;
-    base64::engine::general_purpose::STANDARD.encode(bytes)
+    const MARKER: &[u8] = b"\n<truncated>";
+    let engine = base64::engine::general_purpose::STANDARD;
+    let marker_b64 = engine.encode(MARKER);
+    // 上界是**编码后**的字符数(base64 把 3 字节变 4 字符, 膨胀 4/3), 所以先在
+    // 字符域里给标记留位, 再把有效载荷对齐到 4 字符(= 3 字节), 最后换算回字节。
+    let payload_chars = (DIAG_RAW_MAX_B64.saturating_sub(marker_b64.len()) / 4) * 4;
+    let payload_bytes = payload_chars / 4 * 3;
+    if bytes.len() <= payload_bytes {
+        return engine.encode(bytes);
+    }
+    let mut out = engine.encode(&bytes[..payload_bytes]);
+    out.push_str(&marker_b64);
+    debug_assert!(out.len() <= DIAG_RAW_MAX_B64);
+    out
 }
 const FILES_DIRECTORIES: &str = "/api/plugin-host/files/directories";
 const FILES_DOWNLOADS: &str = "/api/plugin-host/files/downloads";
@@ -747,17 +818,15 @@ pub fn copy_to_cd2(
 pub fn notify_failure(task: &Task, error: &str) -> Result<(), String> {
     let title = format!("下载失败: {}", truncate_chars(&task.name, 100));
     let body_text = format!(
-        "{} - {}\n来源: {} / 音质: {}\n{}",
+        "{} - {}\n来源: {} / 音质: {}\n{}\n(在插件「下载任务」里可一键重试)",
         task.singers, task.name, task.source, task.quality, error
     );
     let body = serde_json::to_vec(&json!({
         "level": "error",
         "title": title,
         "body": truncate_chars(&body_text, 1800),
-        "buttons": [[{
-            "text": "重试",
-            "callback_data": format!("{}{}", tasks::RETRY_PREFIX, task.id),
-        }]],
+        // 0.3.11: 通知 schema(openapi PluginNotificationRequest)只认 {text,url} 按钮,
+        // callback_data 会被 400 拒(真机证实); 重试入口并在正文里, 操作走插件页。
         "dedupe_key": format!(
             "dl-fail-{}-r{}-a{}",
             task.id, task.retry_round, task.attempts
@@ -1180,23 +1249,35 @@ fn advance_copying(
     }
 }
 
-/// 推进 KV 任务队列(状态机本体)。
+/// 推进 KV 任务队列(状态机本体, 分片版)。
 ///
-/// 顺序对齐 sidecar 的 `pumpQueue`:
-/// 1. 先推进在途任务(下载轮询 / 复制重试);
-/// 2. 再按 `created_ms` 升序启动排队任务, 直到 `max_active` 个槽位占满;
-/// 3. 队列按 `tasks` 键整体落盘(ETag 乐观锁 + 幂等键)。
+/// # 峰值内存(0.3.12 的全部意义)
 ///
-/// 返回摘要 `{staging_dir, staging_error, started, completed, failed, active, messages}`。
+/// 一次调用的常驻结构只有:
+/// - `tasks.idx` 索引(<= 200 条紧凑条目, 且**不截断**存储的那份也可能更长);
+/// - 在途任务(`downloading`/`copying`, 稳态 `<= settings.max_active`, 但轮询阶段
+///   按索引条目逐条处理、**不按 `max_active` 截断**);
+/// - **一首**歌的取链工作集(取链阶梯跑完立刻 drop)。
+///
+/// 与总队列长度**无关** —— 队列里 40 条已完结任务不会在一次 pump 里被读进内存。
+///
+/// # 顺序
+/// 0. [`tasks::ensure_migrated`]: 旧键 `tasks` 还在就先拆成 `task.<id>` + `tasks.idx`;
+/// 1. 轮询 `downloading` 的 job(便宜, 逐条处理; 条目数由索引决定, 不按 `max_active`
+///    截断, 一旦某条收尾本轮即停);
+/// 2. 收尾(定名/复制/清理)**最多 1 个任务**(done/failed): ①② 合计不产生第二个终态;
+/// 3. 新开下载**最多 1 首**: 取链阶梯(eapi 最多 8 个请求)完整跑完、中间结构立刻
+///    drop 之后才考虑下一首 —— 这是 OOM 的主因(旧实现一轮里能同时持有多首的
+///    eapi 响应体)。
+///
+/// 每一类工作都在**独立作用域**里处理单条任务, 处理完 `Task`/`Value`/`Vec` 立即释放。
+///
+/// 返回摘要 `{staging_dir, staging_error, queued, active, started, completed, failed, messages}`。
 pub fn pump(ids: &mut PutIds) -> Result<Value, String> {
-    let settings = load_settings();
-    let mut queue = tasks::load_result()?;
-    queue.sort_by(|left, right| {
-        left.created_ms
-            .cmp(&right.created_ms)
-            .then_with(|| left.id.cmp(&right.id))
-    });
+    // ① 迁移(幂等: 已分片则零成本返回 0)。
+    tasks::ensure_migrated(ids)?;
 
+    let settings = load_settings();
     let probe = probe_roots();
     let mut report = PumpReport::default();
     let mut staging_error = String::new();
@@ -1208,75 +1289,96 @@ pub fn pump(ids: &mut PutIds) -> Result<Value, String> {
         staging_error = format!("本地根探测失败: {}", probe.error);
         None
     };
-    let staging_dir = staging.clone().unwrap_or_default();
 
-    // ① 在途任务。
-    for task in queue.iter_mut() {
-        match task.status.as_str() {
-            tasks::STATUS_DOWNLOADING => {
-                advance_downloading(&settings, "", task, &mut report)
+    // ② 轮询在途下载: 逐条处理, **不按 max_active 截断**(条目数由索引里的
+    //    `downloading` 条目决定; `max_active` 只用于第 ④ 步"是否新开一首")。
+    // ③ 收尾最多 1 个任务(done/failed); ②③ 合计不超过 1 个终态。
+    //    ②③ 共用**一次**索引读: 这里的 id 列表 = 索引里在途 + 待收尾的条目,
+    //    与队列总长无关。
+    {
+        let index = tasks::load_index();
+        let downloading: Vec<String> = index
+            .iter()
+            .filter(|entry| entry.status == tasks::STATUS_DOWNLOADING)
+            .map(|entry| entry.id.clone())
+            .collect();
+        let copying: Vec<String> = index
+            .iter()
+            .filter(|entry| entry.status == tasks::STATUS_COPYING)
+            .map(|entry| entry.id.clone())
+            .collect();
+        // 门禁「一次 pump 最多收尾 1 个」: 逐条轮询, 一旦本轮已有任务进入终态
+        // (done/failed)就停手, 其余在途条目下一轮再轮。否则多个在途 job 同轮
+        // 成功会在这一轮里收尾多个。
+        for task_id in &downloading {
+            step_one_downloading(ids, &settings, task_id, &mut report);
+            if finalized_count(&report) > 0 {
+                break;
             }
-            tasks::STATUS_COPYING => {
-                advance_copying(&settings, &staging_dir, task, &mut report)
+        }
+        // 同上: ② 已经收尾过一个, 就不再收尾 copying; 只有 ② 颗粒无收时才动手。
+        if finalized_count(&report) == 0 {
+            if let Some(task_id) = copying.first() {
+                step_one_copying(ids, &settings, task_id, &mut report);
             }
-            _ => {}
         }
     }
 
-    // ② 排队任务(每轮每个任务最多启动一次)。
-    let queued_ids: Vec<String> = queue
-        .iter()
-        .filter(|task| task.status == tasks::STATUS_QUEUED)
-        .map(|task| task.id.clone())
-        .collect();
-    if !queued_ids.is_empty() {
-        match staging.as_deref() {
-            None => {
-                let reason = if staging_error.is_empty() {
-                    "暂存目录不可用".to_string()
-                } else {
-                    staging_error.clone()
-                };
-                report
-                    .messages
-                    .push(format!("{} 个排队任务无法启动: {reason}", queued_ids.len()));
+    // ④ 新开下载最多 1 首。
+    //    索引在这里**重新读一次**: ②③ 已经落盘了状态变化, 槽位判断必须用最新值。
+    //    一次读同时算出排队数/在途数/下一个候选(省 2 次 GET)。
+    {
+        let index = tasks::load_index();
+        let queued_count = index.iter().filter(|e| e.status == tasks::STATUS_QUEUED).count();
+        let active = index
+            .iter()
+            .filter(|e| matches!(e.status.as_str(), tasks::STATUS_DOWNLOADING | tasks::STATUS_COPYING))
+            .count();
+        let next_queued = index
+            .iter()
+            .find(|e| e.status == tasks::STATUS_QUEUED)
+            .map(|e| e.id.clone());
+        if queued_count > 0 {
+            match staging.as_deref() {
+                None => {
+                    let reason = if staging_error.is_empty() {
+                        "暂存目录不可用".to_string()
+                    } else {
+                        staging_error.clone()
+                    };
+                    report.messages.push(format!("{queued_count} 个排队任务无法启动: {reason}"));
+                }
+                Some(_) => match workspace_parent_ref(&probe) {
+                    Ok(parent_ref) => {
+                        let cap = settings.max_active.max(1) as usize;
+                        if active < cap {
+                            if let Some(task_id) = next_queued {
+                                // 本轮已收尾过就别再新开 ---- 新开的下载若宿主 job
+                                // 当轮完成, step_one_start 的即时轮询会把它也收尾,
+                                // 一轮就变成 2 个终态。
+                                let already_finalized = finalized_count(&report) > 0;
+                                step_one_start(
+                                    ids,
+                                    &settings,
+                                    &parent_ref,
+                                    &task_id,
+                                    &mut report,
+                                    already_finalized,
+                                );
+                            }
+                        } else {
+                            report
+                                .messages
+                                .push(format!("{queued_count} 个排队任务等待槽位({active}/{cap})"));
+                        }
+                    }
+                    Err(err) => {
+                        let reason = format!("宿主工作区根不可用: {err}");
+                        // 阻塞原因只落到**索引**里排队任务的那一条 error(不整队加载)。
+                        mark_queued_error(ids, &reason, &mut report);
+                    }
+                },
             }
-            Some(_dir) => match workspace_parent_ref(&probe) {
-                Ok(parent_ref) => {
-                    let cap = settings.max_active.max(1) as usize;
-                    for id in queued_ids {
-                        // 槽位数每轮实时统计: 本轮完成的(下载快)立即释放槽位。
-                        let active = queue.iter().filter(|task| task.is_slot()).count();
-                        if active >= cap {
-                            break;
-                        }
-                        let index = match queue.iter().position(|task| task.id == id) {
-                            Some(index) => index,
-                            None => continue,
-                        };
-                        if queue[index].status != tasks::STATUS_QUEUED {
-                            continue;
-                        }
-                        let task = &mut queue[index];
-                        start_task(&settings, &parent_ref, task, &mut report);
-                        if task.status == tasks::STATUS_DOWNLOADING {
-                            // 取链后立即发起, 发起后立即轮询一次: 宿主任务可能本轮就完成,
-                            // 能在一轮里做完的尽量做完(下一次 cron 是 5 分钟后)。
-                            advance_downloading(&settings, "", task, &mut report);
-                        }
-                    }
-                }
-                Err(err) => {
-                    let reason = format!("宿主工作区根不可用: {err}");
-                    // 0.3.7: 阻塞原因落到每个排队任务的 error, UI 不再只能看到干等的 queued。
-                    for task in queue.iter_mut() {
-                        if task.status == tasks::STATUS_QUEUED && task.error != reason {
-                            task.error = reason.clone();
-                        }
-                    }
-                    report.messages.push(reason);
-                }
-            },
         }
     }
 
@@ -1291,18 +1393,134 @@ pub fn pump(ids: &mut PutIds) -> Result<Value, String> {
     if let Err(err) = store::put_json(ids, "pumpdiag", &diag) {
         report.messages.push(format!("pumpdiag 写入失败: {err}"));
     }
-    tasks::save(ids, &queue)?;
+
+    // 摘要里的排队/在途计数从索引重算(索引已经是最新状态)。
+    let index = tasks::load_index();
+    let queued = index.iter().filter(|e| e.status == tasks::STATUS_QUEUED).count();
+    let active = index
+        .iter()
+        .filter(|e| matches!(e.status.as_str(), tasks::STATUS_DOWNLOADING | tasks::STATUS_COPYING))
+        .count();
 
     Ok(json!({
         "staging_dir": staging,
         "staging_error": staging_error,
-        "queued": queue.iter().filter(|task| task.status == tasks::STATUS_QUEUED).count(),
-        "active": queue.iter().filter(|task| task.is_slot()).count(),
+        "queued": queued,
+        "active": active,
         "started": report.started,
         "completed": report.completed,
         "failed": report.failed,
         "messages": report.messages,
     }))
+}
+
+/// 把"暂存/工作区根不可用"写进**排队任务**的索引条目, 让 UI 不再只看到干等的 queued。
+///
+/// **上界(0.3.12 内存审计)**: `reason` 来自 [`workspace_parent_ref`], 内含宿主
+/// 返回的**全部** roots 摘要(逐条 `alias(backend)`, 见该函数的 `seen`), 长度由宿主
+/// 决定而与队列长度无关。这里若原样写进**每一条**排队条目, 索引体积会变成
+/// `排队条数 × reason 长度` —— 正是分片要消灭的那种"随队列膨胀"的驻留。
+/// 因此按 [`tasks::IDX_ERROR_LIMIT`] 截断, 与 [`tasks::TaskIndexEntry::of`]
+/// 投影完整记录时用的同一个上限, 索引条目大小重新变成常数。
+fn mark_queued_error(ids: &mut PutIds, reason: &str, report: &mut PumpReport) {
+    let mut index = tasks::load_index();
+    let short = util::trunc_to(reason.as_bytes(), tasks::IDX_ERROR_LIMIT);
+    let mut touched = 0usize;
+    for entry in index.iter_mut() {
+        if entry.status == tasks::STATUS_QUEUED && entry.error != short {
+            entry.error = short.clone();
+            entry.updated_ms = tasks::now_ms();
+            touched += 1;
+        }
+    }
+    if touched > 0 {
+        if let Err(err) = tasks::save_index(ids, &index) {
+            report.messages.push(format!("阻塞原因写回失败: {err}"));
+        }
+    }
+    report.messages.push(reason.to_string());
+}
+
+/// 单任务作用域: 轮询一条 `downloading`。读 → 推进 → 落盘 → 释放。
+fn step_one_downloading(ids: &mut PutIds, settings: &Settings, task_id: &str, report: &mut PumpReport) {
+    let Some(mut task) = tasks::load_task(task_id) else { return };
+    if task.status != tasks::STATUS_DOWNLOADING {
+        return; // 上一轮已把它推进到别的状态
+    }
+    {
+        let mut local = PumpReport::default();
+        advance_downloading(settings, "", &mut task, &mut local);
+        merge(report, local);
+    }
+    if let Err(err) = tasks::persist_task(ids, &task) {
+        report.messages.push(format!("任务 {task_id} 落盘失败: {err}"));
+    }
+    // `task` 在函数返回时释放, 不进任何长生命周期容器。
+}
+
+/// 单任务作用域: 收尾一条 `copying`(定名后复制入库 + 清理暂存)。
+fn step_one_copying(ids: &mut PutIds, settings: &Settings, task_id: &str, report: &mut PumpReport) {
+    let Some(mut task) = tasks::load_task(task_id) else { return };
+    if task.status != tasks::STATUS_COPYING {
+        return;
+    }
+    {
+        let mut local = PumpReport::default();
+        advance_copying(settings, "", &mut task, &mut local);
+        merge(report, local);
+    }
+    if let Err(err) = tasks::persist_task(ids, &task) {
+        report.messages.push(format!("任务 {task_id} 落盘失败: {err}"));
+    }
+}
+
+/// 单任务作用域: 新开**一首**下载。取链阶梯完整跑完、中间结构立即释放。
+///
+/// `already_finalized` 为真表示本轮已有任务收尾(done/failed) —— 此时只提交下载,
+/// **不做**即时轮询, 保证「一次 pump 最多收尾 1 个」(门禁 3)。即时轮询只在
+/// 本轮尚无收尾时进行, 让常见的"宿主 job 当轮即成功"仍能一轮走完。
+fn step_one_start(
+    ids: &mut PutIds,
+    settings: &Settings,
+    parent_ref: &str,
+    task_id: &str,
+    report: &mut PumpReport,
+    already_finalized: bool,
+) {
+    let Some(mut task) = tasks::load_task(task_id) else { return };
+    if task.status != tasks::STATUS_QUEUED {
+        return;
+    }
+    {
+        let mut local = PumpReport::default();
+        start_task(settings, parent_ref, &mut task, &mut local);
+        merge(report, local);
+        if task.status == tasks::STATUS_DOWNLOADING && !already_finalized {
+            // 取链后立即轮询一次: 宿主任务可能本轮就完成(这是"单曲"范围内的工作集)。
+            let mut local2 = PumpReport::default();
+            advance_downloading(settings, "", &mut task, &mut local2);
+            merge(report, local2);
+        }
+    }
+    if let Err(err) = tasks::persist_task(ids, &task) {
+        report.messages.push(format!("任务 {task_id} 落盘失败: {err}"));
+    }
+}
+
+/// 本轮进入终态(done/failed)的任务数。
+///
+/// `completed`/`failed` 只在任务**真正收尾**时被 push(复制重试、排队失败都不算),
+/// 因此这是门禁「一次 pump 最多收尾 1 个」的直接度量。
+fn finalized_count(report: &PumpReport) -> usize {
+    report.completed.len() + report.failed.len()
+}
+
+/// 把单任务作用域里产生的摘要并进本轮摘要。
+fn merge(into: &mut PumpReport, from: PumpReport) {
+    into.messages.extend(from.messages);
+    into.started.extend(from.started);
+    into.completed.extend(from.completed);
+    into.failed.extend(from.failed);
 }
 
 #[cfg(test)]
@@ -1358,6 +1576,9 @@ mod tests {
         copies: Vec<Value>,
         notifications: Vec<Value>,
         write_keys: Vec<(String, String)>,
+        /// 读过的**单条完整任务记录**(`task.<id>`)的键与字节数 —— 用来直接量
+        /// 「一次 pump 把多少完整记录搬进了内存」(0.3.12 的核心指标)。
+        task_reads: Vec<(String, usize)>,
     }
 
     fn json_response(status: i32, body: &[u8]) -> Result<HostCallResponse, HostError> {
@@ -1415,6 +1636,16 @@ mod tests {
                     ..HostCallResponse::default()
                 })
             }
+            "DELETE" => {
+                let idem = request.headers.get("idempotency-key").cloned().unwrap_or_default();
+                if !(16..=128).contains(&idem.len())
+                    || !idem.bytes().all(|byte| byte.is_ascii_graphic())
+                {
+                    return json_response(400, br#"{"error":"bad idempotency key"}"#);
+                }
+                let existed = state.kv.remove(key).is_some();
+                Ok(HostCallResponse { status: if existed { 200 } else { 404 }, ..HostCallResponse::default() })
+            }
             other => Err(HostError::new(format!("unexpected KV method: {other}"))),
         }
     }
@@ -1450,6 +1681,11 @@ mod tests {
                 }
             }
             if let Some(key) = path.strip_prefix("/api/plugin-runtime/storage/") {
+                // 量"搬进内存的完整任务记录"总量: 只统计 `task.<id>` 的读取。
+                if method == "GET" && key.starts_with(tasks::TASK_KEY_PREFIX) {
+                    let size = state.kv.get(key).map(|(bytes, _)| bytes.len()).unwrap_or(0);
+                    state.task_reads.push((key.to_string(), size));
+                }
                 return kv_response(&mut state, request, key);
             }
             // 网易 eapi 取链: 只解响应, 不校验加密请求。
@@ -1570,16 +1806,19 @@ mod tests {
         // 借出中的替身状态不能跨 host.call: 先归还再读 KV。
         drop(state);
 
-        let tasks = tasks::load();
+        let tasks = tasks::load_index();
         assert_eq!(tasks.len(), 1);
         assert_eq!(tasks[0].status, tasks::STATUS_DONE);
-        assert_eq!(tasks[0].out_name, "周杰伦 - 晴天.flac");
-        assert_eq!(tasks[0].attempts, 1);
-        assert!(tasks[0].error.is_empty());
+        assert_eq!(tasks[0].id, task_id);
+        // 完整记录(定名/尝试次数)在分片键上, 不在索引里。
+        let full = tasks::load_task(&task_id).unwrap();
+        assert_eq!(full.out_name, "周杰伦 - 晴天.flac");
+        assert_eq!(full.attempts, 1);
+        assert!(full.error.is_empty());
     }
 
     #[test]
-    fn pump_retries_three_times_then_notifies_with_retry_button() {
+    fn pump_retries_three_times_then_notifies() {
         let fake = install_pipeline_host(JobOutcome::Failed("CDN 403".to_string()));
         crate::clock::testhooks::set_now(Some(1_790_676_009_000_000_000));
         let mut ids = PutIds::new();
@@ -1593,10 +1832,10 @@ mod tests {
             pump(&mut ids).unwrap();
         }
 
-        let tasks = tasks::load();
-        assert_eq!(tasks[0].status, tasks::STATUS_FAILED);
-        assert_eq!(tasks[0].attempts, MAX_ATTEMPTS);
-        assert_eq!(tasks[0].error, "CDN 403");
+        let full = tasks::load_task(&task_id).unwrap();
+        assert_eq!(full.status, tasks::STATUS_FAILED);
+        assert_eq!(full.attempts, MAX_ATTEMPTS);
+        assert_eq!(full.error, "CDN 403");
 
         let state = fake.borrow();
         assert_eq!(state.notifications.len(), 1, "只通知一次");
@@ -1604,8 +1843,396 @@ mod tests {
         assert_eq!(notice["level"], "error");
         assert!(notice["title"].as_str().unwrap().contains("晴天"));
         assert!(notice["body"].as_str().unwrap().contains("CDN 403"));
-        assert_eq!(notice["buttons"][0][0]["text"], "重试");
-        assert_eq!(notice["buttons"][0][0]["callback_data"], format!("retry:{task_id}"));
+        // 0.3.11 起通知不再带 callback_data 按钮(宿主 schema 会 400), 重试入口在正文里。
+        assert!(notice.get("buttons").is_none(), "0.3.11 起不发 callback_data 按钮");
+        assert!(notice["body"].as_str().unwrap().contains("可一键重试"));
+    }
+
+    /// 0.3.12 核心保证: **一次 pump 最多新开 1 首**下载。
+    ///
+    /// 旧实现一轮里把 `max_active` 个槽位全填满, 每首都要跑完 eapi 取链阶梯
+    /// (网易最多 8 个请求), 于是同时持有多首歌的中间结构 —— 这就是真机 128MB
+    /// 内存限下被 SIGKILL 的直接原因。这里入队 5 首, 一次 pump 只应提交 1 个
+    /// 宿主下载任务。
+    #[test]
+    fn single_pump_starts_at_most_one_new_download() {
+        let fake = install_pipeline_host(JobOutcome::Succeeded);
+        crate::clock::testhooks::set_now(Some(1_790_676_009_000_000_000));
+        let mut ids = PutIds::new();
+
+        // 5 首不同的歌(不同 song_id → 不去重)。
+        for index in 0..5 {
+            let mut request = download_request();
+            request.song_id = format!("song-{index}");
+            request.name = format!("歌{index}");
+            request_download(&mut ids, &request).unwrap();
+        }
+        assert_eq!(tasks::load_index().len(), 5);
+
+        let summary = pump(&mut ids).unwrap();
+        assert_eq!(summary["started"].as_array().unwrap().len(), 1, "一次 pump 只新开 1 首: {summary}");
+        assert_eq!(fake.borrow().downloads.len(), 1, "只提交 1 个宿主下载 job");
+        assert_eq!(fake.borrow().copies.len(), 1, "假宿主 job 本轮就成功, 顺带收尾 1 条");
+
+        // 其余 4 首仍是排队态, 没有被"顺手"开掉。
+        let index = tasks::load_index();
+        let queued = index.iter().filter(|e| e.status == tasks::STATUS_QUEUED).count();
+        assert_eq!(queued, 4, "剩下 4 首必须还排队: {index:?}");
+
+        // 再 pump 4 次: 每次正好推进一首, 5 轮全部走完。
+        for _ in 0..4 {
+            pump(&mut ids).unwrap();
+        }
+        let index = tasks::load_index();
+        assert_eq!(index.iter().filter(|e| e.status == tasks::STATUS_DONE).count(), 5);
+        assert_eq!(fake.borrow().downloads.len(), 5, "总共 5 个下载 job");
+    }
+
+    /// 门禁 3 的回归: 队列里已有 1 条 `copying` + 1 条 `queued`(max_active=2)时,
+    /// 一次 pump **只能收尾 1 个**。旧实现在 ③ 收尾旧 copying 之后, ④ 新开的那首
+    /// 会被 `step_one_start` 的即时轮询同步收尾(宿主 job 当轮成功), 一轮出现 2 个终态。
+    #[test]
+    fn single_pump_finalizes_at_most_one_task_with_copying_and_queued() {
+        let fake = install_pipeline_host(JobOutcome::Succeeded);
+        crate::clock::testhooks::set_now(Some(1_790_676_009_000_000_000));
+        let mut ids = PutIds::new();
+
+        // 一条已在 copying 的旧任务(暂存已定名, 只差复制入库)。
+        let copying = Task {
+            id: "cp00001".to_string(),
+            source: "netease".to_string(),
+            song_id: "old".to_string(),
+            name: "旧歌".to_string(),
+            singers: "旧歌手".to_string(),
+            quality: DEFAULT_QUALITY.to_string(),
+            out_name: "旧歌手 - 旧歌.flac".to_string(),
+            staged_path: format!("{DEFAULT_MUSIC_DIR}/cp00001.part"),
+            status: tasks::STATUS_COPYING.to_string(),
+            updated_ms: 1,
+            ..Task::default()
+        };
+        tasks::persist_task(&mut ids, &copying).unwrap();
+
+        // 一条排队的新歌(与旧任务不同 source/song_id, 不去重)。
+        let queued = request_download(&mut ids, &download_request()).unwrap();
+        let queued_id = queued["task_id"].as_str().unwrap().to_string();
+        assert_eq!(tasks::load_index().len(), 2);
+
+        let summary = pump(&mut ids).unwrap();
+        let completed = summary["completed"].as_array().unwrap().len();
+        let failed = summary["failed"].as_array().unwrap().len();
+        assert!(completed + failed <= 1, "一次 pump 最多收尾 1 个: {summary}");
+        assert_eq!(fake.borrow().copies.len(), 1, "同一轮最多 1 次复制: {summary}");
+
+        // 旧 copying 被收尾; 新开的那首只是提交(仍是 downloading), 留到下轮收尾。
+        assert_eq!(tasks::load_task("cp00001").unwrap().status, tasks::STATUS_DONE);
+        let new_entry = tasks::load_index()
+            .into_iter()
+            .find(|e| e.id == queued_id)
+            .expect("新任务在索引里");
+        assert_eq!(
+            new_entry.status,
+            tasks::STATUS_DOWNLOADING,
+            "新开的那首不该在同一轮被顺手收尾: {summary}"
+        );
+        drop(fake);
+    }
+
+    /// 0.3.12 内存审计: 把模块头注释里引用的**实测字节数**钉成断言。
+    ///
+    /// 索引条目与完整记录的单条体积决定了"单次 pump 内存上界"里 idx 与在途两项的
+    /// 系数。这里按真机形态构造(长 error 撑满 `IDX_ERROR_LIMIT`、绝对暂存路径、
+    /// `job_ref`), 断言:
+    /// - 索引条目 < 完整记录的一半(分片的收益前提);
+    /// - 索引条目有**字节级上界**(不随 error 文本长度线性膨胀);
+    /// - 200 条索引(state 展示上限)仍远小于宿主帧上限。
+    ///
+    /// 顺带把 `report` 打印出来, 便于对照模块头的数字。
+    #[test]
+    fn audit_measured_index_and_record_sizes() {
+        // 索引条目: `error` 撑满 IDX_ERROR_LIMIT(这是它唯一可能变大的字段)。
+        let idx = tasks::TaskIndexEntry {
+            id: "a1b2c3d4".to_string(),
+            status: tasks::STATUS_QUEUED.to_string(),
+            name: "晴天".to_string(),
+            singers: "周杰伦".to_string(),
+            quality: "jymaster".to_string(),
+            error: "x".repeat(tasks::IDX_ERROR_LIMIT),
+            updated_ms: 1_790_676_009_000,
+        };
+        // 完整记录: 多带 job_ref / staged_path / out_name / album, error 撑到 600B。
+        let full = Task {
+            id: "a1b2c3d4".to_string(),
+            source: "netease".to_string(),
+            song_id: "12345".to_string(),
+            name: "晴天".to_string(),
+            singers: "周杰伦".to_string(),
+            album: "叶惠美".to_string(),
+            quality: "jymaster".to_string(),
+            out_name: "周杰伦 - 晴天.flac".to_string(),
+            staged_path: "/dian115AI/a1b2c3d4.part".to_string(),
+            status: tasks::STATUS_DOWNLOADING.to_string(),
+            job_ref: "job-8f2c1a".to_string(),
+            attempts: 1,
+            error: "x".repeat(600),
+            created_ms: 1_790_676_009_000,
+            updated_ms: 1_790_676_009_000,
+            ..Task::default()
+        };
+        let idx_bytes = serde_json::to_vec(&idx).unwrap().len();
+        let full_bytes = serde_json::to_vec(&full).unwrap().len();
+
+        // 索引条目必须明显小于完整记录(分片的收益前提)。
+        assert!(
+            idx_bytes * 2 < full_bytes,
+            "索引条目({idx_bytes}B)相对完整记录({full_bytes}B)没有小到一半以下"
+        );
+        // 字节级上界: error 撑满时也只有这个量级, 不再随文本长度线性增长。
+        assert!(
+            idx_bytes <= 256,
+            "索引条目 {idx_bytes}B 超过 256B 上界, 模块头的 KB 估算需要更新"
+        );
+        // 200 条(state 展示上限)仍只有几十 KB。
+        let idx_200 = 200 * idx_bytes;
+        assert!(
+            idx_200 < 64 * 1024,
+            "200 条索引 {idx_200}B 超过 64KiB, 超出模块头声称的量级"
+        );
+        println!(
+            "[audit] idx_entry={idx_bytes}B full_record={full_bytes}B ratio={:.1} \
+             idx@200={:.1}KB in_flight@max_active_cap={:.1}KB",
+            full_bytes as f64 / idx_bytes as f64,
+            idx_200 as f64 / 1024.0,
+            (crate::download::MAX_ACTIVE_CAP as usize * full_bytes) as f64 / 1024.0,
+        );
+    }
+
+    /// 0.3.12 内存审计: `DIAG_ROOTS_RAW` 是**永不释放**的 static(线性内存不归还
+    /// OS), 因此必须与"历史最大响应"解耦。
+    ///
+    /// 断言 [`diag_b64`] 把超长响应截到 [`DIAG_RAW_MAX_B64`], 且截断后仍是合法
+    /// base64(否则诊断读档时 `base64 -d` 会直接失败)。
+    #[test]
+    fn diag_static_is_bounded_and_stays_valid_base64() {
+        use base64::Engine as _;
+        let engine = base64::engine::general_purpose::STANDARD;
+
+        // 短响应: 原样编码, 不加截断标记。
+        let small = diag_b64(b"{\"data\":{\"items\":[]}}");
+        assert_eq!(small, engine.encode(b"{\"data\":{\"items\":[]}}"));
+
+        // 远超上限的响应: 截断。
+        let huge = vec![b'x'; DIAG_RAW_MAX_B64 * 4];
+        let capped = diag_b64(&huge);
+        assert!(
+            capped.len() <= DIAG_RAW_MAX_B64,
+            "诊断留档 {}B 超过上限 {DIAG_RAW_MAX_B64}B",
+            capped.len()
+        );
+        // 必须是合法 base64(否则读档的人没法解码)。
+        let decoded = engine
+            .decode(&capped)
+            .unwrap_or_else(|err| panic!("截断后不是合法 base64: {err}"));
+        assert!(
+            decoded.len() <= DIAG_RAW_MAX_B64,
+            "解码后 {}B 超过上限",
+            decoded.len()
+        );
+        // 标记在解码之后可见, 且落在 4 字节对齐的有效载荷之后。
+        let text = String::from_utf8_lossy(&decoded);
+        assert!(text.contains("<truncated>"), "截断标记必须可见: {text:?}");
+        let marker_len = "\n<truncated>".len();
+        let payload_bytes = decoded.len() - marker_len;
+        assert_eq!(payload_bytes % 3, 0, "有效载荷必须 3 字节对齐(base64 的最小编码单位)");
+
+        // 关键性质: 响应再大, static 的字节数也不变(与历史峰值无关)。
+        for scale in [1usize, 8, 64] {
+            let body = vec![b'y'; DIAG_RAW_MAX_B64 * scale];
+            assert_eq!(
+                diag_b64(&body).len(),
+                capped.len(),
+                "响应放大 {scale} 倍后诊断留档长度变了 → static 上界与响应大小相关"
+            );
+        }
+    }
+
+    /// 0.3.12 内存审计: [`mark_queued_error`] 把阻塞原因写进**每一条**排队条目,
+    /// 若不截断, 索引体积会变成 `排队条数 × reason 长度`(reason 内含宿主返回的
+    /// 全部 roots 摘要)。断言它与完整记录投影走同一个 `IDX_ERROR_LIMIT`。
+    #[test]
+    fn queued_block_reason_is_truncated_in_index() {
+        let fake = install_pipeline_host(JobOutcome::Succeeded);
+        crate::clock::testhooks::set_now(Some(1_790_676_009_000_000_000));
+        let mut ids = PutIds::new();
+
+        // 3 条排队任务(全终态队列不需要完整记录, 便于只观察索引)。
+        for index in 0..3u64 {
+            let task = Task {
+                id: format!("q{index:03}"),
+                status: tasks::STATUS_QUEUED.to_string(),
+                name: format!("歌{index}"),
+                updated_ms: index + 1,
+                ..Task::default()
+            };
+            tasks::persist_task(&mut ids, &task).unwrap();
+        }
+
+        // 一个远超 IDX_ERROR_LIMIT 的阻塞原因(模拟宿主返回几十个 roots 的形态)。
+        let long_reason = format!("宿主未向插件开放本地可写工作区根(roots: [{}])", "别名(后端), ".repeat(200));
+        assert!(long_reason.len() > tasks::IDX_ERROR_LIMIT * 5);
+        let mut report = PumpReport::default();
+        mark_queued_error(&mut ids, &long_reason, &mut report);
+
+        let index = tasks::load_index();
+        assert_eq!(index.len(), 3);
+        for entry in &index {
+            assert!(
+                entry.error.len() <= tasks::IDX_ERROR_LIMIT,
+                "排队条目的 error 未截断: {}B",
+                entry.error.len()
+            );
+        }
+        // 整份索引仍是常数级: 3 条 × 上界, 不随 reason 长度膨胀。
+        let idx_bytes = serde_json::to_vec(&index).unwrap().len();
+        assert!(
+            idx_bytes <= 3 * 512,
+            "3 条索引就占了 {idx_bytes}B, 阻塞原因仍在按 reason 长度膨胀"
+        );
+        drop(fake);
+    }
+
+    /// 峰值内存与队列长度**无关**的直接度量: 一次 pump 只把"在途 + 本轮要动的那几条"
+    /// 完整记录读进内存, 队列里其余几十条**一次都不读**。
+    ///
+    /// 摆 40 条任务(模拟真机队列规模), 全部推到 `done`(终态, 无需推进), 槽位全空;
+    /// 一次 pump 应当只读索引与设置, `task.<id>` 的读取**为 0**。
+    /// 对照旧实现: 整队 `Vec<Task>` 被 load 进来, 40 条全量进内存。
+    #[test]
+    fn pump_reads_no_full_records_for_finished_queue() {
+        let fake = install_pipeline_host(JobOutcome::Succeeded);
+        crate::clock::testhooks::set_now(Some(1_790_676_009_000_000_000));
+        let mut ids = PutIds::new();
+
+        // 40 条已完成的完整记录(故意带长 error/长路径, 让单条足够"重")。
+        for index in 0..40u64 {
+            let task = Task {
+                id: format!("fin{index:03}"),
+                source: "netease".to_string(),
+                song_id: index.to_string(),
+                name: format!("歌{index}"),
+                singers: "歌手".to_string(),
+                quality: "jymaster".to_string(),
+                status: tasks::STATUS_DONE.to_string(),
+                out_name: format!("歌手 - 歌{index}.flac"),
+                staged_path: format!("/dian115AI/fin{index:03}.part"),
+                job_ref: format!("job-{index}"),
+                attempts: 3,
+                error: "x".repeat(600),
+                created_ms: index + 1,
+                updated_ms: index + 1,
+                ..Task::default()
+            };
+            tasks::persist_task(&mut ids, &task).unwrap();
+        }
+        let index = tasks::load_index();
+        assert_eq!(index.len(), 40);
+        // 索引条目必须明显小于完整记录(这是分片的收益前提)。实测: 索引里 `error`
+        // 被截到 120B, 完整记录还带 job_ref/staged_path/out_name/album 等。
+        let idx_bytes = serde_json::to_vec(&index).unwrap().len() / index.len();
+        let full_bytes = serde_json::to_vec(&tasks::load_task("fin000").unwrap()).unwrap().len();
+        assert!(
+            full_bytes >= idx_bytes * 2,
+            "索引条目({idx_bytes}B)相对完整记录({full_bytes}B)没有明显变小"
+        );
+
+        fake.borrow_mut().task_reads.clear();
+        let summary = pump(&mut ids).unwrap();
+        let reads = fake.borrow().task_reads.clone();
+        assert!(
+            reads.is_empty(),
+            "全终态队列的一次 pump 不该读任何完整记录, 实际读了: {:?}",
+            reads.iter().map(|(k, _)| k).collect::<Vec<_>>()
+        );
+        assert_eq!(summary["active"], 0);
+        assert_eq!(summary["queued"], 0);
+        assert_eq!(summary["completed"].as_array().unwrap().len(), 0);
+        // 40 条记录都还在(没有被这次 pump 顺手清掉)。
+        assert_eq!(tasks::load_index().len(), 40);
+    }
+
+    /// 队列里只剩 1 首排队 + 38 条已完成时, 一次 pump 只读**那一条**的完整记录。
+    #[test]
+    fn pump_reads_only_the_one_task_it_advances() {
+        let fake = install_pipeline_host(JobOutcome::Succeeded);
+        crate::clock::testhooks::set_now(Some(1_790_676_009_000_000_000));
+        let mut ids = PutIds::new();
+
+        // 38 条已完成。
+        for index in 0..38 {
+            let task = Task {
+                id: format!("fin{index:03}"),
+                status: tasks::STATUS_DONE.to_string(),
+                updated_ms: index as u64 + 1,
+                ..Task::default()
+            };
+            tasks::persist_task(&mut ids, &task).unwrap();
+        }
+        // 1 首排队。
+        let queued = request_download(&mut ids, &download_request()).unwrap();
+        let queued_id = queued["task_id"].as_str().unwrap().to_string();
+        assert_eq!(tasks::load_index().len(), 39);
+
+        fake.borrow_mut().task_reads.clear();
+        let summary = pump(&mut ids).unwrap();
+        assert_eq!(summary["started"].as_array().unwrap().len(), 1);
+
+        let reads = fake.borrow().task_reads.clone();
+        assert!(!reads.is_empty(), "推进那条必须读它的完整记录");
+        // 读到的键只有被推进的那一条。
+        let distinct: std::collections::BTreeSet<&String> = reads.iter().map(|(k, _)| k).collect();
+        assert_eq!(distinct.len(), 1, "只应读被推进的那一条, 实际读了: {distinct:?}");
+        assert!(
+            distinct.iter().all(|k| k.ends_with(&queued_id)),
+            "读到的是别的任务: {distinct:?}"
+        );
+    }
+
+    /// pump 开头做旧键迁移: 旧单键 `tasks` 的任务会被拆成分片并被推进。
+    #[test]
+    fn pump_migrates_legacy_queue_first() {
+        let fake = install_pipeline_host(JobOutcome::Succeeded);
+        crate::clock::testhooks::set_now(Some(1_790_676_009_000_000_000));
+        let mut ids = PutIds::new();
+
+        // 直接塞旧版单键队列(0.3.11 形态, 顶层数组)。
+        let legacy = vec![Task {
+            id: "leg001".to_string(),
+            source: "netease".to_string(),
+            song_id: "77".to_string(),
+            name: "旧歌".to_string(),
+            singers: "旧歌手".to_string(),
+            quality: "jymaster".to_string(),
+            out_name: "旧歌手 - 旧歌.flac".to_string(),
+            status: tasks::STATUS_QUEUED.to_string(),
+            created_ms: 1_000,
+            updated_ms: 1_000,
+            ..Task::default()
+        }];
+        store::put(&mut ids, tasks::TASKS_KEY, &serde_json::to_vec(&legacy).unwrap()).unwrap();
+
+        // 第一次 pump: 迁移 + 推进这一条(一次只新开 1 首)。
+        let summary = pump(&mut ids).unwrap();
+        assert_eq!(summary["started"].as_array().unwrap().len(), 1, "{summary}");
+
+        let (raw, ok) = store::get(tasks::TASKS_KEY);
+        assert!(!ok || raw.is_empty(), "pump 之后旧键必须被删");
+        let full = tasks::load_task("leg001").expect("分片键");
+        assert_eq!(full.status, tasks::STATUS_DONE);
+        assert_eq!(full.out_name, "旧歌手 - 旧歌.flac");
+        let index = tasks::load_index();
+        assert_eq!(index.len(), 1);
+        assert_eq!(index[0].id, "leg001");
+        assert_eq!(fake.borrow().downloads.len(), 1);
     }
 
     /// 重试后再用尽: 第二次失败通知的 `dedupe_key` 与幂等键必须与第一轮不同,
@@ -1628,9 +2255,9 @@ mod tests {
 
         // 用户点「重试」: attempts 归零、retry_round 自增, 再跑一轮仍失败。
         tasks::retry(&mut ids, &task_id).unwrap();
-        let retried = tasks::load();
-        assert_eq!(retried[0].attempts, 0);
-        assert_eq!(retried[0].retry_round, 1);
+        let retried = tasks::load_task(&task_id).unwrap();
+        assert_eq!(retried.attempts, 0);
+        assert_eq!(retried.retry_round, 1);
         for _ in 0..4 {
             pump(&mut ids).unwrap();
         }
@@ -1650,8 +2277,9 @@ mod tests {
             .collect();
         assert_eq!(notify_keys.len(), 2);
         assert_ne!(notify_keys[0], notify_keys[1]);
-        // callback_data 仍指向同一个任务, 便于重试按钮路由。
-        assert_eq!(second["buttons"][0][0]["callback_data"], format!("retry:{task_id}"));
+        // 两轮通知都指向同一个任务(正文里的重试入口经插件页路由到 task-retry)。
+        assert!(second["body"].as_str().unwrap().contains("可一键重试"));
+        assert_eq!(second["body"].as_str().unwrap(), first["body"].as_str().unwrap());
     }
 
     #[test]

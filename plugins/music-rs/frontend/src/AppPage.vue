@@ -11,7 +11,7 @@
 //   qr-create{source} / qr-poll{source,key} / search{source,query,page}
 //   / playlists{source} / playlist-songs{source,id,page,page_size}
 //   / download{source,song_id,name,singers,album,level} / settings-update{patch}
-//   / task-retry{id} / task-clear{}
+//   / task-retry{id} / task-clear{} / pump{}
 // 返回形状是 `{result:{status,message,data}}`(见 runtime.rs 的 `action_result`)。
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import {
@@ -773,7 +773,7 @@ async function downloadPlaylistAll() {
   }
 }
 
-// ─────────────────────────── ④ 任务列表(runtime.rs: task-retry / task-clear) ───────────────────────────
+// ─────────────────────────── ④ 任务列表(runtime.rs: task-retry / task-clear / pump) ───────────────────────────
 
 const taskBusy = ref('')
 
@@ -830,6 +830,35 @@ async function retryTask(task: Task) {
     message.success(String(data.message || '已重新排队'))
   } catch (error: unknown) {
     message.error(String((error as { message?: string })?.message || '重试失败'))
+  } finally {
+    taskBusy.value = ''
+  }
+}
+
+async function pumpQueue() {
+  taskBusy.value = 'pump'
+  try {
+    // 无入参: 与定时 job `queue-pump` 走同一个函数(runtime.rs:508, tasks::queue_pump
+    // → download::pump), 单次只新开 1 首, 连点几次是安全的吞吐兜底。
+    const result = await invoke('pump')
+    if (result.status === 'failed') {
+      message.error(String(result.message || '推进失败'))
+      return
+    }
+    // 摘要是 `{queued,active,started,completed,failed,messages}`(download.rs 末尾的 json!),
+    // messages 是这一轮真正推过的事件文案(取链/提交/入库/失败原因)。
+    const data = (result.data || {}) as Record<string, any>
+    const lines = listOf<unknown>(data.messages)
+      .map((item) => String(item || '').trim())
+      .filter((text) => text.length > 0)
+    const head = lines.slice(0, 3)
+    message.success(
+      head.length > 0
+        ? head.join('；')
+        : `已推进（排队 ${Number(data.queued) || 0} · 进行中 ${Number(data.active) || 0}）`,
+    )
+  } catch (error: unknown) {
+    message.error(String((error as { message?: string })?.message || '推进失败'))
   } finally {
     taskBusy.value = ''
   }
@@ -1355,6 +1384,9 @@ const rootProbeNote = computed(() => {
         <n-tag v-if="pendingTasks.length" size="small" type="info" :bordered="false">进行中 {{ pendingTasks.length }}</n-tag>
         <n-tag v-if="failedTasks.length" size="small" type="error" :bordered="false">失败 {{ failedTasks.length }}</n-tag>
         <span class="spacer" />
+        <n-button size="small" secondary :loading="taskBusy === 'pump'" :disabled="taskBusy === 'pump'" @click="pumpQueue">
+          推进队列
+        </n-button>
         <n-button size="small" secondary :loading="taskBusy === 'clear'" @click="clearFinished">清理已完成</n-button>
       </div>
 
@@ -1400,7 +1432,8 @@ const rootProbeNote = computed(() => {
       <n-empty v-else description="暂无任务。去「搜索」页选一首歌点下载。" />
 
       <p class="hint">
-        任务由后台 job `queue-pump`（每 5 分钟，见 manifest）推进；失败任务最多自动重试 3 次，用尽后可在这一行点「重试」，
+        任务由后台 job `queue-pump`（每 5 分钟，见 manifest）推进；想立刻推一轮点右上角「推进队列」（与 job 同一个入口，
+        单次只新开 1 首）。失败任务最多自动重试 3 次，用尽后可在这一行点「重试」，
         或从 Telegram 失败通知的按钮重试。「清理已完成」只删 done/failed，进行中的任务不动。
       </p>
     </section>

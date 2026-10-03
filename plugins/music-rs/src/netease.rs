@@ -880,14 +880,19 @@ pub fn song_url(song_id: &str, level: &str) -> Result<SongUrl, String> {
     let mut headers = base_headers(CHROME_UA);
     headers.insert("cookie".to_string(), cookie_header(&load_cookies()));
 
-    let mut last_body: Vec<u8> = Vec::new();
+    // 只留**最后那档的截断尾巴**(<= `util::TRUNC_LIMIT` 字节), 不留整份响应体:
+    // 阶梯最多 8 档, 留全文等于把 8 份响应体依次钉在本轮峰值上, 而错误文案只需要
+    // 200 字节的尾巴。`body` 与本变量因此不再是"整份 + 一份克隆"的双份驻留。
+    let mut last_tail = String::new();
     for current in level_ladder(level) {
         let payload = song_url_payload(song_id, current, request_id(clock::now_unix_nanos()));
         let params = eapi_params(SONG_URL_API, &payload);
         let form = form_encode(&[("params", params.as_str())]);
         let response = post_form(SONG_URL_API, headers.clone(), &form)?;
         let body = store::decode_body(&response).unwrap_or_default();
-        last_body = body.clone();
+        last_tail = util::trunc(&body);
+        // `body`/`response`/`form`/`params`/`payload` 全部在本轮迭代结束即释放,
+        // 下一档从头再来 —— 单曲取链工作集不随档位数累加。
         let out: SongUrlResponse = match serde_json::from_slice(&body) {
             Ok(out) => out,
             // Go `netease.go:158`: 解不出来就试下一档。
@@ -910,12 +915,9 @@ pub fn song_url(song_id: &str, level: &str) -> Result<SongUrl, String> {
             size: item.size.unwrap_or_default(),
         });
     }
-    {
-            let tail = util::trunc(&last_body);
-            Err(format!(
-                "所有音质均未获取到链接（需要 SVIP 且歌曲有对应音源）; 最后响应: {tail}"
-            ))
-        }
+    Err(format!(
+        "所有音质均未获取到链接（需要 SVIP 且歌曲有对应音源）; 最后响应: {last_tail}"
+    ))
 }
 
 /// 登录态查询: 从 KV 读会话 cookie 是否还在(Go 版从 `state.sessions["netease"]` 读)。
