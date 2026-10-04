@@ -583,6 +583,9 @@ const submitting = ref('')
  * 都被 try/catch 吞下, **绝不向外抛异常** —— 这样即便被逐首循环调用也不会中断整批,
  * 调用方只需按返回值累计"N 首失败, 可重试"。当前页面除后端分批的整单下载外没有逐首循环,
  * 单曲按钮失败只弹一条错误。
+ *
+ * 0.3.15: 队列互斥把入队挡下时后端回 skipped(runtime.rs:456-468) —— 什么都没做,
+ * 也返回 false(没入队, 可重试), 但弹 warning: 既不能报「已入队」, 也不是业务失败。
  */
 async function download(song: Song): Promise<boolean> {
   const key = String(song.id ?? '')
@@ -598,6 +601,12 @@ async function download(song: Song): Promise<boolean> {
     })
     if (result.status === 'failed') {
       message.error(loginHint(String(result.message || '下载失败')))
+      return false
+    }
+    // 0.3.15: 队列互斥(单曲入队/整单入队/推进)撞车时后端回 skipped —— 什么都没做,
+    // 不是成功(没入队)也不是失败; 提示稍后再试, 绝不弹「已入队」。
+    if (result.status === 'skipped') {
+      message.warning(String(result.message || '队列正在推进或入队, 本次未入队, 请稍后再试'))
       return false
     }
     const data = (result.data || {}) as Record<string, any>
@@ -752,12 +761,13 @@ async function fetchPlaylistSongs(page: number) {
  * 整单下载(0.3.14): 循环调 `playlist-queue-all` 让后端分批翻页整单入队。
  *
  * 每轮固定 `batch_pages=5`(500 首)、统一 `quality`; 后端返回 `{queued,deduped,total_seen,next_page,has_more}`,
- * `has_more` 为 true 就带着上一轮的 `next_page` 继续下一轮, 取尽(has_more=false)或某轮业务失败即停。
+ * `has_more` 为 true 就带着上一轮的 `next_page` 继续下一轮, 取尽(has_more=false)、某轮业务失败
+ * 或某轮被队列互斥跳过(0.3.15 的 `skipped`, runtime.rs:424-430)即停。
  * 每轮之间不人为延时(action 自身串行, 后端逐页取歌也串行)。
  *
  * 与歌单曲目列表的分页浏览**完全解耦**: 这里不再读 `plSongs`, 只认歌单 id,
  * 所以不需要先把 100 首「加载更多」到底 —— 100 首限制由此解除。
- * 全程按钮 loading; 结束(完成或失败)都弹汇总, 业务失败时已入队的不丢。
+ * 全程按钮 loading; 结束(完成/失败/跳过)都弹汇总, 业务失败与跳过时已入队的不丢。
  */
 async function downloadPlaylistAll() {
   const view = playlistView.value
@@ -773,7 +783,10 @@ async function downloadPlaylistAll() {
   let deduped = 0
   let seen = 0
   let nextPage = 1
+  /** 真正的失败/防御性中止(报 error)。 */
   let stopped = ''
+  /** 0.3.15: 被队列互斥跳过(什么都没做, 报 warning, 不算失败)。 */
+  let skipped = ''
   try {
     for (;;) {
       let result: RuntimeCallback['result'] = {}
@@ -796,6 +809,12 @@ async function downloadPlaylistAll() {
       deduped += Number(data.deduped) || 0
       seen += Number(data.total_seen) || 0
       plBatchProgress.value = batchProgressText(queued, deduped, seen, total)
+      // 0.3.15: 队列互斥把本批挡下 —— 后端什么都没做(游标停在请求的起始页),
+      // 不是失败, 更不能掉进下面的游标守卫误报「入队游标没有前进」; 收尾提示稍后再试。
+      if (result.status === 'skipped') {
+        skipped = String(result.message || '队列正在推进或入队, 本批未入队, 请稍后再试')
+        break
+      }
       if (result.status === 'failed') {
         stopped = String(result.message || '整单入队失败')
         break
@@ -809,7 +828,9 @@ async function downloadPlaylistAll() {
       }
       nextPage = cursor
     }
-    if (stopped) {
+    if (skipped) {
+      message.warning(`${skipped}；已入队 ${queued} 首(去重 ${deduped})，未完成的可稍后再试`)
+    } else if (stopped) {
       message.error(`${loginHint(stopped)}；已入队 ${queued} 首(去重 ${deduped})，未完成的可重试`)
     } else {
       message.success(
@@ -898,6 +919,12 @@ async function pumpQueue() {
     const result = await invoke('pump')
     if (result.status === 'failed') {
       message.error(String(result.message || '推进失败'))
+      return
+    }
+    // 0.3.15: 与定时 job `queue-pump`/入队撞车时后端回 skipped(runtime.rs:566-577) ——
+    // 本轮什么都没推进, 提示稍后再试, 绝不弹「已推进」。
+    if (result.status === 'skipped') {
+      message.warning(String(result.message || '上一轮队列推进仍在进行, 本次跳过, 请稍后再试'))
       return
     }
     // 摘要是 `{queued,active,started,completed,failed,messages}`(download.rs 末尾的 json!),

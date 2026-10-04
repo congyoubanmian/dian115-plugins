@@ -103,6 +103,99 @@ const FILES_ENTRIES: &str = "/api/plugin-host/files/entries";
 //   `root_entry_ref`), 全仓无写入点, 恒为 `(0, "")` —— 保留字段只为 `pumpdiag`
 //   的键形状稳定, 仍然是 0 字节。
 static DIAG_ROOTS_RAW: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
+
+/// 0.3.15: WASM 线性内存实时字节数(64KB 页 × 页数); 非 wasm 目标(测试)恒 0。
+///
+/// wasm 线性内存**不归还 OS**, 所以"这次操作到底涨了多少"只能靠内存指针读数
+/// 前后对比: 真机上 `memory_size` 是权威值, manifest 的 `memory_mb` 只是上限。
+pub fn wasm_memory_bytes() -> u64 {
+    #[cfg(target_arch = "wasm32")]
+    {
+        // Rust 1.98 起 `memory_size` 已是安全函数(再包 unsafe 会触发 unused_unsafe);
+        // `allow(unused_unsafe)` 让这段在仍要求 unsafe 的旧工具链上也能编译
+        // (CI 用滚动的 rust:1-slim 镜像)。
+        #[allow(unused_unsafe)]
+        unsafe {
+            (core::arch::wasm32::memory_size(0) as u64) * 65_536
+        }
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        0
+    }
+}
+
+/// [`wasm_memory_bytes`] 的 KB 形态(诊断字段一律 KB; 非 wasm 恒 0)。
+pub fn wasm_memory_kb() -> u64 {
+    wasm_memory_bytes() / 1024
+}
+
+// ── 队列操作互斥(0.3.15) ────────────────────────────────────────────────
+//
+// pump(定时 job `queuePump` 与手动 action `pump`/`queue-pump`)、单曲入队
+// (action `download` → [`tasks::enqueue`])与整单入队(action `playlist-queue-all`)
+// 读改写的都是同一批 KV 键(`tasks.idx` 与 `task.<id>`), 因此共用**同一面**旗标:
+//
+// - **为什么需要**: manifest `max_concurrency = 2`, cron 的 `queuePump` 可能撞上
+//   用户手动点击。两个队列操作并发时, 各自在内存里持有一份索引/在途记录 ——
+//   双份内存, 正是 0.3.12 起在 128MB 上限下要避免的; 而且 ETag 乐观锁只保证
+//   单个键的写入不损坏, 不保证后写者不会覆盖前者的状态转移(读-改-写丢更新)。
+// - **语义: 尝试进入, 失败即跳过, 绝不排队等待**。后来者立刻拿到 `skipped`
+//   (提示"稍后再试"), 而不是阻塞/自旋 —— wasm 里没有可让步的线程原语, 阻塞只会
+//   把请求堆在宿主侧; 被跳过的又都是幂等操作(推进/入队), 稍后再点或等下一轮
+//   cron 都没有副作用。
+// - **作用域**: 同一 wasm 实例内的重入/并发(第二个调用看得到第一个的旗标)。
+//   宿主若把并发派发到不同实例, 那份隔离由宿主调度决定, 不在本旗标范围内。
+//
+// 生产是进程级原子; `cfg(test)` 用线程局部 —— 测试是多线程并行跑的, 共享旗标会
+// 让互斥用例把其它并行用例挡成 skipped(假失败), 线程局部与 wasm 的单实例串行
+// 语义一致(与 `clock::testhooks` 同一处理)。
+#[cfg(not(test))]
+static QUEUE_OP_RUNNING: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+#[cfg(test)]
+std::thread_local! {
+    static QUEUE_OP_RUNNING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// 读改写队列旗标, 返回**改前**的值(`true` = 已有队列操作在跑)。
+fn queue_op_flag_swap(running: bool) -> bool {
+    #[cfg(not(test))]
+    {
+        QUEUE_OP_RUNNING.swap(running, std::sync::atomic::Ordering::SeqCst)
+    }
+    #[cfg(test)]
+    {
+        QUEUE_OP_RUNNING.with(|flag| flag.replace(running))
+    }
+}
+
+/// 队列操作作用域守卫: 任何路径退出(含 `?` 提前返回)都复位旗标。
+struct QueueOpGuard;
+
+impl Drop for QueueOpGuard {
+    fn drop(&mut self) {
+        queue_op_flag_swap(false);
+    }
+}
+
+/// 尝试独占一次队列操作。`None` = 已有队列操作在跑, 调用方必须**立即**返回
+/// [`queue_busy_value`], 不得排队、不得重试(语义见上方互斥注释)。
+fn try_begin_queue_op() -> Option<QueueOpGuard> {
+    if queue_op_flag_swap(true) {
+        None
+    } else {
+        Some(QueueOpGuard)
+    }
+}
+
+/// 队列忙时的统一回答(不是失败: 什么都没做, 稍后再试即可)。
+/// `skipped` 让 action 层([`crate::runtime`])把状态栏标成"已跳过"而不是"成功"。
+fn queue_busy_value(message: &str) -> Value {
+    json!({"skipped": "queue_busy", "message": message})
+}
+
 static DIAG_ENTRIES: std::sync::Mutex<(u16, String)> = std::sync::Mutex::new((0, String::new()));
 
 /// 诊断留档单个字段的 base64 字节上限。
@@ -1002,7 +1095,20 @@ pub struct DownloadRequest {
 }
 
 /// 建一条下载任务并写入 KV 队列(真正的下载在 [`pump`] 里推进)。
+///
+/// 0.3.15: 与 [`pump`]/[`playlist_queue_all`] 共用"队列操作"互斥 —— 撞车时**直接
+/// 跳过**(返回 `skipped=queue_busy`, 不排队等待, 语义见 `QUEUE_OP_RUNNING` 注释),
+/// 此时不产生任何 KV 写入。响应带 `mem_kb{start,end}` 内存探针(真机诊断用)。
 pub fn request_download(ids: &mut PutIds, request: &DownloadRequest) -> Result<Value, String> {
+    let Some(_guard) = try_begin_queue_op() else {
+        let mem = wasm_memory_kb();
+        return Ok(json!({
+            "skipped": "queue_busy",
+            "message": "队列正在推进或入队, 本次未入队, 请稍后再试",
+            "mem_kb": {"start": mem, "end": mem},
+        }));
+    };
+    let mem_start = wasm_memory_kb();
     let settings = load_settings();
     let level = request.level.trim();
     let quality = if level.is_empty() { settings.quality.clone() } else { level.to_string() };
@@ -1023,14 +1129,15 @@ pub fn request_download(ids: &mut PutIds, request: &DownloadRequest) -> Result<V
         "deduped": outcome.deduped,
         "out_name": outcome.task.out_name,
         "quality": outcome.task.quality,
+        "mem_kb": {"start": mem_start, "end": wasm_memory_kb()},
     }))
 }
 
 // ─────────────────────── 歌单整单入队 (0.3.14) ───────────────────────
 
 /// action `playlist-queue-all` 每批最多翻的页数上限。
-/// 前台 action 超时 60s: 每页约 1 次 v6 detail(GET) + 1 次 v3 detail(POST, ~200ms),
-/// 10 页(1000 首)也只有约 20 次网络往返, 预算充足。
+/// 前台 action 超时 60s: 整批只 1 次 v6 detail(GET) 拿全量索引, 之后每页 1 次
+/// v3 detail(POST, ~200ms), 10 页(1000 首)也只有约 11 次网络往返, 预算充足。
 pub const PLAYLIST_QUEUE_MAX_PAGES: u32 = 10;
 
 /// action `playlist-queue-all` 的 `batch_pages` 缺省值(5 页 = 500 首)。
@@ -1063,20 +1170,66 @@ struct QueueCounts {
     skipped: u64,
 }
 
-/// 组装 action result(`status` 在顶层, 计数在 `data` 下)。
-fn queue_all_result(counts: QueueCounts, next_page: u32, has_more: bool, error: Option<String>) -> Value {
-    let data = json!({
+/// action result 的 `data` 主体(`status`/`message` 由调用方决定)。
+///
+/// 0.3.15 起 `data` 里恒带内存探针:
+/// - `mem_kb{start,end}`: 本次 action 起止时的 wasm 线性内存(KB, 真机诊断);
+/// - `pages_mem_kb`: 每处理完一页记一条 `{page,start,end}` —— 大歌单入队时
+///   一眼能看出是哪一页把内存从多少 KB 推到了多少 KB。
+///
+/// 字段名与值都走宿主安全规则: 键名不含 "cookie" 子串、值不是以 "/" 开头的字符串
+/// (见 `settings_view` 注释里的宿主过滤), 探针全是数字/数组, 不会被过滤。
+fn queue_all_data(
+    counts: QueueCounts,
+    next_page: u32,
+    has_more: bool,
+    mem_start: u64,
+    pages_mem_kb: &[Value],
+) -> Value {
+    json!({
         "queued": counts.queued,
         "deduped": counts.deduped,
         "total_seen": counts.total_seen,
         "skipped": counts.skipped,
         "next_page": next_page,
         "has_more": has_more,
-    });
+        "mem_kb": {"start": mem_start, "end": wasm_memory_kb()},
+        "pages_mem_kb": pages_mem_kb,
+    })
+}
+
+/// 组装 action result(`status` 在顶层, 计数与探针在 `data` 下)。
+fn queue_all_result(
+    counts: QueueCounts,
+    next_page: u32,
+    has_more: bool,
+    error: Option<String>,
+    mem_start: u64,
+    pages_mem_kb: &[Value],
+) -> Value {
+    let data = queue_all_data(counts, next_page, has_more, mem_start, pages_mem_kb);
     match error {
         Some(message) => json!({"status": "failed", "message": message, "data": data}),
         None => json!({"status": "succeeded", "data": data}),
     }
+}
+
+/// 队列操作互斥把本批整单入队挡下时的回答: `status=skipped`(不是 failed),
+/// 计数全 0、`pages_mem_kb` 为空, 续批游标停在**请求的起始页**(什么都没做,
+/// 下次从同一页继续, 不丢也不重)。
+fn queue_all_skipped(mem_start: u64, start_page: u32) -> Value {
+    json!({
+        "status": "skipped",
+        "skipped": "queue_busy",
+        "message": "队列正在推进或入队, 本批未入队, 请稍后再试",
+        "data": queue_all_data(
+            QueueCounts::default(),
+            start_page,
+            true,
+            mem_start,
+            &[],
+        ),
+    })
 }
 
 /// 歌单整单入队核心(可注入取页器, 便于测试)。
@@ -1088,6 +1241,13 @@ fn queue_all_result(counts: QueueCounts, next_page: u32, has_more: bool, error: 
 /// **页面级失败是业务失败**: 返回已完成的 `next_page`
 /// 与错误文案, 已入队的不回滚。`next_page` 是"下次该取的页号"(错误时即失败那一页,
 /// 全部满页时是 `start_page + batch_pages`)。
+///
+/// 0.3.15: 每页结束时记一条内存探针(`pages_mem_kb`, 成功页与失败页都记)。
+/// 采样点在**页面作用域之后**, 页响应体已经释放 —— 量的是这页留在内存里的部分
+/// (新入队条目推高的索引/分片工作集), 而不是当页响应体的瞬时副本。
+/// 取页器(`fetch`)自 0.3.15 起在整单入队里是"一次性索引 + 本地切片": 全量
+/// `trackIds` 只在第一页拉取时解析一次并被闭包持有到本批结束, 所以第一页之后
+/// 各页的采样增量只包含当页 v3 详情与队列写入, 不再有整棵 trackIds 的解析分配。
 fn queue_playlist_pages<F>(
     ids: &mut PutIds,
     source: &str,
@@ -1100,72 +1260,89 @@ where
     F: FnMut(u32, u32) -> Result<Value, String>,
 {
     let start_page = start_page.max(1);
+    let mem_start = wasm_memory_kb();
     let counts = &mut QueueCounts::default();
+    let mut pages_mem_kb: Vec<Value> = Vec::new();
     // 本批处理 [start_page, start_page + batch_pages) 这些页。
     let end_page = start_page.saturating_add(batch_pages);
     let mut page = start_page;
     while page < end_page {
-        match fetch(page, PLAYLIST_PAGE_SIZE) {
-            Ok(value) => {
-                let songs = value
-                    .get("songs")
-                    .and_then(Value::as_array)
-                    .cloned()
-                    .unwrap_or_default();
-                counts.total_seen += songs.len() as u64;
-                for song in &songs {
-                    let song_id =
-                        song.get("id").and_then(Value::as_str).unwrap_or("").trim().to_string();
-                    if song_id.is_empty() {
-                        counts.skipped += 1;
-                        continue;
+        let page_mem_start = wasm_memory_kb();
+        // 一页的结局: 取尽 / 继续 / 取页失败。在页面作用域里算出, 作用域外再
+        // 采样与返回 —— 这样页响应与逐首 `NewTask` 都已经释放。
+        let mut exhausted = false;
+        let mut page_error: Option<String> = None;
+        {
+            match fetch(page, PLAYLIST_PAGE_SIZE) {
+                Ok(page_value) => {
+                    let songs = page_value
+                        .get("songs")
+                        .and_then(Value::as_array)
+                        .cloned()
+                        .unwrap_or_default();
+                    counts.total_seen += songs.len() as u64;
+                    for song in &songs {
+                        let song_id =
+                            song.get("id").and_then(Value::as_str).unwrap_or("").trim().to_string();
+                        if song_id.is_empty() {
+                            counts.skipped += 1;
+                            continue;
+                        }
+                        let new_task = tasks::NewTask {
+                            source: source.to_string(),
+                            song_id,
+                            name: song.get("name").and_then(Value::as_str).unwrap_or("").to_string(),
+                            singers: song
+                                .get("singers")
+                                .and_then(Value::as_str)
+                                .unwrap_or("")
+                                .to_string(),
+                            album: song.get("album").and_then(Value::as_str).unwrap_or("").to_string(),
+                            quality: quality.to_string(),
+                        };
+                        // 单首入队失败(如单条分片写入失败)不拖垮整批: 记账跳过, 继续后面的歌。
+                        match tasks::enqueue(ids, &new_task) {
+                            Ok(outcome) if outcome.deduped => counts.deduped += 1,
+                            Ok(_) => counts.queued += 1,
+                            Err(_) => counts.skipped += 1,
+                        }
                     }
-                    let new_task = tasks::NewTask {
-                        source: source.to_string(),
-                        song_id,
-                        name: song.get("name").and_then(Value::as_str).unwrap_or("").to_string(),
-                        singers: song
-                            .get("singers")
-                            .and_then(Value::as_str)
-                            .unwrap_or("")
-                            .to_string(),
-                        album: song.get("album").and_then(Value::as_str).unwrap_or("").to_string(),
-                        quality: quality.to_string(),
+                    // 取尽判定以页接口恒带的 `total`(整单曲目数)为准, 而非当页条数:
+                    // `song/detail` 会因下架/无版权/无效 id 少返曲目, 满页也可能不足 100 首,
+                    // 只看 `songs.len()` 会把这样的页误判成最后一页, 后续页静默丢失。
+                    // 本页覆盖到的曲目序号上界是 `page * PLAYLIST_PAGE_SIZE`, 一旦 >= total
+                    // 就已翻到整单末尾(与前端 `plSongs.length < plTotal` 的权威判定一致)。
+                    let total = page_value.get("total").and_then(Value::as_i64).unwrap_or(0);
+                    let page_end = u64::from(page) * u64::from(PLAYLIST_PAGE_SIZE);
+                    exhausted = if total > 0 {
+                        page_end >= total as u64
+                    } else {
+                        // 没有 total(异常/旧接口)才退回当页条数判定, 保持有界。
+                        songs.len() < PLAYLIST_PAGE_SIZE as usize
                     };
-                    // 单首入队失败(如单条分片写入失败)不拖垮整批: 记账跳过, 继续后面的歌。
-                    match tasks::enqueue(ids, &new_task) {
-                        Ok(outcome) if outcome.deduped => counts.deduped += 1,
-                        Ok(_) => counts.queued += 1,
-                        Err(_) => counts.skipped += 1,
-                    }
                 }
-                // 取尽判定以页接口恒带的 `total`(整单曲目数)为准, 而非当页条数:
-                // `song/detail` 会因下架/无版权/无效 id 少返曲目, 满页也可能不足 100 首,
-                // 只看 `songs.len()` 会把这样的页误判成最后一页, 后续页静默丢失。
-                // 本页覆盖到的曲目序号上界是 `page * PLAYLIST_PAGE_SIZE`, 一旦 >= total
-                // 就已翻到整单末尾(与前端 `plSongs.length < plTotal` 的权威判定一致)。
-                let total = value.get("total").and_then(Value::as_i64).unwrap_or(0);
-                let page_end = u64::from(page) * u64::from(PLAYLIST_PAGE_SIZE);
-                let exhausted = if total > 0 {
-                    page_end >= total as u64
-                } else {
-                    // 没有 total(异常/旧接口)才退回当页条数判定, 保持有界。
-                    songs.len() < PLAYLIST_PAGE_SIZE as usize
-                };
-                if exhausted {
-                    // 取尽: 已覆盖整单全部曲目, 歌单到底了。
-                    return queue_all_result(*counts, page + 1, false, None);
+                Err(err) => {
+                    page_error = Some(format!("第 {page} 页取歌失败: {err}"));
                 }
-                page += 1;
-            }
-            Err(err) => {
-                let message = format!("第 {page} 页取歌失败: {err}");
-                return queue_all_result(*counts, page, true, Some(message));
             }
         }
+        // 本页结束(成功或失败)各记一次。
+        pages_mem_kb.push(json!({
+            "page": page,
+            "start": page_mem_start,
+            "end": wasm_memory_kb(),
+        }));
+        if let Some(message) = page_error {
+            return queue_all_result(*counts, page, true, Some(message), mem_start, &pages_mem_kb);
+        }
+        if exhausted {
+            // 取尽: 已覆盖整单全部曲目, 歌单到底了。
+            return queue_all_result(*counts, page + 1, false, None, mem_start, &pages_mem_kb);
+        }
+        page += 1;
     }
     // 处理满 batch_pages 页且末页仍是满页: 后面可能还有, 让调用方从 end_page 续跑。
-    queue_all_result(*counts, end_page, true, None)
+    queue_all_result(*counts, end_page, true, None, mem_start, &pages_mem_kb)
 }
 
 /// action `playlist-queue-all`: 把网易云歌单从 `next_page` 起的 `batch_pages` 页整单入队。
@@ -1177,7 +1354,20 @@ where
 ///
 /// `batch_pages` 会夹到 `[1, PLAYLIST_QUEUE_MAX_PAGES]`; `next_page` 缺省/0 视为从第 1 页
 /// 开始。大歌单(> `batch_pages` 页)靠返回的 `next_page` 续跑, 不会重复处理已经入队的页。
+///
+/// 0.3.15: 本批只拉一次 [`netease::PlaylistIndex`](v6 `playlist/detail?n=0` 全量
+/// `trackIds` + `total`), 之后各页纯本地切片、每页只 POST 一次 v3 `song/detail`。
+/// 索引拉取失败与页面取歌失败同语义(业务 failed, 回传起始页与已入队计数)。
+///
+/// 0.3.15: 与 [`pump`]/[`request_download`] 共用"队列操作"互斥 —— 撞车时整批直接
+/// `status=skipped`(不排队等待, 也不产生任何 KV 写入), 续批游标停在请求的起始页。
+/// 响应带内存探针 `mem_kb{start,end}` 与逐页的 `pages_mem_kb`。
 pub fn playlist_queue_all(ids: &mut PutIds, request: &PlaylistQueueRequest) -> Value {
+    let mem_start = wasm_memory_kb();
+    let start_page = request.next_page.max(1);
+    let Some(_guard) = try_begin_queue_op() else {
+        return queue_all_skipped(mem_start, start_page);
+    };
     let source = request.source.trim();
     if source != "netease" {
         return queue_all_result(
@@ -1185,21 +1375,46 @@ pub fn playlist_queue_all(ids: &mut PutIds, request: &PlaylistQueueRequest) -> V
             1,
             false,
             Some("该来源暂不支持歌单，先支持网易云".to_string()),
+            mem_start,
+            &[],
         );
     }
     let playlist_id = request.playlist_id.trim().to_string();
     if playlist_id.is_empty() {
-        return queue_all_result(QueueCounts::default(), 1, false, Some("缺少歌单 id".to_string()));
+        return queue_all_result(
+            QueueCounts::default(),
+            1,
+            false,
+            Some("缺少歌单 id".to_string()),
+            mem_start,
+            &[],
+        );
     }
     let level = request.quality.trim();
     let quality = if level.is_empty() { load_settings().quality } else { level.to_string() };
     if quality.trim().is_empty() {
-        return queue_all_result(QueueCounts::default(), 1, false, Some("缺少音质".to_string()));
+        return queue_all_result(
+            QueueCounts::default(),
+            1,
+            false,
+            Some("缺少音质".to_string()),
+            mem_start,
+            &[],
+        );
     }
     let batch_pages = request.batch_pages.clamp(1, PLAYLIST_QUEUE_MAX_PAGES);
-    let start_page = request.next_page.max(1);
+    // 0.3.15: 整批只 GET 一次 v6 detail 拿全量 trackIds + total, 之后各页纯本地切片
+    // (`page*100..page*100+100`), 每片只 POST 一次 v3 detail 换详情 —— 网络从
+    // N×(v6 全量 + v3) 降为 1×v6 + N×v3, 全量解析分配从 N 次降为 1 次。
+    // 索引在**第一次取页时**才拉(惰性): 失败照样归到"第 N 页取歌失败"(N = 请求的起始页),
+    // 续批游标不会因一次索引失败而跳页。跨批(next_page 续跑)是新的调用路径, 各自
+    // 重取一次索引 —— 每批仍是 1×v6 + N×v3, 不是每页 v6。
+    let mut index: Option<netease::PlaylistIndex> = None;
     queue_playlist_pages(ids, source, quality.trim(), start_page, batch_pages, |page, size| {
-        netease::playlist_songs(&playlist_id, page, size)
+        if index.is_none() {
+            index = Some(netease::PlaylistIndex::fetch(&playlist_id)?);
+        }
+        index.as_ref().expect("上面刚填入").songs(page, size)
     })
 }
 
@@ -1450,7 +1665,24 @@ fn advance_copying(
 /// 每一类工作都在**独立作用域**里处理单条任务, 处理完 `Task`/`Value`/`Vec` 立即释放。
 ///
 /// 返回摘要 `{staging_dir, staging_error, queued, active, started, completed, failed, messages}`。
+///
+/// 0.3.15: 与 [`request_download`]/[`playlist_queue_all`] 共用"队列操作"互斥
+/// (见 `QUEUE_OP_RUNNING` 注释) —— 已有队列操作在跑时本次**直接跳过**, 不排队等待。
+/// 每轮把各阶段的内存采样写进 `pumpdiag.mem_kb`(start/after_index/after_poll/
+/// after_start/after_finish/end), 真机上"哪个阶段把内存推到多少"有据可查。
 pub fn pump(ids: &mut PutIds) -> Result<Value, String> {
+    let Some(_guard) = try_begin_queue_op() else {
+        return Ok(queue_busy_value("上一轮队列推进仍在进行, 本次跳过, 请稍后再试"));
+    };
+    // 阶段探针(0.3.15): 每个大步骤后采样一次线性内存(KB)。非 wasm(测试)目标恒 0;
+    // 值全部送进末尾的 `pumpdiag.mem_kb`。各变量都在对应阶段无条件赋值。
+    let mem_start = wasm_memory_kb();
+    let mem_after_index: u64;
+    let mem_after_poll: u64;
+    let mem_after_finish: u64;
+    let mem_after_start: u64;
+    // 首读索引时的排队条数(诊断用; 索引此时尚未被本轮改动)。
+    let queue_len_at_start: usize;
     // ① 迁移(幂等: 已分片则零成本返回 0)。
     tasks::ensure_migrated(ids)?;
 
@@ -1474,6 +1706,8 @@ pub fn pump(ids: &mut PutIds) -> Result<Value, String> {
     //    与队列总长无关。
     {
         let index = tasks::load_index();
+        queue_len_at_start =
+            index.iter().filter(|entry| entry.status == tasks::STATUS_QUEUED).count();
         let downloading: Vec<String> = index
             .iter()
             .filter(|entry| entry.status == tasks::STATUS_DOWNLOADING)
@@ -1484,6 +1718,8 @@ pub fn pump(ids: &mut PutIds) -> Result<Value, String> {
             .filter(|entry| entry.status == tasks::STATUS_COPYING)
             .map(|entry| entry.id.clone())
             .collect();
+        // 「读索引后」: 索引 + 两个 id 列表都在内存里时的读数。
+        mem_after_index = wasm_memory_kb();
         // 门禁「一次 pump 最多收尾 1 个」: 逐条轮询, 一旦本轮已有任务进入终态
         // (done/failed)就停手, 其余在途条目下一轮再轮。否则多个在途 job 同轮
         // 成功会在这一轮里收尾多个。
@@ -1493,12 +1729,16 @@ pub fn pump(ids: &mut PutIds) -> Result<Value, String> {
                 break;
             }
         }
+        // 「在途轮询后」: 轮询(可能已有一条任务推进到 copying/done/failed)之后的读数。
+        mem_after_poll = wasm_memory_kb();
         // 同上: ② 已经收尾过一个, 就不再收尾 copying; 只有 ② 颗粒无收时才动手。
         if finalized_count(&report) == 0 {
             if let Some(task_id) = copying.first() {
                 step_one_copying(ids, &settings, task_id, &mut report);
             }
         }
+        // 「收尾一个后」: 收尾阶段(本轮最多 1 个任务, 可能一个都没有)结束时的读数。
+        mem_after_finish = wasm_memory_kb();
     }
 
     // ④ 新开下载最多 1 首。
@@ -1557,10 +1797,26 @@ pub fn pump(ids: &mut PutIds) -> Result<Value, String> {
                 },
             }
         }
+        // 「新开一首后」: ④ 阶段(本轮可能没有新开)结束时的读数。
+        mem_after_start = wasm_memory_kb();
     }
 
     let diag = json!({
         "at": clock::now_rfc3339(),
+        // 阶段内存探针(0.3.15, 单位 KB): 见 pump 开头各赋值处的采样点注释。
+        // `manifest_cap_kb` 是 manifest `memory_mb`(=128MB)换算的上限, 只读展示。
+        "mem_kb": {
+            "start": mem_start,
+            "after_index": mem_after_index,
+            "after_poll": mem_after_poll,
+            "after_start": mem_after_start,
+            "after_finish": mem_after_finish,
+            "end": wasm_memory_kb(),
+            "manifest_cap_kb": 128 * 1024,
+        },
+        "queue": {
+            "idx": queue_len_at_start,
+        },
         "staging_dir": staging,
         "roots_raw_b64": DIAG_ROOTS_RAW.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone(),
         "entries_status": DIAG_ENTRIES.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).0,
@@ -1706,8 +1962,11 @@ mod tests {
     use crate::host::{HostCallRequest, HostCallResponse, HostError};
     use base64::Engine as _;
     use std::cell::RefCell;
-    use std::collections::{BTreeMap, HashMap};
+    use std::collections::{BTreeMap, BTreeSet, HashMap};
     use std::rc::Rc;
+
+    /// 整单入队测试的整单曲目数: 1000 首 = 10 页(每页 100)。
+    const PLAYLIST_TEST_TRACKS: usize = 1000;
 
     /// 宿主会拒绝包含绝对路径字符串的整个 state 响应: settings 视图必须无开头 "/",
     /// 且 settings-update 能把无斜杠输入还原回绝对路径(往返一致)。
@@ -1756,6 +2015,10 @@ mod tests {
         /// 读过的**单条完整任务记录**(`task.<id>`)的键与字节数 —— 用来直接量
         /// 「一次 pump 把多少完整记录搬进了内存」(0.3.12 的核心指标)。
         task_reads: Vec<(String, usize)>,
+        /// 整单入队链路的网易请求计数: v6 全量索引 与 v3 当页详情。
+        /// 0.3.15 起 1000 首整批应为 1 次 v6 + 每页 1 次 v3。
+        playlist_v6_calls: usize,
+        playlist_v3_ids: Vec<Vec<i64>>,
     }
 
     fn json_response(status: i32, body: &[u8]) -> Result<HostCallResponse, HostError> {
@@ -1764,6 +2027,39 @@ mod tests {
             headers: BTreeMap::new(),
             body_base64: base64::engine::general_purpose::STANDARD_NO_PAD.encode(body),
         })
+    }
+
+    /// 请求体的原始字节(生产 POST 用带 padding 的 StdEncoding, 两种都容错解码;
+    /// `request_body` 只适合 JSON 体, 表单体要走这里)。
+    fn request_bytes(request: &HostCallRequest) -> Vec<u8> {
+        base64::engine::general_purpose::STANDARD
+            .decode(&request.body_base64)
+            .or_else(|_| {
+                base64::engine::general_purpose::STANDARD_NO_PAD.decode(&request.body_base64)
+            })
+            .unwrap_or_default()
+    }
+
+    /// 从 v3 请求表单 `c=..&ids=[1,2,..]` 里取出当页 id 列表。
+    fn form_ids(form: &str) -> Vec<i64> {
+        form.split("&ids=[")
+            .nth(1)
+            .unwrap_or("")
+            .split(']')
+            .next()
+            .unwrap_or("")
+            .split(',')
+            .filter_map(|text| text.trim().parse::<i64>().ok())
+            .collect()
+    }
+
+    /// v6 `playlist/detail` 的固定索引: `0..track_count-1` 的全量 trackIds。
+    fn playlist_index_body(track_count: usize) -> Vec<u8> {
+        let ids: Vec<Value> = (0..track_count).map(|id| json!({ "id": id })).collect();
+        serde_json::to_vec(&json!({
+            "playlist": {"name": "大歌单", "trackCount": track_count, "trackIds": ids},
+        }))
+        .unwrap()
     }
 
     fn request_body(request: &HostCallRequest) -> Value {
@@ -1871,6 +2167,22 @@ mod tests {
                     200,
                     br#"{"data":[{"url":"https://cdn.example.com/song.flac","type":"flac","level":"lossless","size":1024}]}"#,
                 );
+            }
+            // 网易歌单链路(整单入队): v6 detail 回全量索引, v3 song/detail 按当页 ids 回详情。
+            if method == "GET" && path.starts_with(netease::PLAYLIST_DETAIL_URL) {
+                state.playlist_v6_calls += 1;
+                return json_response(200, &playlist_index_body(PLAYLIST_TEST_TRACKS));
+            }
+            if method == "POST" && path == netease::SONG_DETAIL_URL {
+                let ids = form_ids(&String::from_utf8_lossy(&request_bytes(request)));
+                state.playlist_v3_ids.push(ids.clone());
+                let songs: Vec<Value> = ids
+                    .iter()
+                    .map(|id| {
+                        json!({"id": id, "name": format!("歌{id}"), "singers": "歌手", "album": "专辑"})
+                    })
+                    .collect();
+                return json_response(200, &serde_json::to_vec(&json!({ "songs": songs })).unwrap());
             }
             if path == FILES_ROOTS {
                 // 0.3.8: 换成宿主真实形状(data.items[] + root_id/root_entry_ref/capabilities)。
@@ -2161,6 +2473,94 @@ mod tests {
         assert_eq!(missing["status"], "failed");
         assert!(missing["message"].as_str().unwrap().contains("缺少歌单 id"), "{missing}");
         assert_eq!(tasks::load_index().len(), 0);
+    }
+
+    /// 0.3.15: 1000 首整单(10 页)只 GET 一次 v6 全量索引, 之后各页纯本地切片;
+    /// 第 10 页取 900..999, v3 详情每页一次; 内存探针仍逐页记录。
+    #[test]
+    fn playlist_queue_all_fetches_v6_index_once_for_all_pages() {
+        let fake = install_pipeline_host(JobOutcome::Succeeded);
+        let mut ids = PutIds::new();
+        let result = playlist_queue_all(
+            &mut ids,
+            &PlaylistQueueRequest {
+                source: "netease".to_string(),
+                playlist_id: "42".to_string(),
+                quality: "lossless".to_string(),
+                batch_pages: 10,
+                next_page: 1,
+            },
+        );
+        assert_eq!(result["status"], "succeeded", "{result}");
+        assert_eq!(result["data"]["queued"], 1000);
+        assert_eq!(result["data"]["total_seen"], 1000);
+        assert_eq!(result["data"]["deduped"], 0);
+        assert_eq!(result["data"]["next_page"], 11);
+        assert_eq!(result["data"]["has_more"], false);
+
+        {
+            let state = fake.borrow();
+            assert_eq!(state.playlist_v6_calls, 1, "v6 全量索引整批只请求一次: {result}");
+            assert_eq!(state.playlist_v3_ids.len(), 10, "v3 详情每页一次");
+            assert_eq!(state.playlist_v3_ids[0], (0..100).collect::<Vec<i64>>());
+            assert_eq!(
+                state.playlist_v3_ids[9],
+                (900..1000).collect::<Vec<i64>>(),
+                "第 10 页本地切片取 900..999"
+            );
+        }
+
+        // 1000 首全部入队(含第 10 页的 900..999), 不重不漏。
+        let index = tasks::load_index();
+        assert_eq!(index.len(), 1000);
+        let song_ids: BTreeSet<String> = index.iter().map(|entry| entry.song_id.clone()).collect();
+        assert!(song_ids.contains("900") && song_ids.contains("999"));
+
+        // 逐页内存探针: 10 页各一条、页号连续。v6 全量索引只在第一页解析一次,
+        // 之后各页的采样增量只含当页 v3 详情与队列写入(真机内存数值由 wasm 侧给)。
+        let pages = result["data"]["pages_mem_kb"].as_array().unwrap();
+        assert_eq!(pages.len(), 10);
+        for (offset, page) in pages.iter().enumerate() {
+            assert_eq!(page["page"], offset as u64 + 1);
+            assert!(page["start"].is_u64() && page["end"].is_u64(), "{page}");
+        }
+    }
+
+    /// 续批(`${next_page}` 续跑)是新的调用路径: 每批各自取一次索引, 仍是
+    /// "每批 1×v6 + N×v3"(不是每页 v6), 且续批不重复入队。
+    #[test]
+    fn playlist_queue_all_continuation_fetches_index_per_batch() {
+        let fake = install_pipeline_host(JobOutcome::Succeeded);
+        let mut ids = PutIds::new();
+        let request = |next_page: u32| PlaylistQueueRequest {
+            source: "netease".to_string(),
+            playlist_id: "42".to_string(),
+            quality: "lossless".to_string(),
+            batch_pages: 5,
+            next_page,
+        };
+
+        let first = playlist_queue_all(&mut ids, &request(1));
+        assert_eq!(first["status"], "succeeded", "{first}");
+        assert_eq!(first["data"]["queued"], 500);
+        assert_eq!(first["data"]["next_page"], 6);
+        assert_eq!(first["data"]["has_more"], true);
+        assert_eq!(fake.borrow().playlist_v6_calls, 1, "第一批 5 页只 1 次 v6");
+        assert_eq!(fake.borrow().playlist_v3_ids.len(), 5);
+
+        let second = playlist_queue_all(&mut ids, &request(6));
+        assert_eq!(second["status"], "succeeded", "{second}");
+        assert_eq!(second["data"]["queued"], 500);
+        assert_eq!(second["data"]["deduped"], 0, "续批不碰已入队的前 5 页");
+        assert_eq!(second["data"]["next_page"], 11);
+        assert_eq!(second["data"]["has_more"], false);
+        {
+            let state = fake.borrow();
+            assert_eq!(state.playlist_v6_calls, 2, "续批各自 1 次索引, 不是每页");
+            assert_eq!(state.playlist_v3_ids.len(), 10);
+            assert_eq!(state.playlist_v3_ids[5], (500..600).collect::<Vec<i64>>());
+        }
+        assert_eq!(tasks::load_index().len(), 1000);
     }
 
     #[test]
@@ -2875,5 +3275,196 @@ mod tests {
         assert_eq!(reloaded.quality, "lossless");
         assert!(!reloaded.notify_on_fail);
         drop(fake);
+    }
+
+    // ─────────────── 0.3.15: 队列操作互斥 + 内存探针 ───────────────
+
+    /// 队列操作互斥: pump / 单曲入队 / 整单入队共用一面旗标, 已有操作在跑时后来者
+    /// **直接 skipped**(不排队等待、不触碰 KV/宿主), 守卫释放后同一入口立刻恢复。
+    #[test]
+    fn queue_op_mutex_skips_second_queue_op_while_busy() {
+        let fake = install_pipeline_host(JobOutcome::Succeeded);
+        crate::clock::testhooks::set_now(Some(1_790_676_009_000_000_000));
+        let mut ids = PutIds::new();
+        // 持有守卫 = 模拟"另一个 pump/入队正在跑"(cron 撞上手动点击的真实形态)。
+        let held = try_begin_queue_op().expect("首个队列操作应拿到互斥");
+
+        let skipped_pump = pump(&mut ids).unwrap();
+        assert_eq!(skipped_pump["skipped"], "queue_busy", "{skipped_pump}");
+        assert!(skipped_pump["message"].as_str().unwrap().contains("稍后再试"), "{skipped_pump}");
+
+        let skipped_enqueue = request_download(&mut ids, &download_request()).unwrap();
+        assert_eq!(skipped_enqueue["skipped"], "queue_busy", "{skipped_enqueue}");
+        assert!(skipped_enqueue.get("task_id").is_none(), "跳过时不该建任务: {skipped_enqueue}");
+        assert!(skipped_enqueue["mem_kb"]["start"].is_u64(), "{skipped_enqueue}");
+
+        let skipped_all = playlist_queue_all(
+            &mut ids,
+            &PlaylistQueueRequest {
+                source: "netease".to_string(),
+                playlist_id: "42".to_string(),
+                quality: "lossless".to_string(),
+                batch_pages: 5,
+                next_page: 3,
+            },
+        );
+        assert_eq!(skipped_all["status"], "skipped", "{skipped_all}");
+        assert_eq!(skipped_all["skipped"], "queue_busy", "{skipped_all}");
+        // 什么都没做: 续批游标停在请求的起始页, 不丢也不重。
+        assert_eq!(skipped_all["data"]["next_page"], 3, "{skipped_all}");
+        assert_eq!(skipped_all["data"]["queued"], 0, "{skipped_all}");
+
+        // 跳过路径不许碰存储/宿主。
+        assert_eq!(tasks::load_index().len(), 0, "跳过路径不该产生任务");
+        assert!(fake.borrow().downloads.is_empty(), "跳过路径不该提交宿主下载");
+        assert!(fake.borrow().task_reads.is_empty(), "跳过路径不该读任务分片");
+
+        // 释放后同一入口立刻恢复正常(守卫必须复位旗标)。
+        drop(held);
+        let queued = request_download(&mut ids, &download_request()).unwrap();
+        assert_eq!(queued["deduped"], false, "{queued}");
+        assert_eq!(tasks::load_index().len(), 1);
+    }
+
+    /// action 层形状: 忙时 `download` / `pump` / `playlist-queue-all` 三个 action
+    /// 都返回 `status=skipped` + `skipped=queue_busy`(提示稍后再试), 而不是
+    /// succeeded(误报已入队/已推进)或 failed(其实什么都没做)。
+    #[test]
+    fn runtime_actions_report_skipped_while_queue_busy() {
+        let _fake = install_pipeline_host(JobOutcome::Succeeded);
+        let held = try_begin_queue_op().expect("首个队列操作应拿到互斥");
+        let mut runtime = crate::runtime::Runtime::new();
+
+        let download_payload = json!({
+            "id": "download",
+            "input": {
+                "source": "netease", "song_id": "1", "name": "晴天",
+                "singers": "周杰伦", "album": "叶惠美", "level": "lossless"
+            }
+        });
+        let result = runtime
+            .action("inv-busy-1", crate::raw::RawPayload::Value(&download_payload))
+            .unwrap();
+        assert_eq!(result["status"], "skipped", "{result}");
+        assert_eq!(result["skipped"], "queue_busy", "{result}");
+        assert_eq!(result["data"]["skipped"], "queue_busy", "{result}");
+
+        let pump_payload = json!({"id": "pump"});
+        let result = runtime
+            .action("inv-busy-2", crate::raw::RawPayload::Value(&pump_payload))
+            .unwrap();
+        assert_eq!(result["status"], "skipped", "{result}");
+        assert_eq!(result["skipped"], "queue_busy", "{result}");
+
+        let playlist_payload = json!({
+            "id": "playlist-queue-all",
+            "input": {"source": "netease", "id": "42", "quality": "lossless", "batch_pages": 5}
+        });
+        let result = runtime
+            .action("inv-busy-3", crate::raw::RawPayload::Value(&playlist_payload))
+            .unwrap();
+        assert_eq!(result["status"], "skipped", "{result}");
+        assert_eq!(result["skipped"], "queue_busy", "{result}");
+
+        drop(held);
+    }
+
+    /// pumpdiag 携带六段阶段内存探针(键齐全、值为整数)与 `queue.idx`;
+    /// 非 wasm(测试)目标探针恒 0 —— 真值是 wasm 下 `memory_size` 的读数。
+    #[test]
+    fn pumpdiag_carries_stage_memory_probes() {
+        let _fake = install_pipeline_host(JobOutcome::Succeeded);
+        crate::clock::testhooks::set_now(Some(1_790_676_009_000_000_000));
+        let mut ids = PutIds::new();
+        let _ = request_download(&mut ids, &download_request()).unwrap();
+        let summary = pump(&mut ids).unwrap();
+        assert!(summary.get("skipped").is_none(), "不忙时 pump 应正常推进: {summary}");
+
+        let diag = store::get_json::<Value>("pumpdiag").expect("pumpdiag 必须落盘");
+        let mem = &diag["mem_kb"];
+        let keys = ["start", "after_index", "after_poll", "after_start", "after_finish", "end"];
+        for key in keys {
+            assert!(mem.get(key).and_then(Value::as_u64).is_some(), "mem_kb.{key} 缺失或非整数: {diag}");
+        }
+        // 首次读索引时的排队数: 1 条(刚入队; 本轮 ④ 才把它启动)。
+        assert_eq!(diag["queue"]["idx"], 1, "{diag}");
+        // 只读展示 manifest 上限(memory_mb=128 → 131072 KB), 恒 >= 当前读数。
+        assert_eq!(mem["manifest_cap_kb"], 128 * 1024, "{diag}");
+        assert!(mem["manifest_cap_kb"].as_u64().unwrap() >= mem["end"].as_u64().unwrap());
+        #[cfg(not(target_arch = "wasm32"))]
+        for key in keys {
+            assert_eq!(mem[key], 0, "非 wasm(测试)目标探针恒 0: {diag}");
+        }
+    }
+
+    /// action 响应探针: 单曲入队带 `mem_kb{start,end}`; 整单入队带整批 `mem_kb`
+    /// 与每页一条的 `pages_mem_kb{page,start,end}`(失败页也记, 校验失败的空数组)。
+    #[test]
+    fn action_responses_carry_memory_probes() {
+        let _fake = install_pipeline_host(JobOutcome::Succeeded);
+        let mut ids = PutIds::new();
+
+        // ① 单曲入队(action `download` 的落地函数)。
+        let enqueue = request_download(&mut ids, &download_request()).unwrap();
+        assert!(enqueue["mem_kb"]["start"].is_u64(), "{enqueue}");
+        assert!(enqueue["mem_kb"]["end"].is_u64(), "{enqueue}");
+
+        // ② 整单入队: 两页, 每页一条 pages_mem_kb, 页号连续。
+        let pages = vec![
+            songs_page(150, &ids_range("a", 100)),
+            songs_page(150, &ids_range("b", 50)),
+        ];
+        let all = queue_playlist_pages(&mut ids, "netease", "lossless", 1, 5, |page, _size| {
+            Ok(pages[(page - 1) as usize].clone())
+        });
+        assert_eq!(all["status"], "succeeded", "{all}");
+        assert!(all["data"]["mem_kb"]["start"].is_u64(), "{all}");
+        assert!(all["data"]["mem_kb"]["end"].is_u64(), "{all}");
+        let per_page =
+            all["data"]["pages_mem_kb"].as_array().expect("pages_mem_kb 必须是数组");
+        assert_eq!(per_page.len(), 2, "每页结束记一条: {all}");
+        for (index, item) in per_page.iter().enumerate() {
+            assert_eq!(item["page"], (index + 1) as u64, "{all}");
+            assert!(item["start"].is_u64() && item["end"].is_u64(), "{all}");
+        }
+
+        // ③ 入参校验失败的业务 failed 响应同样带探针数组(空)。
+        let bad = playlist_queue_all(
+            &mut ids,
+            &PlaylistQueueRequest {
+                source: "qq".to_string(),
+                playlist_id: "42".to_string(),
+                quality: "lossless".to_string(),
+                batch_pages: 5,
+                next_page: 1,
+            },
+        );
+        assert_eq!(bad["status"], "failed", "{bad}");
+        assert!(bad["data"]["pages_mem_kb"].as_array().unwrap().is_empty(), "{bad}");
+        assert!(bad["data"]["mem_kb"]["start"].is_u64(), "{bad}");
+
+        // ④ 页面失败也记一条: 失败页的内存尖峰同样要能看到。
+        let mut ids2 = PutIds::new();
+        let failed = queue_playlist_pages(&mut ids2, "netease", "lossless", 1, 5, |page, _size| {
+            if page == 1 {
+                return Err("network boom".to_string());
+            }
+            Ok(songs_page(0, &[]))
+        });
+        assert_eq!(failed["status"], "failed", "{failed}");
+        assert_eq!(failed["data"]["pages_mem_kb"].as_array().unwrap().len(), 1, "{failed}");
+
+        // 非 wasm(测试)目标: 所有探针恒 0(真值只在 wasm 下由 memory_size 给出)。
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            for value in [&enqueue["mem_kb"], &all["data"]["mem_kb"]] {
+                assert_eq!(value["start"], 0, "非 wasm 探针恒 0: {value}");
+                assert_eq!(value["end"], 0, "非 wasm 探针恒 0: {value}");
+            }
+            for item in per_page {
+                assert_eq!(item["start"], 0, "非 wasm 探针恒 0: {item}");
+                assert_eq!(item["end"], 0, "非 wasm 探针恒 0: {item}");
+            }
+        }
     }
 }

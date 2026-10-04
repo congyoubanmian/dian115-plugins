@@ -13,7 +13,7 @@
 //! | [`search`] | `netease.go:63` `neteaseSearch` | `https://music.163.com/api/cloudsearch/pc` |
 //! | [`song_url`] | `netease.go:112` `neteaseSongURL` | `https://interface3.music.163.com/eapi/song/enhance/player/url/v1` |
 //! | [`playlists`] | (Go 版无对应; sidecar `server.mjs:293` `neteasePlaylists`) | `https://music.163.com/api/user/playlist` |
-//! | [`playlist_songs`] | (Go 版无对应; sidecar `server.mjs:310` `neteasePlaylistSongs`) | `https://music.163.com/api/v6/playlist/detail` 与 `/api/v3/song/detail` |
+//! | [`playlist_songs`] / [`PlaylistIndex`] | (Go 版无对应; sidecar `server.mjs:310` `neteasePlaylistSongs`) | `https://music.163.com/api/v6/playlist/detail` 与 `/api/v3/song/detail` |
 //! | [`login_status`] | (Go 版直接读 `state.sessions["netease"]`) | 无网络请求 |
 //!
 //! # 协议细节的出处
@@ -992,58 +992,101 @@ pub fn playlists() -> Result<Value, String> {
     Ok(json!({ "playlists": out, "count": count }))
 }
 
+/// 歌单索引(带缓存形态, 0.3.15): **一次** GET v6 `playlist/detail?n=0` 拿全量
+/// `trackIds` + `trackCount` + `name`, 之后各页纯本地切片([`PlaylistIndex::songs`]),
+/// 每片只 POST 当页的 v3 `song/detail` 换详情。
+///
+/// 整单入队([`crate::download::playlist_queue_all`])持有一个索引翻多页: 网络从
+/// N×(v6 全量 + v3) 降为 1×v6 + N×v3, 全量 `trackIds` 的解析分配从 N 次降为 1 次
+/// (页面内存探针因此只反映当页 v3 详情的分配)。
+#[derive(Debug, Clone, Default)]
+pub struct PlaylistIndex {
+    name: String,
+    total: i64,
+    ids: Vec<i64>,
+}
+
+impl PlaylistIndex {
+    /// 拉取索引: 一次 v6 `playlist/detail?n=0`。
+    ///
+    /// 解析失败文案与旧的 [`playlist_songs`] 单页形态逐字一致
+    /// (`歌单详情解析失败: <serde 错误>`), 行为不变。
+    pub fn fetch(id: &str) -> Result<PlaylistIndex, String> {
+        let url = format!("{PLAYLIST_DETAIL_URL}?id={}&n=0", query_escape(id));
+        let response = get_url(&url, playlist_headers())?;
+        let body = store::decode_body(&response).unwrap_or_default();
+        let parsed: PlaylistDetailResponse =
+            serde_json::from_slice(&body).map_err(|err| format!("歌单详情解析失败: {err}"))?;
+        let info = parsed.playlist.or(parsed.result).unwrap_or_default();
+        let ids: Vec<i64> = info
+            .track_ids
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|track| track.id)
+            .collect();
+        // `pl.trackCount ?? ids.length`(`??` 只认 null/undefined, 0 也是值)。
+        let total = info.track_count.unwrap_or(ids.len() as i64);
+        Ok(PlaylistIndex { name: info.name.unwrap_or_default(), total, ids })
+    }
+
+    /// 整单曲目数(`trackCount`, 缺失时回退 `trackIds` 长度)。
+    pub fn total(&self) -> i64 {
+        self.total
+    }
+
+    /// 歌单名(v6 响应缺失时为空串)。
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// 当页歌曲: 本地切片 `ids[(page-1)*page_size .. +page_size]`(`page` 从 1 起),
+    /// 再每 200 个 id 一批 POST v3 `song/detail`。返回与单页形态相同的
+    /// `{name, total, page, page_size, songs}`。
+    pub fn songs(&self, page: u32, page_size: u32) -> Result<Value, String> {
+        // `ids.slice(start, start + pageSize)`, `start = (page - 1) * pageSize`;
+        // 起点为负(JS 会落到空页)或越界都按空页处理。
+        let start = i64::from(page).saturating_sub(1).saturating_mul(i64::from(page_size));
+        if start < 0 {
+            return Ok(playlist_page(&self.name, self.total, page, page_size, Vec::new()));
+        }
+        let start = (start as usize).min(self.ids.len());
+        let end = start.saturating_add(page_size as usize).min(self.ids.len());
+        let page_ids = &self.ids[start..end];
+        if page_ids.is_empty() {
+            return Ok(playlist_page(&self.name, self.total, page, page_size, Vec::new()));
+        }
+
+        let mut tracks: Vec<Value> = Vec::new();
+        for chunk in page_ids.chunks(200) {
+            // `c=[{"id":..},..]&ids=[..,..]`(sidecar `server.mjs:326-333`)。
+            let c = serde_json::to_string(
+                &chunk.iter().map(|value| json!({ "id": value })).collect::<Vec<_>>(),
+            )
+            .unwrap_or_default();
+            let ids_text = chunk.iter().map(i64::to_string).collect::<Vec<_>>().join(",");
+            let form = format!("c={}&ids=[{}]", query_escape(&c), ids_text);
+            let response = post_form(SONG_DETAIL_URL, playlist_form_headers(), &form)?;
+            let body = store::decode_body(&response).unwrap_or_default();
+            let parsed: SongDetailResponse =
+                serde_json::from_slice(&body).map_err(|err| format!("歌曲详情解析失败: {err}"))?;
+            tracks.extend(parsed.songs.unwrap_or_default());
+        }
+
+        let songs: Vec<Value> = tracks.iter().map(playlist_song_from_value).collect();
+        Ok(playlist_page(&self.name, self.total, page, page_size, songs))
+    }
+}
+
 /// 歌单的歌曲页(sidecar `server.mjs:310-349` `neteasePlaylistSongs`)。
 ///
-/// 先 GET v6 `playlist/detail?n=0` 拿全量 `trackIds` + `trackCount` + `name`,
-/// 按 `page`/`page_size` 切片(`page` 从 1 起), 再每 200 个 id 一批 POST v3
-/// `song/detail` 换详情。返回 `{name, total, page, page_size, songs}`。
+/// 对外行为与 0.3.14 逐字不变: 一次 GET v6 `playlist/detail?n=0` 拿全量
+/// `trackIds` + `trackCount` + `name`, 按 `page`/`page_size` 切片(`page` 从 1 起),
+/// 每 200 个 id 一批 POST v3 `song/detail`。返回 `{name, total, page, page_size, songs}`。
+///
+/// 0.3.15 起复用 [`PlaylistIndex`] 的带缓存形态(与整单入队同一条切片/映射路径),
+/// UI 分页浏览每次调用仍是 1×v6 + 当页 v3 —— 请求次数与响应形状都不变。
 pub fn playlist_songs(id: &str, page: u32, page_size: u32) -> Result<Value, String> {
-    let url = format!("{PLAYLIST_DETAIL_URL}?id={}&n=0", query_escape(id));
-    let response = get_url(&url, playlist_headers())?;
-    let body = store::decode_body(&response).unwrap_or_default();
-    let parsed: PlaylistDetailResponse =
-        serde_json::from_slice(&body).map_err(|err| format!("歌单详情解析失败: {err}"))?;
-    let info = parsed.playlist.or(parsed.result).unwrap_or_default();
-    let ids: Vec<i64> = info
-        .track_ids
-        .unwrap_or_default()
-        .iter()
-        .filter_map(|track| track.id)
-        .collect();
-    let total = info.track_count.unwrap_or(ids.len() as i64);
-    let name = info.name.unwrap_or_default();
-
-    // `ids.slice(start, start + pageSize)`, `start = (page - 1) * pageSize`;
-    // 起点为负(JS 会落到空页)或越界都按空页处理。
-    let start = i64::from(page).saturating_sub(1).saturating_mul(i64::from(page_size));
-    if start < 0 {
-        return Ok(playlist_page(&name, total, page, page_size, Vec::new()));
-    }
-    let start = (start as usize).min(ids.len());
-    let end = start.saturating_add(page_size as usize).min(ids.len());
-    let page_ids = &ids[start..end];
-    if page_ids.is_empty() {
-        return Ok(playlist_page(&name, total, page, page_size, Vec::new()));
-    }
-
-    let mut tracks: Vec<Value> = Vec::new();
-    for chunk in page_ids.chunks(200) {
-        // `c=[{"id":..},..]&ids=[..,..]`(sidecar `server.mjs:326-333`)。
-        let c = serde_json::to_string(
-            &chunk.iter().map(|value| json!({ "id": value })).collect::<Vec<_>>(),
-        )
-        .unwrap_or_default();
-        let ids_text = chunk.iter().map(i64::to_string).collect::<Vec<_>>().join(",");
-        let form = format!("c={}&ids=[{}]", query_escape(&c), ids_text);
-        let response = post_form(SONG_DETAIL_URL, playlist_form_headers(), &form)?;
-        let body = store::decode_body(&response).unwrap_or_default();
-        let parsed: SongDetailResponse =
-            serde_json::from_slice(&body).map_err(|err| format!("歌曲详情解析失败: {err}"))?;
-        tracks.extend(parsed.songs.unwrap_or_default());
-    }
-
-    let songs: Vec<Value> = tracks.iter().map(playlist_song_from_value).collect();
-    Ok(playlist_page(&name, total, page, page_size, songs))
+    PlaylistIndex::fetch(id)?.songs(page, page_size)
 }
 
 /// 歌曲页的返回形状(`page_size` 按本插件契约用下划线, sidecar 是 `pageSize`)。
@@ -1147,6 +1190,8 @@ fn number_field(value: &Value, key: &str) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::RefCell;
+    use std::rc::Rc;
 
     #[test]
     fn go_trim_space_matches_go_unicode_isspace() {
@@ -1209,5 +1254,131 @@ mod tests {
         assert_eq!(request_id(0), 0);
         assert_eq!(request_id(99_999_999), 99_999_999);
         assert_eq!(request_id(100_000_001), 1);
+    }
+
+    // ─────────────── 歌单索引(带缓存形态, 0.3.15) ───────────────
+
+    /// 歌单假宿主: 统计 v6/v3 请求; v6 回 `0..track_count-1` 的全量 trackIds,
+    /// v3 按请求表单里的 `ids=[..]` 回对应歌曲 —— 便于直接断言每页切片。
+    #[derive(Debug, Default)]
+    struct PlaylistHost {
+        v6_calls: usize,
+        v3_ids: Vec<Vec<i64>>,
+    }
+
+    fn fake_json(body: &[u8]) -> Result<HostCallResponse, crate::host::HostError> {
+        Ok(HostCallResponse {
+            status: 200,
+            headers: BTreeMap::new(),
+            body_base64: base64::engine::general_purpose::STANDARD_NO_PAD.encode(body),
+        })
+    }
+
+    /// 请求体 base64: 生产 POST 用带 padding 的 StdEncoding, 两种都容错解码。
+    fn request_bytes(request: &HostCallRequest) -> Vec<u8> {
+        use base64::Engine as _;
+        STANDARD
+            .decode(&request.body_base64)
+            .or_else(|_| {
+                base64::engine::general_purpose::STANDARD_NO_PAD.decode(&request.body_base64)
+            })
+            .unwrap_or_default()
+    }
+
+    /// 从 v3 请求表单 `c=..&ids=[1,2,..]` 里取出当页 id 列表。
+    fn form_ids(form: &str) -> Vec<i64> {
+        form.split("&ids=[")
+            .nth(1)
+            .unwrap_or("")
+            .split(']')
+            .next()
+            .unwrap_or("")
+            .split(',')
+            .filter_map(|text| text.trim().parse::<i64>().ok())
+            .collect()
+    }
+
+    fn install_playlist_host(track_count: usize) -> Rc<RefCell<PlaylistHost>> {
+        let state = Rc::new(RefCell::new(PlaylistHost::default()));
+        let shared = state.clone();
+        host::testhost::install(Box::new(move |request: &HostCallRequest| {
+            let mut state = shared.borrow_mut();
+            // 歌单请求头先读 KV 里的 cookie: 未登录 → 404(空 jar)。
+            if request.path.starts_with("/api/plugin-runtime/storage/") {
+                return Ok(HostCallResponse { status: 404, ..HostCallResponse::default() });
+            }
+            if request.method == "GET" && request.path.starts_with(PLAYLIST_DETAIL_URL) {
+                state.v6_calls += 1;
+                let ids: Vec<Value> = (0..track_count).map(|id| json!({ "id": id })).collect();
+                let body = serde_json::to_vec(&json!({
+                    "playlist": {"name": "大歌单", "trackCount": track_count, "trackIds": ids},
+                }))
+                .unwrap();
+                return fake_json(&body);
+            }
+            if request.method == "POST" && request.path == SONG_DETAIL_URL {
+                let form = String::from_utf8_lossy(&request_bytes(request)).to_string();
+                let ids = form_ids(&form);
+                state.v3_ids.push(ids.clone());
+                let songs: Vec<Value> = ids
+                    .iter()
+                    .map(|id| json!({"id": id, "name": format!("歌{id}")}))
+                    .collect();
+                return fake_json(&serde_json::to_vec(&json!({ "songs": songs })).unwrap());
+            }
+            Err(crate::host::HostError::new(format!(
+                "unexpected host call: {} {}",
+                request.method, request.path
+            )))
+        }));
+        state
+    }
+
+    /// 0.3.15 的核心指标: 1000 首/页 100, v6 全量索引只请求 **1 次**, 各页纯本地
+    /// 切片, 第 10 页取 900..999, 每页各 1 次 v3 详情。
+    #[test]
+    fn playlist_index_fetches_v6_once_and_slices_each_page_locally() {
+        let host = install_playlist_host(1000);
+        let index = PlaylistIndex::fetch("42").unwrap();
+        assert_eq!(index.name(), "大歌单");
+        assert_eq!(index.total(), 1000);
+
+        for page in 1..=10u32 {
+            let value = index.songs(page, 100).unwrap();
+            assert_eq!(value["page"], page);
+            assert_eq!(value["page_size"], 100);
+            assert_eq!(value["total"], 1000);
+            assert_eq!(value["songs"].as_array().unwrap().len(), 100, "第 {page} 页 100 首");
+        }
+
+        // 越界页与 page=0(起点为负 → JS 空页)都不发 v3。
+        assert!(index.songs(11, 100).unwrap()["songs"].as_array().unwrap().is_empty());
+        assert!(index.songs(0, 100).unwrap()["songs"].as_array().unwrap().is_empty());
+
+        let state = host.borrow();
+        assert_eq!(state.v6_calls, 1, "v6 全量索引整批只请求一次");
+        assert_eq!(state.v3_ids.len(), 10, "v3 每页一次(空页不发)");
+        assert_eq!(state.v3_ids[0], (0..100).collect::<Vec<i64>>());
+        assert_eq!(state.v3_ids[9], (900..1000).collect::<Vec<i64>>(), "第 10 页取 900..999");
+    }
+
+    /// `playlist-songs`(UI 分页浏览)复用同一形态: 一次调用仍是 1×v6 + 当页 v3,
+    /// 响应形状与 0.3.14 逐字一致(第 10 页 → id 900..999)。
+    #[test]
+    fn playlist_songs_single_page_reuses_index_form() {
+        let host = install_playlist_host(1000);
+        let value = playlist_songs("42", 10, 100).unwrap();
+        assert_eq!(value["name"], "大歌单");
+        assert_eq!(value["total"], 1000);
+        assert_eq!(value["page"], 10);
+        assert_eq!(value["page_size"], 100);
+        let songs = value["songs"].as_array().unwrap();
+        assert_eq!(songs.len(), 100);
+        assert_eq!(songs[0]["id"], "900");
+        assert_eq!(songs[99]["id"], "999");
+
+        let state = host.borrow();
+        assert_eq!(state.v6_calls, 1);
+        assert_eq!(state.v3_ids, vec![(900..1000).collect::<Vec<i64>>()]);
     }
 }

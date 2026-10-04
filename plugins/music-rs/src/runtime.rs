@@ -348,7 +348,7 @@ impl Runtime {
     /// | `song-url` | `source` / `song_id` / `level` | [`crate::netease::song_url`] / [`crate::qq::song_url`] |
     /// | `playlists` | `source` | [`crate::netease::playlists`](仅网易云; 其他来源报"该来源暂不支持歌单") |
     /// | `playlist-songs` | `source` / `id` / `page` / `page_size` | [`crate::netease::playlist_songs`](仅网易云; `page_size` 缺省 100) |
-    /// | `playlist-queue-all` | `source` / `id` / `quality` / `batch_pages` / `next_page` | [`crate::download::playlist_queue_all`](整单入队: 每页 100 首走索引去重; `batch_pages` 缺省 5 上限 10; `next_page` 缺省 1 作为续批游标; 页面失败是业务 failed 并回传 `next_page`) |
+    /// | `playlist-queue-all` | `source` / `id` / `quality` / `batch_pages` / `next_page` | [`crate::download::playlist_queue_all`](整单入队: 每批一次 v6 全量索引 + 每页 100 首切片走 v3 详情与索引去重; `batch_pages` 缺省 5 上限 10; `next_page` 缺省 1 作为续批游标; 页面失败是业务 failed 并回传 `next_page`) |
     /// | `qr-create` | `source` | [`crate::netease::qr_create`] / [`crate::qq::qr_create`](QQ 返回 [`crate::qq::QR_UNAVAILABLE`]) |
     /// | `qr-poll` | `source` / `key` | [`crate::netease::qr_poll`] / [`crate::qq::qr_poll`] |
     /// | `qq-cookie-paste` | `cookie`(浏览器复制的 Cookie 头) | [`crate::qq::save_cookie_string`] |
@@ -421,6 +421,13 @@ impl Runtime {
                             data["queued"], data["deduped"]
                         ),
                     );
+                } else if outcome["status"] == "skipped" {
+                    // 0.3.15: 队列操作互斥把本批挡下 —— 什么都没做, 提示稍后再试,
+                    // 不当失败(不写 error, 续批游标停在请求的起始页)。
+                    let message = outcome["message"]
+                        .as_str()
+                        .unwrap_or("队列操作正在进行, 请稍后再试");
+                    self.bump("skipped", message);
                 } else {
                     self.bump("failed", &format!("歌单入队失败: {}", outcome["message"]));
                 }
@@ -446,8 +453,17 @@ impl Runtime {
                         level,
                     },
                 );
-                if outcome.is_ok() {
-                    self.bump("succeeded", "已加入下载队列");
+                match &outcome {
+                    // 0.3.15: 被队列操作互斥跳过时不能报"已加入下载队列"(其实没入队)。
+                    Ok(value) if value.get("skipped").and_then(Value::as_str).is_some() => {
+                        let message = value
+                            .get("message")
+                            .and_then(Value::as_str)
+                            .unwrap_or("队列操作正在进行, 请稍后再试");
+                        self.bump("skipped", message);
+                    }
+                    Ok(_) => self.bump("succeeded", "已加入下载队列"),
+                    Err(_) => {}
                 }
                 Ok(action_result(outcome))
             }
@@ -544,9 +560,19 @@ impl Runtime {
                 // 0.3.12: `pump` 是给 UI 的手动快进入口, 与定时 job `queuePump`
                 // 走**同一个**函数(`tasks::queue_pump` → `download::pump`) ——
                 // 单次调用只新开 1 首下载, 所以 UI 连点几次是安全的吞吐兜底。
+                // 0.3.15: 与另一个队列操作(cron/入队)撞车时 `pump` 直接返回 skipped,
+                // 这里同样把状态栏标成"已跳过", 不报"已推进"。
                 let outcome = tasks::queue_pump(&mut self.put_ids);
-                if outcome.is_ok() {
-                    self.bump("succeeded", "任务队列已推进");
+                match &outcome {
+                    Ok(value) if value.get("skipped").and_then(Value::as_str).is_some() => {
+                        let message = value
+                            .get("message")
+                            .and_then(Value::as_str)
+                            .unwrap_or("队列操作正在进行, 请稍后再试");
+                        self.bump("skipped", message);
+                    }
+                    Ok(_) => self.bump("succeeded", "任务队列已推进"),
+                    Err(_) => {}
                 }
                 Ok(action_result(outcome))
             }
@@ -744,9 +770,27 @@ fn playlist_songs(source: &str, id: &str, page: u32, page_size: u32) -> Result<V
 }
 
 /// 空桩返回值 → action 的 result 形状: `Ok` → succeeded, `Err` → failed。
+///
+/// 0.3.15: 队列操作互斥(`download` 入队 / `pump`)在忙时返回带 `skipped` 的 Ok ——
+/// 那是"什么都没做, 稍后再试", 既不是成功也不是失败: 状态给 `skipped`, 让 UI
+/// 提示而不是误报"已加入队列"/"已推进"。
 fn action_result(outcome: Result<Value, String>) -> Value {
     match outcome {
-        Ok(value) => json!({"status": "succeeded", "data": value}),
+        Ok(value) => {
+            if let Some(reason) = value.get("skipped").and_then(Value::as_str) {
+                let message = value
+                    .get("message")
+                    .and_then(Value::as_str)
+                    .unwrap_or("队列操作正在进行, 请稍后再试");
+                return json!({
+                    "status": "skipped",
+                    "skipped": reason,
+                    "message": message,
+                    "data": value,
+                });
+            }
+            json!({"status": "succeeded", "data": value})
+        }
         Err(message) => json!({"status": "failed", "message": message}),
     }
 }
