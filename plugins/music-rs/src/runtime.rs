@@ -600,7 +600,9 @@ impl Runtime {
             "queue-pump" => match tasks::queue_pump(&mut self.put_ids) {
                 Ok(value) => {
                     self.persist_all();
-                    Ok(json!({"status": "accepted", "message": "任务队列已推进", "result": value}))
+                    // 4.0.82 起宿主对 job 应答也做绝对路径过滤(与 state 同规), 摘要里的
+                    // staging_dir 等以 "/" 开头的值会让整个 job 判 runtime_protocol_error。
+                    Ok(json!({"status": "accepted", "message": "任务队列已推进", "result": sanitize_state(value)}))
                 }
                 Err(err) => Ok(json!({"status": "skipped", "message": err})),
             },
@@ -789,9 +791,10 @@ fn action_result(outcome: Result<Value, String>) -> Value {
                     "data": value,
                 });
             }
-            json!({"status": "succeeded", "data": value})
+            // 4.0.82 起宿主对 action 应答同样做绝对路径过滤, 统一过 sanitize_state。
+            json!({"status": "succeeded", "data": sanitize_state(value)})
         }
-        Err(message) => json!({"status": "failed", "message": message}),
+        Err(message) => json!({"status": "failed", "message": sanitize_state(Value::String(message)).as_str().unwrap_or("").to_string()}),
     }
 }
 

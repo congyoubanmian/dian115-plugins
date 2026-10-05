@@ -1,12 +1,12 @@
 {
   "id": "music.rs",
   "name": "音乐下载（Rust 版）",
-  "version": "0.3.15",
+  "version": "0.3.16",
   "description": "网易云/QQ 音乐扫码登录、搜索与音质自选取链；无 sidecar，由宿主代理下载（本地暂存 → CD2 入库），任务状态落 KV 队列并支持 Telegram 回调重试。",
   "author": "congyoubanmian",
   "homepage": "https://github.com/congyoubanmian/dian115-plugins",
-  "package_url": "https://github.com/congyoubanmian/douban-center-wasm/releases/download/music-rs-v0.3.15/music.rs-0.3.15.d115p",
-  "sha256": "50d4b4d0826c12d6d068127a4347e810b0d8b94d400dc7b6e13876f2a8c895c1",
+  "package_url": "https://github.com/congyoubanmian/douban-center-wasm/releases/download/music-rs-v0.3.16/music.rs-0.3.16.d115p",
+  "sha256": "d058e7d86057215110a3dce822bdb9e679e95185135f36c98d9b247d5e9ca8f9",
   "runtime": {
     "kind": "wasm",
     "protocol": "dian115:wasm@1",
