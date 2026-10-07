@@ -183,14 +183,25 @@ jobs:
           cp plugin-market/index.json "$RUNNER_TEMP/index.json"
           mkdir -p "$RUNNER_TEMP/icons"
           cp -a plugin-market/icons/. "$RUNNER_TEMP/icons/"
-          git fetch origin main
-          git checkout -B main origin/main
-          cp "$RUNNER_TEMP/index.json" plugin-market/index.json
-          cp -a "$RUNNER_TEMP/icons/." plugin-market/icons/
-          git add plugin-market/index.json plugin-market/icons
-          if git diff --cached --quiet; then
-            echo "索引无变化"
-          else
-            git commit -m "chore: 更新追剧管家 Rust 版市场索引 $TAG [skip ci]"
-            git push origin main
-          fi
+          # 回写可能和人工/其它工作流的 push 撞车(non-fast-forward): 重取最新 main
+          # 后重试, 最多 5 次(chase.rs 0.1.6 发布时被一次人工 commit 撞掉过)。
+          for attempt in 1 2 3 4 5; do
+            git fetch origin main
+            git checkout -f -B main origin/main
+            cp "$RUNNER_TEMP/index.json" plugin-market/index.json
+            cp -a "$RUNNER_TEMP/icons/." plugin-market/icons/
+            git add plugin-market/index.json plugin-market/icons
+            if git diff --cached --quiet; then
+              echo "索引无变化"
+              exit 0
+            fi
+            git commit -q -m "chore: 更新追剧管家 Rust 版市场索引 $TAG [skip ci]"
+            if git push origin main; then
+              echo "索引已回写(第 $attempt 次尝试)"
+              exit 0
+            fi
+            echo "::warning::第 $attempt 次回写被拒(远端有新提交), 重试"
+            sleep 5
+          done
+          echo "::error::市场索引回写失败: 连续 5 次被拒"
+          exit 1
