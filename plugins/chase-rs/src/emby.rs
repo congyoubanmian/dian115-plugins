@@ -262,12 +262,12 @@ pub fn fetch_instances_detailed() -> Result<(Vec<Instance>, i32, Vec<u8>), Parse
 
 // ─────────────────────────── episodes ───────────────────────────
 
-/// 一次 `emby/episodes` 请求的参数组合(候选矩阵 V1-V5)。
+/// 一次 `emby/episodes` 请求的参数组合(候选矩阵 V1/V2/V3/V5)。
 ///
 /// 真实宿主(2026-10-02 探测)对缺参请求回 400 且点名
 /// `{"error":"tmdb_id and total_episodes are required"}` —— 所以每个变体都带
-/// `total_episodes`(V5 用备选参数名 `total`), 并保留 GET 查询串之外的一条 POST
-/// JSON body 路径(V4): 宿主若从 body 取参, GET 永远 400 同一个错。
+/// `total_episodes`(V5 用备选参数名 `total`)。全部变体都是 GET: 曾经的 V4
+/// (POST JSON body)已被宿主权限闸门否决, 见 [`candidates`]。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EpisodeQuery {
     /// `None` = 省略 `proxy_id`(实例 id 为 0 的旧版单实例)。
@@ -276,7 +276,7 @@ pub struct EpisodeQuery {
     pub season: i64,
     /// 订阅已知总集数; `None` = 省略总数参数(宿主必填, 省略基本必 400, 仅兜底)。
     pub total: Option<i64>,
-    /// 1-5 见 [`candidates`]。
+    /// 见 [`candidates`] 的矩阵(1/2/3/5)。
     pub variant: u8,
 }
 
@@ -289,11 +289,6 @@ impl EpisodeQuery {
             5 => ("tmdb_id", "season", "total"),
             _ => ("tmdb_id", "season", "total_episodes"),
         }
-    }
-
-    /// 是否走 POST body(其余变体一律 GET 查询串)。
-    fn is_post(&self) -> bool {
-        self.variant == 4
     }
 
     /// GET 变体的请求路径(参数全是数字, 无需转义)。
@@ -311,43 +306,17 @@ impl EpisodeQuery {
         path
     }
 
-    /// POST 变体(V4)的 JSON body; GET 变体返回 `None`。
-    pub fn body(&self) -> Option<Vec<u8>> {
-        if !self.is_post() {
-            return None;
-        }
-        let mut object = serde_json::Map::new();
-        object.insert("tmdb_id".to_string(), self.tmdb_id.into());
-        object.insert("season".to_string(), self.season.into());
-        if let Some(total) = self.total {
-            object.insert("total_episodes".to_string(), total.into());
-        }
-        if let Some(proxy_id) = self.proxy_id {
-            object.insert("proxy_id".to_string(), proxy_id.into());
-        }
-        serde_json::to_vec(&object).ok()
-    }
-
-    /// 执行该变体(GET 查询串或 POST body)。
+    /// 执行该变体(GET 查询串)。
     pub fn execute(&self) -> Result<crate::host::HttpResponse, crate::host::HostError> {
-        match self.body() {
-            Some(body) => crate::host::send(
-                "POST",
-                EPISODES_PATH,
-                Some(&body),
-                &[("accept", "application/json")],
-            ),
-            None => crate::host::get(&self.path()),
-        }
+        crate::host::get(&self.path())
     }
 
     /// 参数名列表(写进形状指纹与 debug.attempts[].params)。
     pub fn params_label(&self) -> String {
         let (id_key, season_key, total_key) = self.keys();
-        let prefix = if self.is_post() { "POST:" } else { "" };
         match self.proxy_id {
-            Some(_) => format!("{prefix}proxy_id,{id_key},{season_key},{total_key}"),
-            None => format!("{prefix}{id_key},{season_key},{total_key}"),
+            Some(_) => format!("proxy_id,{id_key},{season_key},{total_key}"),
+            None => format!("{id_key},{season_key},{total_key}"),
         }
     }
 
@@ -357,13 +326,21 @@ impl EpisodeQuery {
     }
 }
 
-/// 参数矩阵: 依可能性排序 V1 → V4 → V2 → V3 → V5, 命中即停。
+/// 候选矩阵的变体号(与 [`candidates`] 同序)。
+///
+/// V4(POST JSON body)自 0.1.5 起移除: 宿主的安装期权限闸门只批准 manifest
+/// 里声明的 API, 而官方目录里 `emby/episodes` 只有 GET —— POST 每次都被
+/// "host API was not approved at installation" 挡下, 是纯白烧(2026-10-07 的
+/// 08:00 轮实测 18 次)。矩阵与 [`variant_from_shape`] 共用这份清单, 免得
+/// 旧指纹再把一个必被拒的变体排到最前。
+pub const CANDIDATE_VARIANTS: [u8; 4] = [1, 2, 3, 5];
+
+/// 参数矩阵: 依可能性排序 V1 → V2 → V3 → V5, 命中即停。
 ///
 /// - V1 GET `tmdb_id`+`season`+`total_episodes`(宿主 400 报错点名的参数);
-/// - V4 POST body `{tmdb_id, season, total_episodes, proxy_id?}`(宿主可能从 body 取参);
 /// - V2 GET `season_number` 变体; V3 GET `tmdbId` 驼峰变体; V5 GET `total` 变体。
 pub fn candidates(tmdb_id: i64, season: i64, proxy_id: Option<i64>, total: Option<i64>) -> Vec<EpisodeQuery> {
-    [1u8, 4, 2, 3, 5]
+    CANDIDATE_VARIANTS
         .into_iter()
         .map(|variant| EpisodeQuery { proxy_id, tmdb_id, season, total, variant })
         .collect()
@@ -371,20 +348,22 @@ pub fn candidates(tmdb_id: i64, season: i64, proxy_id: Option<i64>, total: Optio
 
 /// 从形状指纹里取出参数组合的变体号(缓存命中时按它直接调用)。
 ///
-/// 优先认 `v=N` 段; 兼容旧指纹(无 `v=`)按参数名尾缀匹配映射到 GET 变体。
+/// 优先认 `v=N` 段(只认 [`CANDIDATE_VARIANTS`] 里的变体); 兼容旧指纹(无 `v=`)
+/// 按参数名尾缀匹配映射到 GET 变体。
 pub fn variant_from_shape(shape: &str) -> Option<u8> {
     if let Some(variant) = shape
         .split(';')
         .find_map(|segment| segment.strip_prefix("v="))
         .and_then(|value| value.parse::<u8>().ok())
     {
-        return if (1..=5).contains(&variant) { Some(variant) } else { None };
+        // v=4(POST)是旧版本留下的必败指纹: 当作"没指纹"从矩阵头重试。
+        return CANDIDATE_VARIANTS.contains(&variant).then_some(variant);
     }
     let params = shape
         .split(';')
         .find_map(|segment| segment.strip_prefix("params="))?;
     let names: Vec<&str> = params.split(',').collect();
-    // 允许带或不带 proxy_id 前缀; POST 标记没有旧指纹, 不在这里处理
+    // 允许带或不带 proxy_id 前缀
     let tail: Vec<&str> = names
         .iter()
         .copied()
@@ -946,26 +925,29 @@ mod tests {
     #[test]
     fn query_paths_and_shape_fingerprints() {
         let queries = candidates(1396, 5, Some(3), Some(12));
-        assert_eq!(queries.len(), 5, "矩阵 V1-V5");
-        // 顺序按可能性: V1 GET(宿主点名的参数) → V4 POST → V2 → V3 → V5
+        assert_eq!(queries.len(), 4, "矩阵 V1/V2/V3/V5");
+        // 顺序按可能性: V1 GET(宿主点名的参数) → V2 → V3 → V5
         assert_eq!(
             queries[0].path(),
             "/api/plugin-host/emby/episodes?proxy_id=3&tmdb_id=1396&season=5&total_episodes=12"
         );
-        assert!(queries[1].is_post(), "V4 是 POST body 变体");
-        assert_eq!(queries[1].body().unwrap(), br#"{"proxy_id":3,"season":5,"tmdb_id":1396,"total_episodes":12}"#.to_vec());
+        assert_eq!(queries[0].variant, 1);
         assert_eq!(
-            queries[2].path(),
+            queries[1].path(),
             "/api/plugin-host/emby/episodes?proxy_id=3&tmdb_id=1396&season_number=5&total_episodes=12"
         );
         assert_eq!(
-            queries[3].path(),
+            queries[2].path(),
             "/api/plugin-host/emby/episodes?proxy_id=3&tmdbId=1396&season=5&total_episodes=12"
         );
         assert_eq!(
-            queries[4].path(),
+            queries[3].path(),
             "/api/plugin-host/emby/episodes?proxy_id=3&tmdb_id=1396&season=5&total=12",
             "V5 用备选总数参数名 total"
+        );
+        assert!(
+            queries.iter().all(|query| !query.params_label().contains("POST")),
+            "0.1.5 起矩阵里没有 POST 变体(宿主的权限闸门只批 GET)"
         );
         // 旧版单实例: 一律省略 proxy_id; total 未知时省略总数参数
         assert_eq!(
@@ -979,7 +961,11 @@ mod tests {
 
         // v=N 段优先(新指纹), 参数名尾缀匹配兜底(旧指纹迁移)
         assert_eq!(variant_from_shape("params=proxy_id,tmdb_id,season,total_episodes;v=1;list=items"), Some(1));
-        assert_eq!(variant_from_shape("params=POST:proxy_id,tmdb_id,season,total_episodes;v=4"), Some(4));
+        assert_eq!(
+            variant_from_shape("params=POST:proxy_id,tmdb_id,season,total_episodes;v=4"),
+            None,
+            "旧版本缓存的 v=4(POST)指纹不再可用, 必须从矩阵头重试"
+        );
         assert_eq!(variant_from_shape("params=proxy_id,tmdb_id,season,total;v=5"), Some(5));
         assert_eq!(variant_from_shape("params=proxy_id,tmdb_id,season;list=items"), Some(1), "旧指纹仍映射到 V1");
         assert_eq!(variant_from_shape("params=tmdb_id,season_number;list=array"), Some(2));
@@ -989,17 +975,18 @@ mod tests {
     }
 
     #[test]
-    fn fetch_coverage_falls_through_to_post_body_variant() {
-        // 宿主只吃 POST body: GET 全部 400 同一个错, V4 命中
+    fn fetch_coverage_never_sends_the_rejected_post_variant() {
+        // 曾经有宿主"只吃 POST body"的假设(V4) —— 0.1.5 起不再探测它:
+        // 权限闸门在安装期就否决了 POST, 每个变体都是 GET, 全失败就如实报失败。
         let fake = FakeHost::new();
         fake.route_prefix("GET", "GET /api/plugin-host/emby/episodes?", 400, br#"{"error":"tmdb_id and total_episodes are required"}"#);
+        // 就算宿主对 POST 有响应, 也不该有人去发它
         fake.route_prefix("POST", "POST /api/plugin-host/emby/episodes", 200, &coverage_items_fixture());
         let guard = fake.install();
-        let (coverage, query, calls) = fetch_coverage(1396, 5, Some(3), Some(12), "", 2).unwrap();
-        assert_eq!(query.variant, 4);
-        assert_eq!(calls, 2, "V1(GET) 400 后第二个就轮到 V4(POST)");
-        assert_eq!(coverage.have_max(), Some(4));
-        assert!(coverage.shape.starts_with("params=POST:proxy_id,tmdb_id,season,total_episodes;v=4"), "{}", coverage.shape);
+        let failure = fetch_coverage(1396, 5, Some(3), Some(12), "params=POST:proxy_id,tmdb_id,season,total_episodes;v=4", 5)
+            .unwrap_err();
+        assert!(failure.message.contains("HTTP 400"), "{}", failure.message);
+        assert_eq!(fake.requests().iter().filter(|r| r.method == "POST").count(), 0, "一次 POST 都不许发");
         drop(guard);
     }
 
@@ -1107,15 +1094,15 @@ mod tests {
         assert!(failure.message.contains("预算"), "{}", failure.message);
         drop(guard);
 
-        // 预算 9 → 最多 5 次(矩阵有 5 个组合; POST 变体由具体 route 决定成败)
+        // 预算 9 → 最多 4 次(矩阵只有 4 个组合, 全是 GET; POST 变体已随 V4 移除)
         let fake = FakeHost::new();
         fake.route_prefix("GET", "GET /api/plugin-host/emby/episodes?", 200, br#"{"count":3}"#);
         fake.route_prefix("POST", "POST /api/plugin-host/emby/episodes", 200, br#"{"count":9}"#);
         let guard = fake.install();
         let before = crate::host::observed_calls();
         let failure = fetch_coverage(1396, 5, None, Some(12), "", 9).unwrap_err();
-        assert_eq!(failure.attempts, 5);
-        assert_eq!(crate::host::observed_calls() - before, 5);
+        assert_eq!(failure.attempts, 4);
+        assert_eq!(crate::host::observed_calls() - before, 4);
         drop(guard);
     }
 

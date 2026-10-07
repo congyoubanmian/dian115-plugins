@@ -58,6 +58,13 @@ pub const CACHE_FRESH_SECS: i64 = 6 * 3600;
 /// Emby 探测失败后的负缓存窗口(6 小时): 一个结构认不出的端点在窗口内不再每小时
 /// 重复烧 host.call(见 `state.probe_book`)。
 pub const PROBE_NEGATIVE_TTL_SECS: i64 = 6 * 3600;
+/// 整点 job 复用「已核实无缺口」行的窗口(5 小时)。
+///
+/// 无缺口的条目(订阅总数 = Emby 已有 = TMDB 目标)在一轮里占绝大多数, 每小时
+/// 全部重探一遍毫无信息量, 只会跟 Emby 的扫描/元数据刷新抢时间。窗口取 5 小时
+/// 而不是 6 小时, 是为了让复查那一轮命中的 TMDB 目标行(6 小时窗口)还没过期 ——
+/// 复查只花 1 次 host.call(Emby 覆盖), 不必再取一次目标。
+pub const NO_GAP_TTL_SECS: i64 = 5 * 3600;
 /// align-now 只读 1 页, 大小为 50(规格: `limit=50`)。
 pub const ALIGN_NOW_PAGE_SIZE: u32 = 50;
 
@@ -161,6 +168,29 @@ fn probe_priority(book: &BTreeMap<String, model::ProbeBookEntry>, key: &str) -> 
         // 空正文 404 这类端点整体故障现在归 failed, 走上面的 6 小时负缓存。
         Some(_) => 2,
     }
+}
+
+/// 上一轮已核实的「无缺口」行能否在本轮直接复用(零 host.call)。
+///
+/// 全部满足才复用 —— 每一道都对应一类"复用就会说假话"的行:
+/// - 行够新(`NO_GAP_TTL_SECS` 窗口内);
+/// - 上一轮动作是 `skipped`(无缺口在 [`align::decide`] 里恒回 `skipped`, 用
+///   `at`/`gap` 之外的 action 再挡一道: `patched`/`failed` 的行必须重探);
+/// - 订阅总数与当前条目一致(用户在这期间改过总数 → 旧判定作废, 重探);
+/// - TMDB 目标取到过且不超过订阅总数、Emby 覆盖取到过且不超过订阅总数 ——
+///   也就是恰好落在 decide 的「无缺口」那类里。「目标未知」「覆盖未知」
+///   「Emby 该季 0 集」(have_max = -1)都可能藏着缺口, 一律不许复用。
+fn cached_no_gap_row(row: &model::AlignItem, total_known: i64) -> bool {
+    if row.total_known != total_known
+        || row.action != align::ACTION_SKIPPED
+        || !row.target_known
+        || row.emby_have_max < 0
+    {
+        return false;
+    }
+    row.target_upper <= total_known
+        && row.emby_have_max <= total_known
+        && is_fresh(&row.at, NO_GAP_TTL_SECS)
 }
 
 /// 插件运行时。
@@ -1414,6 +1444,18 @@ impl Runtime {
             .map(|entry| (entry.key.clone(), entry.clone()))
             .collect();
         let mut book_updates: BTreeMap<String, (String, String)> = BTreeMap::new();
+        // 上一轮的对齐行(按 (订阅 id, 剧, 季) 索引): 「已核实无缺口」的行在本轮
+        // 直接复用, 不再烧 host.call 重探(见 cached_no_gap_row)。克隆一份是为了
+        // 让循环里的 &mut self 变更(指纹/调试槽/目标书)不被借用挡住。
+        let previous_rows: BTreeMap<(i64, i64, i64), model::AlignItem> = self
+            .state
+            .align
+            .items
+            .iter()
+            .map(|item| ((item.intent_id, item.tmdb_id, item.season), item.clone()))
+            .collect();
+        // 本轮复用条数(日报/日志里可见: 复用越多, 压在 Emby 上的重查询越少)。
+        let mut reused_rows: u16 = 0;
 
         if selection.is_some() {
             // 排序(稳定): 上轮被预算/墙钟/补订上限挡下的先探, 从没探过的其次, 最近
@@ -1470,6 +1512,23 @@ impl Runtime {
                         ),
                     );
                     continue;
+                }
+                // 复用上一轮「已核实无缺口」的行: 零 host.call, 所以必须排在墙钟
+                // 判定**之前** —— 哪怕本轮只剩一秒, 这些条目也该被如实列出来。
+                // 行原样带走(尤其 `at` 保留真实核实时刻), 否则 TTL 永远不过期。
+                if let Some(row) = previous_rows.get(&(intent.id, intent.tmdb_id, intent.season)) {
+                    if cached_no_gap_row(row, intent.total_known) {
+                        reused_rows = reused_rows.saturating_add(1);
+                        counters.skipped = counters.skipped.saturating_add(1);
+                        let mut cached = row.clone();
+                        cached.reason = format!(
+                            "{}（{} 小时窗口内已核实, 本轮复用缓存, 不重复探测 Emby）",
+                            row.reason,
+                            NO_GAP_TTL_SECS / 3600
+                        );
+                        push_align_item(&mut items, cached);
+                        continue;
+                    }
                 }
                 if clock::now_unix_secs() > deadline {
                     budget_hit = true;
@@ -1934,6 +1993,16 @@ impl Runtime {
         self.state.status = "accepted".to_string();
         self.state.last_message = message.clone();
         self.state.log("info", &message);
+        // 复用条数单独记一条: 它直接对应"本轮少烧了多少次 Emby 探测"。
+        if reused_rows > 0 {
+            self.state.log(
+                "info",
+                &format!(
+                    "本轮复用 {reused_rows} 条已核实无缺口的行({} 小时窗口内不重复探测 Emby)",
+                    NO_GAP_TTL_SECS / 3600
+                ),
+            );
+        }
         if let Some(note) = degraded.as_ref() {
             self.state.log("warning", note);
         }
@@ -1951,6 +2020,7 @@ impl Runtime {
             "absent": counters.absent,
             "pending_probe": pending_probe,
             "target_calls": target_calls,
+            "reused": reused_rows,
             "budget_hit": budget_hit,
             "report": report
         })
@@ -2990,6 +3060,86 @@ mod tests {
         assert_eq!(doc.debug.air_calendar.status, "http_error");
         assert_eq!(doc.debug.air_calendar.sample, "nope");
         drop(guard);
+    }
+
+    /// 0.1.5: 上一轮已核实「无缺口」的行在窗口内复用 —— 把每小时的 Emby 重查询
+    /// 压下来的主手段(无缺口条目占订阅池的绝大多数), 且窗口过期后必须重探,
+    /// 不许因为"复用"把 TTL 刷成永不过期。
+    #[test]
+    fn hourly_job_reuses_fresh_verified_no_gap_rows_without_probing() {
+        let fake = one_intent_host(
+            br#"{"items":[{"index_number":1},{"index_number":16}]}"#,
+            br#"{"seasons":[{"season_number":5,"episode_count":16}]}"#,
+        );
+        let guard = fake.install();
+        let mut runtime = Runtime::new();
+        runtime.ensure_loaded();
+        let base = 1_790_000_000_i64;
+        fn emby_probes(fake: &FakeHost) -> usize {
+            fake.requests()
+                .into_iter()
+                .filter(|request| request.path.starts_with("/api/plugin-host/emby/episodes"))
+                .count()
+        }
+        clock::testhooks::set_now(Some(base as u64 * 1_000_000_000));
+        let first = job(&mut runtime, "align");
+        assert_eq!(first["reused"], 0, "首轮没有可复用的行: {first}");
+        let doc = stored(&fake);
+        assert!(doc.align.items[0].reason.contains("无缺口"), "{}", doc.align.items[0].reason);
+        let first_at = doc.align.items[0].at.clone();
+        let probed = emby_probes(&fake);
+        assert!(probed >= 1, "首轮必须真的探一次 Emby");
+
+        // 一小时后再跑: 复用, 零 Emby 探测
+        clock::testhooks::set_now(Some((base + 3600) as u64 * 1_000_000_000));
+        let second = job(&mut runtime, "align");
+        assert_eq!(second["reused"], 1, "{second}");
+        assert_eq!(emby_probes(&fake), probed, "复用轮不许再探 Emby");
+        let doc = stored(&fake);
+        assert!(doc.align.items[0].reason.contains("复用缓存"), "{}", doc.align.items[0].reason);
+        assert_eq!(doc.align.items[0].at, first_at, "at 必须保留真实核实时刻, 否则 TTL 永不过期");
+
+        // 超过 5 小时窗口: 重新探测
+        clock::testhooks::set_now(Some((base + 6 * 3600) as u64 * 1_000_000_000));
+        let third = job(&mut runtime, "align");
+        assert_eq!(third["reused"], 0, "{third}");
+        assert!(emby_probes(&fake) > probed, "窗口过期后必须重探");
+        clock::testhooks::set_now(None);
+        drop(guard);
+    }
+
+    /// 复用守卫(纯函数级): 任何会"把没核实的说成无缺口"的行都不许复用。
+    #[test]
+    fn cached_no_gap_row_rejects_everything_but_verified_no_gap() {
+        let fresh = clock::now_rfc3339();
+        let row = |action: &str, total: i64, target_known: bool, have_max: i64, target_upper: i64, at: String| {
+            model::AlignItem {
+                action: action.to_string(),
+                total_known: total,
+                target_known,
+                emby_have_max: have_max,
+                target_upper,
+                at,
+                ..Default::default()
+            }
+        };
+        assert!(cached_no_gap_row(&row("skipped", 16, true, 16, 16, fresh.clone()), 16), "核实过的无缺口行可复用");
+        assert!(!cached_no_gap_row(&row("skipped", 16, true, 16, 16, fresh.clone()), 12), "订阅总数变了 → 旧判定作废");
+        assert!(!cached_no_gap_row(&row("skipped", 16, false, 16, 16, fresh.clone()), 16), "目标未知 → 重探");
+        assert!(!cached_no_gap_row(&row("skipped", 16, true, -1, 16, fresh.clone()), 16), "覆盖未知/该季 0 集 → 重探");
+        assert!(!cached_no_gap_row(&row("skipped", 10, true, 12, 10, fresh.clone()), 10), "Emby 有超出订阅的集 → 先补订");
+        assert!(!cached_no_gap_row(&row("skipped", 16, true, 16, 20, fresh.clone()), 16), "目标超过订阅 → 先补订");
+        assert!(!cached_no_gap_row(&row("patched", 16, true, 16, 16, fresh.clone()), 16), "补订过的行 → 重探");
+        assert!(!cached_no_gap_row(&row("failed", 16, true, 16, 16, fresh.clone()), 16), "失败过的行 → 重探");
+        let stale = row(
+            "skipped",
+            16,
+            true,
+            16,
+            16,
+            clock::rfc3339_from_unix(clock::now_unix_secs() - NO_GAP_TTL_SECS - 1),
+        );
+        assert!(!cached_no_gap_row(&stale, 16), "窗口过期 → 重探");
     }
 
     // ── align-now ──
