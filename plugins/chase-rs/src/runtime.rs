@@ -1519,6 +1519,10 @@ impl Runtime {
                 if let Some(row) = previous_rows.get(&(intent.id, intent.tmdb_id, intent.season)) {
                     if cached_no_gap_row(row, intent.total_known) {
                         reused_rows = reused_rows.saturating_add(1);
+                        // 口径与"真探过一轮"的无缺口行一致: 判定 +1、跳过 +1。
+                        // 复用行也是参与本轮判定的(证据是上一轮核实过的), 不计数会让
+                        // 界面上"判定 N 条"随复用骤降、"跳过"照旧 —— 看着像回归。
+                        counters.matched = counters.matched.saturating_add(1);
                         counters.skipped = counters.skipped.saturating_add(1);
                         let mut cached = row.clone();
                         cached.reason = format!(
@@ -3094,6 +3098,8 @@ mod tests {
         clock::testhooks::set_now(Some((base + 3600) as u64 * 1_000_000_000));
         let second = job(&mut runtime, "align");
         assert_eq!(second["reused"], 1, "{second}");
+        assert_eq!(second["matched"], 1, "复用行也算参与本轮判定, 口径与真探过一致: {second}");
+        assert_eq!(second["skipped"], 1, "{second}");
         assert_eq!(emby_probes(&fake), probed, "复用轮不许再探 Emby");
         let doc = stored(&fake);
         assert!(doc.align.items[0].reason.contains("复用缓存"), "{}", doc.align.items[0].reason);
