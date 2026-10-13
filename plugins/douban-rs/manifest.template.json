@@ -3,7 +3,7 @@
   "schema_version": 1,
   "id": "douban.rs",
   "name": "豆瓣中心（Rust 版）",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "豆瓣榜单抓取 + 黑名单过滤 + 观察队列 + 聚合订阅；支持 CookieCloud 同步浏览器豆瓣登录态，自动追订「我的想看」。",
   "default_locale": "zh-CN",
   "publisher": {
@@ -12,7 +12,7 @@
     "url": "https://github.com/congyoubanmian"
   },
   "compatibility": {
-    "dian115": ">=3.8.51 <5.0.0",
+    "dian115": ">=3.8.51 <6.0.0",
     "plugin_api": "^2.0"
   },
   "runtime": {
