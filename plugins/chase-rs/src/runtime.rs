@@ -526,6 +526,10 @@ impl Runtime {
                 .get(&(intent.id, intent.tmdb_id, intent.season))
                 .filter(|entry| is_fresh(&entry.0, CACHE_FRESH_SECS))
                 .cloned();
+            // 缓存行的原始核实时刻: 命中缓存时, 产出的行保留这个时刻而不是盖成 now ——
+            // `at` 的语义是"证据核实时间", 整点 job 的无缺口复用窗口(5 小时)按它起算;
+            // 盖成 now 会让反复点「立即对齐」把一条其实很旧的证据无限续命。
+            let verified_at = cached.as_ref().map(|entry| entry.0.clone());
             // 该条这一轮用的 TMDB 目标(缓存行里的 / 整点 job 留下的目标书 / 未知)。
             let target_state: TargetUpper;
             let evidence = match cached {
@@ -659,6 +663,8 @@ impl Runtime {
             let decision = align::decide(&evidence, &settings, settings.dry_run);
             counters.matched = counters.matched.saturating_add(1);
             counters.gap_total = counters.gap_total.saturating_add(decision.gap_max.max(0) as u32);
+            // 缓存命中 → 行的 at 用原始核实时刻; 真探过 → now。
+            let row_at = verified_at.unwrap_or_else(|| now.clone());
             match decision.action {
                 align::ACTION_PATCHED => {
                     if patches >= patch_limit {
@@ -670,7 +676,7 @@ impl Runtime {
                                 reason: format!("已达单轮补订上限 {patch_limit} 条"),
                                 ..decision.clone()
                             },
-                            &now,
+                            &row_at,
                             target_state,
                         ));
                         continue;
@@ -688,19 +694,19 @@ impl Runtime {
                     } else {
                         counters.failed = counters.failed.saturating_add(1);
                     }
-                    items.push(item_of(intent, outcome, &now, target_state));
+                    items.push(item_of(intent, outcome, &row_at, target_state));
                 }
                 align::ACTION_DRY_RUN => {
                     planned += 1;
                     counters.aligned = counters.aligned.saturating_add(1);
-                    items.push(item_of(intent, decision, &now, target_state));
+                    items.push(item_of(intent, decision, &row_at, target_state));
                 }
                 _ => {
                     // 未收录行只进 absent 桶, 不再重复进 skipped(口径与 404 路径一致)。
                     if !absent_row {
                         counters.skipped = counters.skipped.saturating_add(1);
                     }
-                    items.push(item_of(intent, decision, &now, target_state));
+                    items.push(item_of(intent, decision, &row_at, target_state));
                 }
             }
         }
@@ -3153,7 +3159,9 @@ mod tests {
     #[test]
     fn align_now_reuses_the_six_hour_cache_without_probing_emby() {
         let fake = FakeHost::new();
-        let at = clock::now_rfc3339();
+        // 5.5 小时前的核实时刻: 仍在 align-now 的 6 小时缓存窗口内, 但已超出整点
+        // job 的 5 小时无缺口复用窗口 —— 用来钉死"缓存命中的行不刷新 at"。
+        let at = clock::rfc3339_from_unix(clock::now_unix_secs() - 5 * 3600 - 1800);
         // 缓存: 上一轮已把 41 补到 16 集, Emby 那边只看得到 12 集。
         // 订阅池现在也报 16 集 → 缓存判定"无缺口", 本轮既不该探 Emby 也不该写。
         fake.set(
@@ -3187,6 +3195,11 @@ mod tests {
         assert!(fake.puts().is_empty(), "align-now 不落盘(预算约束)");
         let calls = crate::host::observed_calls() - calls_before;
         assert_eq!(calls, 1, "缓存命中 → 只该读 1 页订阅池, 0 次 Emby 探测, 实际 {calls}");
+        // 0.1.7: 缓存命中的行必须保留原始核实时刻 —— 盖成 now 会让反复点「立即对齐」
+        // 把一条旧证据无限续命, 整点 job 的 5 小时无缺口复用窗口也就跟着被拉长。
+        let rows = &runtime.state.align.items;
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].at, at, "复用缓存产出的行不得刷新核实时刻");
         drop(guard);
     }
 
