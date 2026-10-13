@@ -9,12 +9,12 @@
     {
       "id": "chase.rs",
       "name": "追剧管家（Rust 版）",
-      "version": "0.1.7",
+      "version": "0.1.6",
       "description": "小时级对齐「订阅池里的剧集订阅」与「Emby 已有集数」：只对可解析的条目做只增 PATCH total_episodes，并产出追剧日历与当天一次的 Telegram 日报；减方向只给建议，从不写。已核实无缺口的条目在 5 小时窗口内复用缓存，不重复探测 Emby（把每小时的 Emby 查询压下一个数量级）。",
       "author": "congyoubanmian",
       "homepage": "https://github.com/congyoubanmian/dian115-plugins",
-      "package_url": "https://github.com/congyoubanmian/dian115-plugins/releases/download/chase-v0.1.7/chase.rs-0.1.7.d115p",
-      "sha256": "250e4f093027688a31fbfdeb48e6fa9e982a115d757c520e52f9496c564b45d1",
+      "package_url": "https://github.com/congyoubanmian/dian115-plugins/releases/download/chase-v0.1.6/chase.rs-0.1.6.d115p",
+      "sha256": "9df311539299ea1d683df99c981ee8e5070bf36c0f6e47d84416cc70fa7f1694",
       "runtime": {
         "kind": "wasm",
         "protocol": "dian115:wasm@1",
@@ -82,12 +82,12 @@
     {
       "id": "douban.rs",
       "name": "豆瓣中心（Rust 版）",
-      "version": "0.2.2",
+      "version": "0.2.3",
       "description": "豆瓣榜单抓取 + 黑名单过滤 + 观察队列 + 聚合订阅；支持 CookieCloud 同步浏览器豆瓣登录态，自动追订「我的想看」。",
       "author": "congyoubanmian",
       "homepage": "https://github.com/congyoubanmian/douban-center-wasm",
-      "package_url": "https://github.com/congyoubanmian/dian115-plugins/releases/download/rs-v0.2.2/douban.rs-0.2.2.d115p",
-      "sha256": "9fc84559d32f25783ea23bd9f249508bf57286597ff506bdeb48665e5e6f5aa9",
+      "package_url": "https://github.com/congyoubanmian/dian115-plugins/releases/download/rs-v0.2.3/douban.rs-0.2.3.d115p",
+      "sha256": "3b6b285c485e6b4f6d52091ee63477c7be2dc50359286659c2f2c2c4e204a4da",
       "runtime": {
         "kind": "wasm",
         "protocol": "dian115:wasm@1",
