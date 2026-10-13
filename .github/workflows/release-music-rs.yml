@@ -141,7 +141,19 @@ jobs:
           for attempt in 1 2 3 4 5; do
             git fetch origin main
             git checkout -f -B main origin/main
-            cp "$RUNNER_TEMP/index.json" plugin-market/index.json
+            # 按 id 把本插件条目**增量合并**进最新 main 的索引 —— 不能整文件覆盖:
+            # 保存的索引基于 tag 里的旧版本, 整文件覆盖会把其它插件刚回写的条目一并
+            # 回退(rs-v0.2.3 的回写曾把 chase.rs 0.1.7 打回 0.1.6)。
+            node -e '
+              const fs = require("fs");
+              const fresh = JSON.parse(fs.readFileSync("plugin-market/index.json", "utf8"));
+              const mine = JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP + "/index.json", "utf8"));
+              for (const p of mine.plugins) {
+                const i = fresh.plugins.findIndex(x => x.id === p.id);
+                if (i >= 0) fresh.plugins[i] = p; else fresh.plugins.push(p);
+              }
+              fs.writeFileSync("plugin-market/index.json", JSON.stringify(fresh, null, 2) + "\n");
+            '
             cp -a "$RUNNER_TEMP/icons/." plugin-market/icons/
             git add plugin-market/index.json plugin-market/icons
             if git diff --cached --quiet; then
