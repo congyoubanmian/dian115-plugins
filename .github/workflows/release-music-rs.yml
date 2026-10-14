@@ -85,6 +85,26 @@ jobs:
           }
           ls -l target/wasm32-unknown-unknown/release/plugin.wasm
 
+      # 官方黑盒契约校验(vendored 于 tools/conformance/, 来源见 tools/conformance/LOCAL-NOTES.md)。
+      # 卡在签名之前: 校验最终 wasm 与 Federation 入口。市场条目版本按 package.mjs 的规则用 manifest 覆盖。
+      - name: conformance 构包前校验
+        run: |
+          set -euo pipefail
+          node -e '
+            const fs = require("fs");
+            const m = JSON.parse(fs.readFileSync("manifest.template.json", "utf8"));
+            const e = JSON.parse(fs.readFileSync("market-entry.template.json", "utf8"));
+            e.version = m.version;
+            fs.writeFileSync("/tmp/dian-market-entry.json", JSON.stringify(e, null, 2));
+          '
+          rm -rf /tmp/dian-conf-build && mkdir -p /tmp/dian-conf-build/runtime /tmp/dian-conf-build/frontend/dist
+          cp target/wasm32-unknown-unknown/release/plugin.wasm /tmp/dian-conf-build/runtime/plugin.wasm
+          cp -r frontend/dist/. /tmp/dian-conf-build/frontend/dist/
+          node ../../tools/conformance/project-check.mjs \
+            --manifest manifest.template.json \
+            --market /tmp/dian-market-entry.json \
+            --build-root /tmp/dian-conf-build --require-build
+
       - name: 写入签名私钥
         env:
           SIGNING_KEY: ${{ secrets.DIAN115_PLUGIN_SIGNING_KEY }}
