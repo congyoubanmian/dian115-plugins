@@ -8,13 +8,14 @@
 //     走 `props.api.invokeAction`, **每次动作后都 `await props.api.refresh()`**
 //     (douban-center/src/AppPage.vue:243-270 的调用惯例, 否则界面还是旧值)。
 //
-// 只呈现真实状态: 缺数据就说缺什么、下一步点哪里, 不造任何假数据。
+// 视觉按《DIAN115 插件 UI 重画 · 共享实现规范》§4(追剧管家): 页头(状态/日报胶囊 + 动作组)
+// → 8 块指标瓦片 → 对齐结果卡(筛选 pill 纯前端过滤) → 双栏(补订建议 + 追剧日历)
+// → 探测诊断折叠条 → 最近动作 → 页脚。只呈现真实状态: 缺数据就说缺什么、下一步点哪里,
+// 不造任何假数据。
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import {
   NAlert,
   NButton,
-  NCollapse,
-  NCollapseItem,
   NDivider,
   NDrawer,
   NDrawerContent,
@@ -25,36 +26,38 @@ import {
   NInputNumber,
   NSelect,
   NSwitch,
-  NTag,
   NText,
   useMessage,
 } from 'naive-ui'
 // lucide 图标统一加 `Icon` 后缀导入: 模板里 `<calendar-days />` 这种 kebab 标签会先按
 // setup 绑定解析(camelize 后正好撞上 `calendarDays` 这类计算属性), 加后缀杜绝影子解析。
 import {
-  Activity as ActivityIcon,
-  Bug as BugIcon,
-  CalendarDays as CalendarDaysIcon,
+  ChevronDown as ChevronDownIcon,
   CircleAlert as CircleAlertIcon,
   CircleCheckBig as CircleCheckBigIcon,
-  CircleMinus as CircleMinusIcon,
   CircleHelp as CircleHelpIcon,
+  CircleMinus as CircleMinusIcon,
+  CirclePlus as CirclePlusIcon,
+  CircleX as CircleXIcon,
+  CloudOff as CloudOffIcon,
   Copy as CopyIcon,
+  Layers as LayersIcon,
   ListChecks as ListChecksIcon,
-  Play as PlayIcon,
+  Radar as RadarIcon,
+  Recycle as RecycleIcon,
   RefreshCw as RefreshCwIcon,
-  Scissors as ScissorsIcon,
+  Send as SendIcon,
   Settings as SettingsIcon,
-  Target as TargetIcon,
-  UserX as UserXIcon,
+  SkipForward as SkipForwardIcon,
+  Stethoscope as StethoscopeIcon,
+  Tv as TvIcon,
+  Zap as ZapIcon,
 } from '@lucide/vue'
 import ProbePanel from './ProbePanel.vue'
 import StatTile from './StatTile.vue'
 import {
   alignActionResult,
-  episodeLabel,
   formatAt,
-  gapRange,
   hasGap,
   list,
   localDate,
@@ -62,10 +65,7 @@ import {
   probeFailed,
   reasonBadge,
   seasonLabel,
-  coverageLabel,
-  coverageText,
   targetKnown,
-  targetLabel,
   text,
   type AlignItem,
   type AppState,
@@ -129,7 +129,7 @@ onMounted(() => {
   if (!props.runtimeState || Object.keys(props.runtimeState).length === 0) void loadState()
 })
 
-// ─────────────────────────── ① 顶部概览 ───────────────────────────
+// ─────────────────────────── 状态字段 ───────────────────────────
 
 const settings = computed(() => state.value.settings || {})
 const align = computed(() => state.value.align || {})
@@ -150,63 +150,33 @@ const overviewStatus = computed(() => ({
   dryRun: settings.value.dry_run === true,
 }))
 
-const alignItems = computed<AlignItem[]>(() => list(align.value.items))
-const gapItems = computed(() => alignItems.value.filter(hasGap))
+// ─────────────────────────── ① 页头胶囊 ───────────────────────────
 
-/** 逐行预组装徽章: 分类/配色只算一次, 模板里不再重复调用。 */
-const alignRows = computed(() =>
-  alignItems.value.map((item) => ({
-    item,
-    badge: reasonBadge(item),
-    detail: alignActionResult(item),
-    targetUnknown: !targetKnown(item),
-  })),
-)
-
-/** reason 分类 → 图标(文案一律用后端给的分类词, 这里只挑图形)。 */
-function reasonIcon(kind: ReasonBadge['kind']) {
-  switch (kind) {
-    case 'patched':
-      return CircleCheckBigIcon
-    case 'no-gap':
-      return CircleMinusIcon
-    case 'unknown-coverage':
-      return CircleHelpIcon
-    case 'empty-season':
-    case 'absent':
-      return UserXIcon
-    case 'target-unknown':
-      // 覆盖已核实但目标未知: 用和目标列/子徽章同一个 Target 图标(主徽章已经是"目标未知"时不再挂重复的子徽章)。
-      return TargetIcon
-    default:
-      return CircleAlertIcon
-  }
+/** RFC3339 → `HH:MM`(与 formatAt 同一约定: 直接取原文时刻, 不做时区换算)。 */
+function timeAt(value: unknown): string {
+  const formatted = formatAt(value)
+  if (formatted === '—') return ''
+  const parts = formatted.split(' ')
+  return parts.length === 2 ? (parts[1] ?? '') : formatted
 }
 
-/** Emby 实例名与 id: -1 跟随宿主默认, 0 旧版单实例, ≥1 指定实例(找不到就如实说)。 */
-const instanceLabel = computed(() => {
-  const proxy = num(settings.value.emby_proxy_id, -1)
-  if (proxy === -1) {
-    const fallback = instances.value.find((item) => item.is_default === true)
-    if (fallback) return `${text(fallback.name, '未命名实例')} #${num(fallback.id, 0)}`
-    return '跟随宿主默认实例'
-  }
-  if (proxy === 0) return '旧版单实例(调用时不带 id)'
-  const found = instances.value.find((item) => num(item.id, -1) === proxy)
-  return found ? `${text(found.name, '未命名实例')} #${proxy}` : `#${proxy}`
-})
+/** RFC3339 → `HH:MM:SS`(日志行用; 认不出就回退 formatAt 的口径)。 */
+function timeLongAt(value: unknown): string {
+  const raw = text(value, '')
+  const match = /T(\d{2}:\d{2}:\d{2})/.exec(raw)
+  return match ? (match[1] ?? '') : formatAt(raw)
+}
 
-const instanceNote = computed(() => {
-  const proxy = num(settings.value.emby_proxy_id, -1)
-  if (instances.value.length === 0) return '还没读到实例列表'
-  if (proxy === -1) {
-    const fallback = instances.value.find((item) => item.is_default === true)
-    return fallback ? `id ${num(fallback.id, 0)} · 宿主默认` : '列表里没有标默认的实例'
+/** 运行状态胶囊: 绿=正常(时间=对齐最近运行) / 红=失败 / 灰=停用或未拉取 —— 异常时说实话。 */
+const healthCapsule = computed(() => {
+  if (!stateReady.value) return { text: '状态未拉取', tone: 'neutral', icon: CircleHelpIcon }
+  if (!overviewStatus.value.enabled) return { text: '已停用', tone: 'neutral', icon: CircleMinusIcon }
+  const time = timeAt(align.value.last_run_at) || timeAt(state.value.last_run)
+  const suffix = time ? ` · ${time}` : ''
+  if (text(state.value.status, '') === 'failed') {
+    return { text: `运行异常${suffix}`, tone: 'error', icon: CircleAlertIcon }
   }
-  if (proxy === 0) return 'id 0 · 旧版单实例'
-  const found = instances.value.find((item) => num(item.id, -1) === proxy)
-  if (!found) return `id ${proxy} · 已不在最近一次解析到的列表里`
-  return `id ${num(found.id, 0)}${found.is_default ? ' · 宿主默认' : ''}${found.key_ready === false ? ' · 未配置密钥' : ''}`
+  return { text: `运行正常${suffix}`, tone: 'success', icon: CircleCheckBigIcon }
 })
 
 /** 日报状态: 今日已发 / 今日待发 / 已关闭(按设置里的本地时区判定"今天")。 */
@@ -227,15 +197,236 @@ const reportStatus = computed(() => {
   }
 })
 
-const scheduleLine = computed(() => {
-  const report = settings.value.report || {}
-  const parts: string[] = ['后台对齐: 每小时一次(manifest job `0 * * * *`)']
-  if (report.enabled === true) parts.push(`日报 ${num(report.hour, 9)}:00 后当天首次运行发送`)
-  else parts.push('日报已关闭')
-  if (settings.value.dry_run === true) parts.push('dry-run: 只判定不写入')
-  if (settings.value.enabled === false) parts.push('插件已停用')
-  return parts.join(' · ')
+/** 日报胶囊: 已发按设计图走灰胶囊; 待发用琥珀色提示; 已关闭灰。 */
+const dailyCapsule = computed(() => ({
+  text: `日报 · ${reportStatus.value.value}`,
+  tone: reportStatus.value.tone === 'warning' ? 'warning' : 'neutral',
+}))
+
+// ─────────────────────────── ② 指标瓦片 ×8 ───────────────────────────
+
+const alignSummary = computed(() => ({
+  lastRunAt: formatAt(align.value.last_run_at),
+  patched: num(align.value.patched, 0),
+  skipped: num(align.value.skipped, 0),
+  failed: num(align.value.failed, 0),
+  absent: num(align.value.absent, 0),
+  pendingProbe: num(align.value.pending_probe, 0),
+  pages: num(align.value.pages, 0),
+  intentsSeen: num(align.value.intents_seen, 0),
+  matched: num(align.value.matched, 0),
+  lastError: text(align.value.last_error, ''),
+}))
+
+const alignItems = computed<AlignItem[]>(() => list(align.value.items))
+const gapItems = computed(() => alignItems.value.filter(hasGap))
+
+/**
+ * 「本轮复用」计数: 状态文档的 align 汇总没有 reused 字段(reused 只出现在
+ * align-now 动作的返回 JSON), 按规范 §4.2 的回退口径, 数 align.items 里
+ * reason 含「复用」的行(运行时复用行的 reason 固定带「本轮复用缓存」)。
+ */
+const reusedCount = computed(() => alignItems.value.filter((item) => text(item.reason, '').includes('复用')).length)
+
+// ─────────────────────────── ③ 对齐结果卡 ───────────────────────────
+
+/** 缺口列: 有缺口 `+N`(蓝) / 已核实 0 / 被预算挡下「待探测」(蓝) / 未知 `—`。 */
+function gapCell(item: AlignItem): { label: string; cls: string } {
+  if (hasGap(item)) return { label: `+${num(item.gap_max, 0)}`, cls: 'gap-num' }
+  const reason = text(item.reason, '')
+  if (reason.includes('下轮优先') || reason.includes('预算用尽')) return { label: '待探测', cls: 'gap-probe' }
+  if (num(item.emby_have_max, -1) >= 0) return { label: '0', cls: 'muted' }
+  return { label: '—', cls: 'muted' }
+}
+
+/** 动作列: 补订至 N / 待补订至 N(dry-run 必须如实标出) / 失败的下轮重试 / 无动作 `—`。 */
+function actionCell(item: AlignItem, kind: ReasonBadge['kind']): { label: string; cls: string } {
+  switch (item.action) {
+    case 'patched':
+      return { label: `补订至 ${num(item.to_total, 0)}`, cls: 'action-link' }
+    case 'dry-run':
+      return { label: `待补订至 ${num(item.to_total, 0)}`, cls: 'action-dry' }
+    case 'failed':
+      // 「Emby 无此剧」的行也记 action=failed, 但它没有"重试就会好"的含义 —— 不显示重试。
+      return kind === 'failed' ? { label: '重试', cls: 'action-link' } : { label: '—', cls: 'muted' }
+    default:
+      return { label: '—', cls: 'muted' }
+  }
+}
+
+/** reason 分类 → 胶囊配色(分类逻辑在 chase-state.reasonBadge, 一行不改; 这里只换视觉)。 */
+function badgeClass(kind: ReasonBadge['kind']): string {
+  switch (kind) {
+    case 'patched':
+      return 'badge-success'
+    case 'target-unknown':
+      return 'badge-info'
+    case 'absent':
+    case 'empty-season':
+    case 'unknown-coverage':
+      return 'badge-warning'
+    case 'failed':
+      return 'badge-error'
+    default:
+      return 'badge-neutral'
+  }
+}
+
+/** 剧集副行: 季(零填充) + Emby 覆盖到的最大集号(真实字段 emby_have_max; -1 = 未探测)。 */
+function seasonPad(season: unknown): string {
+  const value = num(season, 0)
+  return value > 0 ? `S${String(value).padStart(2, '0')}` : '整剧'
+}
+
+function coverageSub(item: AlignItem): string {
+  const have = num(item.emby_have_max, -1)
+  return have >= 0 ? `Emby 至 E${String(have).padStart(2, '0')}` : 'Emby 未探测'
+}
+
+/** 逐行预组装: 徽章/缺口/动作/复用标记只算一次, 模板里不再重复调用。 */
+const alignRows = computed(() =>
+  alignItems.value.map((item) => {
+    const badge = reasonBadge(item)
+    const reasonText = text(item.reason, '')
+    return {
+      item,
+      badge,
+      detail: alignActionResult(item),
+      targetUnknown: !targetKnown(item),
+      /** 复用上一轮已核实无缺口行(运行时 reason 固定带「本轮复用缓存」)→ 紫色「复用缓存」徽章。 */
+      reused: reasonText.includes('复用缓存'),
+      reasonText,
+      gap: gapCell(item),
+      action: actionCell(item, badge.kind),
+    }
+  }),
+)
+
+/** 「异常」筛选 = 失败 + 未收录类(无此剧/0 集/覆盖未知)—— 需要人看一眼的行。 */
+const ABNORMAL_KINDS = new Set<ReasonBadge['kind']>(['failed', 'absent', 'empty-season', 'unknown-coverage'])
+
+const filter = ref<'all' | 'gap' | 'abnormal'>('all')
+
+const filterOptions = computed(() => [
+  { key: 'all' as const, label: '全部', count: alignRows.value.length },
+  { key: 'gap' as const, label: '有缺口', count: gapItems.value.length },
+  { key: 'abnormal' as const, label: '异常', count: alignRows.value.filter((row) => ABNORMAL_KINDS.has(row.badge.kind)).length },
+])
+
+const filteredRows = computed(() => {
+  if (filter.value === 'gap') return alignRows.value.filter((row) => hasGap(row.item))
+  if (filter.value === 'abnormal') return alignRows.value.filter((row) => ABNORMAL_KINDS.has(row.badge.kind))
+  return alignRows.value
 })
+
+/** 副题: 本轮条目数 · 最近运行时刻 · 立即对齐预算(6 秒 = 运行时 ALIGN_NOW_BUDGET_SECS) · 单轮补订上限。 */
+const alignSub = computed(() => {
+  const time = timeAt(align.value.last_run_at)
+  const maxPatch = num(settings.value.max_patch_per_run, 5)
+  const runPart = time ? `${time} 运行` : '还没有运行记录'
+  return `本轮 ${alignItems.value.length} 个剧·季 · ${runPart} · 立即对齐 6 秒预算 · 单轮最多补订 ${maxPatch} 条`
+})
+
+const alignEmptyReason = computed(() => {
+  if (alignItems.value.length > 0) return ''
+  if (!align.value.last_run_at) {
+    return '还没有跑过对齐。点「立即对齐」先看一轮结果, 或等下一个整点的后台任务。'
+  }
+  if (probeFailed(debug.value.emby_episodes?.status)) {
+    return `Emby 覆盖结构未识别(${text(debug.value.emby_episodes?.status)}), 该轮零写入。点「探测诊断」看参数矩阵与原文样本。`
+  }
+  if (align.value.last_error) return align.value.last_error
+  return '这一轮没有需要判定或补订的条目(订阅池可能为空, 或没有可用的 Emby 实例)。'
+})
+
+// ─────────────────────────── ④ 追剧日历 ───────────────────────────
+
+const calendarDays = computed<CalendarDay[]>(() => list(state.value.calendar?.days))
+const calendarFetchedAt = computed(() => formatAt(state.value.calendar?.fetched_at))
+
+/** `days` | `unrecognized` | `never` | `empty` —— 空列表要能区分"没抓过/没安排/没认出来"。 */
+const calendarState = computed(() => {
+  if (calendarDays.value.length > 0) return 'days'
+  const status = debug.value.air_calendar?.status
+  if (probeFailed(status)) return 'unrecognized'
+  if (!status || status === 'never') return 'never'
+  return 'empty'
+})
+
+const WEEKDAYS = ['周日', '周一', '周二', '周三', '周四', '周五', '周六']
+
+/** `YYYY-MM-DD` → 周一..周日(日期本身是后端按本地时区给的, 按日历日取星期, 不再换算)。 */
+function weekdayOf(date: string): string {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(date)
+  if (!match) return ''
+  const day = new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]))).getUTCDay()
+  return WEEKDAYS[day] ?? ''
+}
+
+/** 日期 chip(最多 7 天, 窗口真实有几日出几日; 今天高亮主色)。 */
+const calendarChips = computed(() =>
+  calendarDays.value.slice(0, 7).map((day) => {
+    const date = text(day.date, '')
+    const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(date)
+    return {
+      date,
+      isToday: date === today.value,
+      weekday: weekdayOf(date),
+      short: match ? `${Number(match[2])}/${Number(match[3])}` : date,
+    }
+  }),
+)
+
+/** 集数紧凑写法: S1 直接写 E13(设计图口径), 更靠后的季带上季号。 */
+function episodeCompact(season: unknown, episode: unknown): string {
+  const ep = num(episode, 0)
+  if (ep <= 0) return ''
+  const s = num(season, 0)
+  return s > 1 ? `S${s} E${ep}` : `E${ep}`
+}
+
+interface CalendarEntry {
+  key: string
+  dayLabel: string
+  isToday: boolean
+  title: string
+  episode: string
+  time: string
+}
+
+const calendarEntriesAll = computed<CalendarEntry[]>(() => {
+  const entries: CalendarEntry[] = []
+  for (const day of calendarDays.value) {
+    const date = text(day.date, '')
+    const isToday = date === today.value
+    const dayLabel = isToday ? '今天' : weekdayOf(date) || date
+    list(day.items).forEach((entry, index) => {
+      entries.push({
+        key: `${date}-${index}`,
+        dayLabel,
+        isToday,
+        title: text(entry.title, `tmdb ${num(entry.tmdb_id, 0)}`),
+        episode: episodeCompact(entry.season, entry.episode),
+        time: text(entry.time, '时间待定'),
+      })
+    })
+  }
+  return entries
+})
+
+/** 卡内最多平铺 8 条, 超出的用底注如实交代条数。 */
+const calendarEntries = computed(() => calendarEntriesAll.value.slice(0, 8))
+const calendarOverflow = computed(() => Math.max(0, calendarEntriesAll.value.length - 8))
+
+// ─────────────────────────── ⑤ 补订建议(只读, 减方向) ───────────────────────────
+
+const trims = computed<TrimSuggestion[]>(() => list(state.value.trim_suggestions))
+
+// ─────────────────────────── ⑥ 最近动作 ───────────────────────────
+
+const recentLogs = computed(() => list(state.value.logs).slice(-8).reverse())
+
+// ─────────────────────────── ⑦ 告警条 ───────────────────────────
 
 /** 运行时自己报的"宿主存储不可用"(只读不落盘), 从 last_message/最近日志里如实转述。 */
 const storageWarning = computed(() => {
@@ -270,61 +461,16 @@ const instanceProblem = computed(() => {
   return `${target}还没有读到 Emby 实例列表(最近一次解析未成功)。下一步: 点「探测诊断」——它会调 emby/instances 并把结果存进状态文档, 下拉框随即有值。`
 })
 
-// ─────────────────────────── ② 对齐结果表 ───────────────────────────
-
-const alignSummary = computed(() => ({
-  lastRunAt: formatAt(align.value.last_run_at),
-  patched: num(align.value.patched, 0),
-  skipped: num(align.value.skipped, 0),
-  failed: num(align.value.failed, 0),
-  absent: num(align.value.absent, 0),
-  pendingProbe: num(align.value.pending_probe, 0),
-  pages: num(align.value.pages, 0),
-  intentsSeen: num(align.value.intents_seen, 0),
-  matched: num(align.value.matched, 0),
-  lastError: text(align.value.last_error, ''),
-}))
-
-const alignEmptyReason = computed(() => {
-  if (alignItems.value.length > 0) return ''
-  if (!align.value.last_run_at) {
-    return '还没有跑过对齐。点「立即对齐」先看一轮结果, 或等下一个整点的后台任务。'
-  }
-  if (probeFailed(debug.value.emby_episodes?.status)) {
-    return `Emby 覆盖结构未识别(${text(debug.value.emby_episodes?.status)}), 该轮零写入。点「探测诊断」看参数矩阵与原文样本。`
-  }
-  if (align.value.last_error) return align.value.last_error
-  return '这一轮没有需要判定或补订的条目(订阅池可能为空, 或没有可用的 Emby 实例)。'
-})
-
-// ─────────────────────────── ③ 追剧日历 ───────────────────────────
-
-const calendarDays = computed<CalendarDay[]>(() => list(state.value.calendar?.days))
-const calendarFetchedAt = computed(() => formatAt(state.value.calendar?.fetched_at))
-
-/** `days` | `unrecognized` | `never` | `empty` —— 空列表要能区分"没抓过/没安排/没认出来"。 */
-const calendarState = computed(() => {
-  if (calendarDays.value.length > 0) return 'days'
-  const status = debug.value.air_calendar?.status
-  if (probeFailed(status)) return 'unrecognized'
-  if (!status || status === 'never') return 'never'
-  return 'empty'
-})
-
-// ─────────────────────────── ④ 补订建议(只读, 减方向) ───────────────────────────
-
-const trims = computed<TrimSuggestion[]>(() => list(state.value.trim_suggestions))
-
-// ─────────────────────────── ⑤ 动作 ───────────────────────────
+// ─────────────────────────── ⑧ 动作(生命周期: 进行中副文案 → 完成结果条) ───────────────────────────
 
 const busyLabel = computed(() => {
   switch (busy.value) {
     case 'refresh':
       return '正在刷新(重读订阅池 1 页 + 追剧日历)…'
     case 'align-now':
-      return '正在立即对齐(≤1 页订阅池 + ≤5 次 PATCH + ≤3 次 Emby 探测, 6 秒预算)…'
+      return '对齐中 · ≤1 页订阅池 · ≤5 次 PATCH · ≤3 次 Emby 探测 · 6 秒预算…'
     case 'probe-dump':
-      return '正在探测诊断(emby/instances + 两个未知端点的参数矩阵)…'
+      return '正在探测诊断(emby/instances + 未知端点的参数矩阵)…'
     case 'settings-update':
       return '正在保存设置…'
     default:
@@ -332,9 +478,13 @@ const busyLabel = computed(() => {
   }
 })
 
+/** 「立即对齐」的完成结果条: 内容全部来自真实 invokeAction 返回, 下一次动作清掉。 */
+const alignResult = ref<{ ok: boolean; text: string } | null>(null)
+
 /** 每次动作后都 await props.api.refresh() —— 状态重取失败也不能吞掉动作结果。 */
 async function runAction(action: string, input: Record<string, unknown> = {}): Promise<NonNullable<RuntimeCallback['result']>> {
   busy.value = action
+  if (action === 'align-now') alignResult.value = null
   let result: NonNullable<RuntimeCallback['result']> = {}
   try {
     const response = await props.api.invokeAction(action, input)
@@ -345,21 +495,24 @@ async function runAction(action: string, input: Record<string, unknown> = {}): P
       message.warning(`状态重取失败: ${String((refreshError as { message?: string })?.message || refreshError)}; 界面可能还是旧值`)
     }
     if (result.status === 'failed') {
-      message.error(String(result.message || '操作失败'))
+      const failureText = String(result.message || '操作失败')
+      if (action === 'align-now') alignResult.value = { ok: false, text: failureText }
+      message.error(failureText)
     } else if (action === 'align-now') {
-      const note = result.budget_hit ? '(达时间预算提前结束)' : ''
+      const note = result.budget_hit ? ' · 达时间预算提前结束' : ''
       const absent = num(result.absent, 0)
       const absentNote = absent > 0 ? ` · 未收录 ${absent} 条` : ''
-      message.success(
-        `立即对齐完成: 补订 ${num(result.patched, 0)} 条 · 跳过 ${num(result.skipped, 0)} 条 · 失败 ${num(result.failed, 0)} 条${absentNote}${note}`,
-      )
-    } else if (action === 'probe-dump') {
-      message.success(String(result.message || '操作完成'))
+      const reused = num(result.reused, 0)
+      const reusedNote = reused > 0 ? ` · 复用缓存 ${reused} 条` : ''
+      const doneText = `完成: 补订 ${num(result.patched, 0)} 条 · 跳过 ${num(result.skipped, 0)} 条 · 失败 ${num(result.failed, 0)} 条${absentNote}${reusedNote}${note}`
+      alignResult.value = { ok: true, text: doneText }
+      message.success(`立即对齐${doneText}`)
     } else {
       message.success(String(result.message || '操作完成'))
     }
   } catch (error: unknown) {
     result = { status: 'failed', message: String((error as { message?: string })?.message || '操作失败') }
+    if (action === 'align-now') alignResult.value = { ok: false, text: String(result.message) }
     message.error(String(result.message))
   } finally {
     busy.value = ''
@@ -368,7 +521,25 @@ async function runAction(action: string, input: Record<string, unknown> = {}): P
   return result
 }
 
-// ─────────────────────────── ⑥ 设置抽屉 ───────────────────────────
+// ─────────────────────────── ⑨ 探测诊断折叠条(默认折叠, 出问题自动展开) ───────────────────────────
+
+const probeOpen = ref(false)
+
+watch(
+  probeProblem,
+  (problem) => {
+    if (problem) probeOpen.value = true
+  },
+  { immediate: true },
+)
+
+/** 页头「探测诊断」按钮: 跑诊断动作并展开折叠条看结果。 */
+async function runProbe() {
+  probeOpen.value = true
+  await runAction('probe-dump')
+}
+
+// ─────────────────────────── ⑩ 设置抽屉 ───────────────────────────
 
 interface SettingsForm {
   enabled: boolean
@@ -496,7 +667,7 @@ async function saveSettings() {
   if (result.status !== 'failed') settingsOpen.value = false
 }
 
-// ─────────────────────────── ⑦ 诊断 ───────────────────────────
+// ─────────────────────────── ⑪ 诊断文本(折叠条展开内容) ───────────────────────────
 
 const attempts = computed(() => list(debug.value.attempts).slice(-20).reverse())
 const lastErrors = computed(() => list(debug.value.last_errors).slice(-10).reverse())
@@ -559,94 +730,92 @@ async function copyDiagnostics() {
 
 <template>
   <main class="dian-plugin-page chase-page">
-    <!-- 标题 + ⑤ 操作区 -->
-    <header class="chase-header">
-      <div class="chase-header-title">
-        <h2>追剧管家</h2>
-        <p>订阅池的 total_episodes × Emby 已有集数, 每小时对齐一次; 只增不减, 减方向只给建议。</p>
+    <!-- ① 页头: 图标瓦片 + 标题 / 状态胶囊 + 日报胶囊 + 动作组 + 设置 -->
+    <header class="page-header">
+      <div class="page-brand">
+        <span class="page-brand-icon"><tv-icon /></span>
+        <div class="page-brand-text">
+          <h2>追剧管家</h2>
+          <p>每小时对齐订阅池 · Emby 覆盖 / TMDB 目标 · 只增不减</p>
+        </div>
       </div>
-      <div class="chase-header-actions">
-        <n-tag :type="overviewStatus.enabled ? 'success' : 'default'" :bordered="false" size="small">
-          {{ overviewStatus.enabled ? '已启用' : '已停用' }}
-        </n-tag>
-        <n-tag v-if="overviewStatus.dryRun" type="warning" :bordered="false" size="small">dry-run</n-tag>
-        <n-button size="small" secondary :loading="busy === 'refresh'" :disabled="!!busy" @click="runAction('refresh')">
+      <div class="page-actions">
+        <span class="capsule" :class="`capsule-${healthCapsule.tone}`">
+          <component :is="healthCapsule.icon" class="capsule-icon" />
+          {{ healthCapsule.text }}
+        </span>
+        <span class="capsule" :class="`capsule-${dailyCapsule.tone}`" :title="reportStatus.note">
+          <send-icon class="capsule-icon" />
+          {{ dailyCapsule.text }}
+        </span>
+        <span v-if="overviewStatus.dryRun" class="capsule capsule-warning">dry-run · 只判定不写入</span>
+        <n-button secondary :loading="busy === 'refresh'" :disabled="!!busy" @click="runAction('refresh')">
           <template #icon><refresh-cw-icon /></template>
           刷新
         </n-button>
-        <n-button size="small" type="primary" :loading="busy === 'align-now'" :disabled="!!busy" @click="runAction('align-now')">
-          <template #icon><play-icon /></template>
-          立即对齐
-        </n-button>
-        <n-button size="small" secondary :loading="busy === 'probe-dump'" :disabled="!!busy" @click="runAction('probe-dump')">
-          <template #icon><bug-icon /></template>
+        <n-button secondary :loading="busy === 'probe-dump'" :disabled="!!busy" @click="runProbe">
+          <template #icon><stethoscope-icon /></template>
           探测诊断
         </n-button>
-        <n-button size="small" quaternary @click="settingsOpen = true">
+        <n-button
+          class="align-primary"
+          type="primary"
+          :loading="busy === 'align-now'"
+          :disabled="!!busy"
+          @click="runAction('align-now')"
+        >
+          <template #icon><zap-icon /></template>
+          立即对齐
+        </n-button>
+        <n-button quaternary circle aria-label="设置" @click="settingsOpen = true">
           <!-- 别名 SettingsIcon: 模板里 `<settings />` 会被解析成同名的 `settings` 计算属性 -->
           <template #icon><settings-icon /></template>
-          设置
         </n-button>
       </div>
     </header>
 
-    <p v-if="busyLabel" class="chase-busy">{{ busyLabel }}</p>
-    <p class="chase-budget">
-      立即对齐的预算: 1 页订阅池 + ≤5 次 PATCH + ≤3 次 Emby 探测, 6 秒时间预算; 命中预算会提前结束并在结果里标 budget_hit。
-    </p>
+    <!-- 动作生命周期(规范 §2.5): 进行中副文案 / 完成结果条(来自真实 invokeAction 返回) -->
+    <p v-if="busyLabel" class="action-progress"><span class="action-spinner" />{{ busyLabel }}</p>
+    <div v-else-if="alignResult" class="action-result" :class="alignResult.ok ? 'action-result-ok' : 'action-result-err'">
+      <component :is="alignResult.ok ? CircleCheckBigIcon : CircleAlertIcon" class="capsule-icon" />
+      {{ alignResult.text }}
+    </div>
 
-    <!-- ⑧ 状态加载不可用: 一句话原因 + 下一步, 不显示任何假数据 -->
-    <section v-if="!stateReady" class="chase-card">
+    <!-- 状态加载不可用: 一句话原因 + 下一步, 不显示任何假数据 -->
+    <section v-if="!stateReady" class="card">
       <n-alert type="error" :show-icon="true" title="状态不可用">
         宿主还没有返回本插件的状态文档{{ stateLoadError ? `(${stateLoadError})` : '' }}。
         常见原因: 插件 runtime 刚重启或更新中, `runtime/state` 暂时失败; 或是存储后端不可读(运行时按「只读不落盘」处理)。
       </n-alert>
-      <p class="chase-next">
+      <p class="next-line">
         下一步: 点「重新读取状态」; 仍然失败就点「探测诊断」拉一次诊断(它会重新读状态), 或把宿主机上插件的运行日志贴给作者。
       </p>
-      <div class="chase-inline-actions">
+      <div class="inline-actions">
         <n-button size="small" type="primary" :loading="loadingState" @click="loadState">
           <template #icon><refresh-cw-icon /></template>
           重新读取状态
         </n-button>
-        <n-button size="small" secondary :loading="busy === 'probe-dump'" :disabled="!!busy" @click="runAction('probe-dump')">
-          <template #icon><bug-icon /></template>
+        <n-button size="small" secondary :loading="busy === 'probe-dump'" :disabled="!!busy" @click="runProbe">
+          <template #icon><stethoscope-icon /></template>
           探测诊断
         </n-button>
       </div>
     </section>
 
     <template v-else>
-      <!-- ① 顶部概览条 -->
-      <section class="chase-overview">
-        <stat-tile label="运行状态" :value="overviewStatus.status" :note="overviewStatus.lastMessage" />
-        <stat-tile label="订阅池剧集数" :value="String(num(stats.tv_intents, 0))" :note="`参与判定 ${num(stats.matched, 0)} 条`" />
-        <stat-tile label="已对齐" :value="String(num(stats.aligned, 0))" note="本轮补订(含 dry-run 判定要补)" tone="success" />
-        <stat-tile
-          label="有缺口"
-          :value="String(gapItems.length)"
-          :note="`合计缺口 ${num(stats.gap_total, 0)} 集`"
-          :tone="gapItems.length > 0 ? 'warning' : 'default'"
-        />
-        <stat-tile
-          label="待探测"
-          :value="`${alignSummary.pendingProbe} 条`"
-          :note="alignSummary.pendingProbe > 0 ? '预算/时间用尽, 下轮优先补探' : '本轮没有条目被预算挡下'"
-          :tone="alignSummary.pendingProbe > 0 ? 'warning' : 'default'"
-        />
-        <stat-tile
-          label="未收录"
-          :value="`${alignSummary.absent} 条`"
-          :note="alignSummary.absent > 0 ? 'Emby 里没有这部剧/该季 0 集' : '没有未收录条目'"
-          :tone="alignSummary.absent > 0 ? 'warning' : 'default'"
-        />
-        <stat-tile label="Emby 实例" :value="instanceLabel" :note="instanceNote" />
-        <stat-tile label="最近对齐" :value="alignSummary.lastRunAt" :note="`上次运行 ${overviewStatus.lastRun} · revision ${overviewStatus.revision}`" />
-        <stat-tile label="日报" :value="reportStatus.value" :note="reportStatus.note" :tone="reportStatus.tone" />
+      <!-- ② 指标瓦片 ×8(数据: stats / align 汇总; 本轮复用 = items 里 reason 含「复用」的行数) -->
+      <section class="tiles">
+        <stat-tile label="订阅池" :value="String(num(stats.tv_intents, 0))" :icon="LayersIcon" />
+        <stat-tile label="已判定" :value="String(num(stats.matched, 0))" :icon="ListChecksIcon" />
+        <stat-tile label="补订" :value="String(alignSummary.patched)" :icon="CirclePlusIcon" tone="primary" />
+        <stat-tile label="跳过" :value="String(alignSummary.skipped)" :icon="SkipForwardIcon" />
+        <stat-tile label="失败" :value="String(alignSummary.failed)" :icon="CircleXIcon" :tone="alignSummary.failed > 0 ? 'error' : 'default'" />
+        <stat-tile label="未收录" :value="String(alignSummary.absent)" :icon="CloudOffIcon" :tone="alignSummary.absent > 0 ? 'warning' : 'default'" />
+        <stat-tile label="待探测" :value="String(alignSummary.pendingProbe)" :icon="RadarIcon" :tone="alignSummary.pendingProbe > 0 ? 'primary' : 'default'" />
+        <stat-tile label="本轮复用" :value="String(reusedCount)" :icon="RecycleIcon" tone="success" />
       </section>
-      <p class="chase-schedule">{{ scheduleLine }}</p>
 
-      <!-- ⑧ 未配置/未读到 Emby 实例 -->
+      <!-- ⑦ 告警条: 实例 / 存储 / 探测结构(全部如实转述运行时) -->
       <n-alert v-if="instanceProblem" type="warning" :show-icon="true" class="chase-alert">
         <template #header>Emby 实例不可用</template>
         {{ instanceProblem }}
@@ -654,15 +823,24 @@ async function copyDiagnostics() {
       <n-alert v-if="storageWarning" type="error" :show-icon="true" class="chase-alert">{{ storageWarning }}</n-alert>
       <n-alert v-if="probeProblem" type="warning" :show-icon="true" class="chase-alert">{{ probeProblem }}</n-alert>
 
-      <!-- ② 对齐结果表 -->
-      <section class="chase-card">
-        <div class="chase-card-head">
-          <h3><list-checks-icon class="chase-icon" />对齐结果</h3>
-          <n-text depth="3">
-            最近对齐 {{ alignSummary.lastRunAt }} · 补订 {{ alignSummary.patched }} / 跳过 {{ alignSummary.skipped }} / 失败
-            {{ alignSummary.failed }} · 未收录 {{ alignSummary.absent }} · 待探测 {{ alignSummary.pendingProbe }} 条 · 读
-            {{ alignSummary.pages }} 页 / 见到 {{ alignSummary.intentsSeen }} 条 / 参与判定 {{ alignSummary.matched }} 条
-          </n-text>
+      <!-- ③ 对齐结果卡(筛选 pill 为纯前端过滤, 不改数据) -->
+      <section class="card">
+        <div class="card-head">
+          <div class="card-head-text">
+            <h3>对齐结果</h3>
+            <p class="card-sub">{{ alignSub }}</p>
+          </div>
+          <div v-if="alignItems.length > 0" class="filter-pills">
+            <button
+              v-for="option in filterOptions"
+              :key="option.key"
+              class="filter-pill"
+              :class="{ active: filter === option.key }"
+              @click="filter = option.key"
+            >
+              {{ option.label }} {{ option.count }}
+            </button>
+          </div>
         </div>
 
         <n-alert v-if="alignSummary.pendingProbe > 0" type="warning" :show-icon="true" class="chase-alert">
@@ -677,57 +855,50 @@ async function copyDiagnostics() {
           </template>
         </n-empty>
 
-        <div v-else class="chase-table-wrap">
-          <table class="chase-table">
+        <p v-else-if="filteredRows.length === 0" class="muted-line">该筛选下没有条目。</p>
+
+        <div v-else class="table-wrap">
+          <table class="align-table">
             <thead>
               <tr>
                 <th>剧集</th>
-                <th>季</th>
-                <th>订阅总集数</th>
-                <th>Emby 已有</th>
-                <th>TMDB 目标</th>
-                <th>缺口集号</th>
-                <th>结果</th>
+                <th class="num">订阅</th>
+                <th class="num">Emby 已有</th>
+                <th class="num">TMDB 目标</th>
+                <th class="num">缺口</th>
+                <th class="num">动作</th>
+                <th>原因</th>
               </tr>
             </thead>
             <tbody>
-              <tr v-for="row in alignRows" :key="`${num(row.item.intent_id, 0)}-${num(row.item.season, 0)}`">
+              <tr v-for="row in filteredRows" :key="`${num(row.item.intent_id, 0)}-${num(row.item.season, 0)}`">
                 <td data-label="剧集">
-                  <div class="chase-title">{{ text(row.item.title, `intent #${num(row.item.intent_id, 0)}`) }}</div>
-                  <div class="chase-sub">intent {{ num(row.item.intent_id, 0) }} · tmdb {{ num(row.item.tmdb_id, 0) }} · {{ formatAt(row.item.at) }}</div>
+                  <div class="show-title">{{ text(row.item.title, `intent #${num(row.item.intent_id, 0)}`) }}</div>
+                  <div class="show-sub">{{ seasonPad(row.item.season) }} · {{ coverageSub(row.item) }}</div>
                 </td>
-                <td data-label="季">{{ seasonLabel(row.item.season) }}</td>
-                <td data-label="订阅总集数">{{ num(row.item.total_known, 0) }}</td>
-                <td data-label="Emby 已有">
-                  <span :class="{ 'chase-sub': num(row.item.emby_have_max, -1) < 0 }">{{ coverageLabel(row.item) }}</span>
+                <td data-label="订阅" class="num">{{ num(row.item.total_known, 0) }}</td>
+                <td data-label="Emby 已有" class="num">
+                  <span v-if="num(row.item.emby_have_max, -1) >= 0">{{ num(row.item.emby_have_max, 0) }}</span>
+                  <span v-else class="muted">—</span>
                 </td>
-                <td data-label="TMDB 目标">
-                  <span :class="{ 'chase-sub': !targetKnown(row.item) }">{{ targetLabel(row.item) }}</span>
+                <td data-label="TMDB 目标" class="num">
+                  <span v-if="targetKnown(row.item)">{{ num(row.item.target_upper, 0) }}</span>
+                  <span v-else class="muted">—</span>
                 </td>
-                <td data-label="缺口集号">
-                  <span :class="{ 'chase-gap': hasGap(row.item) }">{{ gapRange(row.item) }}</span>
+                <td data-label="缺口" class="num">
+                  <span :class="row.gap.cls">{{ row.gap.label }}</span>
                 </td>
-                <td data-label="结果">
-                  <div class="chase-result-cell">
-                    <div class="chase-result">
-                      <n-tag :type="row.badge.tag" :bordered="false" size="small">
-                        <template #icon>
-                          <component :is="reasonIcon(row.badge.kind)" class="chase-result-icon" />
-                        </template>
-                        {{ row.badge.label }}
-                      </n-tag>
-                      <n-tag
-                        v-if="row.targetUnknown && row.badge.kind !== 'target-unknown'"
-                        type="info"
-                        :bordered="false"
-                        size="small"
-                        class="chase-tag-target"
-                      >
-                        <template #icon><target-icon class="chase-result-icon" /></template>
-                        目标未知
-                      </n-tag>
+                <td data-label="动作" class="num">
+                  <span :class="row.action.cls">{{ row.action.label }}</span>
+                </td>
+                <td data-label="原因">
+                  <div class="reason-cell">
+                    <div class="reason-badges">
+                      <span class="badge" :class="badgeClass(row.badge.kind)">{{ row.badge.label }}</span>
+                      <span v-if="row.reused" class="badge badge-third">复用缓存</span>
+                      <span v-if="row.targetUnknown && row.badge.kind !== 'target-unknown'" class="badge badge-info">目标未知</span>
                     </div>
-                    <div class="chase-sub">{{ row.detail }}</div>
+                    <div class="reason-text">{{ row.reasonText || row.detail }}</div>
                   </div>
                 </td>
               </tr>
@@ -736,151 +907,173 @@ async function copyDiagnostics() {
         </div>
       </section>
 
-      <!-- ③ 追剧日历 -->
-      <section class="chase-card">
-        <div class="chase-card-head">
-          <h3><calendar-days-icon class="chase-icon" />追剧日历</h3>
-          <n-text depth="3">抓取于 {{ calendarFetchedAt }} · 窗口 {{ calendarDays.length }} 天</n-text>
-        </div>
-
-        <n-alert v-if="calendarState === 'unrecognized'" type="warning" :show-icon="true" class="chase-alert">
-          日历结构未识别, 见诊断 —— air-calendar 的字段指纹不在已知形状里, 日报会缺「今日播出」段; 对齐不受影响。点「探测诊断」
-          看参数矩阵与原文样本。
-        </n-alert>
-        <n-empty v-else-if="calendarState === 'never'" description="还没有抓过追剧日历: 点「刷新」拉一次, 或等下一个整点的对齐任务。">
-          <template #extra>
-            <n-button size="small" secondary :loading="busy === 'refresh'" :disabled="!!busy" @click="runAction('refresh')">刷新一次</n-button>
-          </template>
-        </n-empty>
-        <n-empty v-else-if="calendarState === 'empty'" description="窗口里没有播出安排(订阅池里可能没有在播剧集)。" />
-
-        <div v-else class="chase-days">
-          <div
-            v-for="day in calendarDays"
-            :key="text(day.date, '')"
-            class="chase-day"
-            :class="{ 'chase-day-today': text(day.date, '') === today }"
-          >
-            <div class="chase-day-head">
-              <strong>{{ text(day.date) }}</strong>
-              <n-tag v-if="text(day.date, '') === today" type="primary" size="small" :bordered="false">今天</n-tag>
-              <span class="chase-sub">{{ list(day.items).length }} 条</span>
+      <!-- ④ 双栏: 补订建议(只读) + 追剧日历 -->
+      <div class="duo">
+        <section class="card">
+          <div class="card-head">
+            <div class="card-head-text">
+              <h3>补订建议</h3>
             </div>
-            <ul v-if="list(day.items).length > 0" class="chase-list">
-              <li v-for="(entry, index) in list(day.items)" :key="`${text(day.date, '')}-${index}`">
-                <span class="chase-time">{{ text(entry.time, '时间待定') }}</span>
-                <span class="chase-title">{{ text(entry.title, `tmdb ${num(entry.tmdb_id, 0)}`) }}</span>
-                <span class="chase-sub">{{ episodeLabel(entry.season, entry.episode) }}</span>
+            <span class="capsule capsule-warning">只读 · 从不自动执行</span>
+          </div>
+          <n-empty v-if="trims.length === 0" description="没有需要提醒的条目: 订阅集数都不超过该季 TMDB 的集数。" />
+          <template v-else>
+            <ul class="trim-list">
+              <li v-for="trim in trims" :key="`${num(trim.intent_id, 0)}-${num(trim.season, 0)}`">
+                <div class="trim-main">
+                  <div class="show-title">{{ text(trim.title, `intent #${num(trim.intent_id, 0)}`) }} {{ seasonPad(trim.season) }}</div>
+                  <div class="show-sub">
+                    订阅 {{ num(trim.total_known, 0) }} 集<template v-if="num(trim.target_upper, 0) > 0">, 高于 TMDB 官方目标</template>
+                  </div>
+                  <!-- reason 为后端原文, 原样渲染不改写 -->
+                  <div class="reason-text">{{ text(trim.reason, '') }}</div>
+                  <div class="trim-ids">
+                    intent_id {{ num(trim.intent_id, 0) }} · tmdb_id {{ num(trim.tmdb_id, 0) }} · {{ seasonLabel(trim.season) }}
+                  </div>
+                </div>
+                <div class="trim-delta">{{ num(trim.total_known, 0) }} → {{ num(trim.target_upper, 0) }}</div>
               </li>
             </ul>
-            <p v-else class="chase-sub">这天没有播出</p>
+            <p class="card-foot">共 {{ trims.length }} 条建议 · 仅提示, 需拿 intent_id 到订阅池手动调整</p>
+          </template>
+        </section>
+
+        <section class="card">
+          <div class="card-head">
+            <div class="card-head-text">
+              <h3>追剧日历</h3>
+            </div>
+            <span class="card-head-meta">抓取于 {{ calendarFetchedAt }} · 窗口 {{ calendarDays.length }} 天</span>
           </div>
-        </div>
-      </section>
 
-      <!-- ④ 补订建议(只读, 减方向) -->
-      <section class="chase-card">
-        <div class="chase-card-head">
-          <h3><scissors-icon class="chase-icon" />补订建议(只读)</h3>
-          <n-text depth="3">{{ trims.length }} 条</n-text>
-        </div>
-        <n-alert type="info" :show-icon="true" class="chase-alert">
-          <template #header>本插件只补订不裁剪, 以下仅为建议</template>
-          需要缩小 total_episodes 时, 请拿下面的 intent_id / tmdb_id / season 到宿主的订阅池页面手工处理。
-        </n-alert>
-        <n-empty v-if="trims.length === 0" description="没有需要提醒的条目: 订阅集数都不超过该季 TMDB 的集数。" />
-        <ul v-else class="chase-list chase-list-block">
-          <li v-for="trim in trims" :key="`${num(trim.intent_id, 0)}-${num(trim.season, 0)}`">
-            <div class="chase-title">{{ text(trim.title, `intent #${num(trim.intent_id, 0)}`) }}</div>
-            <div class="chase-sub chase-mono">
-              intent_id {{ num(trim.intent_id, 0) }} · tmdb_id {{ num(trim.tmdb_id, 0) }} · season {{ seasonLabel(trim.season) }}
-            </div>
-            <div class="chase-sub">
-              订阅 {{ num(trim.total_known, 0) }} 集 · Emby 已有 {{ coverageText(trim.emby_have_max, undefined) }} · 建议上限
-              {{ targetLabel(trim) }} · {{ formatAt(trim.at) }}
-            </div>
-            <div>{{ text(trim.reason) }}</div>
-          </li>
-        </ul>
-      </section>
+          <n-alert v-if="calendarState === 'unrecognized'" type="warning" :show-icon="true" class="chase-alert">
+            日历结构未识别, 见诊断 —— air-calendar 的字段指纹不在已知形状里, 日报会缺「今日播出」段; 对齐不受影响。点「探测诊断」
+            看参数矩阵与原文样本。
+          </n-alert>
+          <n-empty v-else-if="calendarState === 'never'" description="还没有抓过追剧日历: 点「刷新」拉一次, 或等下一个整点的对齐任务。">
+            <template #extra>
+              <n-button size="small" secondary :loading="busy === 'refresh'" :disabled="!!busy" @click="runAction('refresh')">刷新一次</n-button>
+            </template>
+          </n-empty>
+          <n-empty v-else-if="calendarState === 'empty'" description="窗口里没有播出安排(订阅池里可能没有在播剧集)。" />
 
-      <!-- ⑦ 诊断面板 -->
-      <section class="chase-card">
-        <div class="chase-card-head">
-          <h3><activity-icon class="chase-icon" />诊断</h3>
-          <n-text depth="3">更新于 {{ formatAt(debug.updated_at) }}</n-text>
-        </div>
-        <n-collapse :default-expanded-names="probeProblem ? ['diag'] : []">
-          <n-collapse-item title="端点探针与原文样本" name="diag">
-            <div class="chase-probes">
-              <probe-panel
-                endpoint="emby/instances"
-                :probe="debug.emby_instances"
-                hint="Emby 实例列表现场; 「200 但解析为空」时看原文分辨是字段没认出还是宿主没配实例。"
-              />
-              <probe-panel
-                endpoint="emby/episodes"
-                :probe="debug.emby_episodes"
-                hint="Emby 已有集数的解析现场; 结构未识别时该轮零写入(不猜集号)。"
-              />
-              <probe-panel
-                endpoint="subscribe/air-calendar"
-                :probe="debug.air_calendar"
-                hint="追剧日历的解析现场; 失败只影响日历与日报的「今日播出」段。"
-              />
-              <probe-panel
-                endpoint="subscribe/pool/intents"
-                :probe="debug.pool_intents"
-                hint="订阅池列表的解析现场(对规格的显式扩展槽: 订阅池解析失败时原文无处安放, 所以与上面两个同形)。"
-              />
-              <probe-panel
-                endpoint="tmdb/tv (该季集数)"
-                :probe="debug.tmdb_target"
-                hint="该季 TMDB 集数的取数现场(带 raw_episode_counts=true); 取不到时对齐判定只靠 Emby 缺口, 结果表会显示「未知」。"
-              />
+          <template v-else>
+            <div class="day-chips">
+              <div v-for="chip in calendarChips" :key="chip.date" class="day-chip" :class="{ today: chip.isToday }">
+                <span class="day-chip-label">{{ chip.isToday ? '今天' : chip.weekday }}</span>
+                <span class="day-chip-date">{{ chip.short }}</span>
+              </div>
             </div>
+            <ul v-if="calendarEntries.length > 0" class="air-list">
+              <li v-for="entry in calendarEntries" :key="entry.key">
+                <span class="air-dot" :class="{ today: entry.isToday }" />
+                <span class="air-title">{{ entry.dayLabel }} · {{ entry.title }}<template v-if="entry.episode"> {{ entry.episode }}</template></span>
+                <span class="air-time">{{ entry.time }}</span>
+              </li>
+            </ul>
+            <p v-else class="muted-line">窗口里的这些天都没有播出安排。</p>
+            <p v-if="calendarOverflow > 0" class="card-foot">另有 {{ calendarOverflow }} 条播出安排未列出 · 窗口 {{ calendarDays.length }} 天</p>
+          </template>
+        </section>
+      </div>
 
-            <div class="chase-diag-block">
-              <div class="chase-probe-label">last_errors (最近 {{ lastErrors.length }} 条)</div>
-              <ul v-if="lastErrors.length > 0" class="chase-list">
-                <li v-for="(error, index) in lastErrors" :key="index">
-                  <span class="chase-sub">{{ formatAt(error.at) }}</span>
-                  <span class="chase-mono">[{{ text(error.step) }}]</span>
-                  {{ text(error.message) }}
-                </li>
-              </ul>
-              <p v-else class="chase-sub">没有错误记录。</p>
-            </div>
+      <!-- ⑤ 探测诊断折叠条: 默认折叠, 排障时展开; 展开内容 = 现有 ProbePanel, 功能不动 -->
+      <section class="card probe-bar">
+        <button class="probe-bar-head" type="button" :aria-expanded="probeOpen" @click="probeOpen = !probeOpen">
+          <stethoscope-icon class="probe-bar-icon" />
+          <span class="probe-bar-title">探测诊断</span>
+          <span class="probe-bar-sub">端点参数矩阵 · 形状指纹 · HTTP 状态 · 2KB 原文样本 —— 默认折叠, 排障时展开</span>
+          <chevron-down-icon class="probe-bar-chevron" :class="{ open: probeOpen }" />
+        </button>
+        <div v-show="probeOpen" class="probe-bar-body">
+          <div class="chase-probes">
+            <probe-panel
+              endpoint="emby/instances"
+              :probe="debug.emby_instances"
+              hint="Emby 实例列表现场; 「200 但解析为空」时看原文分辨是字段没认出还是宿主没配实例。"
+            />
+            <probe-panel
+              endpoint="emby/episodes"
+              :probe="debug.emby_episodes"
+              hint="Emby 已有集数的解析现场; 结构未识别时该轮零写入(不猜集号)。"
+            />
+            <probe-panel
+              endpoint="subscribe/air-calendar"
+              :probe="debug.air_calendar"
+              hint="追剧日历的解析现场; 失败只影响日历与日报的「今日播出」段。"
+            />
+            <probe-panel
+              endpoint="subscribe/pool/intents"
+              :probe="debug.pool_intents"
+              hint="订阅池列表的解析现场(对规格的显式扩展槽: 订阅池解析失败时原文无处安放, 所以与上面两个同形)。"
+            />
+            <probe-panel
+              endpoint="tmdb/tv (该季集数)"
+              :probe="debug.tmdb_target"
+              hint="该季 TMDB 集数的取数现场(带 raw_episode_counts=true); 取不到时对齐判定只靠 Emby 缺口, 结果表会显示「未知」。"
+            />
+          </div>
 
-            <div class="chase-diag-block">
-              <div class="chase-probe-label">host.call 尝试 (最近 {{ attempts.length }} 次)</div>
-              <ul v-if="attempts.length > 0" class="chase-list">
-                <li v-for="(attempt, index) in attempts" :key="index">
-                  <span class="chase-sub">{{ formatAt(attempt.at) }}</span>
-                  <span class="chase-mono">{{ text(attempt.endpoint) }}</span>
-                  {{ text(attempt.params) }} →
-                  <span class="chase-sub">http {{ num(attempt.http_status, 0) }} · {{ text(attempt.shape) }}</span>
-                </li>
-              </ul>
-              <p v-else class="chase-sub">还没有 host.call 记录。</p>
-            </div>
-          </n-collapse-item>
+          <div class="diag-block">
+            <div class="diag-label">last_errors (最近 {{ lastErrors.length }} 条)</div>
+            <ul v-if="lastErrors.length > 0" class="diag-list">
+              <li v-for="(error, index) in lastErrors" :key="index">
+                <span class="muted">{{ formatAt(error.at) }}</span>
+                <span class="mono">[{{ text(error.step) }}]</span>
+                {{ text(error.message) }}
+              </li>
+            </ul>
+            <p v-else class="muted-line">没有错误记录。</p>
+          </div>
 
-          <n-collapse-item title="完整诊断文本(整段复制给作者)" name="raw">
-            <div class="chase-diag-head">
-              <n-text depth="3">只读文本域, 内容与上面一致并附带最近日志。</n-text>
+          <div class="diag-block">
+            <div class="diag-label">host.call 尝试 (最近 {{ attempts.length }} 次)</div>
+            <ul v-if="attempts.length > 0" class="diag-list">
+              <li v-for="(attempt, index) in attempts" :key="index">
+                <span class="muted">{{ formatAt(attempt.at) }}</span>
+                <span class="mono">{{ text(attempt.endpoint) }}</span>
+                {{ text(attempt.params) }} →
+                <span class="muted">http {{ num(attempt.http_status, 0) }} · {{ text(attempt.shape) }}</span>
+              </li>
+            </ul>
+            <p v-else class="muted-line">还没有 host.call 记录。</p>
+          </div>
+
+          <div class="diag-block">
+            <div class="diag-head">
+              <n-text depth="3">完整诊断文本(整段复制给作者), 内容与上面一致并附带最近日志。</n-text>
               <n-button size="tiny" secondary @click="copyDiagnostics">
                 <template #icon><copy-icon /></template>
                 {{ copied ? '已复制' : '复制' }}
               </n-button>
             </div>
-            <n-input :value="diagnosticsText" type="textarea" readonly :autosize="{ minRows: 12, maxRows: 28 }" />
-          </n-collapse-item>
-        </n-collapse>
+            <n-input :value="diagnosticsText" type="textarea" readonly :autosize="{ minRows: 8, maxRows: 24 }" />
+          </div>
+        </div>
       </section>
+
+      <!-- ⑥ 最近动作: 等宽时间戳 + 后端日志原文 -->
+      <section class="card">
+        <div class="card-head">
+          <div class="card-head-text">
+            <h3>最近动作</h3>
+          </div>
+          <span class="card-head-meta">{{ text(props.pluginId, 'chase.rs') }} · 状态文档 revision {{ overviewStatus.revision }}</span>
+        </div>
+        <ul v-if="recentLogs.length > 0" class="log-list">
+          <li v-for="(entry, index) in recentLogs" :key="index">
+            <span class="log-time">{{ timeLongAt(entry.at) }}</span>
+            <span class="log-msg">{{ text(entry.message, '') }}</span>
+          </li>
+        </ul>
+        <p v-else class="muted-line">还没有运行日志。</p>
+      </section>
+
+      <!-- 页脚: 如实说明数据来源与断点(本前端不轮询, 状态由宿主注入) -->
+      <footer class="page-foot">状态文档由宿主注入 · 页面宽度跟随宿主可用宽度, 双栏在 900–1000px 回落单栏 · 表格在 ≤640px 退化为卡片</footer>
     </template>
 
-    <!-- ⑥ 设置抽屉 -->
+    <!-- ⑩ 设置抽屉(功能不动, naive-ui 交宿主 NConfigProvider 上主题) -->
     <n-drawer v-model:show="settingsOpen" :width="420" placement="right">
       <n-drawer-content title="追剧管家设置" closable>
         <n-form label-placement="left" :label-width="126" size="small">
@@ -936,7 +1129,7 @@ async function copyDiagnostics() {
         </n-form>
         <n-alert v-if="changedKeys.length > 0" type="info" :show-icon="false" class="chase-alert">
           <template #header>将提交改动</template>
-          <span class="chase-mono">{{ changedKeys.join(', ') }}</span>
+          <span class="mono">{{ changedKeys.join(', ') }}</span>
         </n-alert>
         <n-alert v-else type="default" :show-icon="false" class="chase-alert">
           没有改动: 保存只提交被改动的键, 其余保持原值。
@@ -967,267 +1160,715 @@ async function copyDiagnostics() {
 <style scoped>
 /* ---- 根容器: width/min-width 由宿主 iframe 决定, 这里只保证不撑破 ---- */
 .chase-page {
+  /* 第三态 · 非成败(规范 §1): 宿主无此语义, 插件根容器内派生, 深浅主题同值 */
+  --ui-third: #7c5cfc;
   display: grid;
-  gap: var(--dian-space-4);
-  padding: var(--dian-space-1);
+  gap: var(--dian-space-4, 16px);
+  padding: var(--dian-space-1, 4px);
   width: 100%;
   max-width: 100%;
   min-width: 0;
-  color: var(--dian-text-primary);
+  color: var(--dian-text-primary, rgba(0, 0, 0, 0.88));
 }
 
-.chase-header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: var(--dian-space-3);
-  border-bottom: 1px solid var(--dian-divider);
-  padding-bottom: var(--dian-space-4);
-  flex-wrap: wrap;
-}
+/* ---- ① 页头(规范 §2.4) ---- */
 
-.chase-header-title {
-  min-width: 0;
-}
-
-.chase-header-title h2 {
-  margin: 0;
-  font-size: 22px;
-}
-
-.chase-header-title p {
-  margin: var(--dian-space-1) 0 0;
-  color: var(--dian-text-secondary);
-  font-size: 13px;
-}
-
-.chase-header-actions {
+.page-header {
   display: flex;
   align-items: center;
-  gap: var(--dian-space-2);
-  flex-wrap: wrap;
-}
-
-.chase-busy {
-  margin: 0;
-  color: var(--dian-primary);
-  font-size: 13px;
-}
-
-.chase-budget,
-.chase-schedule,
-.chase-next {
-  margin: 0;
-  color: var(--dian-text-muted);
-  font-size: 12px;
-}
-
-.chase-next {
-  color: var(--dian-text-secondary);
-  font-size: 13px;
-}
-
-.chase-overview {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(168px, 1fr));
-  gap: var(--dian-space-3);
-}
-
-.chase-inline-actions {
-  display: flex;
-  gap: var(--dian-space-2);
-  flex-wrap: wrap;
-}
-
-.chase-alert {
-  border-radius: var(--dian-radius-sm);
-}
-
-.chase-card {
-  border: 1px solid var(--dian-border);
-  border-radius: var(--dian-radius-panel);
-  background: var(--dian-surface);
-  padding: var(--dian-space-4);
-  display: grid;
-  gap: var(--dian-space-3);
-  min-width: 0;
-}
-
-.chase-card-head {
-  display: flex;
-  align-items: baseline;
   justify-content: space-between;
-  gap: var(--dian-space-3);
+  gap: var(--dian-space-3, 12px) var(--dian-space-4, 16px);
   flex-wrap: wrap;
+  padding: var(--dian-space-2, 8px) 0 var(--dian-space-1, 4px);
 }
 
-.chase-card-head h3 {
-  margin: 0;
-  display: inline-flex;
+.page-brand {
+  display: flex;
   align-items: center;
-  gap: var(--dian-space-2);
-  font-size: 16px;
-}
-
-.chase-icon {
-  width: 16px;
-  height: 16px;
-}
-
-.chase-empty {
-  padding: var(--dian-space-4) 0;
-}
-
-/* ---- ② 对齐结果表 ---- */
-
-.chase-table-wrap {
-  overflow-x: auto;
+  gap: var(--dian-space-3, 12px);
   min-width: 0;
 }
 
-.chase-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 13px;
+.page-brand-icon {
+  width: 44px;
+  height: 44px;
+  border-radius: var(--dian-radius-md, 12px);
+  display: grid;
+  place-items: center;
+  flex: none;
+  color: var(--dian-primary, #2080f0);
+  background: color-mix(in srgb, var(--dian-primary, #2080f0) 12%, transparent);
 }
 
-.chase-table th,
-.chase-table td {
-  text-align: left;
-  padding: var(--dian-space-2) var(--dian-space-3);
-  border-bottom: 1px solid var(--dian-divider);
-  vertical-align: top;
+.page-brand-icon svg {
+  width: 22px;
+  height: 22px;
 }
 
-.chase-table th {
-  color: var(--dian-text-muted);
-  font-weight: 500;
-  white-space: nowrap;
-}
-
-.chase-title {
+.page-brand-text h2 {
+  margin: 0;
+  font-size: 20px;
   font-weight: 600;
 }
 
-.chase-sub {
-  color: var(--dian-text-muted);
+.page-brand-text p {
+  margin: 2px 0 0;
+  color: var(--dian-text-secondary, rgba(0, 0, 0, 0.72));
+  font-size: 13px;
+}
+
+.page-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--dian-space-2, 8px);
+  flex-wrap: wrap;
+}
+
+/* ---- 胶囊(规范 §2.1: 文字色 = 语义色, 底色 = 语义色 14% 透明; 深浅主题同一透明度) ---- */
+
+.capsule {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border-radius: var(--dian-radius-pill, 999px);
+  padding: 4px 12px;
   font-size: 12px;
-}
-
-.chase-mono {
-  font-family: var(--dian-font-mono, monospace);
-}
-
-.chase-gap {
-  color: var(--dian-warning);
+  font-weight: 500;
+  line-height: 1.45;
+  white-space: nowrap;
   font-variant-numeric: tabular-nums;
 }
 
-/* 结果列: 分类徽章(+ 目标未知小徽章)一行, 详细原因另起一行 —— 窄屏下 td 是 flex,
-   这里用 grid 保证两行始终竖排 */
-.chase-result-cell {
+.capsule-icon {
+  width: 12px;
+  height: 12px;
+  flex: none;
+}
+
+.capsule-success {
+  color: var(--dian-success, #18a058);
+  background: color-mix(in srgb, var(--dian-success, #18a058) 14%, transparent);
+}
+
+.capsule-warning {
+  color: var(--dian-warning, #f0a020);
+  background: color-mix(in srgb, var(--dian-warning, #f0a020) 16%, transparent);
+}
+
+.capsule-error {
+  color: var(--dian-error, #d03050);
+  background: color-mix(in srgb, var(--dian-error, #d03050) 14%, transparent);
+}
+
+.capsule-neutral {
+  color: var(--dian-text-secondary, #8a919c);
+  background: color-mix(in srgb, var(--dian-text-secondary, #8a919c) 14%, transparent);
+}
+
+/* ---- 动作生命周期(规范 §2.5) ---- */
+
+.action-progress {
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--dian-space-2, 8px);
+  color: var(--dian-primary, #2080f0);
+  font-size: 13px;
+}
+
+.action-spinner {
+  width: 14px;
+  height: 14px;
+  flex: none;
+  border-radius: 50%;
+  border: 2px solid color-mix(in srgb, var(--dian-primary, #2080f0) 25%, transparent);
+  border-top-color: var(--dian-primary, #2080f0);
+  animation: chase-spin 0.8s linear infinite;
+}
+
+@keyframes chase-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.action-result {
+  display: flex;
+  align-items: center;
+  gap: var(--dian-space-2, 8px);
+  border-radius: var(--dian-radius-md, 12px);
+  padding: 8px 12px;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+.action-result-ok {
+  color: var(--dian-success, #18a058);
+  background: color-mix(in srgb, var(--dian-success, #18a058) 12%, transparent);
+}
+
+.action-result-err {
+  color: var(--dian-error, #d03050);
+  background: color-mix(in srgb, var(--dian-error, #d03050) 12%, transparent);
+}
+
+/* ---- ② 指标瓦片行 ---- */
+
+.tiles {
   display: grid;
-  gap: 2px;
+  grid-template-columns: repeat(8, minmax(0, 1fr));
+  gap: var(--dian-space-3, 12px);
+}
+
+/* ---- 卡片区块(规范 §2.3) ---- */
+
+.card {
+  background: var(--dian-surface, #ffffff);
+  border: 1px solid var(--dian-border, #e0e4ea);
+  border-radius: var(--dian-radius-lg, 14px);
+  padding: var(--dian-space-5, 20px) var(--dian-space-6, 24px);
+  display: grid;
+  gap: var(--dian-space-3, 12px);
+  min-width: 0;
+  align-content: start;
+}
+
+.card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--dian-space-3, 12px);
+  flex-wrap: wrap;
+}
+
+.card-head-text {
+  display: grid;
+  gap: 4px;
   min-width: 0;
 }
 
-.chase-result {
+.card-head-text h3 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.card-sub {
+  margin: 0;
+  font-size: 13px;
+  color: var(--dian-text-secondary, rgba(0, 0, 0, 0.72));
+}
+
+.card-head-meta {
+  font-size: 12px;
+  color: var(--dian-text-muted, rgba(0, 0, 0, 0.45));
+  white-space: nowrap;
+}
+
+.card-foot {
+  margin: 0;
+  padding-top: var(--dian-space-2, 8px);
+  border-top: 1px solid var(--dian-divider, #e0e4ea);
+  font-size: 12px;
+  color: var(--dian-text-muted, rgba(0, 0, 0, 0.45));
+}
+
+.chase-alert {
+  border-radius: var(--dian-radius-md, 12px);
+}
+
+.chase-empty {
+  padding: var(--dian-space-4, 16px) 0;
+}
+
+.muted-line {
+  margin: 0;
+  color: var(--dian-text-muted, rgba(0, 0, 0, 0.45));
+  font-size: 13px;
+}
+
+.next-line {
+  margin: 0;
+  color: var(--dian-text-secondary, rgba(0, 0, 0, 0.72));
+  font-size: 13px;
+}
+
+.inline-actions {
+  display: flex;
+  gap: var(--dian-space-2, 8px);
+  flex-wrap: wrap;
+}
+
+.mono {
+  font-family: var(--dian-font-mono, monospace);
+}
+
+.muted {
+  color: var(--dian-text-muted, rgba(0, 0, 0, 0.45));
+}
+
+/* ---- ③ 对齐结果卡: 筛选 pill(纯前端过滤) ---- */
+
+.filter-pills {
+  display: inline-flex;
+  gap: 4px;
+  padding: 3px;
+  border-radius: var(--dian-radius-pill, 999px);
+  background: var(--dian-surface-soft, #f7faff);
+  flex: none;
+}
+
+.filter-pill {
+  border: none;
+  background: transparent;
+  border-radius: var(--dian-radius-pill, 999px);
+  padding: 4px 12px;
+  font-size: 12px;
+  font-weight: 500;
+  font-family: inherit;
+  color: var(--dian-text-secondary, rgba(0, 0, 0, 0.72));
+  cursor: pointer;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.filter-pill:hover {
+  color: var(--dian-text-primary, rgba(0, 0, 0, 0.88));
+}
+
+.filter-pill.active {
+  color: var(--dian-primary, #2080f0);
+  background: color-mix(in srgb, var(--dian-primary, #2080f0) 14%, transparent);
+}
+
+/* ---- ③ 对齐结果表(数字 tabular-nums; 长表格保留表头、局部纵向滚动) ---- */
+
+.table-wrap {
+  overflow: auto;
+  max-height: 460px;
+  min-width: 0;
+}
+
+.align-table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 13px;
+}
+
+.align-table th {
+  text-align: left;
+  padding: 8px 12px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--dian-text-muted, rgba(0, 0, 0, 0.45));
+  background: var(--dian-surface-soft, #f7faff);
+  white-space: nowrap;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+
+.align-table th:first-child {
+  border-radius: var(--dian-radius-sm, 8px) 0 0 var(--dian-radius-sm, 8px);
+}
+
+.align-table th:last-child {
+  border-radius: 0 var(--dian-radius-sm, 8px) var(--dian-radius-sm, 8px) 0;
+}
+
+.align-table td {
+  padding: 12px;
+  border-bottom: 1px solid var(--dian-divider, #e0e4ea);
+  vertical-align: top;
+}
+
+.align-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.align-table .num {
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.show-title {
+  font-weight: 600;
+}
+
+.show-sub {
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--dian-text-muted, rgba(0, 0, 0, 0.45));
+}
+
+.gap-num {
+  color: var(--dian-primary, #2080f0);
+  font-weight: 600;
+}
+
+.gap-probe {
+  color: var(--dian-primary, #2080f0);
+}
+
+.action-link {
+  color: var(--dian-primary, #2080f0);
+  font-weight: 500;
+}
+
+.action-dry {
+  color: var(--dian-warning, #f0a020);
+  font-weight: 500;
+}
+
+/* 原因列: 徽章一行 + reason 原文灰字一行(原文不改写) */
+.reason-cell {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.reason-badges {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: var(--dian-space-1);
+  gap: 6px;
 }
 
-/* lucide 图标默认 24px, 塞进 small 徽章要收小 */
-.chase-result-icon {
-  width: 14px;
-  height: 14px;
+.reason-text {
+  font-size: 12px;
+  color: var(--dian-text-muted, rgba(0, 0, 0, 0.45));
+  overflow-wrap: anywhere;
 }
 
-.chase-tag-target {
-  color: var(--dian-text-secondary);
-}
+/* ---- 徽标(规范 §2.1): 胶囊, 12px/500, padding 3px 10px, 无边框 ---- */
 
-/* ---- ③ 追剧日历 ---- */
-
-.chase-days {
-  display: grid;
-  gap: var(--dian-space-3);
-}
-
-.chase-day {
-  border: 1px solid var(--dian-border);
-  border-radius: var(--dian-radius-md);
-  padding: var(--dian-space-3);
-  background: var(--dian-surface-soft, var(--dian-surface));
-}
-
-.chase-day-today {
-  border-color: var(--dian-primary);
-  box-shadow: inset 3px 0 0 var(--dian-primary);
-}
-
-.chase-day-head {
-  display: flex;
+.badge {
+  display: inline-flex;
   align-items: center;
-  gap: var(--dian-space-2);
-  margin-bottom: var(--dian-space-2);
+  border-radius: var(--dian-radius-pill, 999px);
+  padding: 3px 10px;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
 }
 
-/* ---- ④ 补订建议 / ⑦ 诊断列表 ---- */
+.badge-success {
+  color: var(--dian-success, #18a058);
+  background: color-mix(in srgb, var(--dian-success, #18a058) 14%, transparent);
+}
 
-.chase-list {
+.badge-info {
+  color: var(--dian-info, #2080f0);
+  background: color-mix(in srgb, var(--dian-info, #2080f0) 14%, transparent);
+}
+
+.badge-warning {
+  color: var(--dian-warning, #f0a020);
+  background: color-mix(in srgb, var(--dian-warning, #f0a020) 16%, transparent);
+}
+
+.badge-error {
+  color: var(--dian-error, #d03050);
+  background: color-mix(in srgb, var(--dian-error, #d03050) 14%, transparent);
+}
+
+.badge-neutral {
+  color: var(--dian-text-secondary, #8a919c);
+  background: color-mix(in srgb, var(--dian-text-secondary, #8a919c) 14%, transparent);
+}
+
+.badge-third {
+  color: var(--ui-third, #7c5cfc);
+  background: color-mix(in srgb, var(--ui-third, #7c5cfc) 14%, transparent);
+}
+
+/* ---- ④ 双栏(≥1000px 双栏; 900–1000px 回落单栏) ---- */
+
+.duo {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: var(--dian-space-4, 16px);
+  align-items: start;
+}
+
+/* 补订建议: 琥珀大字「45 → 42」式 */
+.trim-list {
   list-style: none;
   margin: 0;
   padding: 0;
   display: grid;
-  gap: var(--dian-space-1);
+}
+
+.trim-list li {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: var(--dian-space-3, 12px);
+  padding: 10px 0;
+  border-bottom: 1px solid var(--dian-divider, #e0e4ea);
+}
+
+.trim-list li:first-child {
+  padding-top: 0;
+}
+
+.trim-list li:last-child {
+  border-bottom: none;
+}
+
+.trim-main {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.trim-delta {
+  color: var(--dian-warning, #f0a020);
+  font-size: 18px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.trim-ids {
+  font-family: var(--dian-font-mono, monospace);
+  font-size: 11px;
+  color: var(--dian-text-muted, rgba(0, 0, 0, 0.45));
+}
+
+/* 追剧日历: 7 天 chip + 今天高亮主色 */
+.day-chips {
+  display: flex;
+  gap: var(--dian-space-2, 8px);
+  flex-wrap: wrap;
+}
+
+.day-chip {
+  display: grid;
+  justify-items: center;
+  gap: 2px;
+  min-width: 64px;
+  padding: 8px 10px;
+  border-radius: var(--dian-radius-md, 12px);
+  border: 1px solid transparent;
+  background: var(--dian-surface-soft, #f7faff);
+}
+
+.day-chip-label {
+  font-size: 12px;
+  color: var(--dian-text-secondary, rgba(0, 0, 0, 0.72));
+}
+
+.day-chip-date {
+  font-size: 13px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.day-chip.today {
+  border-color: var(--dian-primary, #2080f0);
+  background: color-mix(in srgb, var(--dian-primary, #2080f0) 8%, transparent);
+}
+
+.day-chip.today .day-chip-label,
+.day-chip.today .day-chip-date {
+  color: var(--dian-primary, #2080f0);
+}
+
+.air-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+}
+
+.air-list li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--dian-divider, #e0e4ea);
   font-size: 13px;
 }
 
-.chase-list-block li {
-  border-bottom: 1px dashed var(--dian-divider);
-  padding-bottom: var(--dian-space-2);
+.air-list li:last-child {
+  border-bottom: none;
 }
 
-.chase-time {
-  display: inline-block;
-  min-width: 64px;
-  color: var(--dian-text-secondary);
+.air-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--dian-text-muted, rgba(0, 0, 0, 0.45));
+  flex: none;
+}
+
+.air-dot.today {
+  background: var(--dian-primary, #2080f0);
+}
+
+.air-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.air-time {
+  margin-left: auto;
+  color: var(--dian-text-muted, rgba(0, 0, 0, 0.45));
+  font-size: 12px;
   font-variant-numeric: tabular-nums;
+  flex: none;
+}
+
+/* ---- ⑤ 探测诊断折叠条 ---- */
+
+.probe-bar {
+  padding: 0;
+  gap: 0;
+}
+
+.probe-bar-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 14px var(--dian-space-6, 24px);
+  background: none;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  color: inherit;
+  font: inherit;
+}
+
+.probe-bar-icon {
+  width: 18px;
+  height: 18px;
+  color: var(--dian-text-secondary, rgba(0, 0, 0, 0.72));
+  flex: none;
+}
+
+.probe-bar-title {
+  font-weight: 600;
+  font-size: 15px;
+  flex: none;
+}
+
+.probe-bar-sub {
+  font-size: 12px;
+  color: var(--dian-text-muted, rgba(0, 0, 0, 0.45));
+  min-width: 0;
+  flex: 1;
+}
+
+.probe-bar-chevron {
+  width: 16px;
+  height: 16px;
+  color: var(--dian-text-muted, rgba(0, 0, 0, 0.45));
+  flex: none;
+  transition: transform 0.2s ease;
+}
+
+.probe-bar-chevron.open {
+  transform: rotate(180deg);
+}
+
+.probe-bar-body {
+  display: grid;
+  gap: var(--dian-space-3, 12px);
+  margin: 0 var(--dian-space-6, 24px) var(--dian-space-4, 16px);
+  padding-top: var(--dian-space-4, 16px);
+  border-top: 1px solid var(--dian-divider, #e0e4ea);
 }
 
 .chase-probes {
   display: grid;
-  gap: var(--dian-space-3);
-  padding-bottom: var(--dian-space-3);
+  gap: var(--dian-space-3, 12px);
 }
 
-.chase-diag-block {
+.diag-block {
   display: grid;
-  gap: var(--dian-space-1);
-  padding-top: var(--dian-space-3);
-  border-top: 1px solid var(--dian-divider);
+  gap: var(--dian-space-1, 4px);
+  padding-top: var(--dian-space-3, 12px);
+  border-top: 1px solid var(--dian-divider, #e0e4ea);
 }
 
-.chase-diag-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--dian-space-2);
-  flex-wrap: wrap;
-  margin-bottom: var(--dian-space-2);
-}
-
-.chase-probe-label {
-  color: var(--dian-text-muted);
+.diag-label {
+  color: var(--dian-text-muted, rgba(0, 0, 0, 0.45));
   font-size: 12px;
 }
 
-/* ---- ⑥ 设置抽屉 ---- */
+.diag-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: var(--dian-space-1, 4px);
+  font-size: 13px;
+}
+
+.diag-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--dian-space-2, 8px);
+  flex-wrap: wrap;
+}
+
+/* ---- ⑥ 最近动作(规范 §2.7 时间线: 等宽时间 + 事件, 行间 1px divider) ---- */
+
+.log-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+}
+
+.log-list li {
+  display: flex;
+  align-items: baseline;
+  gap: var(--dian-space-3, 12px);
+  padding: 8px 0;
+  border-bottom: 1px solid var(--dian-divider, #e0e4ea);
+  font-size: 13px;
+}
+
+.log-list li:last-child {
+  border-bottom: none;
+}
+
+.log-time {
+  font-family: var(--dian-font-mono, monospace);
+  color: var(--dian-text-muted, rgba(0, 0, 0, 0.45));
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  flex: none;
+}
+
+.log-msg {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* ---- 页脚 ---- */
+
+.page-foot {
+  text-align: center;
+  font-size: 12px;
+  color: var(--dian-text-muted, rgba(0, 0, 0, 0.45));
+  padding: 0 0 var(--dian-space-2, 8px);
+}
+
+/* ---- ⑩ 设置抽屉 ---- */
 
 .chase-form-note {
-  margin-left: var(--dian-space-2);
+  margin-left: var(--dian-space-2, 8px);
   font-size: 12px;
 }
 
@@ -1235,70 +1876,99 @@ async function copyDiagnostics() {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: var(--dian-space-3);
+  gap: var(--dian-space-3, 12px);
   flex-wrap: wrap;
 }
 
 .chase-drawer-buttons {
   display: flex;
-  gap: var(--dian-space-2);
+  gap: var(--dian-space-2, 8px);
 }
 
-/* ---- 视口折叠: 宿主侧边栏打开时 iframe 变窄(900-1000px), 表格折成单栏卡片 ---- */
+/* ---- 断点(规范 §3): 900–1000px 双栏回落单栏 ---- */
 
 @media (max-width: 1000px) {
-  .chase-header {
-    flex-direction: column;
-    align-items: stretch;
+  .tiles {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
   }
 
-  .chase-overview {
-    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  .duo {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* ---- 移动档 ≤640px: 单栏堆叠, 瓦片 2 列, 表格退化为卡片, 主按钮第一优先可见 ---- */
+
+@media (max-width: 640px) {
+  .tiles {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .chase-table thead {
+  /* 工具栏换行时主按钮(立即对齐)排最前 */
+  .page-actions .align-primary {
+    order: -1;
+  }
+
+  .card {
+    padding: var(--dian-space-4, 16px);
+  }
+
+  .probe-bar-head {
+    padding: 12px var(--dian-space-4, 16px);
+  }
+
+  .probe-bar-sub {
     display: none;
   }
 
-  .chase-table,
-  .chase-table tbody,
-  .chase-table tr,
-  .chase-table td {
+  .probe-bar-body {
+    margin: 0 var(--dian-space-4, 16px) var(--dian-space-3, 12px);
+  }
+
+  .table-wrap {
+    max-height: none;
+    overflow: visible;
+  }
+
+  .align-table thead {
+    display: none;
+  }
+
+  .align-table,
+  .align-table tbody,
+  .align-table tr,
+  .align-table td {
     display: block;
     width: 100%;
   }
 
-  .chase-table tr {
-    border: 1px solid var(--dian-border);
-    border-radius: var(--dian-radius-md);
-    padding: var(--dian-space-2);
-    margin-bottom: var(--dian-space-2);
-    background: var(--dian-surface-soft, var(--dian-surface));
+  .align-table tr {
+    border: 1px solid var(--dian-border, #e0e4ea);
+    border-radius: var(--dian-radius-md, 12px);
+    padding: 10px 12px;
+    margin-bottom: 8px;
+    background: var(--dian-surface-soft, var(--dian-surface, #ffffff));
   }
 
-  .chase-table td {
+  .align-table td {
     border-bottom: none;
-    padding: 2px 0;
+    padding: 3px 0;
     display: flex;
-    gap: var(--dian-space-2);
+    gap: var(--dian-space-2, 8px);
+    align-items: baseline;
   }
 
-  .chase-table td::before {
+  .align-table td::before {
     content: attr(data-label);
-    color: var(--dian-text-muted);
+    color: var(--dian-text-muted, rgba(0, 0, 0, 0.45));
     font-size: 12px;
-    min-width: 76px;
+    min-width: 64px;
     flex: none;
   }
-}
 
-@media (max-width: 600px) {
-  .chase-card {
-    padding: var(--dian-space-3);
-  }
-
-  .chase-time {
-    min-width: 0;
+  .align-table .num {
+    text-align: left;
+    white-space: normal;
   }
 }
 </style>
