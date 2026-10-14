@@ -82,12 +82,12 @@
     {
       "id": "douban.rs",
       "name": "豆瓣中心（Rust 版）",
-      "version": "0.2.3",
-      "description": "豆瓣榜单抓取 + 黑名单过滤 + 观察队列 + 聚合订阅；支持 CookieCloud 同步浏览器豆瓣登录态，自动追订「我的想看」。",
+      "version": "0.2.4",
+      "description": "豆瓣榜单抓取 + 黑名单过滤 + 观察队列 + 聚合订阅；支持 CookieCloud 同步浏览器豆瓣登录态，自动追订「我的想看」。界面按统一设计稿重绘：榜单海报卡、观察队列/我的想看双栏、不再订阅名单条与移动端单栏适配。",
       "author": "congyoubanmian",
       "homepage": "https://github.com/congyoubanmian/douban-center-wasm",
-      "package_url": "https://github.com/congyoubanmian/dian115-plugins/releases/download/rs-v0.2.3/douban.rs-0.2.3.d115p",
-      "sha256": "3b6b285c485e6b4f6d52091ee63477c7be2dc50359286659c2f2c2c4e204a4da",
+      "package_url": "https://github.com/congyoubanmian/dian115-plugins/releases/download/rs-v0.2.4/douban.rs-0.2.4.d115p",
+      "sha256": "9e1128bd1676bade41f905ca165fde76b10482946216e9dd86ee67ceb9db6f64",
       "runtime": {
         "kind": "wasm",
         "protocol": "dian115:wasm@1",
@@ -289,12 +289,12 @@
     {
       "id": "music.rs",
       "name": "音乐下载（Rust 版）",
-      "version": "0.3.17",
-      "description": "网易云/QQ 音乐扫码登录、搜索与音质自选取链；无 sidecar，由宿主代理下载（本地暂存 → CD2 入库），任务状态落 KV 队列并支持 Telegram 回调重试。界面按统一设计稿重绘：扫码登录卡、音质档位、任务五态徽标与移动端单栏适配。",
+      "version": "0.3.16",
+      "description": "网易云/QQ 音乐扫码登录、搜索与音质自选取链；无 sidecar，由宿主代理下载（本地暂存 → CD2 入库），任务状态落 KV 队列并支持 Telegram 回调重试。",
       "author": "congyoubanmian",
       "homepage": "https://github.com/congyoubanmian/dian115-plugins",
-      "package_url": "https://github.com/congyoubanmian/dian115-plugins/releases/download/music-rs-v0.3.17/music.rs-0.3.17.d115p",
-      "sha256": "34c7de57bc065cc2249a1e16c8fc87053f6bf6fd116211072aba6f4db328426f",
+      "package_url": "https://github.com/congyoubanmian/dian115-plugins/releases/download/music-rs-v0.3.16/music.rs-0.3.16.d115p",
+      "sha256": "53de2800694422e95cd3a30f283d3caef2ccf9ee5699e8efa089a73236c2a653",
       "runtime": {
         "kind": "wasm",
         "protocol": "dian115:wasm@1",
