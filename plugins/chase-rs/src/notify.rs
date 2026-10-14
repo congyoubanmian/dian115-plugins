@@ -20,7 +20,7 @@
 use serde::Serialize;
 
 use crate::host;
-use crate::model::{AlignItem, CalendarItem, DailyState, ReportSettings};
+use crate::model::{AlignItem, CalendarItem, DailyState, NotifyChannel, ReportSettings};
 use crate::raw;
 
 /// 通知端点路径。
@@ -43,6 +43,8 @@ pub struct NotifyOutcome {
     pub deduplicated: bool,
     pub suppressed: bool,
     pub suppression_reason: String,
+    /// 通道能力上报(openapi `NotificationResult.channels`); 老宿主没这个字段时为空。
+    pub channels: Vec<NotifyChannel>,
 }
 
 impl NotifyOutcome {
@@ -158,11 +160,47 @@ pub fn parse_result(status: i32, raw_bytes: &[u8]) -> Result<NotifyOutcome, Stri
         .as_object()
         .ok_or_else(|| "通知响应不是对象".to_string())?;
     let data = raw::descend(&value, &["data"]).and_then(|inner| inner.as_object()).unwrap_or(obj);
+    // 通道能力上报: 老宿主/无通道配置时没有 channels 字段, 解析为空即可。
+    // raw::descend 是"同层候选键"而非路径下钻, data → channels 要分两步。
+    let channels = raw::descend(&value, &["data"])
+        .and_then(|data| raw::descend(data, &["channels"]))
+        .and_then(|inner| inner.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| {
+                    let get_strs = |key: &str| {
+                        raw::descend(item, &[key])
+                            .and_then(|v| v.as_array())
+                            .map(|vals| {
+                                vals.iter()
+                                    .filter_map(|v| v.as_str().map(str::to_string))
+                                    .collect::<Vec<String>>()
+                            })
+                            .unwrap_or_default()
+                    };
+                    let channel = item
+                        .as_object()
+                        .and_then(|obj| raw::first_string(obj, &["channel"]))
+                        .unwrap_or_default();
+                    if channel.is_empty() {
+                        return None;
+                    }
+                    Some(NotifyChannel {
+                        channel,
+                        preserved: get_strs("preserved"),
+                        dropped: get_strs("dropped"),
+                    })
+                })
+                .collect::<Vec<NotifyChannel>>()
+        })
+        .unwrap_or_default();
     Ok(NotifyOutcome {
         accepted: raw::first_bool(data, &["accepted"]),
         deduplicated: raw::first_bool(data, &["deduplicated"]),
         suppressed: raw::first_bool(data, &["suppressed"]),
         suppression_reason: raw::first_string(data, &["suppression_reason"]).unwrap_or_default(),
+        channels,
     })
 }
 
@@ -194,6 +232,8 @@ pub fn send(
 /// 只有 accepted / deduplicated 才记 `last_sent_date`; suppressed 留到下一小时重试。
 pub fn apply_outcome(daily: &mut DailyState, date: &str, outcome: &NotifyOutcome, at: &str) {
     daily.last_at = at.to_string();
+    // 通道能力随每次响应原地更新(空上报也如实覆盖, 不残留上一次的旧通道)。
+    daily.notify_channels = outcome.channels.clone();
     if outcome.accepted || outcome.deduplicated {
         daily.last_sent_date = date.to_string();
         daily.sent_total = daily.sent_total.saturating_add(1);
@@ -368,6 +408,66 @@ mod tests {
         // HTTP 失败 / 非法 JSON
         assert!(parse_result(500, b"boom").unwrap_err().contains("HTTP 500"));
         assert!(parse_result(200, b"<html>").is_err());
+    }
+
+    #[test]
+    fn parse_result_captures_channel_capabilities() {
+        // 宿主 5.x 的 NotificationResult.channels: 每条通道的 preserved/dropped 能力。
+        let outcome = parse_result(
+            200,
+            br#"{"data":{"event":"plugin_notification","accepted":true,"channels":[
+                {"channel":"telegram","preserved":["link_buttons","callback_buttons","images"]},
+                {"channel":"wecom","preserved":["link_buttons","images"],"dropped":["callback_buttons"]},
+                {"preserved":["images"],"dropped":["link_buttons","callback_buttons"]}
+            ]}}"#,
+        )
+        .unwrap();
+        assert_eq!(outcome.channels.len(), 2, "缺 channel 名的条目跳过, 不猜");
+        let tg = &outcome.channels[0];
+        assert_eq!(tg.channel, "telegram");
+        assert!(tg.preserved.contains(&"callback_buttons".to_string()));
+        assert!(tg.dropped.is_empty());
+        let wecom = &outcome.channels[1];
+        assert_eq!(wecom.channel, "wecom");
+        assert_eq!(wecom.dropped, vec!["callback_buttons".to_string()]);
+
+        // 老宿主没有 channels 字段 → 空, 不报错
+        let legacy = parse_result(
+            200,
+            br#"{"data":{"event":"plugin_notification","accepted":true}}"#,
+        )
+        .unwrap();
+        assert!(legacy.channels.is_empty());
+    }
+
+    #[test]
+    fn apply_outcome_stores_channels_and_overwrites_stale_ones() {
+        let mut daily = DailyState::default();
+        apply_outcome(
+            &mut daily,
+            "2026-10-01",
+            &NotifyOutcome {
+                accepted: true,
+                channels: vec![crate::model::NotifyChannel {
+                    channel: "wecom".to_string(),
+                    preserved: vec!["link_buttons".to_string()],
+                    dropped: vec!["callback_buttons".to_string()],
+                }],
+                ..Default::default()
+            },
+            "2026-10-01T09:00:00Z",
+        );
+        assert_eq!(daily.notify_channels.len(), 1);
+        assert_eq!(daily.notify_channels[0].channel, "wecom");
+
+        // 下一次上报没有 channels(比如老宿主回滚) → 原地清空, 不残留旧通道
+        apply_outcome(
+            &mut daily,
+            "2026-10-02",
+            &NotifyOutcome { accepted: true, ..Default::default() },
+            "2026-10-02T09:00:00Z",
+        );
+        assert!(daily.notify_channels.is_empty());
     }
 
     #[test]

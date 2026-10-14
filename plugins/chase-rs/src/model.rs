@@ -308,6 +308,21 @@ pub struct DailyState {
     pub last_result: String,
     pub last_error: String,
     pub sent_total: u32,
+    /// 最近一次日报的通道能力上报(NotificationResult.channels):
+    /// 每条已配置通道会保留/丢弃哪些能力, 供排查「按钮在某通道点了没反应」类问题。
+    pub notify_channels: Vec<NotifyChannel>,
+}
+
+/// 一条通知通道的能力上报(openapi ChannelSupport)。
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct NotifyChannel {
+    /// `telegram` | `wecom` | `wechat_claw`。
+    pub channel: String,
+    /// 该通道能承载的能力(`link_buttons` / `callback_buttons` / `images`)。
+    pub preserved: Vec<String>,
+    /// 该通道会丢弃的能力。
+    pub dropped: Vec<String>,
 }
 
 // ─────────────────────────── debug ───────────────────────────
