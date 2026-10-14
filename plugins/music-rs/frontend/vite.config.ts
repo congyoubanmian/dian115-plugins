@@ -6,11 +6,12 @@ import federation from '@originjs/vite-plugin-federation'
 // 宿主运行时支持这些 Federation singleton 标记, 但已发布的 TypeScript 声明里
 // 还没暴露 `singleton`(与 music-dl / chase-rs / example 的 vite.config.ts 同一处理)。
 //
-// `generate: false` = 不自带副本, 由宿主提供(宿主已把 vue / naive-ui 注入 share scope)。
-// 这里不声明 `@lucide/vue`: 本页不用图标库, 声明了反而多一个宿主依赖。
+// `generate: false` = 不自带副本, 由宿主提供(宿主已把 vue / naive-ui / @lucide/vue 注入 share scope)。
+// `@lucide/vue`: 2026-10 视觉重画引入的图标库, 声明方式与 chase-rs/frontend/vite.config.ts 一致。
 const hostSharedDependencies = {
   vue: { singleton: true, requiredVersion: false, generate: false },
   'naive-ui': { singleton: true, requiredVersion: false, generate: false },
+  '@lucide/vue': { singleton: true, requiredVersion: false, generate: false },
 } as any
 
 // 构建入口固定在插件自己的 frontend/(而不是 process.cwd()):

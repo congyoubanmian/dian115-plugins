@@ -3,8 +3,8 @@
   "schema_version": 1,
   "id": "music.rs",
   "name": "音乐下载（Rust 版）",
-  "version": "0.3.16",
-  "description": "网易云/QQ 音乐扫码登录、搜索与音质自选取链；无 sidecar，由宿主代理下载（本地暂存 → CD2 入库），任务状态落 KV 队列并支持 Telegram 回调重试。",
+  "version": "0.3.17",
+  "description": "网易云/QQ 音乐扫码登录、搜索与音质自选取链；无 sidecar，由宿主代理下载（本地暂存 → CD2 入库），任务状态落 KV 队列并支持 Telegram 回调重试。界面按统一设计稿重绘：扫码登录卡、音质档位、任务五态徽标与移动端单栏适配。",
   "default_locale": "zh-CN",
   "publisher": {
     "name": "congyoubanmian",
@@ -12,7 +12,7 @@
     "url": "https://github.com/congyoubanmian"
   },
   "compatibility": {
-    "dian115": ">=3.8.51 <5.0.0",
+    "dian115": ">=3.8.51 <6.0.0",
     "plugin_api": "^2.0"
   },
   "runtime": {
