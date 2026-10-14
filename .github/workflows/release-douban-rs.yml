@@ -188,17 +188,19 @@ jobs:
           for attempt in 1 2 3 4 5; do
             git fetch origin main
             git checkout -f -B main origin/main
-            # 按 id 把本插件条目**增量合并**进最新 main 的索引 —— 不能整文件覆盖:
-            # 保存的索引基于 tag 里的旧版本, 整文件覆盖会把其它插件刚回写的条目一并
-            # 回退(rs-v0.2.3 的回写曾把 chase.rs 0.1.7 打回 0.1.6)。
+            # 只把**本工作流发布的插件(douban.rs)条目**覆盖进最新 main 的索引。
+            # tag 树里保存的索引带着其它插件的旧版本, 若按 id 全量合并, 并发发布时
+            # 后完成的回写会把兄弟插件刚回写的新条目打回旧版(chase-v0.1.8 三连发时
+            # 就把 douban.rs 0.2.4 / music.rs 0.3.17 回退了)。其它条目一律以 main 为准。
             node -e '
               const fs = require("fs");
+              const OWN = "douban.rs";
               const fresh = JSON.parse(fs.readFileSync("plugin-market/index.json", "utf8"));
               const mine = JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP + "/index.json", "utf8"));
-              for (const p of mine.plugins) {
-                const i = fresh.plugins.findIndex(x => x.id === p.id);
-                if (i >= 0) fresh.plugins[i] = p; else fresh.plugins.push(p);
-              }
+              const entry = mine.plugins.find(p => p.id === OWN);
+              if (!entry) throw new Error("生成的索引里没有自己的条目 " + OWN);
+              const i = fresh.plugins.findIndex(x => x.id === OWN);
+              if (i >= 0) fresh.plugins[i] = entry; else fresh.plugins.push(entry);
               fs.writeFileSync("plugin-market/index.json", JSON.stringify(fresh, null, 2) + "\n");
             '
             cp -a "$RUNNER_TEMP/icons/." plugin-market/icons/
