@@ -3,8 +3,8 @@
   "schema_version": 1,
   "id": "douban.rs",
   "name": "豆瓣中心（Rust 版）",
-  "version": "0.2.3",
-  "description": "豆瓣榜单抓取 + 黑名单过滤 + 观察队列 + 聚合订阅；支持 CookieCloud 同步浏览器豆瓣登录态，自动追订「我的想看」。",
+  "version": "0.2.4",
+  "description": "豆瓣榜单抓取 + 黑名单过滤 + 观察队列 + 聚合订阅；支持 CookieCloud 同步浏览器豆瓣登录态，自动追订「我的想看」。界面按统一设计稿重绘：榜单海报卡、观察队列/我的想看双栏、不再订阅名单条与移动端单栏适配。",
   "default_locale": "zh-CN",
   "publisher": {
     "name": "congyoubanmian",

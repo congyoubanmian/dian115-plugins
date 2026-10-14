@@ -1,9 +1,11 @@
+/* 本地预览用的宿主变量替身: 生产环境由宿主注入 --dian-*, 这里只在预览页模拟。
+   插件自身样式一律 var(--dian-*, fallback), 不覆盖宿主 :root。 */
 :root {
   --dian-color-scheme: light;
   --dian-background: #f5f6f8;
   --dian-surface: #ffffff;
   --dian-surface-raised: #ffffff;
-  --dian-surface-soft: #f7faff;
+  --dian-surface-soft: #f4f6fa;
   --dian-surface-hover: #eaf4fd;
   --dian-text-primary: rgba(0, 0, 0, 0.88);
   --dian-text-secondary: rgba(0, 0, 0, 0.72);
@@ -12,22 +14,22 @@
   --dian-scrim: rgba(0, 0, 0, 0.55);
   --dian-border: #e0e4ea;
   --dian-border-strong: #c8d8ec;
-  --dian-divider: #e0e4ea;
-  --dian-primary: #2196f3;
-  --dian-primary-hover: #1976d2;
-  --dian-primary-pressed: #1565c0;
+  --dian-divider: #e8ebf0;
+  --dian-primary: #2080f0;
+  --dian-primary-hover: #4c9af5;
+  --dian-primary-pressed: #1b6fd6;
   --dian-primary-contrast: #ffffff;
   --dian-success: #18a058;
   --dian-warning: #f0a020;
   --dian-error: #d03050;
-  --dian-info: #2196f3;
-  --dian-focus-ring: rgba(33, 150, 243, 0.44);
+  --dian-info: #2080f0;
+  --dian-focus-ring: rgba(32, 128, 240, 0.44);
   --dian-shadow-sm: 0 6px 18px rgba(35, 52, 84, 0.08);
   --dian-shadow-md: 0 14px 36px rgba(35, 52, 84, 0.12);
   --dian-shadow-lg: 0 24px 60px rgba(35, 52, 84, 0.18);
   --dian-radius-sm: 8px;
   --dian-radius-md: 12px;
-  --dian-radius-lg: 14px;
+  --dian-radius-lg: 12px;
   --dian-radius-panel: 20px;
   --dian-radius-pill: 999px;
   --dian-space-1: 4px;
@@ -42,13 +44,44 @@
   background: var(--dian-background);
 }
 
+/* 深色预览(对应设计图 3): 卡片以 border 为主、阴影减弱; 徽标透明度底深浅通用无需改。
+   用法: 预览地址加 ?theme=dark(见 main.ts)。 */
+:root[data-dian-theme="dark"] {
+  --dian-color-scheme: dark;
+  --dian-background: #13161b;
+  --dian-surface: #1a1e25;
+  --dian-surface-raised: #1c212a;
+  --dian-surface-soft: #232935;
+  --dian-surface-hover: #2a3140;
+  --dian-text-primary: rgba(255, 255, 255, 0.92);
+  --dian-text-secondary: rgba(255, 255, 255, 0.66);
+  --dian-text-muted: rgba(255, 255, 255, 0.42);
+  --dian-text-inverse: #ffffff;
+  --dian-scrim: rgba(0, 0, 0, 0.62);
+  --dian-border: #2d3442;
+  --dian-border-strong: #3c4658;
+  --dian-divider: #272e3a;
+  --dian-primary: #4090f2;
+  --dian-primary-hover: #62a6f5;
+  --dian-primary-pressed: #2f7de0;
+  --dian-primary-contrast: #ffffff;
+  --dian-success: #36ad6a;
+  --dian-warning: #f0a020;
+  --dian-error: #de6b83;
+  --dian-info: #4090f2;
+  --dian-focus-ring: rgba(64, 144, 242, 0.44);
+  --dian-shadow-sm: 0 2px 10px rgba(0, 0, 0, 0.28);
+  --dian-shadow-md: 0 10px 28px rgba(0, 0, 0, 0.4);
+  --dian-shadow-lg: 0 20px 50px rgba(0, 0, 0, 0.52);
+}
+
 body {
   box-sizing: border-box;
-  min-width: 320px;
-  max-width: 1100px;
-  margin: 0 auto;
+  /* 规范 §3: 页面不设全页 max-width/min-width, body 不锁宽, 宽度跟随宿主可用宽度 */
+  margin: 0;
   padding: 24px;
   background: var(--dian-background);
+  font-family: var(--dian-font-family);
 }
 
 *,
@@ -57,7 +90,7 @@ body {
   box-sizing: inherit;
 }
 
-@media (max-width: 600px) {
+@media (max-width: 640px) {
   body {
     padding: 12px;
   }

@@ -85,15 +85,15 @@ watch(
 .dc-poster-img {
   display: block;
   object-fit: cover;
-  border-radius: var(--dian-radius-sm);
+  border-radius: var(--dian-radius-sm, 8px);
   flex: none;
 }
 .dc-poster-ph {
-  background: linear-gradient(135deg, var(--dian-surface-hover), var(--dian-surface-soft));
+  background: linear-gradient(135deg, var(--dian-surface-hover, #eaf4fd), var(--dian-surface-soft, #f7faff));
   display: flex;
   align-items: center;
   justify-content: center;
-  color: var(--dian-text-secondary);
+  color: var(--dian-text-secondary, rgba(0, 0, 0, 0.72));
   position: relative;
   overflow: hidden;
 }
@@ -101,7 +101,7 @@ watch(
   content: '';
   position: absolute;
   inset: 0;
-  background: linear-gradient(100deg, transparent 30%, var(--dian-surface-raised) 50%, transparent 70%);
+  background: linear-gradient(100deg, transparent 30%, var(--dian-surface-raised, #ffffff) 50%, transparent 70%);
   background-size: 200% 100%;
   animation: dc-poster-shimmer 1.4s ease infinite;
 }

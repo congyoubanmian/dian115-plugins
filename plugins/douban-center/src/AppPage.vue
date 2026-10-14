@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from 'vue'
 import PosterImg from './PosterImg.vue'
+import StatTile from './StatTile.vue'
 import {
   NAlert,
   NButton,
@@ -9,8 +10,6 @@ import {
   NEmpty,
   NForm,
   NFormItem,
-  NGrid,
-  NGridItem,
   NIcon,
   NInput,
   NInputNumber,
@@ -24,15 +23,17 @@ import {
 import {
   Archive,
   Ban,
-  CheckCircle2,
-  Eye,
+  Bookmark,
+  BookOpen,
+  Clock,
   ExternalLink,
-  Flame,
-  ListChecks,
+  Eye,
+  Filter,
+  Heart,
   RefreshCw,
   Settings,
-  Star,
   Trash2,
+  TrendingUp,
   Zap,
 } from '@lucide/vue'
 
@@ -392,15 +393,82 @@ const noResubCount = computed(() => Object.keys(state.value.no_resub || {}).leng
 async function clearNoResub() {
   await runAction('no-resub-clear')
 }
+
+// 底部「不再订阅名单」条: 清除是危险操作, 按共享规范 §2.7 先弹确认对话框, 确认后才走真实清除动作
+function confirmClearNoResub() {
+  dialog.warning({
+    title: '清除不再订阅名单？',
+    content: `${noResubCount.value} 条记录将被移除，不可撤销`,
+    positiveText: '确认清除',
+    negativeText: '取消',
+    // 规范 §2.7: 危险操作的确认钮为红实心
+    positiveButtonProps: { type: 'error' },
+    onPositiveClick: () => {
+      void clearNoResub()
+    },
+  })
+}
+
 const historyRecent = computed(() => state.value.history || [])
 const logsRecent = computed(() => state.value.logs || [])
 const snapshotLists = computed(() => state.value.snapshot?.lists || {})
 
-// 纯展示层辅助: 榜单总数 / 榜单区是否完全无数据(骨架切换用, 不改任何数据流)
-const snapshotListCount = computed(() => Object.keys(snapshotLists.value).length)
+// 纯展示层辅助: 榜单区是否完全无数据(骨架切换用, 不改任何数据流)
 const snapshotEmpty = computed(() =>
   !listDefs.some((def) => (snapshotLists.value[def.key] || []).length > 0),
 )
+
+// 榜单快照当前选中的 tab(纯前端展示状态): 切换只改海报横排显示哪一榜,
+// 完整榜单抽屉仍由右上"完整榜单 · N 条 →"打开, 数据路径不变
+const activeListKey = ref<string>('hot')
+const heroTabTouched = ref(false)
+const activeListItems = computed<ChartItem[]>(() => snapshotLists.value[activeListKey.value] || [])
+// 宽屏一排 5–6 张(规范 §3), 完整条目进榜单抽屉
+const heroItems = computed(() => activeListItems.value.slice(0, 6))
+function selectListTab(key: string) {
+  activeListKey.value = key
+  heroTabTouched.value = true
+}
+// 数据首次到达时若默认 tab 无条目, 落到第一个有数据的榜单(用户点过 tab 后不再自动跳)
+watch(snapshotEmpty, (empty) => {
+  if (empty || heroTabTouched.value) return
+  if ((snapshotLists.value[activeListKey.value] || []).length) return
+  const first = listDefs.find((d) => (snapshotLists.value[d.key] || []).length > 0)
+  if (first) activeListKey.value = first.key
+})
+
+// 页头抓取胶囊: 只读真实抓取时间 snapshot.fetched_at(状态里没有抓取周期字段, 不展示"每 Nh")
+const fetchedAtText = computed(() => {
+  const s = state.value.snapshot?.fetched_at || ''
+  return s.length >= 16 ? s.slice(11, 16) : ''
+})
+
+// CookieCloud 配置态(与 douban-rs wish.rs 的判定口径一致): uuid+key 走 CookieCloud, 或手动 Cookie 兜底
+const ccConfigured = computed(() => {
+  const s = state.value.settings
+  return Boolean((s?.cc_uuid && s?.cc_key_set) || s?.cc_manual_set)
+})
+const ccConfiguredLabel = computed(() => {
+  const s = state.value.settings
+  if (s?.cc_uuid && s?.cc_key_set) return 'CookieCloud 已配置'
+  return '手动 Cookie 已配置'
+})
+
+// 指标瓦片 ×6(规范 §5.2): 全部读真实状态字段; 观察队列 >0 时数字琥珀, 总订阅蓝色
+const tiles = computed(() => [
+  { key: 'total', label: '总订阅', value: state.value.stats?.total || 0, icon: Bookmark, tone: 'primary' as const },
+  { key: 'month', label: '本月新增', value: state.value.stats?.month_new || 0, icon: TrendingUp, tone: 'default' as const },
+  {
+    key: 'queue',
+    label: '观察队列',
+    value: queuePending.value.length,
+    icon: Eye,
+    tone: queuePending.value.length > 0 ? ('warning' as const) : ('default' as const),
+  },
+  { key: 'filtered', label: '已过滤', value: queueBlocked.value.length, icon: Filter, tone: 'default' as const },
+  { key: 'wish', label: '我的想看', value: wishItems.value.length, icon: Heart, tone: 'default' as const },
+  { key: 'blacklist', label: '黑名单关键词', value: state.value.blacklist?.keywords?.length || 0, icon: Ban, tone: 'default' as const },
+])
 
 // 相对时间展示(仅格式化, 不改数据): 输入形如 2026-09-30T15:04:05(+08:00) 的 ISO 串
 function relativeTime(iso?: string | null): string {
@@ -420,9 +488,25 @@ function relativeTime(iso?: string | null): string {
   return fmt(Math.round(abs / 86400000), '天')
 }
 
+// 热度展示(仅格式化真实 hotness 字段): 过万按 "x.x万" 缩写
+function formatHot(n: number): string {
+  if (n >= 10000) return (n / 10000).toFixed(1) + '万'
+  return String(n)
+}
+
 // 榜单卡片 meta: 评分与热度分开成徽章数据(无则回退原 displayHot 文案)
 const hasRate = (item: ChartItem): boolean => Boolean(item.rate && parseFloat(item.rate) > 0)
 const hasHot = (item: ChartItem): boolean => Boolean(item.hotness && item.hotness > 0)
+
+// 订阅历史副行: "榜单 · 相对时间", 缺哪段省哪段
+function historyMeta(h: HistoryEntry): string {
+  return [listLabel(h.list), relativeTime(h.created_at) || h.created_at?.slice(5, 16) || ''].filter(Boolean).join(' · ')
+}
+
+// 观察日志时间戳: 等宽 HH:MM:SS(后端给 ISO 串, 仅截取展示)
+function logTime(at: string): string {
+  return at.length >= 19 ? at.slice(11, 19) : at
+}
 
 // 设置抽屉的榜单行: 只渲染真实存在的行对象, 状态未加载时显示提示而不是崩溃。
 const settingsListRows = computed(() =>
@@ -456,53 +540,66 @@ const fullListOpen = computed({
 
 <template>
   <main class="dian-plugin-page dc-page">
+    <!-- 页头(规范 §2.4): 图标瓦片 + 标题/副题 | 抓取胶囊 + 刷新榜单 + 设置 -->
     <header class="dc-header">
-      <div class="dc-header-title">
-        <h2>豆瓣中心 · 运行详情</h2>
-        <p>榜单刷新 → 黑名筛选 → 观察队列 → 订阅记录</p>
+      <div class="dc-header-left">
+        <div class="dc-header-icon" aria-hidden="true"><NIcon :component="BookOpen" :size="22" /></div>
+        <div class="dc-header-title">
+          <h2>豆瓣中心</h2>
+          <p>抓榜单 → 规则过滤 → 自动/手动订阅 · 同步我的想看</p>
+        </div>
       </div>
       <div class="dc-header-actions">
-        <NTag type="success" size="small">{{ themeContract || 'dian115-theme-v1' }}</NTag>
-        <NButton size="small" :loading="busy === 'refresh'" @click="refreshNow">
+        <span class="dc-badge dc-badge-soft dc-header-capsule">
+          <NIcon :component="Clock" :size="12" />
+          <template v-if="fetchedAtText">抓取于 {{ fetchedAtText }}</template>
+          <template v-else>尚未抓取</template>
+        </span>
+        <NButton size="small" secondary :loading="busy === 'refresh'" @click="refreshNow">
           <template #icon><NIcon :component="RefreshCw" /></template>
-          刷新
+          刷新榜单
         </NButton>
-        <NButton size="small" :loading="busy === 'archive'" @click="archive">
-          <template #icon><NIcon :component="Archive" /></template>
-          归档
-        </NButton>
-        <NButton size="small" @click="openSettings">
+        <NButton size="small" quaternary circle aria-label="设置" @click="openSettings">
           <template #icon><NIcon :component="Settings" /></template>
-          设置
         </NButton>
       </div>
     </header>
 
+    <!-- 后端状态文案原样渲染(铁律: 不改写不润色) -->
     <NAlert v-if="state.last_message" :type="state.status === 'failed' ? 'error' : 'info'" :bordered="false" closable>
       {{ state.last_message }}
     </NAlert>
 
-    <!-- 榜单快照: 海报卡片媒体区 -->
+    <!-- 指标瓦片 ×6(规范 §5.2) -->
+    <section class="dc-tiles" aria-label="概览">
+      <StatTile v-for="t in tiles" :key="t.key" :label="t.label" :value="t.value" :icon="t.icon" :tone="t.tone" />
+    </section>
+
+    <!-- 榜单快照: tab pill 切榜 + 海报横排 -->
     <section class="dc-card dc-hero" aria-label="榜单快照">
-      <div class="dc-section-head">
-        <h3>榜单快照</h3>
-        <span class="dc-muted">
-          <template v-if="state.snapshot?.fetched_at">更新于 {{ relativeTime(state.snapshot.fetched_at) }}</template>
-          <template v-else>最近抓取 —</template>
-        </span>
-        <div class="dc-hero-tabs">
-          <button
-            v-for="def in listDefs"
-            :key="def.key"
-            type="button"
-            class="dc-hero-tab"
-            :class="{ 'is-active': fullListKey === def.key }"
-            @click="openFullList(def.key)"
-          >
-            <span>{{ def.label }}</span>
-            <span class="dc-hero-tab-count">{{ (snapshotLists[def.key] || []).length }}</span>
-          </button>
+      <div class="dc-card-head">
+        <div class="dc-card-titles">
+          <h3>榜单快照</h3>
+          <p class="dc-card-sub">榜单类型 / 每榜条数 / 地区在设置中配置</p>
         </div>
+        <button v-if="!snapshotEmpty" type="button" class="dc-link" @click="openFullList(activeListKey)">
+          完整榜单 · {{ activeListItems.length }} 条 →
+        </button>
+      </div>
+
+      <div class="dc-hero-tabs" role="tablist" aria-label="榜单类型">
+        <button
+          v-for="def in listDefs"
+          :key="def.key"
+          type="button"
+          role="tab"
+          class="dc-hero-tab"
+          :class="{ 'is-active': activeListKey === def.key }"
+          :aria-selected="activeListKey === def.key"
+          @click="selectListTab(def.key)"
+        >
+          {{ def.label }}
+        </button>
       </div>
 
       <!-- 加载/空态骨架: 榜单完全无数据时以节奏一致的骨架填充 -->
@@ -514,57 +611,55 @@ const fullListOpen = computed({
         </div>
       </div>
 
+      <div v-else-if="!heroItems.length" class="dc-empty">
+        <NEmpty description="该榜单暂无数据" size="small" />
+      </div>
+
       <div v-else class="dc-hero-strip">
-        <template v-for="def in listDefs" :key="def.key">
-          <NPopover
-            v-for="item in (snapshotLists[def.key] || []).slice(0, 5)"
-            :key="item.douban_ref"
-            trigger="click"
-            placement="bottom"
-            :show="itemMenuOpen && targetItem?.douban_ref === item.douban_ref"
-            @update:show="(v: boolean) => { itemMenuOpen = v; if (v) targetItem = item }"
-          >
-            <template #trigger>
-              <article class="dc-hero-card" :title="item.title">
-                <div class="dc-hero-poster">
-                  <PosterImg :poster-url="item.poster_url" :api="props.api" :alt="item.title" class="dc-hero-poster-img" />
-                  <span v-if="hasRate(item)" class="dc-rate-badge">
-                    <NIcon :component="Star" :size="11" />{{ item.rate }}
-                  </span>
-                  <span v-else-if="hasHot(item)" class="dc-hot-badge">
-                    <NIcon :component="Flame" :size="11" />{{ item.hotness }}
-                  </span>
-                  <div class="dc-hero-overlay">
-                    <NButton size="tiny" type="primary" :loading="busy === 'subscribe'" @click.stop="subscribeItem(item)">
-                      <template #icon><NIcon :component="Zap" /></template>
-                      订阅
-                    </NButton>
-                    <NButton size="tiny" quaternary class="dc-hero-overlay-btn" @click.stop="openSource(item)">
-                      <template #icon><NIcon :component="ExternalLink" /></template>
-                    </NButton>
-                  </div>
+        <NPopover
+          v-for="item in heroItems"
+          :key="item.douban_ref"
+          trigger="click"
+          placement="bottom"
+          :show="itemMenuOpen && targetItem?.douban_ref === item.douban_ref"
+          @update:show="(v: boolean) => { itemMenuOpen = v; if (v) targetItem = item }"
+        >
+          <template #trigger>
+            <article class="dc-poster-card" :title="item.title">
+              <div class="dc-poster-media">
+                <PosterImg :poster-url="item.poster_url" :api="props.api" :alt="item.title" class="dc-poster-fill" />
+                <div class="dc-hero-overlay">
+                  <NButton size="tiny" type="primary" :loading="busy === 'subscribe'" @click.stop="subscribeItem(item)">
+                    <template #icon><NIcon :component="Zap" /></template>
+                    订阅
+                  </NButton>
+                  <NButton size="tiny" quaternary class="dc-hero-overlay-btn" @click.stop="openSource(item)">
+                    <template #icon><NIcon :component="ExternalLink" /></template>
+                  </NButton>
                 </div>
-                <div class="dc-hero-info">
-                  <div class="dc-hero-title">{{ item.title }}</div>
-                  <div class="dc-hero-meta">
-                    <span class="dc-chip">{{ listLabel(def.key) }}</span>
-                    <span v-if="item.year" class="dc-chip dc-chip-muted">{{ item.year }}</span>
-                  </div>
-                </div>
-              </article>
-            </template>
-            <div class="dc-item-menu">
-              <NButton size="tiny" type="primary" :loading="busy === 'subscribe'" @click="subscribeItem(item)">
-                <template #icon><NIcon :component="Zap" /></template>
-                订阅
-              </NButton>
-              <NButton size="tiny" @click="openSource(item)">
-                <template #icon><NIcon :component="ExternalLink" /></template>
-                打开来源
-              </NButton>
-            </div>
-          </NPopover>
-        </template>
+              </div>
+              <div class="dc-poster-title">{{ item.title }}</div>
+              <div class="dc-poster-meta">
+                <span v-if="hasRate(item)" class="dc-badge dc-badge-success">{{ item.rate }}</span>
+                <span v-if="hasHot(item)" class="dc-poster-hot">热度 {{ formatHot(item.hotness) }}</span>
+                <span v-if="!hasRate(item) && !hasHot(item)" class="dc-poster-hot">{{ displayHot(item) }}</span>
+                <button type="button" class="dc-icon-btn dc-poster-ext" aria-label="打开豆瓣来源" @click.stop="openSource(item)">
+                  <NIcon :component="ExternalLink" :size="13" />
+                </button>
+              </div>
+            </article>
+          </template>
+          <div class="dc-item-menu">
+            <NButton size="tiny" type="primary" :loading="busy === 'subscribe'" @click="subscribeItem(item)">
+              <template #icon><NIcon :component="Zap" /></template>
+              订阅
+            </NButton>
+            <NButton size="tiny" @click="openSource(item)">
+              <template #icon><NIcon :component="ExternalLink" /></template>
+              打开来源
+            </NButton>
+          </div>
+        </NPopover>
       </div>
     </section>
 
@@ -588,9 +683,7 @@ const fullListOpen = computed({
             <div class="dc-full-main">
               <div class="dc-full-title" :title="item.title">{{ item.title }}</div>
               <div class="dc-full-meta">
-                <span v-if="hasRate(item)" class="dc-rate-badge dc-rate-badge-inline">
-                  <NIcon :component="Star" :size="11" />{{ item.rate }}
-                </span>
+                <span v-if="hasRate(item)" class="dc-badge dc-badge-success">{{ item.rate }}</span>
                 <span v-else-if="hasHot(item)" class="dc-chip dc-chip-hot">{{ displayHot(item) }}</span>
                 <span v-else class="dc-chip">—</span>
                 <span v-if="item.year" class="dc-chip dc-chip-muted">{{ item.year }}</span>
@@ -610,33 +703,43 @@ const fullListOpen = computed({
       </NDrawerContent>
     </NDrawer>
 
-    <!-- 黑名拦截 + 观察队列 -->
-    <section class="dc-grid-2">
-      <div class="dc-card" aria-label="黑名拦截">
-        <div class="dc-section-head">
-          <h3><NIcon :component="Ban" :size="15" /> 黑名拦截</h3>
-          <NTag size="small" type="error" :bordered="false">关键词 {{ state.blacklist?.keywords?.length || 0 }} 个 · 最近命中 {{ state.blacklist?.hits || 0 }} 条</NTag>
-        </div>
-        <div class="dc-inline-form">
-          <NInput v-model:value="newKeyword" size="small" placeholder="添加黑名单关键词" clearable @keyup.enter="addBlacklist" />
-          <NButton size="small" type="primary" :loading="busy === 'blacklist-add'" @click="addBlacklist">添加</NButton>
-        </div>
-        <div v-if="state.blacklist?.keywords?.length" class="dc-tags">
-          <NTag v-for="kw in state.blacklist.keywords" :key="kw" size="small" closable @close="removeBlacklist(kw)">{{ kw }}</NTag>
-        </div>
-        <div v-if="state.blacklist?.recent?.length" class="dc-mini-list">
-          <div v-for="(hit, i) in state.blacklist.recent.slice(0, 5)" :key="i" class="dc-mini-row">
-            <span class="dc-mini-title">{{ hit.title }}</span>
-            <NTag size="tiny" type="error" :bordered="false">{{ hit.keyword }}</NTag>
-          </div>
-        </div>
-      </div>
-
+    <!-- 双栏: 观察队列 | 我的想看 -->
+    <section class="dc-grid-2 dc-grid-queue">
       <div class="dc-card" aria-label="观察队列">
-        <div class="dc-section-head">
-          <h3><NIcon :component="Eye" :size="15" /> 观察队列</h3>
-          <NTag size="small" type="warning" :bordered="false">待自动订阅 {{ queuePending.length }} 条</NTag>
+        <div class="dc-card-head">
+          <h3>
+            观察队列
+            <span v-if="queuePending.length" class="dc-badge dc-badge-warning">{{ queuePending.length }} 条待确认</span>
+          </h3>
+          <!-- 黑名单管理收进卡片右上弹层: 添加/删除/最近命中功能不变 -->
+          <NPopover trigger="click" placement="bottom-end">
+            <template #trigger>
+              <button type="button" class="dc-badge dc-badge-soft dc-badge-btn">
+                <NIcon :component="Ban" :size="12" />
+                黑名单 · {{ state.blacklist?.keywords?.length || 0 }}
+              </button>
+            </template>
+            <div class="dc-bl-panel">
+              <div class="dc-bl-counts">
+                关键词 {{ state.blacklist?.keywords?.length || 0 }} 个 · 最近命中 {{ state.blacklist?.hits || 0 }} 条
+              </div>
+              <div class="dc-inline-form">
+                <NInput v-model:value="newKeyword" size="small" placeholder="添加黑名单关键词" clearable @keyup.enter="addBlacklist" />
+                <NButton size="small" type="primary" :loading="busy === 'blacklist-add'" @click="addBlacklist">添加</NButton>
+              </div>
+              <div v-if="state.blacklist?.keywords?.length" class="dc-tags">
+                <NTag v-for="kw in state.blacklist.keywords" :key="kw" size="small" closable @close="removeBlacklist(kw)">{{ kw }}</NTag>
+              </div>
+              <div v-if="state.blacklist?.recent?.length" class="dc-mini-list">
+                <div v-for="(hit, i) in state.blacklist.recent.slice(0, 5)" :key="i" class="dc-mini-row">
+                  <span class="dc-mini-title">{{ hit.title }}</span>
+                  <NTag size="tiny" type="error" :bordered="false">{{ hit.keyword }}</NTag>
+                </div>
+              </div>
+            </div>
+          </NPopover>
         </div>
+
         <div v-if="!queuePending.length && !queueBlocked.length" class="dc-empty">
           <NEmpty description="队列为空" size="small" />
         </div>
@@ -644,78 +747,87 @@ const fullListOpen = computed({
           <div v-for="item in queuePending.slice(0, 8)" :key="item.douban_ref" class="dc-queue-row">
             <div class="dc-queue-main">
               <div class="dc-queue-title">{{ item.title }}</div>
-              <div class="dc-queue-meta">
+              <div class="dc-queue-sub">
                 <span class="dc-chip">{{ listLabel(item.list) }}</span>
                 <span v-if="item.due_at" class="dc-muted">{{ relativeTime(item.due_at) }}到期</span>
                 <NTag v-if="item.state === 'needs_review'" size="tiny" type="error" :bordered="false">匹配待确认</NTag>
               </div>
             </div>
             <div class="dc-queue-actions">
-              <NButton size="tiny" type="primary" :loading="busy === 'subscribe-now'" @click="subscribeQueueNow(item)">立即订阅</NButton>
-              <NButton size="tiny" quaternary @click="openSource(item)">
-                <template #icon><NIcon :component="ExternalLink" /></template>
+              <NButton size="small" secondary type="primary" :loading="busy === 'subscribe-now'" @click="subscribeQueueNow(item)">立即订阅</NButton>
+              <NButton size="small" quaternary circle aria-label="打开豆瓣来源" @click="openSource(item)">
+                <template #icon><NIcon :component="ExternalLink" :size="14" /></template>
               </NButton>
-              <NButton size="tiny" quaternary type="error" @click="removeQueue(item)">
-                <template #icon><NIcon :component="Trash2" /></template>
+              <NButton size="small" quaternary circle type="error" aria-label="移出观察队列" @click="removeQueue(item)">
+                <template #icon><NIcon :component="Trash2" :size="14" /></template>
               </NButton>
             </div>
           </div>
-          <!-- 功能 2/3: 被过滤器/墓碑拦下的终态条目, 只读展示(手动订阅仍可用) -->
+          <!-- 功能 2/3: 被过滤器/墓碑拦下的终态条目, 只读展示(手动订阅仍可用, 二次确认逻辑不变) -->
           <div v-for="item in queueBlocked.slice(0, 8)" :key="item.douban_ref" class="dc-queue-row">
             <div class="dc-queue-main">
-              <div class="dc-queue-title" :title="item.last_error">{{ item.title }}</div>
-              <div class="dc-queue-meta">
+              <div class="dc-queue-title-row">
+                <span class="dc-queue-title">{{ item.title }}</span>
+                <span v-if="item.state === 'filtered'" class="dc-badge dc-badge-neutral">已过滤</span>
+                <span v-else-if="item.state === 'no_resub'" class="dc-badge dc-badge-neutral">已删除不重订</span>
+              </div>
+              <div class="dc-queue-sub">
                 <span class="dc-chip">{{ listLabel(item.list) }}</span>
-                <NTag v-if="item.state === 'filtered'" size="tiny" type="warning" :bordered="false" :title="item.last_error">已过滤</NTag>
-                <NTag v-else-if="item.state === 'no_resub'" size="tiny" :bordered="false">已删除不重订</NTag>
+                <!-- last_error 是后端下发的过滤/拦截原因, 原样渲染 -->
+                <span v-if="item.last_error" class="dc-muted dc-queue-reason" :title="item.last_error">{{ item.last_error }}</span>
               </div>
             </div>
             <div class="dc-queue-actions">
-              <NButton size="tiny" :loading="busy === 'subscribe-now'" @click="subscribeQueueNow(item)">仍要订阅</NButton>
-              <NButton size="tiny" quaternary @click="openSource(item)">
-                <template #icon><NIcon :component="ExternalLink" /></template>
+              <NButton size="small" secondary :loading="busy === 'subscribe-now'" @click="subscribeQueueNow(item)">手动订阅</NButton>
+              <NButton size="small" quaternary circle aria-label="打开豆瓣来源" @click="openSource(item)">
+                <template #icon><NIcon :component="ExternalLink" :size="14" /></template>
               </NButton>
-              <NButton size="tiny" quaternary type="error" @click="removeQueue(item)">
-                <template #icon><NIcon :component="Trash2" /></template>
+              <NButton size="small" quaternary circle type="error" aria-label="移出观察队列" @click="removeQueue(item)">
+                <template #icon><NIcon :component="Trash2" :size="14" /></template>
               </NButton>
             </div>
           </div>
         </div>
+        <p class="dc-footnote">命中不再订阅名单的手动订阅，将需要二次确认并展示历史原因</p>
+      </div>
+
+      <!-- 我的想看: CookieCloud 状态胶囊如实, 未配置指路设置 -->
+      <div class="dc-card" aria-label="我的想看">
+        <div class="dc-card-head">
+          <h3>我的想看</h3>
+          <div class="dc-head-right">
+            <button v-if="!ccConfigured" type="button" class="dc-badge dc-badge-warning dc-badge-btn" @click="openSettings">
+              CookieCloud 未配置 · 去设置
+            </button>
+            <span v-else class="dc-badge dc-badge-success">{{ ccConfiguredLabel }}</span>
+            <NButton size="small" secondary :loading="busy === 'wish-sync'" @click="syncWish">
+              <template #icon><NIcon :component="RefreshCw" /></template>
+              立即同步
+            </NButton>
+          </div>
+        </div>
+        <div v-if="!wishItems.length" class="dc-empty">还没有同步到想看条目，点「立即同步」或在设置里配置豆瓣账号</div>
+        <div v-else class="dc-wish-list">
+          <div v-for="w in wishItems.slice(0, 24)" :key="w.douban_ref" class="dc-wish-row">
+            <PosterImg :poster-url="w.poster_url" :api="props.api" :alt="w.title" class="dc-wish-poster" />
+            <div class="dc-wish-main">
+              <div class="dc-wish-title" :title="w.title">{{ w.title }}</div>
+              <div class="dc-wish-sub">{{ [w.year, w.type === 'tv' ? '剧集' : '电影'].filter(Boolean).join(' · ') }}</div>
+            </div>
+          </div>
+          <div v-if="wishItems.length > 24" class="dc-muted dc-wish-more">… 共 {{ wishItems.length }} 条</div>
+        </div>
       </div>
     </section>
 
-    <!-- 我的想看 -->
-    <section v-if="wishItems.length || wishInfo?.enabled || settingsForm.wish_sync_enabled" class="dc-card" aria-label="我的想看">
-      <div class="dc-section-head">
-        <h3>我的想看 <NTag v-if="wishItems.length" size="small" :bordered="false">{{ wishItems.length }}</NTag></h3>
-        <div class="dc-head-actions">
-          <NButton size="small" :loading="busy === 'wish-sync'" @click="syncWish">立即同步</NButton>
-        </div>
-      </div>
-      <div v-if="!wishItems.length" class="dc-empty">还没有同步到想看条目，点「立即同步」或在设置里配置豆瓣账号</div>
-      <div v-else class="dc-wish-list">
-        <!-- 功能 3: 墓碑集非空时给出条数与清除入口 -->
-        <div v-if="noResubCount > 0" class="dc-wish-row dc-wish-resub-row">
-          <span class="dc-muted">已删除不重订：{{ noResubCount }} 条</span>
-          <NButton size="tiny" :loading="busy === 'no-resub-clear'" @click="clearNoResub">清除重订限制</NButton>
-        </div>
-        <div v-for="w in wishItems.slice(0, 24)" :key="w.douban_ref" class="dc-wish-row">
-          <PosterImg :poster-url="w.poster_url" :api="props.api" :alt="w.title" class="dc-wish-poster" />
-          <span class="dc-wish-title" :title="w.title">{{ w.title }}</span>
-          <span class="dc-wish-meta">
-            <span v-if="w.year" class="dc-chip dc-chip-muted">{{ w.year }}</span>
-            <span class="dc-chip">{{ w.type === 'tv' ? '剧集' : '电影' }}</span>
-          </span>
-        </div>
-        <div v-if="wishItems.length > 24" class="dc-muted dc-wish-more">… 共 {{ wishItems.length }} 条</div>
-      </div>
-    </section>
-
-    <!-- 订阅历史 + 订阅统计 -->
+    <!-- 双栏: 订阅历史 | 观察日志 -->
     <section class="dc-grid-2">
       <div class="dc-card" aria-label="订阅历史">
-        <div class="dc-section-head">
-          <h3><NIcon :component="CheckCircle2" :size="15" /> 订阅历史</h3>
+        <div class="dc-card-head">
+          <h3>订阅历史</h3>
+          <span v-if="state.stats" class="dc-muted dc-head-note">
+            总订阅 {{ state.stats.total || 0 }} · 本月 +{{ state.stats.month_new || 0 }}
+          </span>
         </div>
         <div v-if="!historyRecent.length" class="dc-empty">
           <NEmpty description="暂无订阅记录" size="small" />
@@ -724,80 +836,56 @@ const fullListOpen = computed({
           <div v-for="(h, i) in historyRecent.slice(0, 8)" :key="i" class="dc-history-row">
             <div class="dc-history-main">
               <div class="dc-history-title">{{ h.title }}</div>
-              <div class="dc-history-meta">
-                <span class="dc-chip">{{ listLabel(h.list) }}</span>
-                <span class="dc-status-dot" :class="h.result === 'succeeded' ? 'is-ok' : 'is-fail'" aria-hidden="true" />
-                <span class="dc-history-result" :class="h.result === 'succeeded' ? 'is-ok' : 'is-fail'">
-                  {{ h.result === 'succeeded' ? '订阅成功' : '订阅失败' }}
-                </span>
-                <span class="dc-muted">{{ relativeTime(h.created_at) || h.created_at?.slice(5, 16) }}</span>
-              </div>
+              <div class="dc-history-sub">{{ historyMeta(h) }}</div>
             </div>
+            <span class="dc-badge" :class="h.result === 'succeeded' ? 'dc-badge-success' : 'dc-badge-error'">
+              {{ h.result === 'succeeded' ? '订阅成功' : '订阅失败' }}
+            </span>
           </div>
         </div>
       </div>
 
-      <div class="dc-card" aria-label="订阅统计">
-        <div class="dc-section-head">
-          <h3><NIcon :component="ListChecks" :size="15" /> 订阅统计</h3>
+      <div class="dc-card" aria-label="观察日志">
+        <div class="dc-card-head">
+          <h3>观察日志</h3>
         </div>
-        <NGrid cols="2" :x-gap="10" :y-gap="10">
-          <NGridItem span="2">
-            <div class="dc-stat-box dc-stat-hero">
-              <div class="dc-stat-num">{{ state.stats?.total || 0 }}</div>
-              <div class="dc-stat-label">总订阅数</div>
-            </div>
-          </NGridItem>
-          <NGridItem span="2">
-            <div class="dc-stat-box">
-              <div class="dc-stat-num dc-stat-accent">{{ state.stats?.month_new || 0 }}</div>
-              <div class="dc-stat-label">本月新增</div>
-            </div>
-          </NGridItem>
-          <NGridItem>
-            <div class="dc-stat-box">
-              <div class="dc-stat-num">{{ (state.stats?.by_list || {}).upcoming || 0 }}</div>
-              <div class="dc-stat-label">即将上映</div>
-            </div>
-          </NGridItem>
-          <NGridItem>
-            <div class="dc-stat-box">
-              <div class="dc-stat-num">{{ (state.stats?.by_list || {}).hot || 0 }}</div>
-              <div class="dc-stat-label">实时热门</div>
-            </div>
-          </NGridItem>
-          <NGridItem>
-            <div class="dc-stat-box">
-              <div class="dc-stat-num">{{ (state.stats?.by_list || {}).cn_wom || 0 }}</div>
-              <div class="dc-stat-label">华语口碑</div>
-            </div>
-          </NGridItem>
-          <NGridItem>
-            <div class="dc-stat-box">
-              <div class="dc-stat-num">{{ (state.stats?.by_list || {}).global_wom || 0 }}</div>
-              <div class="dc-stat-label">全球口碑</div>
-            </div>
-          </NGridItem>
-        </NGrid>
+        <div v-if="!logsRecent.length" class="dc-empty">
+          <NEmpty description="暂无日志" size="small" />
+        </div>
+        <div v-else class="dc-log-list">
+          <div v-for="(log, i) in logsRecent.slice(0, 12)" :key="i" class="dc-log-row">
+            <span class="dc-log-dot" :class="'is-' + log.level" aria-hidden="true" />
+            <span class="dc-log-time">{{ logTime(log.at) }}</span>
+            <span class="dc-log-msg">{{ log.message }}</span>
+          </div>
+        </div>
+        <p class="dc-footnote">等宽字体时间戳 · 与 Telegram 日报、日志三处口径一致</p>
       </div>
     </section>
 
-    <!-- 观察日志: 等宽时间线 -->
-    <section class="dc-card" aria-label="观察日志">
-      <div class="dc-section-head">
-        <h3>观察日志</h3>
-      </div>
-      <div v-if="!logsRecent.length" class="dc-empty">
-        <NEmpty description="暂无日志" size="small" />
-      </div>
-      <div v-else class="dc-log-list">
-        <div v-for="(log, i) in logsRecent.slice(0, 12)" :key="i" class="dc-log-row">
-          <span class="dc-log-dot" :class="'is-' + log.level" aria-hidden="true" />
-          <span class="dc-log-time">{{ log.at.slice(5, 19) }}</span>
-          <span class="dc-log-msg">{{ log.message }}</span>
-        </div>
-      </div>
+    <!-- 底部整宽条: 不再订阅名单(已删除不重订墓碑集) -->
+    <section class="dc-card dc-noresub" aria-label="不再订阅名单">
+      <NIcon :component="Ban" :size="16" class="dc-noresub-icon" aria-hidden="true" />
+      <strong class="dc-noresub-name">不再订阅名单</strong>
+      <span class="dc-badge dc-badge-neutral">{{ noResubCount }} 条</span>
+      <span class="dc-noresub-desc">源自「已删除不重订阅墓碑」· 清除为危险操作，需二次确认</span>
+      <NButton
+        size="small"
+        secondary
+        type="error"
+        class="dc-noresub-action"
+        :disabled="!noResubCount"
+        :loading="busy === 'no-resub-clear'"
+        @click="confirmClearNoResub"
+      >
+        清除名单
+      </NButton>
     </section>
+
+    <!-- 页脚: 静态说明小字(版本号状态里没有可读字段, 不放) -->
+    <footer class="dc-footer">
+      豆瓣中心 · 抓榜单 → 规则过滤 → 自动/手动订阅 · 同步我的想看 ｜ 状态由宿主注入 · 页面宽度跟随宿主可用宽度，双栏在 900–1000px 回落单栏
+    </footer>
 
     <!-- 设置抽屉 -->
     <NDrawer v-model:show="settingsOpen" :width="520" placement="right">
@@ -892,6 +980,16 @@ const fullListOpen = computed({
           </div>
           <p class="dc-muted dc-settings-hint">地区（逗号分隔，留空 = 不限；只在已取到豆瓣条目详情时生效）</p>
 
+          <!-- 归档入口从页头移到这里: 动作不变(runAction('archive')) -->
+          <div class="dc-settings-section">维护</div>
+          <div class="dc-settings-row">
+            <span>归档订阅历史</span>
+            <NButton size="small" :loading="busy === 'archive'" @click="archive">
+              <template #icon><NIcon :component="Archive" /></template>
+              归档
+            </NButton>
+          </div>
+
           <div class="dc-settings-row dc-settings-actions">
             <NButton type="primary" :loading="busy === 'settings-update'" @click="saveSettings">保存设置</NButton>
             <NButton @click="settingsOpen = false">取消</NButton>
@@ -903,25 +1001,47 @@ const fullListOpen = computed({
 </template>
 
 <style scoped>
-/* ---- 根容器: 媒体优先仪表盘的统一节奏 ---- */
+/* ---- 根容器: 不设全页 max-width/min-width, 宽度跟随宿主可用宽度(规范 §3) ---- */
 
 .dc-page {
   display: grid;
-  gap: var(--dian-space-4);
-  padding: var(--dian-space-1);
+  gap: var(--dian-space-4, 16px);
+  padding: var(--dian-space-2, 8px) var(--dian-space-1, 4px);
   width: 100%;
   max-width: 100%;
   min-width: 0;
-  color: var(--dian-text-primary);
+  color: var(--dian-text-primary, rgba(0, 0, 0, 0.88));
+  font-family: var(--dian-font-family, inherit);
 }
+
+/* ---- 页头(规范 §2.4) ---- */
 
 .dc-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: var(--dian-space-3);
-  border-bottom: 1px solid var(--dian-divider);
-  padding-bottom: var(--dian-space-4);
+  gap: var(--dian-space-3, 12px);
+  flex-wrap: wrap;
+  padding: var(--dian-space-2, 8px) 0 0;
+}
+
+.dc-header-left {
+  display: flex;
+  align-items: center;
+  gap: var(--dian-space-3, 12px);
+  min-width: 0;
+}
+
+.dc-header-icon {
+  width: 44px;
+  height: 44px;
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--dian-radius-md, 12px);
+  color: var(--dian-primary, #2080f0);
+  background: color-mix(in srgb, var(--dian-primary, #2080f0) 11%, transparent);
 }
 
 .dc-header-title {
@@ -931,208 +1051,252 @@ const fullListOpen = computed({
 .dc-header-title h2,
 .dc-header-title p {
   margin: 0;
-  letter-spacing: 0;
 }
 
 .dc-header-title h2 {
-  font-size: 22px;
-  color: var(--dian-text-primary);
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--dian-text-primary, rgba(0, 0, 0, 0.88));
 }
 
 .dc-header-title p {
-  margin-top: var(--dian-space-1);
-  color: var(--dian-text-secondary);
+  margin-top: 2px;
   font-size: 13px;
+  color: var(--dian-text-secondary, rgba(0, 0, 0, 0.72));
 }
 
 .dc-header-actions {
   display: flex;
   align-items: center;
-  gap: var(--dian-space-2);
+  gap: var(--dian-space-2, 8px);
   flex-wrap: wrap;
 }
 
-.dc-card {
-  border: 1px solid var(--dian-border);
-  border-radius: var(--dian-radius-lg);
-  background: var(--dian-surface-raised);
-  padding: var(--dian-space-4);
-  min-width: 0;
-  box-shadow: var(--dian-shadow-sm);
-  transition: border-color 0.18s ease;
+.dc-header-capsule {
+  padding: 5px 12px;
 }
 
-.dc-card:hover {
-  border-color: var(--dian-border-strong);
-}
+/* ---- 徽标(规范 §2.1): 文字色 = 语义色, 底色 = 语义色 14% 透明度, 深浅主题同一透明度 ---- */
 
-.dc-section-head {
-  display: flex;
-  align-items: center;
-  gap: var(--dian-space-2);
-  margin-bottom: var(--dian-space-3);
-  color: var(--dian-primary);
-  flex-wrap: wrap;
-  padding-bottom: var(--dian-space-2);
-  border-bottom: 1px solid var(--dian-divider);
-}
-
-.dc-section-head h3 {
-  margin: 0;
-  font-size: 15px;
+.dc-badge {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  color: var(--dian-text-primary);
+  gap: 4px;
+  padding: 3px 10px;
+  border: none;
+  border-radius: var(--dian-radius-pill, 999px);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.dc-badge-success {
+  color: var(--dian-success, #18a058);
+  background: color-mix(in srgb, var(--dian-success, #18a058) 14%, transparent);
+}
+
+.dc-badge-warning {
+  color: var(--dian-warning, #f0a020);
+  background: color-mix(in srgb, var(--dian-warning, #f0a020) 16%, transparent);
+}
+
+.dc-badge-error {
+  color: var(--dian-error, #d03050);
+  background: color-mix(in srgb, var(--dian-error, #d03050) 13%, transparent);
+}
+
+.dc-badge-neutral {
+  color: var(--dian-text-secondary, rgba(0, 0, 0, 0.72));
+  background: color-mix(in srgb, var(--dian-text-secondary, #8a919c) 16%, transparent);
+}
+
+.dc-badge-soft {
+  color: var(--dian-text-secondary, rgba(0, 0, 0, 0.72));
+  background: var(--dian-surface-soft, #f7faff);
+  border: 1px solid var(--dian-border, #e0e4ea);
+}
+
+/* 可点击的徽标(黑名单弹层入口 / CookieCloud 未配置指路设置) */
+.dc-badge-btn {
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition: filter 0.15s ease;
+}
+
+.dc-badge-btn:hover {
+  filter: brightness(0.96);
+}
+
+/* ---- 卡片区块(规范 §2.3): surface + 1px border + radius-lg + padding 20–24px ---- */
+
+.dc-card {
+  border: 1px solid var(--dian-border, #e0e4ea);
+  border-radius: var(--dian-radius-lg, 12px);
+  background: var(--dian-surface-raised, #ffffff);
+  padding: var(--dian-space-5, 20px) var(--dian-space-6, 24px);
+  min-width: 0;
+  box-shadow: var(--dian-shadow-sm, 0 6px 18px rgba(35, 52, 84, 0.08));
+}
+
+.dc-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--dian-space-3, 12px);
+  margin-bottom: var(--dian-space-3, 12px);
+  flex-wrap: wrap;
+}
+
+.dc-card-head h3 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--dian-text-primary, rgba(0, 0, 0, 0.88));
+  display: inline-flex;
+  align-items: center;
+  gap: var(--dian-space-2, 8px);
+  flex-wrap: wrap;
+}
+
+.dc-card-sub {
+  margin: 4px 0 0;
+  font-size: 13px;
+  color: var(--dian-text-secondary, rgba(0, 0, 0, 0.72));
+}
+
+.dc-head-right {
+  display: flex;
+  align-items: center;
+  gap: var(--dian-space-2, 8px);
+  flex-wrap: wrap;
+}
+
+.dc-head-note {
+  font-variant-numeric: tabular-nums;
 }
 
 .dc-muted {
-  color: var(--dian-text-secondary);
+  color: var(--dian-text-secondary, rgba(0, 0, 0, 0.72));
   font-size: 12px;
   overflow-wrap: anywhere;
 }
 
-/* ---- 通用徽标: 评分 / 次级标签 chip / 状态点 ---- */
+.dc-link {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  font-size: 13px;
+  color: var(--dian-primary, #2080f0);
+  cursor: pointer;
+  white-space: nowrap;
+}
 
-.dc-rate-badge {
-  position: absolute;
-  top: 6px;
-  right: 6px;
-  z-index: 2;
+.dc-link:hover {
+  color: var(--dian-primary-hover, #4c9af5);
+}
+
+.dc-icon-btn {
   display: inline-flex;
   align-items: center;
-  gap: 2px;
-  padding: 1px 7px;
-  border-radius: var(--dian-radius-pill);
-  font-size: 11.5px;
-  font-weight: 700;
-  font-variant-numeric: tabular-nums;
-  color: var(--dian-primary);
-  background: var(--dian-surface-raised);
-  border: 1px solid var(--dian-primary);
-  box-shadow: var(--dian-shadow-sm);
-  line-height: 16px;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: none;
+  border-radius: var(--dian-radius-sm, 8px);
+  background: transparent;
+  color: var(--dian-text-muted, rgba(0, 0, 0, 0.45));
+  cursor: pointer;
+  flex: none;
+  transition: color 0.15s ease, background 0.15s ease;
 }
 
-.dc-rate-badge-inline {
-  position: static;
-  box-shadow: none;
+.dc-icon-btn:hover {
+  color: var(--dian-primary, #2080f0);
+  background: var(--dian-surface-hover, #eaf4fd);
 }
 
-.dc-hot-badge {
-  position: absolute;
-  top: 6px;
-  right: 6px;
-  z-index: 2;
-  display: inline-flex;
-  align-items: center;
-  gap: 2px;
-  padding: 1px 7px;
-  border-radius: var(--dian-radius-pill);
-  font-size: 11.5px;
-  font-weight: 700;
-  font-variant-numeric: tabular-nums;
-  color: var(--dian-primary);
-  background: var(--dian-surface-raised);
-  border: 1px solid var(--dian-primary);
-  box-shadow: var(--dian-shadow-sm);
-  line-height: 16px;
-}
-
+/* 次级标签 chip(榜单名 / 年份等) */
 .dc-chip {
   display: inline-flex;
   align-items: center;
-  padding: 0 7px;
+  padding: 0 8px;
   line-height: 18px;
-  border-radius: var(--dian-radius-pill);
+  border-radius: var(--dian-radius-pill, 999px);
   font-size: 11px;
   font-weight: 500;
-  color: var(--dian-text-secondary);
-  background: var(--dian-surface-hover);
+  color: var(--dian-text-secondary, rgba(0, 0, 0, 0.72));
+  background: var(--dian-surface-soft, #f7faff);
+  border: 1px solid var(--dian-border, #e0e4ea);
   white-space: nowrap;
 }
 
 .dc-chip-muted {
   background: transparent;
-  border: 1px solid var(--dian-border);
 }
 
 .dc-chip-hot {
-  color: var(--dian-primary);
+  color: var(--dian-primary, #2080f0);
 }
 
-/* ---- 榜单快照: 海报卡片媒体区 ---- */
+/* ---- 指标瓦片 ×6 ---- */
 
-.dc-hero {
-  padding-top: var(--dian-space-3);
+.dc-tiles {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: var(--dian-space-3, 12px);
 }
+
+/* ---- 榜单快照: tab pill + 海报横排 ---- */
 
 .dc-hero-tabs {
   display: flex;
   align-items: center;
-  gap: 6px;
-  margin-left: auto;
+  gap: var(--dian-space-2, 8px);
   flex-wrap: wrap;
+  margin-bottom: var(--dian-space-3, 12px);
 }
 
 .dc-hero-tab {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  border: 1px solid var(--dian-border);
-  border-radius: var(--dian-radius-pill);
-  background: var(--dian-surface-soft);
-  color: var(--dian-text-secondary);
+  border: none;
+  border-radius: var(--dian-radius-pill, 999px);
+  background: var(--dian-surface-soft, #f7faff);
+  color: var(--dian-text-secondary, rgba(0, 0, 0, 0.72));
   font: inherit;
-  font-size: 12px;
-  padding: 2px 10px;
+  font-size: 12.5px;
+  padding: 5px 14px;
   cursor: pointer;
   white-space: nowrap;
-  transition: border-color 0.15s, color 0.15s, background 0.15s;
+  transition: color 0.15s ease, background 0.15s ease;
 }
 
 .dc-hero-tab:hover {
-  border-color: var(--dian-primary);
-  color: var(--dian-primary);
+  color: var(--dian-primary, #2080f0);
 }
 
 .dc-hero-tab:focus-visible {
-  outline: 2px solid var(--dian-focus-ring);
+  outline: 2px solid var(--dian-focus-ring, rgba(32, 128, 240, 0.44));
   outline-offset: 1px;
 }
 
 .dc-hero-tab.is-active {
-  border-color: var(--dian-primary);
-  color: var(--dian-primary);
-  background: var(--dian-surface-hover);
+  color: var(--dian-primary, #2080f0);
+  background: color-mix(in srgb, var(--dian-primary, #2080f0) 12%, transparent);
   font-weight: 600;
 }
 
-.dc-hero-tab-count {
-  font-size: 11px;
-  font-variant-numeric: tabular-nums;
-  background: var(--dian-surface-hover);
-  border-radius: var(--dian-radius-pill);
-  padding: 0 6px;
-  line-height: 16px;
-}
-
-.dc-hero-tab.is-active .dc-hero-tab-count {
-  color: var(--dian-primary-contrast);
-  background: var(--dian-primary);
-}
-
+/* 海报横排: 宽屏一排 5–6 张等宽铺满; 窄屏固定宽度横滑(见 §3 媒体查询) */
 .dc-hero-strip {
-  display: grid;
-  grid-auto-flow: column;
-  grid-auto-columns: 148px;
-  justify-content: start;
-  gap: var(--dian-space-3);
+  display: flex;
+  gap: var(--dian-space-3, 12px);
   overflow-x: auto;
   overscroll-behavior-x: contain;
-  padding: var(--dian-space-1) 2px var(--dian-space-2);
+  padding-bottom: var(--dian-space-1, 4px);
   scrollbar-width: thin;
-  scrollbar-color: var(--dian-border-strong) transparent;
+  scrollbar-color: var(--dian-border-strong, #c8d8ec) transparent;
 }
 
 .dc-hero-strip::-webkit-scrollbar {
@@ -1140,47 +1304,42 @@ const fullListOpen = computed({
 }
 
 .dc-hero-strip::-webkit-scrollbar-thumb {
-  background: var(--dian-border-strong);
-  border-radius: var(--dian-radius-pill);
+  background: var(--dian-border-strong, #c8d8ec);
+  border-radius: var(--dian-radius-pill, 999px);
 }
 
 .dc-hero-strip::-webkit-scrollbar-track {
   background: transparent;
 }
 
-.dc-hero-card {
+.dc-poster-card {
+  flex: 1 1 0;
+  min-width: 120px;
+  max-width: 200px;
   display: flex;
   flex-direction: column;
-  border: 1px solid var(--dian-border);
-  border-radius: var(--dian-radius-md);
-  background: var(--dian-surface-soft);
-  overflow: hidden;
   cursor: pointer;
-  transition: transform 0.16s ease, box-shadow 0.16s ease, border-color 0.16s ease;
 }
 
-.dc-hero-card:hover {
-  transform: translateY(-3px);
-  border-color: var(--dian-primary);
-  box-shadow: var(--dian-shadow-md);
-}
-
-.dc-hero-poster {
+.dc-poster-media {
   position: relative;
   aspect-ratio: 2 / 3;
   width: 100%;
-  background: var(--dian-surface-hover);
+  border-radius: var(--dian-radius-md, 12px);
+  overflow: hidden;
+  background: var(--dian-surface-hover, #eaf4fd);
+  box-shadow: var(--dian-shadow-sm, 0 6px 18px rgba(35, 52, 84, 0.08));
 }
 
-.dc-hero-poster-img,
-.dc-hero-poster-img :deep(img),
-.dc-hero-poster-img :deep(.dc-poster-ph) {
+.dc-poster-fill,
+.dc-poster-fill :deep(img),
+.dc-poster-fill :deep(.dc-poster-ph) {
   width: 100%;
   height: 100%;
   object-fit: cover;
 }
 
-.dc-hero-poster-img :deep(.dc-poster-img) {
+.dc-poster-fill :deep(.dc-poster-img) {
   border-radius: 0;
 }
 
@@ -1193,77 +1352,77 @@ const fullListOpen = computed({
   justify-content: center;
   gap: 6px;
   padding: 8px;
-  background: linear-gradient(to top, var(--dian-scrim), transparent 55%);
+  background: linear-gradient(to top, var(--dian-scrim, rgba(0, 0, 0, 0.55)), transparent 55%);
   opacity: 0;
   transition: opacity 0.16s ease;
 }
 
-.dc-hero-card:hover .dc-hero-overlay,
-.dc-hero-card:focus-within .dc-hero-overlay {
+.dc-poster-card:hover .dc-hero-overlay,
+.dc-poster-card:focus-within .dc-hero-overlay {
   opacity: 1;
 }
 
 /* 浮层压在 scrim 之上, 文字需恒为浅色, 由主题变量 --dian-text-inverse 提供 */
 .dc-hero-overlay-btn {
-  color: var(--dian-text-inverse);
+  color: var(--dian-text-inverse, #ffffff);
 }
 
-.dc-hero-info {
-  padding: var(--dian-space-2) 8px;
-  display: grid;
-  gap: 5px;
-}
-
-.dc-hero-title {
-  font-size: 12.5px;
+.dc-poster-title {
+  margin-top: var(--dian-space-2, 8px);
+  font-size: 14px;
   font-weight: 500;
-  color: var(--dian-text-primary);
+  color: var(--dian-text-primary, rgba(0, 0, 0, 0.88));
   overflow: hidden;
   text-overflow: ellipsis;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  line-height: 1.35;
-  min-height: 2.7em;
-  overflow-wrap: anywhere;
+  white-space: nowrap;
 }
 
-.dc-hero-meta {
+.dc-poster-meta {
+  margin-top: 5px;
   display: flex;
   align-items: center;
-  gap: 4px;
-  flex-wrap: wrap;
+  gap: var(--dian-space-2, 8px);
+  min-width: 0;
+}
+
+.dc-poster-hot {
+  font-size: 12px;
+  color: var(--dian-text-muted, rgba(0, 0, 0, 0.45));
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.dc-poster-ext {
+  margin-left: auto;
 }
 
 /* 骨架: 榜单完全无数据(刷新中/未抓取)时的占位, 节奏与卡片一致 */
 .dc-hero-skeleton {
-  display: grid;
-  grid-auto-flow: column;
-  grid-auto-columns: 148px;
-  justify-content: start;
-  gap: var(--dian-space-3);
+  display: flex;
+  gap: var(--dian-space-3, 12px);
   overflow: hidden;
-  padding: var(--dian-space-1) 2px var(--dian-space-2);
 }
 
 .dc-sk-card {
-  border: 1px solid var(--dian-border);
-  border-radius: var(--dian-radius-md);
-  background: var(--dian-surface-soft);
-  padding: 8px;
+  flex: 1 1 0;
+  min-width: 120px;
+  max-width: 200px;
   display: grid;
   gap: 8px;
 }
 
 .dc-sk {
-  border-radius: var(--dian-radius-sm);
-  background: linear-gradient(90deg, var(--dian-surface-hover) 25%, var(--dian-surface-soft) 50%, var(--dian-surface-hover) 75%);
+  border-radius: var(--dian-radius-sm, 8px);
+  background: linear-gradient(90deg, var(--dian-surface-hover, #eaf4fd) 25%, var(--dian-surface-soft, #f7faff) 50%, var(--dian-surface-hover, #eaf4fd) 75%);
   background-size: 200% 100%;
   animation: dc-sk-shimmer 1.4s ease infinite;
 }
 
 .dc-sk-poster {
   aspect-ratio: 2 / 3;
+  border-radius: var(--dian-radius-md, 12px);
 }
 
 .dc-sk-line {
@@ -1289,8 +1448,8 @@ const fullListOpen = computed({
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: var(--dian-space-2);
-  margin-bottom: var(--dian-space-3);
+  gap: var(--dian-space-2, 8px);
+  margin-bottom: var(--dian-space-3, 12px);
 }
 
 .dc-full-list {
@@ -1303,15 +1462,15 @@ const fullListOpen = computed({
   align-items: center;
   gap: 10px;
   padding: 8px;
-  border-radius: var(--dian-radius-sm);
-  border: 1px solid var(--dian-border);
-  background: var(--dian-surface-soft);
+  border-radius: var(--dian-radius-sm, 8px);
+  border: 1px solid var(--dian-border, #e0e4ea);
+  background: var(--dian-surface-soft, #f7faff);
   min-width: 0;
   transition: border-color 0.15s;
 }
 
 .dc-full-row:hover {
-  border-color: var(--dian-primary);
+  border-color: var(--dian-primary, #2080f0);
 }
 
 .dc-full-rank {
@@ -1321,19 +1480,15 @@ const fullListOpen = computed({
   font-weight: 700;
   font-size: 13px;
   font-variant-numeric: tabular-nums;
-  color: var(--dian-text-secondary);
+  color: var(--dian-text-secondary, rgba(0, 0, 0, 0.72));
 }
 
 .dc-full-poster {
   width: 40px;
   height: 56px;
   object-fit: cover;
-  border-radius: var(--dian-radius-sm);
+  border-radius: var(--dian-radius-sm, 8px);
   flex: none;
-}
-
-.dc-full-poster-ph {
-  background: linear-gradient(135deg, var(--dian-surface-hover), var(--dian-surface-soft));
 }
 
 .dc-full-main {
@@ -1343,7 +1498,7 @@ const fullListOpen = computed({
 
 .dc-full-title {
   font-size: 13px;
-  color: var(--dian-text-primary);
+  color: var(--dian-text-primary, rgba(0, 0, 0, 0.88));
   font-weight: 500;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1372,227 +1527,207 @@ const fullListOpen = computed({
 .dc-empty {
   display: flex;
   justify-content: center;
-  padding: var(--dian-space-2);
+  padding: var(--dian-space-2, 8px);
+  color: var(--dian-text-secondary, rgba(0, 0, 0, 0.72));
+  font-size: 13px;
 }
 
-/* ---- 双栏信息区 ---- */
+/* ---- 双栏(规范 §3: ≥1000px 双栏, 900–1000px 回落单栏) ---- */
 
 .dc-grid-2 {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
-  gap: var(--dian-space-4);
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: var(--dian-space-4, 16px);
 }
 
-.dc-inline-form {
-  display: flex;
-  gap: 8px;
-  margin-bottom: var(--dian-space-2);
+/* 观察队列 | 我的想看: 左宽右窄(设计图比例约 3:2) */
+.dc-grid-queue {
+  grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
 }
 
-.dc-tags {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin-bottom: var(--dian-space-2);
-}
+/* ---- 观察队列 ---- */
 
-.dc-mini-list,
-.dc-history-list,
-.dc-queue-list,
-.dc-log-list {
+.dc-queue-list {
   display: grid;
-  gap: 6px;
 }
 
-.dc-mini-row,
-.dc-history-row,
 .dc-queue-row {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 8px 10px;
-  border-radius: var(--dian-radius-sm);
-  background: var(--dian-surface-soft);
-  border: 1px solid transparent;
-  transition: border-color 0.15s;
-}
-
-.dc-history-row:hover,
-.dc-queue-row:hover {
-  border-color: var(--dian-border);
-}
-
-.dc-mini-title,
-.dc-history-title,
-.dc-queue-title {
-  font-size: 13px;
-  color: var(--dian-text-primary);
+  gap: var(--dian-space-3, 12px);
+  padding: 10px 2px;
+  border-bottom: 1px solid var(--dian-divider, #e0e4ea);
   min-width: 0;
+}
+
+.dc-queue-row:last-child {
+  border-bottom: none;
+}
+
+.dc-queue-main {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.dc-queue-title-row {
+  display: flex;
+  align-items: center;
+  gap: var(--dian-space-2, 8px);
+  min-width: 0;
+}
+
+.dc-queue-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--dian-text-primary, rgba(0, 0, 0, 0.88));
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.dc-history-main,
-.dc-queue-main {
-  min-width: 0;
-  flex: 1;
-}
-
-.dc-history-meta,
-.dc-queue-meta {
+.dc-queue-sub {
   display: flex;
   align-items: center;
-  gap: 6px;
-  margin-top: 4px;
+  gap: var(--dian-space-2, 8px);
   flex-wrap: wrap;
+  min-width: 0;
+}
+
+.dc-queue-reason {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
 }
 
 .dc-queue-actions {
   display: flex;
   align-items: center;
   gap: 2px;
-  flex: 0 0 auto;
-}
-
-.dc-status-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
   flex: none;
-}
-
-.dc-status-dot.is-ok {
-  background: var(--dian-success);
-}
-
-.dc-status-dot.is-fail {
-  background: var(--dian-error);
-}
-
-.dc-history-result {
-  font-size: 12px;
-  font-weight: 500;
-}
-
-.dc-history-result.is-ok {
-  color: var(--dian-success);
-}
-
-.dc-history-result.is-fail {
-  color: var(--dian-error);
 }
 
 /* ---- 我的想看 ---- */
 
 .dc-wish-list {
   display: grid;
-  gap: 4px;
+  /* 长列表局部纵向滚动, 不撑整页(规范 §3) */
+  max-height: 308px;
+  overflow-y: auto;
+  scrollbar-width: thin;
 }
 
 .dc-wish-row {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 5px 8px;
-  border-bottom: 1px solid var(--dian-divider);
-  font-size: 13px;
-  border-radius: var(--dian-radius-sm);
-  color: var(--dian-text-primary);
-  transition: background 0.15s ease;
+  gap: var(--dian-space-3, 12px);
+  padding: 8px 2px;
+  border-bottom: 1px solid var(--dian-divider, #e0e4ea);
+  min-width: 0;
 }
 
-.dc-wish-row:hover {
-  background: var(--dian-surface-hover);
+.dc-wish-row:last-child {
+  border-bottom: none;
 }
 
 .dc-wish-poster {
-  width: 28px;
-  height: 40px;
+  width: 36px;
+  height: 54px;
   object-fit: cover;
-  border-radius: var(--dian-radius-sm);
+  border-radius: var(--dian-radius-sm, 8px);
   flex: none;
+}
+
+.dc-wish-main {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  gap: 2px;
 }
 
 .dc-wish-title {
-  flex: 1;
-  min-width: 0;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--dian-text-primary, rgba(0, 0, 0, 0.88));
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: var(--dian-text-primary);
 }
 
-.dc-wish-meta {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  flex: none;
+.dc-wish-sub {
+  font-size: 12px;
+  color: var(--dian-text-muted, rgba(0, 0, 0, 0.45));
 }
 
 .dc-wish-more {
   font-size: 12px;
-  padding: 4px 8px;
+  padding: 6px 2px;
 }
 
-/* ---- 统计数字卡 ---- */
+/* ---- 订阅历史 ---- */
 
-.dc-stat-box {
-  border: 1px solid var(--dian-border);
-  border-radius: var(--dian-radius-md);
-  background: var(--dian-surface-soft);
-  padding: var(--dian-space-3);
-  text-align: center;
+.dc-history-list {
+  display: grid;
+  max-height: 308px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+
+.dc-history-row {
+  display: flex;
+  align-items: center;
+  gap: var(--dian-space-3, 12px);
+  padding: 10px 2px;
+  border-bottom: 1px solid var(--dian-divider, #e0e4ea);
   min-width: 0;
 }
 
-.dc-stat-hero {
-  border-color: var(--dian-primary);
-  background: linear-gradient(160deg, var(--dian-surface-soft), var(--dian-surface-hover));
+.dc-history-row:last-child {
+  border-bottom: none;
 }
 
-.dc-stat-num {
-  font-size: 22px;
-  font-weight: 700;
-  font-variant-numeric: tabular-nums;
-  color: var(--dian-text-primary);
+.dc-history-main {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  gap: 3px;
 }
 
-.dc-stat-hero .dc-stat-num {
-  font-size: 30px;
-  color: var(--dian-primary);
+.dc-history-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--dian-text-primary, rgba(0, 0, 0, 0.88));
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.dc-stat-accent {
-  color: var(--dian-primary);
-}
-
-.dc-stat-label {
+.dc-history-sub {
   font-size: 12px;
-  color: var(--dian-text-secondary);
-  margin-top: 2px;
+  color: var(--dian-text-muted, rgba(0, 0, 0, 0.45));
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* ---- 观察日志: 等宽小字时间线 ---- */
 
 .dc-log-list {
+  display: grid;
+  gap: 6px;
   font-family: var(--dian-font-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
-  border-left: 2px solid var(--dian-divider);
-  padding-left: var(--dian-space-3);
-  gap: 2px;
+  max-height: 308px;
+  overflow-y: auto;
+  scrollbar-width: thin;
 }
 
 .dc-log-row {
   display: flex;
   align-items: baseline;
   gap: 8px;
-  padding: 2px 6px;
-  border-radius: var(--dian-radius-sm);
-  position: relative;
-}
-
-.dc-log-row:hover {
-  background: var(--dian-surface-soft);
+  min-width: 0;
 }
 
 .dc-log-dot {
@@ -1601,33 +1736,131 @@ const fullListOpen = computed({
   border-radius: 50%;
   flex: none;
   align-self: center;
-  background: var(--dian-text-secondary);
-  margin-left: calc(-1 * var(--dian-space-3) - 4px);
-  margin-right: 2px;
+  background: var(--dian-text-muted, rgba(0, 0, 0, 0.45));
 }
 
 .dc-log-dot.is-error {
-  background: var(--dian-error);
+  background: var(--dian-error, #d03050);
 }
 
 .dc-log-dot.is-warning {
-  background: var(--dian-warning);
+  background: var(--dian-warning, #f0a020);
 }
 
 .dc-log-time {
-  font-size: 11px;
-  color: var(--dian-text-secondary);
-  flex: 0 0 auto;
+  font-size: 11.5px;
+  color: var(--dian-text-muted, rgba(0, 0, 0, 0.45));
+  flex: none;
   font-variant-numeric: tabular-nums;
 }
 
 .dc-log-msg {
   font-size: 12px;
-  color: var(--dian-text-secondary);
+  color: var(--dian-text-secondary, rgba(0, 0, 0, 0.72));
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* 卡片底注 */
+.dc-footnote {
+  margin: var(--dian-space-3, 12px) 0 0;
+  padding-top: var(--dian-space-2, 8px);
+  border-top: 1px dashed var(--dian-divider, #e0e4ea);
+  font-size: 12px;
+  color: var(--dian-text-muted, rgba(0, 0, 0, 0.45));
+}
+
+/* ---- 黑名单弹层(观察队列卡右上) ---- */
+
+.dc-bl-panel {
+  display: grid;
+  gap: 10px;
+  max-width: 340px;
+}
+
+.dc-bl-counts {
+  font-size: 12px;
+  color: var(--dian-text-secondary, rgba(0, 0, 0, 0.72));
+  font-variant-numeric: tabular-nums;
+}
+
+.dc-inline-form {
+  display: flex;
+  gap: 8px;
+}
+
+.dc-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.dc-mini-list {
+  display: grid;
+  gap: 6px;
+}
+
+.dc-mini-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: var(--dian-radius-sm, 8px);
+  background: var(--dian-surface-soft, #f7faff);
+}
+
+.dc-mini-title {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  color: var(--dian-text-primary, rgba(0, 0, 0, 0.88));
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---- 底部「不再订阅名单」整宽条 ---- */
+
+.dc-noresub {
+  display: flex;
+  align-items: center;
+  gap: var(--dian-space-3, 12px);
+  flex-wrap: wrap;
+  padding: var(--dian-space-4, 16px) var(--dian-space-6, 24px);
+}
+
+.dc-noresub-icon {
+  color: var(--dian-text-secondary, rgba(0, 0, 0, 0.72));
+  flex: none;
+}
+
+.dc-noresub-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--dian-text-primary, rgba(0, 0, 0, 0.88));
+  flex: none;
+}
+
+.dc-noresub-desc {
+  flex: 1;
+  min-width: 220px;
+  font-size: 12px;
+  color: var(--dian-text-muted, rgba(0, 0, 0, 0.45));
+}
+
+.dc-noresub-action {
+  margin-left: auto;
+}
+
+/* ---- 页脚 ---- */
+
+.dc-footer {
+  text-align: center;
+  font-size: 12px;
+  color: var(--dian-text-muted, rgba(0, 0, 0, 0.45));
+  padding: 0 0 var(--dian-space-3, 12px);
 }
 
 /* ---- 设置抽屉 ---- */
@@ -1635,43 +1868,43 @@ const fullListOpen = computed({
 .dc-settings-section {
   font-weight: 600;
   font-size: 14px;
-  margin: var(--dian-space-3) 0 var(--dian-space-2);
-  color: var(--dian-text-primary);
+  margin: var(--dian-space-3, 12px) 0 var(--dian-space-2, 8px);
+  color: var(--dian-text-primary, rgba(0, 0, 0, 0.88));
 }
 
 .dc-settings-list {
-  border: 1px solid var(--dian-border);
-  border-radius: var(--dian-radius-md);
-  padding: var(--dian-space-3);
-  margin-bottom: var(--dian-space-2);
+  border: 1px solid var(--dian-border, #e0e4ea);
+  border-radius: var(--dian-radius-md, 12px);
+  padding: var(--dian-space-3, 12px);
+  margin-bottom: var(--dian-space-2, 8px);
 }
 
 .dc-settings-list-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: var(--dian-space-2);
+  margin-bottom: var(--dian-space-2, 8px);
 }
 
 .dc-settings-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 0 var(--dian-space-3);
+  gap: 0 var(--dian-space-3, 12px);
 }
 
 .dc-settings-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: var(--dian-space-2) 0;
+  padding: var(--dian-space-2, 8px) 0;
   font-size: 13px;
-  color: var(--dian-text-primary);
+  color: var(--dian-text-primary, rgba(0, 0, 0, 0.88));
 }
 
 .dc-settings-actions {
   justify-content: flex-start;
-  gap: var(--dian-space-2);
-  margin-top: var(--dian-space-2);
+  gap: var(--dian-space-2, 8px);
+  margin-top: var(--dian-space-2, 8px);
 }
 
 /* 功能 2: 过滤器输入项下方的说明文字 */
@@ -1680,33 +1913,66 @@ const fullListOpen = computed({
   font-size: 12px;
 }
 
-/* ---- 视口折叠: 宿主侧边栏打开时 iframe 变窄, 单栏 + 头部纵排 ---- */
+/* ---- 断点(规范 §3): 900–1000px 双栏回落单栏; ≤640px 移动档 ---- */
 
 @media (max-width: 1000px) {
-  .dc-grid-2 {
-    grid-template-columns: 1fr;
+  .dc-grid-2,
+  .dc-grid-queue {
+    grid-template-columns: minmax(0, 1fr);
   }
 
-  /* 榜单切换 pill 从头行右侧落到整行, 避免挤压标题 */
-  .dc-hero-tabs {
-    margin-left: 0;
-    width: 100%;
+  .dc-tiles {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 }
 
-@media (max-width: 600px) {
-  .dc-header {
-    align-items: flex-start;
-    flex-direction: column;
+@media (max-width: 640px) {
+  .dc-page {
+    gap: var(--dian-space-3, 12px);
+  }
+
+  .dc-header-actions {
+    width: 100%;
   }
 
   .dc-card {
-    padding: var(--dian-space-3);
+    padding: var(--dian-space-4, 16px);
   }
 
-  .dc-hero-strip,
-  .dc-hero-skeleton {
-    grid-auto-columns: 128px;
+  .dc-tiles {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: var(--dian-space-2, 8px);
+  }
+
+  /* 榜单海报横滑: 固定 92px 宽 + overflow-x + 右缘渐隐提示可滑 */
+  .dc-hero-strip {
+    mask-image: linear-gradient(to right, #000 88%, transparent);
+    -webkit-mask-image: linear-gradient(to right, #000 88%, transparent);
+  }
+
+  .dc-poster-card {
+    flex: 0 0 92px;
+    min-width: 92px;
+    max-width: 92px;
+  }
+
+  .dc-poster-title {
+    font-size: 12px;
+  }
+
+  .dc-poster-hot {
+    font-size: 11px;
+  }
+
+  .dc-sk-card {
+    flex: 0 0 92px;
+    min-width: 92px;
+    max-width: 92px;
+  }
+
+  .dc-noresub-action {
+    margin-left: 0;
+    width: 100%;
   }
 
   .dc-settings-grid {
