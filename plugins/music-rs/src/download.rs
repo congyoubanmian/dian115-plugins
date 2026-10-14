@@ -908,7 +908,11 @@ pub fn copy_to_cd2(
 /// 会被归零, 只用 `attempts` 会让"重试后再次用尽"的第二次通知与上一轮逐字节相同,
 /// 被宿主按幂等/去重吞掉(见 `docs-ref/new-hostcall.md:97-103` 与
 /// `docs-ref/openapi64.yaml:2653` 的 200「通知已去重或明确抑制」)。
-pub fn notify_failure(task: &Task, error: &str) -> Result<(), String> {
+///
+/// 成功时返回通道能力上报摘要(`NotificationResult.channels`, 如
+/// `telegram · wecom(丢:callback_buttons)`): 企业微信会丢回调按钮、ClawBot 连链接
+/// 按钮都丢, 重试入口必须始终在正文/插件页里; 老宿主没有该字段时返回 `None`。
+pub fn notify_failure(task: &Task, error: &str) -> Result<Option<String>, String> {
     let title = format!("下载失败: {}", truncate_chars(&task.name, 100));
     let body_text = format!(
         "{} - {}\n来源: {} / 音质: {}\n{}\n(在插件「下载任务」里可一键重试)",
@@ -929,9 +933,36 @@ pub fn notify_failure(task: &Task, error: &str) -> Result<(), String> {
     let key = notify_idem_key(task);
     let (status, response) = host_roundtrip("POST", NOTIFY_PLUGIN, Some(&body), Some(&key))?;
     if status == 200 || status == 202 {
-        Ok(())
+        Ok(channel_summary(&response))
     } else {
         Err(http_error("POST", NOTIFY_PLUGIN, status, &response))
+    }
+}
+
+/// 把宿主响应里的通道能力上报拼成一行人话; 没有 channels 字段(老宿主/未配置通道) → None。
+fn channel_summary(response: &[u8]) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_slice(response).ok()?;
+    let channels = value.get("data")?.get("channels")?.as_array()?;
+    let parts: Vec<String> = channels
+        .iter()
+        .filter_map(|item| {
+            let name = item.get("channel")?.as_str()?;
+            let dropped: Vec<&str> = item
+                .get("dropped")
+                .and_then(|v| v.as_array())
+                .map(|vals| vals.iter().filter_map(|v| v.as_str()).collect())
+                .unwrap_or_default();
+            Some(if dropped.is_empty() {
+                name.to_string()
+            } else {
+                format!("{name}(丢:{})", dropped.join("/"))
+            })
+        })
+        .collect();
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join(" · "))
     }
 }
 
@@ -1457,8 +1488,17 @@ fn fail_task(settings: &Settings, task: &mut Task, error: String, report: &mut P
         task.status = tasks::STATUS_FAILED.to_string();
         report.failed.push(task.id.clone());
         if settings.notify_on_fail {
-            if let Err(err) = notify_failure(task, &error) {
-                report.messages.push(format!("任务 {} 失败通知发送失败: {err}", task.id));
+            match notify_failure(task, &error) {
+                Ok(Some(channels)) => report.messages.push(format!(
+                    "任务 {} 失败通知已发出 · 通道: {channels}",
+                    task.id
+                )),
+                Ok(None) => {}
+                Err(err) => {
+                    report
+                        .messages
+                        .push(format!("任务 {} 失败通知发送失败: {err}", task.id));
+                }
             }
         }
     } else {
@@ -1625,10 +1665,17 @@ fn advance_copying(
                 task.status = tasks::STATUS_FAILED.to_string();
                 report.failed.push(task.id.clone());
                 if settings.notify_on_fail {
-                    if let Err(notify_err) = notify_failure(task, &err) {
-                        report
-                            .messages
-                            .push(format!("任务 {} 失败通知发送失败: {notify_err}", task.id));
+                    match notify_failure(task, &err) {
+                        Ok(Some(channels)) => report.messages.push(format!(
+                            "任务 {} 失败通知已发出 · 通道: {channels}",
+                            task.id
+                        )),
+                        Ok(None) => {}
+                        Err(notify_err) => {
+                            report
+                                .messages
+                                .push(format!("任务 {} 失败通知发送失败: {notify_err}", task.id));
+                        }
                     }
                 }
             } else {
@@ -3466,5 +3513,57 @@ mod tests {
                 assert_eq!(item["end"], 0, "非 wasm 探针恒 0: {item}");
             }
         }
+    }
+
+    /// 通道能力上报解析: channels → 一行人话; 无 channels(老宿主) → None。
+    #[test]
+    fn channel_summary_formats_preserved_and_dropped() {
+        let summary = channel_summary(
+            br#"{"data":{"event":"plugin_notification","accepted":true,"channels":[
+                {"channel":"telegram","preserved":["link_buttons","callback_buttons","images"]},
+                {"channel":"wecom","preserved":["link_buttons","images"],"dropped":["callback_buttons"]}
+            ]},"meta":{}}"#,
+        )
+        .unwrap();
+        assert_eq!(summary, "telegram · wecom(丢:callback_buttons)");
+
+        // 老宿主响应没有 channels 字段 → None(不猜、不报错)
+        assert!(channel_summary(br#"{"data":{"accepted":true},"meta":{}}"#).is_none());
+        // 非法 JSON → None
+        assert!(channel_summary(b"<html>").is_none());
+        // 空数组 → None(未配置任何通道)
+        assert!(channel_summary(br#"{"data":{"accepted":true,"channels":[]}}"#).is_none());
+    }
+
+    /// notify_failure 成功时把通道能力摘要带回来, pump 日志/最近动作里可见。
+    #[test]
+    fn notify_failure_returns_channel_summary() {
+        crate::host::testhost::install(Box::new(|request: &HostCallRequest| {
+            if request.method == "POST" && request.path == NOTIFY_PLUGIN {
+                return json_response(
+                    200,
+                    br#"{"data":{"event":"plugin_notification","accepted":true,"channels":[
+                        {"channel":"telegram","preserved":["link_buttons","callback_buttons","images"]},
+                        {"channel":"wecom","preserved":["link_buttons","images"],"dropped":["callback_buttons"]}
+                    ]},"meta":{}}"#,
+                );
+            }
+            Err(HostError::new(format!(
+                "unexpected host call: {} {}",
+                request.method, request.path
+            )))
+        }));
+        let task = Task {
+            id: "cap001".to_string(),
+            source: "netease".to_string(),
+            name: "晴天".to_string(),
+            singers: "周杰伦".to_string(),
+            quality: "lossless".to_string(),
+            ..Task::default()
+        };
+        let summary = notify_failure(&task, "CDN 403").unwrap().expect("有 channels 就有摘要");
+        assert!(summary.contains("telegram"), "{summary}");
+        assert!(summary.contains("wecom(丢:callback_buttons)"), "{summary}");
+        crate::host::testhost::clear();
     }
 }
