@@ -9,8 +9,15 @@
 //!    返回 `job_ref`; 轮询 `GET /api/plugin-host/jobs/:job_ref` 直到终态;
 //! 3. **定名**: 暂存完成后 `POST /api/local-files/rename` 把 `<短id>.part` 改成
 //!    `"{singers} - {name}.{ext}"`(sidecar 是 `fs.renameSync(tmp, out_path)`);
-//! 4. **入库**: `POST /api/local-files/copy` 把定名后的文件复制进 `target_dir`,
-//!    由 CD2 负责刮削/入库;
+//! 4. **入库**: 两条路径 ——
+//!    - **CD2 直送**(0.3.19, 设置里填了 CD2 令牌时): 暂存目录在 CD2 里注册成
+//!      「本地文件夹」(`APIAddLocalFolder`, 幂等), 由 [`crate::cd2::Cd2::copy_file`]
+//!      让 CD2 自己把文件上传到云盘目录(服务器侧异步任务), 插件轮询
+//!      `GetCopyTasks` 直到完成 —— 宿主 5.x 的「本地/CD2 严格隔离」策略与这条
+//!      路径无关(复制由 CD2 发起, 不经过宿主);
+//!    - **宿主直连复制**(未填令牌的旧路径): `POST /api/local-files/copy` 直接
+//!      复制 —— 宿主 5.x 起该调用被隔离策略 400 拒绝(见 [`crate::cd2`] 模块头);
+//!    两条路径最终都由 CD2 负责刮削/入库;
 //! 5. **通知**: 尝试次数用尽后 `POST /api/notifications/plugin`(level=error,
 //!    标题含歌名, `buttons` 带 `{text:"重试", callback_data:"retry:<短id>"}`);
 //!    `dedupe_key` 与幂等键都带 `retry_round`, 用户重试后再次失败仍会发出新通知。
@@ -58,6 +65,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
+use crate::cd2::{self, Cd2};
 use crate::clock;
 use crate::host::{self, HostCallRequest};
 use crate::netease::{self, SongUrl};
@@ -79,6 +87,15 @@ pub const DEFAULT_MAX_ACTIVE: u32 = 2;
 pub const MAX_ACTIVE_CAP: u32 = 16;
 /// CookieCloud 服务默认地址(本机官方默认端口, 见 `cookiecloud.rs`)。
 pub const DEFAULT_COOKIECLOUD_URL: &str = "http://127.0.0.1:8088";
+/// CD2 (CloudDrive2) gRPC-Web 默认地址(0.3.19 直送; CD2 本机端口, 见 `cd2.rs`)。
+pub const DEFAULT_CD2_URL: &str = "http://127.0.0.1:19798";
+/// 单轮 pump 推进复制/直送阶段的最大步数(每条任务提交或轮询算一步)。
+///
+/// CD2 直送把"复制"变成"提交 + 多轮轮询"的异步任务, 一条任务要走多轮; 沿用旧
+/// "每轮只动一条"会让积压按轮序串行(5 分钟一轮时几十首要数小时)。上限来自
+/// **每次 host.call 的代价**(每步 1~4 次往返), 不是内存 —— 单条任务在各自
+/// 作用域里即用即弃, 与队列长度无关。
+const COPY_STEPS_PER_ROUND: usize = 16;
 
 const FILES_ROOTS: &str = "/api/plugin-host/files/roots";
 
@@ -253,6 +270,10 @@ fn default_cookiecloud_url() -> String {
     DEFAULT_COOKIECLOUD_URL.to_string()
 }
 
+fn default_cd2_url() -> String {
+    DEFAULT_CD2_URL.to_string()
+}
+
 /// 下载管线设置(KV `settings`)。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Settings {
@@ -282,6 +303,26 @@ pub struct Settings {
     /// CookieCloud 的同步口令。**绝不回显**(state/settings 视图只给 `cc_key_ready` 布尔)。
     #[serde(default)]
     pub cookiecloud_key: String,
+    /// CD2 (CloudDrive2) gRPC-Web 服务地址(0.3.19 直送; 默认本机 19798)。
+    #[serde(default = "default_cd2_url")]
+    pub cd2_url: String,
+    /// CD2 API 令牌(CD2 界面「创建 API 令牌」, 需文件操作 + 挂载管理权限)。
+    /// **绝不回显**(settings 视图只给 `cd2_auth_ready` 布尔)。空 = 关闭直送,
+    /// 入库退回旧的宿主直连复制路径。
+    #[serde(default)]
+    pub cd2_token: String,
+    /// CD2 侧目标目录(云盘命名空间路径, 如 `/115open/音乐/音乐下载`);
+    /// 空 → 从 `target_dir` 去掉 `/CloudNAS` 挂载前缀推导。
+    #[serde(default)]
+    pub cd2_dest_dir: String,
+    /// CD2 里插件工作区对应的本地文件夹命名空间(如 `/dian115AI`);
+    /// 空 → 用 [`WORKSPACE_DIR`](暂存文件的落点)。
+    #[serde(default)]
+    pub cd2_local_folder: String,
+    /// 首次注册本地文件夹用的宿主 **NAS 真实路径**(容器内 `/dian115AI` 对应的
+    /// 宿主路径, 如 `/volume1/docker/dian115/dian115AI`); 已注册过可留空。
+    #[serde(default)]
+    pub cd2_register_host: String,
 }
 
 impl Default for Settings {
@@ -295,6 +336,11 @@ impl Default for Settings {
             cookiecloud_url: DEFAULT_COOKIECLOUD_URL.to_string(),
             cookiecloud_uuid: String::new(),
             cookiecloud_key: String::new(),
+            cd2_url: DEFAULT_CD2_URL.to_string(),
+            cd2_token: String::new(),
+            cd2_dest_dir: String::new(),
+            cd2_local_folder: String::new(),
+            cd2_register_host: String::new(),
         }
     }
 }
@@ -319,6 +365,13 @@ impl Settings {
         }
         self.cookiecloud_uuid = self.cookiecloud_uuid.trim().to_string();
         self.cookiecloud_key = self.cookiecloud_key.trim().to_string();
+        if self.cd2_url.trim().is_empty() {
+            self.cd2_url = DEFAULT_CD2_URL.to_string();
+        }
+        self.cd2_token = self.cd2_token.trim().to_string();
+        self.cd2_dest_dir = self.cd2_dest_dir.trim().to_string();
+        self.cd2_local_folder = self.cd2_local_folder.trim().to_string();
+        self.cd2_register_host = self.cd2_register_host.trim().to_string();
         self
     }
 }
@@ -359,6 +412,12 @@ pub fn normalize_path(path: &str) -> String {
 /// "cookie" 子串的整个响应(douban-rs `sanitize_settings_view` 的同一宿主规则),
 /// 所以输出键改名 `cc_url`/`cc_uuid`; 密钥绝不回显, 只给 `cc_key_ready` 布尔
 /// (同步口令非空)。持久化 KV 里的字段原名不变。
+///
+/// CD2 字段(0.3.19)同理: 令牌键名含 "token", 绝不出现 —— 只给 `cd2_auth_ready`
+/// 布尔; 三个路径值都走 [`display_path`](值以 "/" 开头会触发宿主另一个整响应
+/// 过滤)。`cd2_dest_dir` / `cd2_local_folder` 给**显式值**(空 = 用推导),
+/// `*_effective` 给实际生效值 —— 表单要用"显式值"做编辑对象, 用生效值做提示,
+/// 否则用户改目标目录时表单会把旧的推导值当成显式改动一起提交(钉死)。
 pub fn settings_view(settings: &Settings) -> Value {
     json!({
         "staging_dir": display_path(&settings.staging_dir),
@@ -369,7 +428,43 @@ pub fn settings_view(settings: &Settings) -> Value {
         "cc_url": settings.cookiecloud_url,
         "cc_uuid": settings.cookiecloud_uuid,
         "cc_key_ready": !settings.cookiecloud_key.is_empty(),
+        "cd2_url": settings.cd2_url,
+        "cd2_auth_ready": !settings.cd2_token.is_empty(),
+        "cd2_dest_dir": display_path(&settings.cd2_dest_dir),
+        "cd2_dest_dir_effective": display_path(&cd2_dest_of(settings)),
+        "cd2_local_folder": display_path(&settings.cd2_local_folder),
+        "cd2_local_folder_effective": display_path(&cd2_namespace_of(settings)),
+        "cd2_register_host": display_path(&settings.cd2_register_host),
     })
+}
+
+/// CD2 侧目标目录: 显式 `cd2_dest_dir` 优先; 否则把 `target_dir` 的 `/CloudNAS`
+/// 挂载前缀换成 CD2 命名空间根(`/CloudNAS/115open/音乐/音乐下载`
+/// → `/115open/音乐/音乐下载`)。推不出(不在 `/CloudNAS` 下)且未配置 → 空串,
+/// 投递时判失败并给出可操作的提示。
+pub fn cd2_dest_of(settings: &Settings) -> String {
+    let explicit = normalize_path(&settings.cd2_dest_dir);
+    if !explicit.is_empty() {
+        return explicit;
+    }
+    let target = settings.target_dir.trim();
+    if let Some(rest) = target.strip_prefix("/CloudNAS/") {
+        if !rest.is_empty() {
+            return format!("/{rest}");
+        }
+    }
+    String::new()
+}
+
+/// CD2 里插件工作区对应的本地文件夹命名空间(默认 [`WORKSPACE_DIR`] —— 宿主代下载
+/// 的暂存文件总是落在插件工作区)。
+pub fn cd2_namespace_of(settings: &Settings) -> String {
+    let explicit = normalize_path(&settings.cd2_local_folder);
+    if explicit.is_empty() {
+        WORKSPACE_DIR.to_string()
+    } else {
+        explicit
+    }
 }
 
 /// 当前设置视图。
@@ -415,6 +510,22 @@ pub fn settings_update(ids: &mut PutIds, patch: &Map<String, Value>) -> Result<V
     ] {
         if let Some(Value::String(text)) = patch.get(key) {
             *target = text.trim().to_string();
+        }
+    }
+    // CD2 直送五项(0.3.19): URL/令牌纯字符串(不走路径归一化); 目录三项走路径
+    // 归一化 —— 空串原样保留 = "用推导值"(目标/命名空间)或"不自动注册"(宿主路径)。
+    for (key, target) in [("cd2_url", &mut settings.cd2_url), ("cd2_token", &mut settings.cd2_token)] {
+        if let Some(Value::String(text)) = patch.get(key) {
+            *target = text.trim().to_string();
+        }
+    }
+    for (key, target) in [
+        ("cd2_dest_dir", &mut settings.cd2_dest_dir),
+        ("cd2_local_folder", &mut settings.cd2_local_folder),
+        ("cd2_register_host", &mut settings.cd2_register_host),
+    ] {
+        if let Some(Value::String(text)) = patch.get(key) {
+            *target = normalize_path(text);
         }
     }
     let settings = settings.normalized();
@@ -891,15 +1002,63 @@ pub fn copy_to_cd2(
     let key = idem_key("copy", task_id, attempt);
     let (status, response) = host_roundtrip("POST", LOCAL_COPY, Some(&body), Some(&key))?;
     if !(200..300).contains(&status) {
-        return Err(http_error("POST", LOCAL_COPY, status, &response));
+        return Err(copy_error_hint(http_error("POST", LOCAL_COPY, status, &response), &response));
     }
     // SuccessResult {success:true}; 宽松处理: 2xx 且没有显式 success:false 即成功。
     if let Ok(value) = serde_json::from_slice::<Value>(&response) {
         if value.get("success").and_then(Value::as_bool) == Some(false) {
-            return Err(format!("POST {LOCAL_COPY} 未成功: {}", util::trunc(&response)));
+            return Err(copy_error_hint(
+                format!("POST {LOCAL_COPY} 未成功: {}", util::trunc(&response)),
+                &response,
+            ));
         }
     }
     Ok(json!({"path": join_dir(target_dir, &file_name_of(staged_path))}))
+}
+
+/// 0.3.19: 宿主 5.x 起本地 ↔ CD2 跨边界复制被参数校验层直接拒绝(400「本地目录和
+/// CD2/AURA 挂载目录必须严格隔离, 不能跨边界复制」)。旧路径的用户看到这条错误
+/// 没有可操作的出路, 把"填 CD2 令牌走直送"补进文案。
+fn copy_error_hint(text: String, body: &[u8]) -> String {
+    let detail = String::from_utf8_lossy(body);
+    if detail.contains("严格隔离") || detail.contains("跨边界") {
+        format!(
+            "{text} —— 宿主策略禁止本地/CD2 跨边界复制; 在插件设置里填入 CD2 令牌, 改用「CD2 直送」即可绕开(见 README 的 CD2 直送说明)"
+        )
+    } else {
+        text
+    }
+}
+
+/// 最近一次 `/api/notifications/plugin` 调用的原始留档:`(http_status, body_text, at)`。
+///
+/// 0.3.19: 通知在真机上**从未成功过**(全部 400, 且 1ms 内返回 = 参数校验层拒绝,
+/// 无副作用), 而插件侧的配置/清单都合法 —— 要定位只能看宿主返回的**原始响应体**。
+/// 每次通知调用(含自动失败通知与 `notify-test`)都刷新这里; pump 末尾落 KV
+/// `notifydiag`, UI 从 state 的 `notify_diag` 键读取。status -1 = 传输层失败。
+static NOTIFY_DIAG: std::sync::Mutex<(i64, String, String)> =
+    std::sync::Mutex::new((0, String::new(), String::new()));
+/// 本次进程内是否有新的通知留档待写入 KV。
+static NOTIFY_DIAG_DIRTY: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// 记录一次通知调用的原始应答(体截断 1KB, 防大响应钉在 static 里)。
+fn set_notify_diag(status: i64, body: &[u8]) {
+    let text = util::trunc_to(body, 1024);
+    let mut diag = NOTIFY_DIAG.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    *diag = (status, text, clock::now_rfc3339());
+    NOTIFY_DIAG_DIRTY.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// 最近一次通知留档的 JSON 形态(写 KV `notifydiag` / 诊断用)。
+pub fn notify_diag_value() -> Value {
+    let (status, body, at) = NOTIFY_DIAG.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone();
+    json!({"at": at, "status": status, "body": body})
+}
+
+/// KV `notifydiag` 的当前值(UI state 展示; 缺失 → null)。
+pub fn notify_diag_doc() -> Value {
+    store::get_json::<Value>("notifydiag").unwrap_or(Value::Null)
 }
 
 /// 失败通知: `POST /api/notifications/plugin`(§12 回调按钮见 `new-hostcall.md`)。
@@ -931,7 +1090,59 @@ pub fn notify_failure(task: &Task, error: &str) -> Result<Option<String>, String
     }))
     .unwrap_or_default();
     let key = notify_idem_key(task);
-    let (status, response) = host_roundtrip("POST", NOTIFY_PLUGIN, Some(&body), Some(&key))?;
+    notify_post(&body, &key)
+}
+
+/// action `notify-test`: 主动发一条测试通知, 把宿主**原始应答**回给 UI。
+///
+/// 2026-10 起自动失败通知在真机上全是 400(原因未明), 这个动作是现场诊断入口:
+/// 结果里的 `status` 与 `body` 就是宿主对 `/api/notifications/plugin` 的原始
+/// HTTP 应答(截断); 同时留档到 KV `notifydiag`(state 的 `notify_diag` 键可见)。
+pub fn notify_test(ids: &mut PutIds) -> Result<Value, String> {
+    let stamp = clock::now_unix_nanos() / 1_000_000;
+    let body = serde_json::to_vec(&json!({
+        "level": "info",
+        "title": "音乐下载 · 通知链路自检",
+        "body": "这是一条测试通知: 收到说明 /api/notifications/plugin 可用; 若插件里失败通知一直 400, 请把「原始应答」反馈给开发者。",
+        "dedupe_key": format!("mr-dl-notifytest-{stamp}"),
+    }))
+    .unwrap_or_default();
+    let outcome = notify_post(&body, &format!("mr-dl-notifytest-{stamp}"));
+    if let Err(err) = store::put_json(ids, "notifydiag", &notify_diag_value()) {
+        // 留档失败不影响测试结论(原始应答仍在返回值里)。
+        let _ = err;
+    }
+    let diag = notify_diag_value();
+    let raw_body = diag["body"].as_str().unwrap_or("").to_string();
+    match outcome {
+        Ok(channels) => Ok(json!({
+            "sent": true,
+            "status": diag["status"],
+            "channels": channels,
+            "body": raw_body,
+            "message": "测试通知已被宿主接受(是否送达看通道)",
+        })),
+        Err(err) => Ok(json!({
+            "sent": false,
+            "status": diag["status"],
+            "message": err,
+            "body": raw_body,
+        })),
+    }
+}
+
+/// 发一条插件通知: 统一走 [`host_roundtrip`] + 原始应答留档([`set_notify_diag`])。
+/// 200/202 → `Ok(channels)`; 其他 → `Err`(文案含状态与响应体截断)。
+fn notify_post(body: &[u8], idempotency_key: &str) -> Result<Option<String>, String> {
+    let (status, response) = match host_roundtrip("POST", NOTIFY_PLUGIN, Some(body), Some(idempotency_key))
+    {
+        Ok(pair) => pair,
+        Err(err) => {
+            set_notify_diag(-1, err.as_bytes());
+            return Err(err);
+        }
+    };
+    set_notify_diag(i64::from(status), &response);
     if status == 200 || status == 202 {
         Ok(channel_summary(&response))
     } else {
@@ -1045,6 +1256,61 @@ fn resolve_staged(prefix: &str) -> Option<String> {
         }
     }
     best.map(|(path, _)| path)
+}
+
+/// 定名后文件名的匹配: 等于 `out_name` 本身, 或是宿主重名去重变体
+/// (`歌手 - 歌名 (1).flac` —— 与 `.part` 去重形态一致, 数字插在扩展名前)。
+///
+/// 用**精确形状**而不是前缀匹配: `"歌手 - 晴天"` 是 `"歌手 - 晴天转多云"` 的
+/// 前缀, 盲面前缀会把后者的文件当成前者的上传源。
+fn staged_name_matches(name: &str, out_name: &str) -> bool {
+    if name == out_name {
+        return true;
+    }
+    let (stem, ext) = match out_name.rsplit_once('.') {
+        Some((stem, ext)) => (stem, Some(ext)),
+        None => (out_name, None),
+    };
+    let Some(rest) = name.strip_prefix(stem) else { return false };
+    let Some(rest) = rest.strip_prefix(" (") else { return false };
+    let Some((num, rest)) = rest.split_once(')') else { return false };
+    if num.is_empty() || !num.bytes().all(|byte| byte.is_ascii_digit()) {
+        return false;
+    }
+    match ext {
+        Some(ext) => rest == format!(".{ext}"),
+        None => rest.is_empty(),
+    }
+}
+
+/// 定名后本地文件的真实文件名与大小(宿主重名去重在扩展名前插 " (N)");
+/// 取最新的匹配一份; 找不到返回 `None`(调用方退回 `task.out_name` 盲提交,
+/// CD2/宿主会明确报文件不存在)。
+fn staged_file_meta(out_name: &str) -> Option<(String, u64)> {
+    let query = format!("/api/local-files?path={}", netease::query_escape(WORKSPACE_DIR));
+    let (status, body) = host_roundtrip("GET", &query, None, None).ok()?;
+    if !(200..300).contains(&status) {
+        return None;
+    }
+    let value: Value = serde_json::from_slice(&body).ok()?;
+    let mut best: Option<(String, u64, String)> = None;
+    for entry in value.get("entries").and_then(Value::as_array).map(Vec::as_slice).unwrap_or(&[]) {
+        if entry.get("is_dir").and_then(Value::as_bool).unwrap_or(true) {
+            continue;
+        }
+        let name = entry.get("name").and_then(Value::as_str).unwrap_or("");
+        if !staged_name_matches(name, out_name) {
+            continue;
+        }
+        let mod_time = entry.get("mod_time").and_then(Value::as_str).unwrap_or("");
+        if best.as_ref().map_or(true, |(_, _, best_time): &(String, u64, String)| {
+            mod_time > best_time.as_str()
+        }) {
+            let size = entry.get("size").and_then(Value::as_u64).unwrap_or(0);
+            best = Some((name.to_string(), size, mod_time.to_string()));
+        }
+    }
+    best.map(|(name, size, _)| (name, size))
 }
 
 /// 删除工作区里以 `prefix` 开头的全部暂存文件(入库成功后的清理, 尽力而为)。
@@ -1487,25 +1753,51 @@ fn fail_task(settings: &Settings, task: &mut Task, error: String, report: &mut P
     if task.attempts >= MAX_ATTEMPTS {
         task.status = tasks::STATUS_FAILED.to_string();
         report.failed.push(task.id.clone());
-        if settings.notify_on_fail {
-            match notify_failure(task, &error) {
-                Ok(Some(channels)) => report.messages.push(format!(
-                    "任务 {} 失败通知已发出 · 通道: {channels}",
-                    task.id
-                )),
-                Ok(None) => {}
-                Err(err) => {
-                    report
-                        .messages
-                        .push(format!("任务 {} 失败通知发送失败: {err}", task.id));
-                }
-            }
-        }
+        notify_failure_and_report(settings, task, &error, report);
     } else {
         task.status = tasks::STATUS_QUEUED.to_string();
         report
             .messages
             .push(format!("任务 {} 第 {} 次尝试失败, 将重试: {error}", task.id, task.attempts));
+    }
+}
+
+/// 复制/直送失败: 只重试入库(暂存文件已定名), 不重新下载; 次数计入总尝试。
+/// `cd2_ref` 一并清空 —— 下一轮重新走"对账 + 提交", 基线也重新采。
+fn copy_failure(settings: &Settings, task: &mut Task, error: String, report: &mut PumpReport) {
+    task.attempts = task.attempts.saturating_add(1);
+    task.error = error.clone();
+    task.updated_ms = tasks::now_ms();
+    task.job_ref.clear();
+    task.cd2_ref.clear();
+    if task.attempts >= MAX_ATTEMPTS {
+        task.status = tasks::STATUS_FAILED.to_string();
+        report.failed.push(task.id.clone());
+        notify_failure_and_report(settings, task, &error, report);
+    } else {
+        task.status = tasks::STATUS_COPYING.to_string();
+        report.messages.push(format!("任务 {} 入库失败, 将重试: {error}", task.id));
+    }
+}
+
+/// 终态失败的通知发送 + 过程可见化(两个失败入口共用)。
+fn notify_failure_and_report(
+    settings: &Settings,
+    task: &Task,
+    error: &str,
+    report: &mut PumpReport,
+) {
+    if !settings.notify_on_fail {
+        return;
+    }
+    match notify_failure(task, error) {
+        Ok(Some(channels)) => report
+            .messages
+            .push(format!("任务 {} 失败通知已发出 · 通道: {channels}", task.id)),
+        Ok(None) => {}
+        Err(err) => report
+            .messages
+            .push(format!("任务 {} 失败通知发送失败: {err}", task.id)),
     }
 }
 
@@ -1550,7 +1842,7 @@ fn start_task(
 /// 推进下载中的任务: 轮询 job, 成功后定名并立即尝试复制。
 fn advance_downloading(
     settings: &Settings,
-    staging: &str,
+    round: &mut Cd2Round,
     task: &mut Task,
     report: &mut PumpReport,
 ) {
@@ -1586,7 +1878,6 @@ fn advance_downloading(
         JobState::Pending => {}
         JobState::Failed(error) => fail_task(settings, task, error, report),
         JobState::Succeeded => {
-            let _ = staging;
             let staged = match job_result_path(&value).or_else(|| resolve_staged(&task.id)) {
                 Some(path) => path,
                 None => {
@@ -1612,20 +1903,174 @@ fn advance_downloading(
             task.status = tasks::STATUS_COPYING.to_string();
             task.updated_ms = tasks::now_ms();
             task.error.clear();
-            // 复制是同步调用, 当轮就把能做完的做完。
-            advance_copying(settings, staging, task, report);
+            // 当轮推进一次入库: 直连路径当轮做完; CD2 直送当轮"对账 + 提交上传",
+            // 完成靠后续轮次的 `GetCopyTasks` 轮询。
+            advance_copying(settings, round, task, report);
         }
     }
 }
 
-/// 推进待复制的任务: 把暂存文件复制进目标目录。
+// ─────────────────────────── CD2 直送(0.3.19) ───────────────────────────
+
+/// 一轮 pump 内共享的 CD2 直送上下文: 本地文件夹就绪只查/注册一次
+/// (几十条任务逐个 `GetAllCloudApis` 是纯浪费)。
+#[derive(Debug, Default)]
+struct Cd2Round {
+    /// `Some(true)` = 已确认; `Some(false)` = 确认缺失(注册也需要)。
+    folder_ready: Option<bool>,
+}
+
+/// CD2 直送单步结果。
+#[derive(Debug)]
+enum DeliveryOutcome {
+    /// 已提交上传任务(`task.cd2_ref` 记下了匹配基线)。
+    Submitted,
+    /// 上传中(进度可展示; 任务尚未出现在列表里时 total=0)。
+    Uploading { uploaded: u64, total: u64 },
+    /// 目标侧已确认完成(上传任务 Completed, 或对账命中同名同大小)。
+    Delivered,
+}
+
+/// 确保 CD2 里存在指向插件工作区的「本地文件夹」(`LocalFsAPI` 存储)。
+///
+/// 已注册 → 直接用(这是稳态; 注册只需一次, E2E 实测重复注册也幂等)。
+/// 缺失且配置了 `cd2_register_host` → 注册; 缺失且未配置 → 报错给出操作指引。
+fn ensure_local_folder(
+    client: &Cd2,
+    settings: &Settings,
+    round: &mut Cd2Round,
+    namespace: &str,
+) -> Result<(), String> {
+    if round.folder_ready == Some(true) {
+        return Ok(());
+    }
+    let ready = match round.folder_ready {
+        Some(false) => false,
+        _ => client.local_folder_ready(namespace)?,
+    };
+    if ready {
+        round.folder_ready = Some(true);
+        return Ok(());
+    }
+    let host_path = settings.cd2_register_host.trim();
+    if host_path.is_empty() {
+        return Err(format!(
+            "CD2 里没有本地文件夹 {namespace}: 请在 CD2 界面添加该目录(容器内 {WORKSPACE_DIR} 对应的宿主 NAS 路径), 或在插件设置里填 cd2_register_host"
+        ));
+    }
+    match client.add_local_folder(host_path) {
+        Ok(true) => {}
+        Ok(false) => return Err(format!("CD2 拒绝注册本地文件夹: {host_path}")),
+        Err(err) => return Err(format!("CD2 注册本地文件夹失败: {err}")),
+    }
+    if client.local_folder_ready(namespace)? {
+        round.folder_ready = Some(true);
+        Ok(())
+    } else {
+        // 注册路径的末段决定命名空间(CD2 用目录名)。不一致时说清楚, 否则每轮都会重注册。
+        Err(format!(
+            "CD2 已注册 {host_path}, 但命名空间不是 {namespace}: CD2 用目录名做命名空间, 请把 cd2_local_folder 改成注册目录的末段名"
+        ))
+    }
+}
+
+/// CD2 直送一步: 未提交 → 对账 + 提交 `CopyFile`; 已提交 → 轮询 `GetCopyTasks`。
+///
+/// 宿主 5.x 禁跨边界复制后(见 [`crate::cd2`] 模块头), 入库交给 CD2 自己:
+/// 本地文件夹 → 云盘目录的 `CopyFile` 在 CD2 侧表现为**上传任务**, `CopyFile`
+/// 服务器侧立即受理, 传输与进度靠 [`Cd2::copy_task`] 轮询(真机 3MB/s, 单曲
+/// 数十秒; 上限 [`cd2::DELIVERY_TIMEOUT_MS`])。
+///
+/// 匹配基线: 提交前把该 (src, dest) 现有最新任务的 `start_time` 记进
+/// `task.cd2_ref`, 轮询只认**比基线更新**的任务 —— 否则上一轮同曲任务的旧终态
+/// (CD2 任务列表会保留已完成任务)会被当成这次提交的结果。
+fn cd2_deliver_step(
+    settings: &Settings,
+    round: &mut Cd2Round,
+    task: &mut Task,
+) -> Result<DeliveryOutcome, String> {
+    let client = Cd2::new(&settings.cd2_url, &settings.cd2_token);
+    let namespace = cd2_namespace_of(settings);
+    ensure_local_folder(&client, settings, round, &namespace)?;
+    let dest = cd2_dest_of(settings);
+    if dest.is_empty() {
+        return Err(format!(
+            "无法确定 CD2 目标目录: target_dir({}) 不在 /CloudNAS 挂载下, 请在设置里填 cd2_dest_dir",
+            settings.target_dir
+        ));
+    }
+    // 定名后的本地文件(宿主重名去重会插 " (N)"); 找不到时按 out_name 盲提交,
+    // CD2 侧会明确报 "not found"。
+    let (local_name, local_size) =
+        staged_file_meta(&task.out_name).unwrap_or_else(|| (task.out_name.clone(), 0));
+    let src = format!("{}/{}", namespace.trim_end_matches('/'), local_name);
+
+    if task.cd2_ref.is_empty() {
+        // ── 对账 + 提交 ──
+        // 目标已有同名且**同大小**的文件 → 上一轮其实已送达(插件被宿主杀掉后
+        // 重启、cd2_ref 未落盘等场景), 不再重复上传。
+        if local_size > 0 {
+            if let Ok(Some(size)) = client.find_file(&dest, &task.out_name) {
+                if size == local_size {
+                    return Ok(DeliveryOutcome::Delivered);
+                }
+            }
+        }
+        let baseline = client
+            .copy_task(&src, &dest)?
+            .map(|info| info.start_time)
+            .unwrap_or(0);
+        client.copy_file(&src, &dest, cd2::CONFLICT_RENAME)?;
+        task.cd2_ref = baseline.to_string();
+        return Ok(DeliveryOutcome::Submitted);
+    }
+
+    // ── 轮询 ──(updated_ms = 提交时刻, 轮询期间不动, 超时判定看它)
+    let baseline: u64 = task.cd2_ref.trim().parse().unwrap_or(0);
+    if let Some(info) = client.copy_task(&src, &dest)? {
+        if info.start_time > baseline {
+            return match info.status {
+                cd2::TASK_COMPLETED => Ok(DeliveryOutcome::Delivered),
+                cd2::TASK_FAILED => {
+                    let detail = info.error.unwrap_or_default();
+                    Err(format!(
+                        "CD2 上传失败({}/{} B) {}",
+                        info.uploaded_bytes,
+                        info.total_bytes,
+                        util::trunc(detail.as_bytes())
+                    ))
+                }
+                _ => Ok(DeliveryOutcome::Uploading {
+                    uploaded: info.uploaded_bytes,
+                    total: info.total_bytes,
+                }),
+            };
+        }
+    }
+    if tasks::now_ms().saturating_sub(task.updated_ms) >= cd2::DELIVERY_TIMEOUT_MS {
+        // 超时兜底对账: 上传完成后任务列表被清理、只见目标文件的情形。
+        if local_size > 0 && client.find_file(&dest, &task.out_name)? == Some(local_size) {
+            return Ok(DeliveryOutcome::Delivered);
+        }
+        return Err(format!(
+            "CD2 上传超时({} 分钟): 任务列表与目标目录都查不到结果, 请到 CD2 界面确认",
+            cd2::DELIVERY_TIMEOUT_MS / 60_000
+        ));
+    }
+    // 新提交的任务可能还没出现在列表里(或列表里仍是旧任务): 保持等待。
+    Ok(DeliveryOutcome::Uploading { uploaded: 0, total: 0 })
+}
+
+/// 推进待复制的任务: CD2 直送(配了令牌)或宿主直连复制(旧路径)。
+///
+/// 直送是异步的: 一步只做"提交"或"轮询", 状态保持 `copying`, 成功/失败都走
+/// [`finish_copying`] / [`copy_failure`] 的公共收尾。
 fn advance_copying(
     settings: &Settings,
-    staging: &str,
+    round: &mut Cd2Round,
     task: &mut Task,
     report: &mut PumpReport,
 ) {
-    let _ = staging;
     if task.staged_path.is_empty() || task.out_name.is_empty() {
         fail_task(
             settings,
@@ -1635,56 +2080,64 @@ fn advance_copying(
         );
         return;
     }
-    let staged = join_dir(&parent_dir(&task.staged_path), &task.out_name);
-    match copy_to_cd2(&task.id, &staged, &settings.target_dir, task.attempts) {
-        Ok(_) => {
-            task.status = tasks::STATUS_DONE.to_string();
-            task.job_ref.clear();
+    if settings.cd2_token.trim().is_empty() {
+        advance_copying_direct(settings, task, report);
+        return;
+    }
+    match cd2_deliver_step(settings, round, task) {
+        Ok(DeliveryOutcome::Submitted) => {
+            task.updated_ms = tasks::now_ms();
             task.error.clear();
-            task.updated_ms = tasks::now_ms();
-            report.completed.push(task.id.clone());
-            // 0.3.10: 入库成功后清理工作区里该任务的全部暂存副本(含 (N) 去重残留)。
-            let staged_note = task.staged_path.clone();
-            match cleanup_staged(&task.id) {
-                Ok(count) if count > 0 => report
-                    .messages
-                    .push(format!("任务 {} 完成: {}; 清理暂存 {count} 个", task.id, task.out_name)),
-                _ => report
-                    .messages
-                    .push(format!("任务 {} 完成: {}", task.id, task.out_name)),
-            }
-            let _ = staged_note;
+            report
+                .messages
+                .push(format!("任务 {} 已提交 CD2 上传: {}", task.id, task.out_name));
         }
-        Err(err) => {
-            // 复制失败只重试复制(暂存文件已定名), 不重新下载; 次数计入总尝试。
-            task.attempts = task.attempts.saturating_add(1);
-            task.error = err.clone();
-            task.updated_ms = tasks::now_ms();
-            task.job_ref.clear();
-            if task.attempts >= MAX_ATTEMPTS {
-                task.status = tasks::STATUS_FAILED.to_string();
-                report.failed.push(task.id.clone());
-                if settings.notify_on_fail {
-                    match notify_failure(task, &err) {
-                        Ok(Some(channels)) => report.messages.push(format!(
-                            "任务 {} 失败通知已发出 · 通道: {channels}",
-                            task.id
-                        )),
-                        Ok(None) => {}
-                        Err(notify_err) => {
-                            report
-                                .messages
-                                .push(format!("任务 {} 失败通知发送失败: {notify_err}", task.id));
-                        }
-                    }
-                }
-            } else {
-                task.status = tasks::STATUS_COPYING.to_string();
-                report
-                    .messages
-                    .push(format!("任务 {} 复制失败, 将重试: {err}", task.id));
+        Ok(DeliveryOutcome::Uploading { uploaded, total }) => {
+            if total > 0 {
+                report.messages.push(format!(
+                    "任务 {} CD2 上传中: {}/{} MB",
+                    task.id,
+                    uploaded / 1_048_576,
+                    total / 1_048_576
+                ));
             }
         }
+        Ok(DeliveryOutcome::Delivered) => finish_copying(task, report),
+        Err(err) => copy_failure(settings, task, err, report),
+    }
+}
+
+/// 旧路径(未配置 CD2 令牌): `POST /api/local-files/copy` 直连复制。
+/// 宿主 5.x 起跨边界会被 400 拒绝, [`copy_error_hint`] 会在文案里给出路。
+fn advance_copying_direct(settings: &Settings, task: &mut Task, report: &mut PumpReport) {
+    // 定名后的真实文件名(宿主重名去重会插 " (N)"), 找不到按 out_name 兜底。
+    let local_name = staged_file_meta(&task.out_name)
+        .map(|(name, _)| name)
+        .unwrap_or_else(|| task.out_name.clone());
+    let staged = join_dir(&parent_dir(&task.staged_path), &local_name);
+    match copy_to_cd2(&task.id, &staged, &settings.target_dir, task.attempts) {
+        Ok(_) => finish_copying(task, report),
+        Err(err) => copy_failure(settings, task, err, report),
+    }
+}
+
+/// 入库成功的公共收尾: 置 done + 清理该任务的 `.part` 暂存残留。
+fn finish_copying(task: &mut Task, report: &mut PumpReport) {
+    task.status = tasks::STATUS_DONE.to_string();
+    task.job_ref.clear();
+    task.cd2_ref.clear();
+    task.error.clear();
+    task.updated_ms = tasks::now_ms();
+    report.completed.push(task.id.clone());
+    // 0.3.10: 清理工作区里该任务的暂存残片(含 (N) 去重残留); 定名后的成品
+    // 仍在工作区(CD2 本地文件夹), 与旧行为一致, 不在此删除。
+    match cleanup_staged(&task.id) {
+        Ok(count) if count > 0 => report
+            .messages
+            .push(format!("任务 {} 完成: {}; 清理暂存 {count} 个", task.id, task.out_name)),
+        _ => report
+            .messages
+            .push(format!("任务 {} 完成: {}", task.id, task.out_name)),
     }
 }
 
@@ -1704,7 +2157,9 @@ fn advance_copying(
 /// 0. [`tasks::ensure_migrated`]: 旧键 `tasks` 还在就先拆成 `task.<id>` + `tasks.idx`;
 /// 1. 轮询 `downloading` 的 job(便宜, 逐条处理; 条目数由索引决定, 不按 `max_active`
 ///    截断, 一旦某条收尾本轮即停);
-/// 2. 收尾(定名/复制/清理)**最多 1 个任务**(done/failed): ①② 合计不产生第二个终态;
+/// 2. 推进 `copying`: 直连路径当轮完成; CD2 直送是"提交 + 多轮轮询"的异步任务,
+///    逐条推进、单轮封顶 [`COPY_STEPS_PER_ROUND`] 步(0.3.19 起不再"每轮 1 条" ——
+///    异步入轨后那会让积压按轮序串行);
 /// 3. 新开下载**最多 1 首**: 取链阶梯(eapi 最多 8 个请求)完整跑完、中间结构立刻
 ///    drop 之后才考虑下一首 —— 这是 OOM 的主因(旧实现一轮里能同时持有多首的
 ///    eapi 响应体)。
@@ -1736,6 +2191,8 @@ pub fn pump(ids: &mut PutIds) -> Result<Value, String> {
     let settings = load_settings();
     let probe = probe_roots();
     let mut report = PumpReport::default();
+    // CD2 直送的轮内缓存(本地文件夹就绪状态), ②③ 阶段共享。
+    let mut cd2_round = Cd2Round::default();
     let mut staging_error = String::new();
     let staging: Option<String> = if probe.ok {
         let (effective, warnings) = effective_staging(&settings, &probe);
@@ -1748,7 +2205,8 @@ pub fn pump(ids: &mut PutIds) -> Result<Value, String> {
 
     // ② 轮询在途下载: 逐条处理, **不按 max_active 截断**(条目数由索引里的
     //    `downloading` 条目决定; `max_active` 只用于第 ④ 步"是否新开一首")。
-    // ③ 收尾最多 1 个任务(done/failed); ②③ 合计不超过 1 个终态。
+    //    下载收尾门禁「本轮最多 1 个终态」照旧(见下方 break); ③ 的 copying
+    //    由自身步数上限约束(0.3.19)。
     //    ②③ 共用**一次**索引读: 这里的 id 列表 = 索引里在途 + 待收尾的条目,
     //    与队列总长无关。
     {
@@ -1771,20 +2229,31 @@ pub fn pump(ids: &mut PutIds) -> Result<Value, String> {
         // (done/failed)就停手, 其余在途条目下一轮再轮。否则多个在途 job 同轮
         // 成功会在这一轮里收尾多个。
         for task_id in &downloading {
-            step_one_downloading(ids, &settings, task_id, &mut report);
+            step_one_downloading(ids, &settings, &mut cd2_round, task_id, &mut report);
             if finalized_count(&report) > 0 {
                 break;
             }
         }
         // 「在途轮询后」: 轮询(可能已有一条任务推进到 copying/done/failed)之后的读数。
         mem_after_poll = wasm_memory_kb();
-        // 同上: ② 已经收尾过一个, 就不再收尾 copying; 只有 ② 颗粒无收时才动手。
-        if finalized_count(&report) == 0 {
-            if let Some(task_id) = copying.first() {
-                step_one_copying(ids, &settings, task_id, &mut report);
+        // ③ 推进 copying: CD2 直送把入库变成"提交 + 多轮轮询"的异步任务, 一条
+        //    任务要走多轮; 沿用旧"每轮只动一条"会让积压按轮序串行(5 分钟一轮
+        //    时几十首要数小时)。这里**逐条**推进(提交/轮询各一步), 单轮封顶
+        //    [`COPY_STEPS_PER_ROUND`] 步 —— 上限来自每步 1~4 次 host.call 的
+        //    代价, 不是内存(单条任务在各自作用域里即用即弃)。终态计数不再受限
+        //    于"每轮最多 1 个": 那是下载阶段的内存门禁, copying 收尾的峰值是
+        //    一条任务记录 + 一次工作区列表, 与在途条数无关。
+        {
+            let mut steps = 0usize;
+            for task_id in &copying {
+                if steps >= COPY_STEPS_PER_ROUND {
+                    break;
+                }
+                step_one_copying(ids, &settings, &mut cd2_round, task_id, &mut report);
+                steps += 1;
             }
         }
-        // 「收尾一个后」: 收尾阶段(本轮最多 1 个任务, 可能一个都没有)结束时的读数。
+        // 「收尾一个后」: 收尾阶段结束时的读数。
         mem_after_finish = wasm_memory_kb();
     }
 
@@ -1824,6 +2293,7 @@ pub fn pump(ids: &mut PutIds) -> Result<Value, String> {
                                 step_one_start(
                                     ids,
                                     &settings,
+                                    &mut cd2_round,
                                     &parent_ref,
                                     &task_id,
                                     &mut report,
@@ -1846,6 +2316,13 @@ pub fn pump(ids: &mut PutIds) -> Result<Value, String> {
         }
         // 「新开一首后」: ④ 阶段(本轮可能没有新开)结束时的读数。
         mem_after_start = wasm_memory_kb();
+    }
+
+    // 通知留档(0.3.19): 本进程内出现过新的通知应答才写 KV(避免每轮一次无用写)。
+    if NOTIFY_DIAG_DIRTY.swap(false, std::sync::atomic::Ordering::SeqCst) {
+        if let Err(err) = store::put_json(ids, "notifydiag", &notify_diag_value()) {
+            report.messages.push(format!("notifydiag 写入失败: {err}"));
+        }
     }
 
     let diag = json!({
@@ -1922,14 +2399,20 @@ fn mark_queued_error(ids: &mut PutIds, reason: &str, report: &mut PumpReport) {
 }
 
 /// 单任务作用域: 轮询一条 `downloading`。读 → 推进 → 落盘 → 释放。
-fn step_one_downloading(ids: &mut PutIds, settings: &Settings, task_id: &str, report: &mut PumpReport) {
+fn step_one_downloading(
+    ids: &mut PutIds,
+    settings: &Settings,
+    round: &mut Cd2Round,
+    task_id: &str,
+    report: &mut PumpReport,
+) {
     let Some(mut task) = tasks::load_task(task_id) else { return };
     if task.status != tasks::STATUS_DOWNLOADING {
         return; // 上一轮已把它推进到别的状态
     }
     {
         let mut local = PumpReport::default();
-        advance_downloading(settings, "", &mut task, &mut local);
+        advance_downloading(settings, round, &mut task, &mut local);
         merge(report, local);
     }
     if let Err(err) = tasks::persist_task(ids, &task) {
@@ -1938,15 +2421,21 @@ fn step_one_downloading(ids: &mut PutIds, settings: &Settings, task_id: &str, re
     // `task` 在函数返回时释放, 不进任何长生命周期容器。
 }
 
-/// 单任务作用域: 收尾一条 `copying`(定名后复制入库 + 清理暂存)。
-fn step_one_copying(ids: &mut PutIds, settings: &Settings, task_id: &str, report: &mut PumpReport) {
+/// 单任务作用域: 推进一条 `copying`(CD2 直送提交/轮询, 或直连复制)。
+fn step_one_copying(
+    ids: &mut PutIds,
+    settings: &Settings,
+    round: &mut Cd2Round,
+    task_id: &str,
+    report: &mut PumpReport,
+) {
     let Some(mut task) = tasks::load_task(task_id) else { return };
     if task.status != tasks::STATUS_COPYING {
         return;
     }
     {
         let mut local = PumpReport::default();
-        advance_copying(settings, "", &mut task, &mut local);
+        advance_copying(settings, round, &mut task, &mut local);
         merge(report, local);
     }
     if let Err(err) = tasks::persist_task(ids, &task) {
@@ -1962,6 +2451,7 @@ fn step_one_copying(ids: &mut PutIds, settings: &Settings, task_id: &str, report
 fn step_one_start(
     ids: &mut PutIds,
     settings: &Settings,
+    round: &mut Cd2Round,
     parent_ref: &str,
     task_id: &str,
     report: &mut PumpReport,
@@ -1978,7 +2468,7 @@ fn step_one_start(
         if task.status == tasks::STATUS_DOWNLOADING && !already_finalized {
             // 取链后立即轮询一次: 宿主任务可能本轮就完成(这是"单曲"范围内的工作集)。
             let mut local2 = PumpReport::default();
-            advance_downloading(settings, "", &mut task, &mut local2);
+            advance_downloading(settings, round, &mut task, &mut local2);
             merge(report, local2);
         }
     }
@@ -2120,8 +2610,17 @@ mod tests {
     }
 
     fn kv_response(state: &mut FakeHost, request: &HostCallRequest, key: &str) -> Result<HostCallResponse, HostError> {
+        kv_branch(&mut state.kv, request, key)
+    }
+
+    /// KV 面的公共实现(两个假宿主共用; 语义 = 宿主 `plugin-runtime/storage` 接口)。
+    fn kv_branch(
+        kv: &mut HashMap<String, (Vec<u8>, u64)>,
+        request: &HostCallRequest,
+        key: &str,
+    ) -> Result<HostCallResponse, HostError> {
         match request.method.as_str() {
-            "GET" => match state.kv.get(key).cloned() {
+            "GET" => match kv.get(key).cloned() {
                 Some((value, revision)) => Ok(HostCallResponse {
                     status: 200,
                     headers: etag_headers(revision),
@@ -2138,7 +2637,7 @@ mod tests {
                 }
                 let parsed = request_body(request);
                 let value = serde_json::to_vec(&parsed["value"]).unwrap_or_default();
-                let current = state.kv.get(key).cloned();
+                let current = kv.get(key).cloned();
                 if let Some(if_match) = request.headers.get("if-match") {
                     let matches = match &current {
                         Some((_, revision)) => if_match == &format!("\"pkv_{revision}\""),
@@ -2149,7 +2648,7 @@ mod tests {
                     }
                 }
                 let revision = current.map(|(_, revision)| revision).unwrap_or(0) + 1;
-                state.kv.insert(key.to_string(), (value, revision));
+                kv.insert(key.to_string(), (value, revision));
                 Ok(HostCallResponse {
                     status: 200,
                     headers: etag_headers(revision),
@@ -2163,7 +2662,7 @@ mod tests {
                 {
                     return json_response(400, br#"{"error":"bad idempotency key"}"#);
                 }
-                let existed = state.kv.remove(key).is_some();
+                let existed = kv.remove(key).is_some();
                 Ok(HostCallResponse { status: if existed { 200 } else { 404 }, ..HostCallResponse::default() })
             }
             other => Err(HostError::new(format!("unexpected KV method: {other}"))),
@@ -3564,6 +4063,627 @@ mod tests {
         let summary = notify_failure(&task, "CDN 403").unwrap().expect("有 channels 就有摘要");
         assert!(summary.contains("telegram"), "{summary}");
         assert!(summary.contains("wecom(丢:callback_buttons)"), "{summary}");
+        crate::host::testhost::clear();
+    }
+
+    // ─────────────── CD2 直送 (0.3.19) ───────────────
+
+    /// CD2 gRPC-Web 请求体里的字符串字段(帧头之后; CopyFile/FindFileByPath 断言用)。
+    fn grpc_request_str_fields(request: &HostCallRequest) -> HashMap<u32, String> {
+        let raw = request_bytes(request);
+        let payload = if raw.len() >= 5 { &raw[5..] } else { &raw[..] };
+        let mut out = HashMap::new();
+        let mut pos = 0usize;
+        while pos < payload.len() {
+            let mut tag = 0u64;
+            let mut shift = 0u32;
+            while pos < payload.len() {
+                let byte = payload[pos];
+                pos += 1;
+                tag |= ((byte & 0x7f) as u64) << shift;
+                shift += 7;
+                if byte & 0x80 == 0 {
+                    break;
+                }
+            }
+            let (num, wire) = ((tag >> 3) as u32, (tag & 7) as u32);
+            if wire != 2 {
+                break;
+            }
+            let mut len = 0usize;
+            let mut shift = 0u32;
+            while pos < payload.len() {
+                let byte = payload[pos];
+                pos += 1;
+                len |= ((byte & 0x7f) as usize) << shift;
+                shift += 7;
+                if byte & 0x80 == 0 {
+                    break;
+                }
+            }
+            if pos + len > payload.len() {
+                break;
+            }
+            out.insert(num, String::from_utf8_lossy(&payload[pos..pos + len]).into_owned());
+            pos += len;
+        }
+        out
+    }
+
+    /// CD2 应答: 数据帧 + `grpc-status: 0` trailer。
+    fn cd2_ok(payload: &[u8]) -> Result<HostCallResponse, HostError> {
+        let mut body = vec![0u8];
+        body.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+        body.extend_from_slice(payload);
+        let trailer = b"grpc-status: 0\r\n";
+        body.push(0x80);
+        body.extend_from_slice(&(trailer.len() as u32).to_be_bytes());
+        body.extend_from_slice(trailer);
+        json_response(200, &body)
+    }
+
+    /// CD2 应答: 只有 trailer 的非零状态(空数据帧)。
+    fn cd2_status(status: u32, message: &str) -> Result<HostCallResponse, HostError> {
+        let text = format!("grpc-status: {status}\r\ngrpc-message: {message}\r\n");
+        let mut body = vec![0x80u8];
+        body.extend_from_slice(&(text.len() as u32).to_be_bytes());
+        body.extend_from_slice(text.as_bytes());
+        json_response(200, &body)
+    }
+
+    fn pb_len(mut value: usize) -> Vec<u8> {
+        let mut out = Vec::new();
+        loop {
+            let byte = (value & 0x7f) as u8;
+            value >>= 7;
+            out.push(if value == 0 { byte } else { byte | 0x80 });
+            if value == 0 {
+                return out;
+            }
+        }
+    }
+
+    /// 字段 tag 的 varint 编码(field ≥ 16 时 tag ≥ 128, 必须是两字节)。
+    fn pb_tag(num: u32, wire: u32) -> Vec<u8> {
+        pb_len(((num << 3) | wire) as usize)
+    }
+
+    fn pb_bytes(num: u32, bytes: &[u8]) -> Vec<u8> {
+        let mut out = pb_tag(num, 2);
+        out.extend_from_slice(&pb_len(bytes.len()));
+        out.extend_from_slice(bytes);
+        out
+    }
+
+    fn pb_str(num: u32, text: &str) -> Vec<u8> {
+        pb_bytes(num, text.as_bytes())
+    }
+
+    fn pb_var(num: u32, value: u64) -> Vec<u8> {
+        let mut out = pb_tag(num, 0);
+        out.extend_from_slice(&pb_len(value as usize));
+        out
+    }
+
+    fn pb_msg(num: u32, payload: &[u8]) -> Vec<u8> {
+        pb_bytes(num, payload)
+    }
+
+    /// CD2 直送测试的假宿主: 宿主文件面(job/定名/工作区列表/清理/通知) + CD2 面。
+    #[derive(Debug, Default)]
+    struct Cd2Host {
+        kv: HashMap<String, (Vec<u8>, u64)>,
+        staged_name: String,
+        /// 工作区文件列表(`staged_file_meta` 的来源): (name, size)。
+        workspace_files: Vec<(String, u64)>,
+        /// `GetAllCloudApis` 返回的存储: (kind, path)。
+        storages: Vec<(String, String)>,
+        added_folders: Vec<String>,
+        /// `FindFileByPath` 可见的远程文件: (parent, name, size)。
+        remote_files: Vec<(String, String, u64)>,
+        /// `GetCopyTasks` 的逐次返回(下标 = 第几次调用, 超出后重复最后一个);
+        /// 每条 = (start_ns, status, uploaded_bytes, total_bytes)。
+        task_script: Vec<Vec<(u64, u64, u64, u64)>>,
+        copy_tasks_calls: usize,
+        copy_calls: Vec<(String, String)>,
+        /// 通知应答(0 = 默认 202 接受)。
+        notify_status: i32,
+        notify_body: Vec<u8>,
+    }
+
+    impl Cd2Host {
+        fn with_ready_folder() -> Cd2Host {
+            Cd2Host {
+                storages: vec![("LocalFsAPI".to_string(), WORKSPACE_DIR.to_string())],
+                ..Cd2Host::default()
+            }
+        }
+    }
+
+    fn cd2_route(
+        state: &mut Cd2Host,
+        route: &str,
+        request: &HostCallRequest,
+    ) -> Result<HostCallResponse, HostError> {
+        match route {
+            "GetAllCloudApis" => {
+                let mut reply = Vec::new();
+                for (kind, path) in &state.storages {
+                    let entry = [pb_str(1, kind), pb_str(10, path)].concat();
+                    reply.extend_from_slice(&pb_msg(1, &entry));
+                }
+                cd2_ok(&reply)
+            }
+            "APIAddLocalFolder" => {
+                let fields = grpc_request_str_fields(request);
+                let host_path = fields.get(&1).cloned().unwrap_or_default();
+                state.added_folders.push(host_path.clone());
+                let namespace = host_path.rsplit('/').next().unwrap_or("").to_string();
+                state.storages.push(("LocalFsAPI".to_string(), format!("/{namespace}")));
+                cd2_ok(&pb_var(1, 1))
+            }
+            "FindFileByPath" => {
+                let fields = grpc_request_str_fields(request);
+                let parent = fields.get(&1).cloned().unwrap_or_default();
+                let name = fields.get(&2).cloned().unwrap_or_default();
+                match state.remote_files.iter().find(|(p, n, _)| p == &parent && n == &name) {
+                    Some((_, _, size)) => cd2_ok(&pb_var(4, *size)),
+                    None => cd2_status(5, "not found"),
+                }
+            }
+            "CopyFile" => {
+                let fields = grpc_request_str_fields(request);
+                let src = fields.get(&1).cloned().unwrap_or_default();
+                let dest = fields.get(&2).cloned().unwrap_or_default();
+                // 与 CD2 行为一致: 源不存在报 grpc-5(真机实测的 raw host path 形态)。
+                let known = state
+                    .workspace_files
+                    .iter()
+                    .any(|(name, _)| format!("{WORKSPACE_DIR}/{name}") == src);
+                if !known {
+                    return cd2_status(5, "source not found");
+                }
+                state.copy_calls.push((src, dest));
+                cd2_ok(&pb_var(1, 1))
+            }
+            "GetCopyTasks" => {
+                let call = state.copy_tasks_calls;
+                state.copy_tasks_calls += 1;
+                let script = state
+                    .task_script
+                    .get(call)
+                    .or_else(|| state.task_script.last())
+                    .cloned()
+                    .unwrap_or_default();
+                let (src, dest) = state.copy_calls.last().cloned().unwrap_or_default();
+                let mut reply = Vec::new();
+                for (start, status, uploaded, total) in script {
+                    let time = [pb_var(1, start / 1_000_000_000), pb_var(2, start % 1_000_000_000)]
+                        .concat();
+                    let entry = [
+                        pb_str(3, &src),
+                        pb_str(4, &dest),
+                        pb_var(5, status),
+                        pb_var(12, total),
+                        pb_var(13, uploaded),
+                        pb_msg(17, &time),
+                    ]
+                    .concat();
+                    reply.extend_from_slice(&pb_msg(1, &entry));
+                }
+                cd2_ok(&reply)
+            }
+            other => cd2_status(12, &format!("unimplemented {other}")),
+        }
+    }
+
+    /// 安装"宿主文件面 + CD2 面"的假宿主(CD2 直送测试共用)。
+    fn install_cd2_host(state: Rc<RefCell<Cd2Host>>) -> Rc<RefCell<Cd2Host>> {
+        let shared = state.clone();
+        crate::host::testhost::install(Box::new(move |request: &HostCallRequest| {
+            let method = request.method.clone();
+            let path = request.path.clone();
+            let body = request_body(request);
+            let mut state = shared.borrow_mut();
+            if let Some(key) = path.strip_prefix("/api/plugin-runtime/storage/") {
+                return kv_branch(&mut state.kv, request, key);
+            }
+            if path.starts_with("https://interface3.music.163.com/") {
+                return json_response(
+                    200,
+                    br#"{"data":[{"url":"https://cdn.example.com/song.flac","type":"flac","level":"lossless","size":29969443}]}"#,
+                );
+            }
+            if path == FILES_ROOTS {
+                return json_response(
+                    200,
+                    br#"{"data":{"items":[
+                        {"root_id":"root_test_ws","alias":"ai_workspace","root_entry_ref":"fe_test_ws_root","name":"AI workspace","backend":"local","capabilities":["files.local.read","files.local.write"]}
+                    ]}}"#,
+                );
+            }
+            if path == FILES_DOWNLOADS {
+                state.staged_name = body["name"].as_str().unwrap_or("").to_string();
+                return json_response(200, br#"{"job_ref":"job-1"}"#);
+            }
+            if path.starts_with(JOBS_PREFIX) {
+                let staged = format!("{WORKSPACE_DIR}/{}", state.staged_name);
+                let payload = json!({"status": "succeeded", "result": {"path": staged}});
+                return json_response(200, &serde_json::to_vec(&payload).unwrap());
+            }
+            if path == LOCAL_RENAME {
+                return json_response(200, br#"{"success":true}"#);
+            }
+            // 工作区文件列表(staged_file_meta / cleanup_staged 都走它)。
+            if method == "GET" && path.starts_with("/api/local-files?") {
+                let entries: Vec<Value> = state
+                    .workspace_files
+                    .iter()
+                    .map(|(name, size)| {
+                        json!({
+                            "name": name,
+                            "path": format!("{WORKSPACE_DIR}/{name}"),
+                            "is_dir": false,
+                            "size": size,
+                            "mod_time": "2026-10-14T00:00:00Z",
+                            "ext": "",
+                        })
+                    })
+                    .collect();
+                let payload = json!({
+                    "current": WORKSPACE_DIR, "parent": "/", "backend": "local", "entries": entries,
+                });
+                return json_response(200, &serde_json::to_vec(&payload).unwrap());
+            }
+            if method == "DELETE" && path == "/api/local-files" {
+                return json_response(200, br#"{"success":true}"#);
+            }
+            if path == NOTIFY_PLUGIN {
+                let status = if state.notify_status == 0 { 202 } else { state.notify_status };
+                let body = if state.notify_body.is_empty() {
+                    br#"{"data":{},"meta":{}}"#.to_vec()
+                } else {
+                    state.notify_body.clone()
+                };
+                return json_response(status, &body);
+            }
+            if let Some(route) = path.strip_prefix("http://127.0.0.1:19798/clouddrive.CloudDriveFileSrv/") {
+                return cd2_route(&mut state, route, request);
+            }
+            Err(HostError::new(format!("unexpected host call: {method} {path}")))
+        }));
+        state
+    }
+
+    /// 一条 copying 态任务的 fixture。
+    fn copying_task(id: &str, out_name: &str) -> Task {
+        Task {
+            id: id.to_string(),
+            source: "netease".to_string(),
+            song_id: "123".to_string(),
+            name: "晴天".to_string(),
+            singers: "周杰伦".to_string(),
+            quality: DEFAULT_QUALITY.to_string(),
+            out_name: out_name.to_string(),
+            staged_path: format!("{WORKSPACE_DIR}/{id}.part"),
+            status: tasks::STATUS_COPYING.to_string(),
+            attempts: 1,
+            updated_ms: 1_000,
+            ..Task::default()
+        }
+    }
+
+    fn cd2_settings(token: &str) -> Settings {
+        let mut settings = Settings::default();
+        settings.cd2_token = token.to_string();
+        settings.target_dir = DEFAULT_MUSIC_DIR.to_string();
+        settings
+    }
+
+    /// 设置的展示/更新规则: 令牌只给布尔, 键名与值都不过宿主过滤线, 目标目录可推导。
+    #[test]
+    fn cd2_settings_view_and_update_rules() {
+        let _fake = install_pipeline_host(JobOutcome::Succeeded);
+        let mut ids = PutIds::new();
+        let mut patch = Map::new();
+        patch.insert("cd2_token".to_string(), json!("tok-123"));
+        patch.insert("target_dir".to_string(), json!("/CloudNAS/115open/音乐/音乐下载"));
+        let view = settings_update(&mut ids, &patch).unwrap();
+        assert_eq!(view["cd2_auth_ready"], true);
+        // 显式值仍为空(未钉死), 生效值从 target_dir 推导。
+        assert_eq!(view["cd2_dest_dir"], "");
+        assert_eq!(view["cd2_dest_dir_effective"], "115open/音乐/音乐下载");
+        assert_eq!(view["cd2_local_folder"], "");
+        assert_eq!(view["cd2_local_folder_effective"], "dian115AI");
+        for (key, value) in view.as_object().unwrap() {
+            let lower = key.to_ascii_lowercase();
+            for needle in ["cookie", "password", "secret", "token"] {
+                assert!(!lower.contains(needle), "视图键 {key} 命中宿主过滤词");
+            }
+            if let Some(text) = value.as_str() {
+                assert!(!text.starts_with('/'), "视图值 {key} 以 / 开头: {text}");
+            }
+        }
+        // 显式目标目录优先(无前导 "/" 的输入会被补全)。
+        let mut patch = Map::new();
+        patch.insert("cd2_dest_dir".to_string(), json!("/115open/我的音乐"));
+        let view = settings_update(&mut ids, &patch).unwrap();
+        assert_eq!(view["cd2_dest_dir"], "115open/我的音乐");
+        assert_eq!(load_settings().cd2_dest_dir, "/115open/我的音乐");
+        // 显式清空令牌 = 关闭直送(回旧路径), 视图布尔翻转。
+        let mut patch = Map::new();
+        patch.insert("cd2_token".to_string(), json!(""));
+        let view = settings_update(&mut ids, &patch).unwrap();
+        assert_eq!(view["cd2_auth_ready"], false);
+        assert_eq!(load_settings().cd2_token, "");
+    }
+
+    /// 目标目录推导: 显式配置 > `/CloudNAS` 前缀替换; 推不出给空串(投递层报错)。
+    #[test]
+    fn cd2_dest_derivation_prefers_explicit_and_strips_cloudnas() {
+        let mut settings = Settings::default();
+        settings.target_dir = "/CloudNAS/115open/音乐/音乐下载".to_string();
+        assert_eq!(cd2_dest_of(&settings), "/115open/音乐/音乐下载");
+        settings.cd2_dest_dir = "/115open/自定义".to_string();
+        assert_eq!(cd2_dest_of(&settings), "/115open/自定义");
+        settings.cd2_dest_dir.clear();
+        settings.target_dir = "/media/music-dl-staging".to_string();
+        assert_eq!(cd2_dest_of(&settings), "");
+        assert_eq!(cd2_namespace_of(&settings), WORKSPACE_DIR);
+        settings.cd2_local_folder = "myfolder".to_string();
+        assert_eq!(cd2_namespace_of(&settings), "/myfolder");
+    }
+
+    /// 定名后文件名匹配: 精确名与宿主去重变体(` (N)`)都算, 前缀相近的另一首不算。
+    #[test]
+    fn staged_name_matches_exact_and_dedup_variants() {
+        assert!(staged_name_matches("周杰伦 - 晴天.flac", "周杰伦 - 晴天.flac"));
+        assert!(staged_name_matches("周杰伦 - 晴天 (1).flac", "周杰伦 - 晴天.flac"));
+        assert!(staged_name_matches("周杰伦 - 晴天 (12).flac", "周杰伦 - 晴天.flac"));
+        assert!(!staged_name_matches("周杰伦 - 晴天转多云.flac", "周杰伦 - 晴天.flac"));
+        assert!(!staged_name_matches("周杰伦 - 晴天.flac.part", "周杰伦 - 晴天.flac"));
+        assert!(!staged_name_matches("周杰伦 - 晴天 (x).flac", "周杰伦 - 晴天.flac"));
+    }
+
+    /// 隔离策略 400 的文案带出路提示; 其它 400 原样。
+    #[test]
+    fn copy_error_hint_mentions_cd2_for_isolation_rejections() {
+        crate::host::testhost::install(Box::new(|request: &HostCallRequest| {
+            if request.path == LOCAL_COPY {
+                return json_response(
+                    400,
+                    r#"{"error":"本地目录和 CD2/AURA 挂载目录必须严格隔离，不能跨边界复制"}"#
+                        .as_bytes(),
+                );
+            }
+            Err(HostError::new(format!("unexpected: {}", request.path)))
+        }));
+        let err = copy_to_cd2("t1", "/dian115AI/a.flac", DEFAULT_MUSIC_DIR, 1).unwrap_err();
+        assert!(err.contains("CD2 直送"), "{err}");
+        crate::host::testhost::clear();
+
+        crate::host::testhost::install(Box::new(|request: &HostCallRequest| {
+            if request.path == LOCAL_COPY {
+                return json_response(400, r#"{"error":"参数错误"}"#.as_bytes());
+            }
+            Err(HostError::new(format!("unexpected: {}", request.path)))
+        }));
+        let err = copy_to_cd2("t1", "/dian115AI/a.flac", DEFAULT_MUSIC_DIR, 1).unwrap_err();
+        assert!(!err.contains("CD2 直送"), "{err}");
+        crate::host::testhost::clear();
+    }
+
+    /// 直送完整周期: 提交(源用去重变体的真实文件名 + 记基线) → 轮询上传中 → 完成落 done。
+    #[test]
+    fn cd2_delivery_full_cycle_submits_polls_and_finishes() {
+        let state = Rc::new(RefCell::new(Cd2Host::with_ready_folder()));
+        {
+            let mut fake = state.borrow_mut();
+            fake.workspace_files.push(("周杰伦 - 晴天 (1).flac".to_string(), 29_969_443));
+            // 同名不同大小 → 不触发"已送达"对账捷径, 走真实上传路径。
+            fake.remote_files.push((
+                "/115open/音乐/音乐下载".to_string(),
+                "周杰伦 - 晴天.flac".to_string(),
+                111,
+            ));
+            fake.task_script = vec![
+                vec![],                                       // 取基线: 无任务
+                vec![(2_000_000_000, 1, 100, 200)],           // 上传中
+                vec![(2_000_000_000, 3, 200, 200)],           // 完成
+            ];
+        }
+        install_cd2_host(state.clone());
+        let settings = cd2_settings("tok");
+        let mut task = copying_task("cd20001", "周杰伦 - 晴天.flac");
+        let mut round = Cd2Round::default();
+
+        // 第 1 步: 提交。
+        let mut report = PumpReport::default();
+        advance_copying(&settings, &mut round, &mut task, &mut report);
+        assert_eq!(task.status, tasks::STATUS_COPYING);
+        assert_eq!(task.cd2_ref, "0");
+        assert!(report.completed.is_empty(), "{report:?}");
+        {
+            let fake = state.borrow();
+            assert_eq!(fake.copy_calls.len(), 1);
+            assert_eq!(fake.copy_calls[0].0, "/dian115AI/周杰伦 - 晴天 (1).flac");
+            assert_eq!(fake.copy_calls[0].1, "/115open/音乐/音乐下载");
+        }
+
+        // 第 2 步: 轮询到上传中(状态保持 copying, 有进度消息)。
+        let mut report = PumpReport::default();
+        advance_copying(&settings, &mut round, &mut task, &mut report);
+        assert_eq!(task.status, tasks::STATUS_COPYING);
+        assert!(report.messages.iter().any(|m| m.contains("上传中")), "{report:?}");
+
+        // 第 3 步: 完成 → done, 基线清空, 收尾进 completed。
+        let mut report = PumpReport::default();
+        advance_copying(&settings, &mut round, &mut task, &mut report);
+        assert_eq!(task.status, tasks::STATUS_DONE);
+        assert_eq!(report.completed, vec!["cd20001".to_string()]);
+        assert!(task.cd2_ref.is_empty());
+        crate::host::testhost::clear();
+    }
+
+    /// 直送失败: 任务 Failed → 入库失败路径(attempts+1、留在 copying、基线清空)。
+    #[test]
+    fn cd2_delivery_failure_clears_ref_and_stays_copying() {
+        let state = Rc::new(RefCell::new(Cd2Host::with_ready_folder()));
+        {
+            let mut fake = state.borrow_mut();
+            fake.workspace_files.push(("周杰伦 - 晴天.flac".to_string(), 1024));
+            fake.task_script = vec![vec![], vec![(2_000_000_000, 4, 0, 1024)]];
+        }
+        install_cd2_host(state.clone());
+        let settings = cd2_settings("tok");
+        let mut task = copying_task("cd20002", "周杰伦 - 晴天.flac");
+        let mut round = Cd2Round::default();
+        let mut report = PumpReport::default();
+        advance_copying(&settings, &mut round, &mut task, &mut report); // 提交
+        advance_copying(&settings, &mut round, &mut task, &mut report); // 轮询 → 失败
+        assert_eq!(task.status, tasks::STATUS_COPYING);
+        assert_eq!(task.attempts, 2);
+        assert!(task.cd2_ref.is_empty(), "失败后清基线, 下轮重提交");
+        assert!(task.error.contains("CD2 上传失败"), "{}", task.error);
+        assert!(report.completed.is_empty() && report.failed.is_empty(), "{report:?}");
+        crate::host::testhost::clear();
+    }
+
+    /// 提交前对账: 目标已有同名同大小文件 → 直接完成, 一次 CopyFile 都不发。
+    #[test]
+    fn cd2_delivery_precheck_skips_upload_when_remote_matches() {
+        let state = Rc::new(RefCell::new(Cd2Host::with_ready_folder()));
+        {
+            let mut fake = state.borrow_mut();
+            fake.workspace_files.push(("周杰伦 - 晴天.flac".to_string(), 29_969_443));
+            fake.remote_files.push((
+                "/115open/音乐/音乐下载".to_string(),
+                "周杰伦 - 晴天.flac".to_string(),
+                29_969_443,
+            ));
+        }
+        install_cd2_host(state.clone());
+        let settings = cd2_settings("tok");
+        let mut task = copying_task("cd20003", "周杰伦 - 晴天.flac");
+        let mut round = Cd2Round::default();
+        let mut report = PumpReport::default();
+        advance_copying(&settings, &mut round, &mut task, &mut report);
+        assert_eq!(task.status, tasks::STATUS_DONE);
+        assert!(state.borrow().copy_calls.is_empty(), "不重复上传");
+        assert_eq!(report.completed, vec!["cd20003".to_string()]);
+        crate::host::testhost::clear();
+    }
+
+    /// 本地文件夹缺失但配了宿主路径 → 自动注册一次(命名空间按目录名), 轮内不重复注册。
+    #[test]
+    fn cd2_delivery_registers_missing_local_folder_once() {
+        let state = Rc::new(RefCell::new(Cd2Host::default()));
+        state.borrow_mut().workspace_files.push(("周杰伦 - 晴天.flac".to_string(), 1024));
+        install_cd2_host(state.clone());
+        let mut settings = cd2_settings("tok");
+        settings.cd2_register_host = "/volume1/docker/dian115/dian115AI".to_string();
+        let mut task = copying_task("cd20004", "周杰伦 - 晴天.flac");
+        let mut round = Cd2Round::default();
+        let mut report = PumpReport::default();
+        advance_copying(&settings, &mut round, &mut task, &mut report);
+        assert_eq!(task.status, tasks::STATUS_COPYING);
+        assert_eq!(
+            state.borrow().added_folders,
+            vec!["/volume1/docker/dian115/dian115AI".to_string()]
+        );
+        advance_copying(&settings, &mut round, &mut task, &mut report);
+        assert_eq!(state.borrow().added_folders.len(), 1, "轮内缓存: 不重复注册");
+        crate::host::testhost::clear();
+    }
+
+    /// 一轮 pump 里推进**多条** copying(0.3.19 取消"每轮只动一条"的串行门禁)。
+    #[test]
+    fn pump_advances_multiple_copying_tasks_per_round() {
+        let state = Rc::new(RefCell::new(Cd2Host::with_ready_folder()));
+        {
+            let mut fake = state.borrow_mut();
+            for index in 0..3 {
+                fake.workspace_files.push((format!("歌手 - 歌{index}.flac"), 10));
+            }
+        }
+        install_cd2_host(state.clone());
+        let mut ids = PutIds::new();
+        save_settings(&mut ids, &cd2_settings("tok")).unwrap();
+        for index in 0..3 {
+            let task = copying_task(
+                &format!("multi{index:03}"),
+                &format!("歌手 - 歌{index}.flac"),
+            );
+            tasks::persist_task(&mut ids, &task).unwrap();
+        }
+        pump(&mut ids).unwrap();
+        assert_eq!(state.borrow().copy_calls.len(), 3, "一轮里三条都提交");
+        let index = tasks::load_index();
+        assert_eq!(index.iter().filter(|e| e.status == tasks::STATUS_COPYING).count(), 3);
+        for entry in &index {
+            let full = tasks::load_task(&entry.id).unwrap();
+            assert!(!full.cd2_ref.is_empty(), "{} 未记基线: {full:?}", entry.id);
+        }
+        crate::host::testhost::clear();
+    }
+
+    /// 索引对账: 分片在、索引缺(宿主被杀打断两次落盘)→ adopt 重新挂回, 幂等。
+    #[test]
+    fn adopt_reattaches_orphan_shard() {
+        let _fake = install_pipeline_host(JobOutcome::Succeeded);
+        let mut ids = PutIds::new();
+        // 只写分片、不写索引 = "分片已写, 索引未写"被打断的形态(真机 2gexs25y)。
+        let orphan = Task {
+            id: "orphan1".to_string(),
+            source: "netease".to_string(),
+            song_id: "9".to_string(),
+            name: "断片".to_string(),
+            singers: "歌手".to_string(),
+            quality: DEFAULT_QUALITY.to_string(),
+            status: tasks::STATUS_DOWNLOADING.to_string(),
+            updated_ms: 5,
+            ..Task::default()
+        };
+        tasks::save_task(&mut ids, &orphan).unwrap();
+        assert!(tasks::load_index().is_empty());
+
+        let outcome = tasks::adopt(&mut ids, "orphan1").unwrap();
+        assert_eq!(outcome["adopted"], true);
+        assert_eq!(outcome["status"], tasks::STATUS_DOWNLOADING);
+        let index = tasks::load_index();
+        assert_eq!(index.len(), 1);
+        assert_eq!(index[0].id, "orphan1");
+
+        // 幂等: 再对账同一条不重复插入; 不存在的分片是业务失败。
+        let outcome = tasks::adopt(&mut ids, "orphan1").unwrap();
+        assert_eq!(outcome["adopted"], false);
+        assert_eq!(tasks::load_index().len(), 1);
+        assert!(tasks::adopt(&mut ids, "nope").is_err());
+    }
+
+    /// notify-test: 宿主 400 时返回原始状态与响应体, 并留档 KV `notifydiag`。
+    #[test]
+    fn notify_test_reports_raw_status_and_persists_diag() {
+        let state = Rc::new(RefCell::new(Cd2Host::default()));
+        {
+            let mut fake = state.borrow_mut();
+            fake.notify_status = 400;
+            fake.notify_body = br#"{"error":"invalid notification payload"}"#.to_vec();
+        }
+        install_cd2_host(state.clone());
+        let mut ids = PutIds::new();
+        let outcome = notify_test(&mut ids).unwrap();
+        assert_eq!(outcome["sent"], false);
+        assert_eq!(outcome["status"], 400);
+        assert!(
+            outcome["body"].as_str().unwrap().contains("invalid notification payload"),
+            "{outcome}"
+        );
+        assert!(outcome["message"].as_str().unwrap().contains("400"), "{outcome}");
+        // 留档已写 KV(state 的 notify_diag 读它)。
+        let diag = notify_diag_doc();
+        assert_eq!(diag["status"], 400);
+        assert!(diag["body"].as_str().unwrap().contains("invalid notification payload"));
         crate::host::testhost::clear();
     }
 }

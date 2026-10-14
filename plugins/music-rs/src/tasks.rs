@@ -165,6 +165,12 @@ pub struct Task {
     /// 宿主下载任务引用(下载阶段)。
     #[serde(default)]
     pub job_ref: String,
+    /// 0.3.19: CD2 直送上传的匹配基线 —— 提交 `CopyFile` 前 `GetCopyTasks` 里
+    /// 该 (src,dest) 最新任务的 `start_time`(纳秒十进制字符串); 轮询只认**比它
+    /// 更新**的任务, 否则会把上一轮同曲任务的旧终态当成自己的结果。
+    /// 空串 = 尚未提交(下一轮执行"对账 + 提交")。
+    #[serde(default)]
+    pub cd2_ref: String,
     /// 已开始的尝试次数(含复制重试), 上限 [`MAX_ATTEMPTS`]。
     #[serde(default)]
     pub attempts: u32,
@@ -564,6 +570,7 @@ fn requeue(task: &mut Task) -> bool {
     task.retry_round = task.retry_round.saturating_add(1);
     task.error.clear();
     task.job_ref.clear();
+    task.cd2_ref.clear();
     task.updated_ms = now_ms();
     true
 }
@@ -608,6 +615,43 @@ pub fn retry(ids: &mut PutIds, task_id: &str) -> Result<Value, String> {
     let status = task.status.clone();
     persist_task(ids, &task)?;
     Ok(json!({"task_id": task_id, "status": status, "message": "已重新排队"}))
+}
+
+/// 索引对账(action `task-adopt`): 把孤儿分片 `task.<id>` 重新挂回 `tasks.idx`。
+///
+/// 宿主 OOM 被杀(SIGKILL)可能打断"先写分片、后写索引"的两次落盘, 于是分片存在
+/// 而索引里没有 —— pump 只遍历索引, 这条任务就成了**永远看不见的僵尸**(真机
+/// `2gexs25y` 即是此形态: 分片停在 downloading, 索引里查无此条)。本函数把孤儿
+/// 分片按现状投影回索引, 之后的推进交给正常的 pump 流程。幂等: 已在索引里只报
+/// 现状, 不重复插入。
+pub fn adopt(ids: &mut PutIds, task_id: &str) -> Result<Value, String> {
+    let task_id = task_id.trim();
+    if task_id.is_empty() {
+        return Err("缺少任务 id".to_string());
+    }
+    ensure_migrated(ids)?;
+    let Some(task) = load_task(task_id) else {
+        return Err(format!("分片不存在: task.{task_id}"));
+    };
+    let mut index = load_index();
+    if index.iter().any(|entry| entry.id == task.id) {
+        return Ok(json!({
+            "task_id": task.id,
+            "status": task.status,
+            "adopted": false,
+            "message": "已在索引里, 无需对账",
+        }));
+    }
+    index.push(TaskIndexEntry::of(&task));
+    sort_index(&mut index);
+    save_index(ids, &index)?;
+    Ok(json!({
+        "task_id": task.id,
+        "status": task.status,
+        "name": task.display_name(),
+        "adopted": true,
+        "message": "已挂回索引, 下轮泵会继续推进(在途会按原状态轮询)",
+    }))
 }
 
 /// 清掉已终态(done/failed)的任务, 返回清理条数。

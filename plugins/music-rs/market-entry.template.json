@@ -1,8 +1,8 @@
 {
   "id": "music.rs",
   "name": "音乐下载（Rust 版）",
-  "version": "0.3.16",
-  "description": "网易云/QQ 音乐扫码登录、搜索与音质自选取链；无 sidecar，由宿主代理下载（本地暂存 → CD2 入库），任务状态落 KV 队列并支持 Telegram 回调重试。",
+  "version": "0.3.19",
+  "description": "网易云/QQ 音乐扫码登录、搜索与音质自选取链；无 sidecar：本地暂存后优先由插件直连 CD2（CloudDrive2）gRPC-Web 上传到网盘目录（可回退宿主复制），绕开跨边界隔离限制；任务状态落 KV 队列并支持 Telegram 回调重试。0.3.19 新增 CD2 直送、通知自检与任务索引对账。",
   "author": "congyoubanmian",
   "homepage": "https://github.com/congyoubanmian/dian115-plugins",
   "package_url": "https://github.com/congyoubanmian/douban-center-wasm/releases/download/music-rs-v0.3.16/music.rs-0.3.16.d115p",
@@ -170,6 +170,14 @@
         ],
         "proxy_mode": "direct",
         "reason": "本机 CookieCloud 服务: 拉取加密同步数据解出网易云/QQ 登录 cookie"
+      },
+      {
+        "origin": "http://127.0.0.1:19798",
+        "methods": [
+          "POST"
+        ],
+        "proxy_mode": "direct",
+        "reason": "本机 CD2(CloudDrive2) gRPC-Web 接口: 把暂存音频直接提交给 CD2 上传到网盘目录, 绕开本地目录与 CD2 挂载目录的跨边界复制限制"
       }
     ]
   },

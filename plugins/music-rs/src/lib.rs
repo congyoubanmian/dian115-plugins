@@ -14,6 +14,7 @@
 //! | [`clock`] | 经宿主 WASI 取墙钟时间与休眠 |
 //! | [`raw`] | Go `encoding/json` 结构体解码语义 |
 //! | [`netease`] / [`qq`] | 网易云 / QQ 音乐: 搜索、取链、扫码登录 |
+//! | [`cd2`] | CD2 (CloudDrive2) gRPC-Web 直送(0.3.19): 本地文件夹 + `CopyFile`, 替代被宿主 5.x 封闭的 `local-files/copy` 跨边界复制 |
 //! | [`cookiecloud`] | CookieCloud 同步登录(0.3.4): 拉取本机服务 → 解密 → 按域合并网易云/QQ 登录态 |
 //! | [`download`] | 宿主代下载两段式管线(取链 → 暂存 → 轮询 → 定名 → 复制 → 通知) |
 //! | [`tasks`] | KV 任务队列(KV `tasks`)+ Telegram 回调重试 |
@@ -41,6 +42,7 @@
 #[cfg(target_arch = "wasm32")]
 pub mod abi;
 pub mod arena;
+pub mod cd2;
 pub mod clock;
 pub mod cookiecloud;
 pub mod download;

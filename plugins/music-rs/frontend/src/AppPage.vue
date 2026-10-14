@@ -38,6 +38,7 @@ import {
   RefreshCw as RefreshCwIcon,
   RotateCcw as RotateCcwIcon,
   Search as SearchIcon,
+  Send as SendIcon,
   Settings as SettingsIcon,
   Trash2 as Trash2Icon,
   TriangleAlert as TriangleAlertIcon,
@@ -110,6 +111,15 @@ interface Settings {
   cc_url?: string
   cc_uuid?: string
   cc_key_ready?: boolean
+  /** CD2 直送(0.3.19): 令牌不回显(键名含 token 会被宿主整响应过滤), 只给 ready 布尔;
+   *  dest/local_folder 给显式值(空=自动推导), `*_effective` 给实际生效值。 */
+  cd2_url?: string
+  cd2_auth_ready?: boolean
+  cd2_dest_dir?: string
+  cd2_dest_dir_effective?: string
+  cd2_local_folder?: string
+  cd2_local_folder_effective?: string
+  cd2_register_host?: string
 }
 
 interface LoginInfo {
@@ -153,6 +163,15 @@ interface AppState {
   login?: Record<string, LoginInfo>
   roots?: RootsProbe
   logs?: LogEntry[]
+  /** 最近一次插件通知的原始应答留档(download.rs `notify_diag_doc`: {at,status,body}|null)。
+   *  status -1 = 传输层失败; 400 是宿主校验拒绝。 */
+  notify_diag?: NotifyDiag | null
+}
+
+interface NotifyDiag {
+  at?: string
+  status?: number
+  body?: string
 }
 
 const localState = ref<AppState | null>(null)
@@ -1099,6 +1118,39 @@ async function clearFinished() {
   }
 }
 
+/**
+ * 索引对账(task-adopt, 0.3.19): 分片 `task.<id>` 在、索引里丢了(两阶段写入被打断,
+ * 如容器重启)的“僵尸任务”手动挂回队列; 已在索引里则回 adopted:false。
+ */
+const adoptId = ref('')
+
+async function adoptTask() {
+  const id = adoptId.value.trim()
+  if (!id) {
+    message.info('请输入任务 id（下载任务页可见，如 2gexs25y）')
+    return
+  }
+  taskBusy.value = 'adopt'
+  try {
+    const result = await invoke('task-adopt', { id })
+    if (result.status === 'failed') {
+      message.error(String(result.message || '对账失败'))
+      return
+    }
+    const data = (result.data || {}) as Record<string, any>
+    if (data.adopted) {
+      adoptId.value = ''
+      message.success(String(data.message || '已挂回索引'))
+    } else {
+      message.info(String(data.message || '已在索引里，无需对账'))
+    }
+  } catch (error: unknown) {
+    message.error(String((error as { message?: string })?.message || '对账失败'))
+  } finally {
+    taskBusy.value = ''
+  }
+}
+
 // 任务分页可见且有未完成任务时, 每 5 秒跟着后端队列刷一次状态(后端 job `queue-pump` 每 5 分钟跑一轮)。
 let taskTimer: ReturnType<typeof setInterval> | null = null
 
@@ -1136,10 +1188,18 @@ interface SettingsForm {
   cc_url: string
   cc_uuid: string
   cc_key: string
+  /** CD2 直送(0.3.19): 令牌同 CookieCloud 密钥的处理方式(不回显, 只在提交时发)。 */
+  cd2_url: string
+  cd2_token: string
+  cd2_dest_dir: string
+  cd2_local_folder: string
+  cd2_register_host: string
 }
 
 /** CookieCloud 服务端默认地址(download.rs `DEFAULT_COOKIECLOUD_URL`, URL 清空后后端也回落到它)。 */
 const DEFAULT_CC_URL = 'http://127.0.0.1:8088'
+/** CD2 本机 gRPC-Web 默认地址(download.rs `DEFAULT_CD2_URL`; 与宿主同 network 时用回环)。 */
+const DEFAULT_CD2_URL = 'http://127.0.0.1:19798'
 
 const DEFAULTS: SettingsForm = {
   staging_dir: '',
@@ -1150,6 +1210,11 @@ const DEFAULTS: SettingsForm = {
   cc_url: DEFAULT_CC_URL,
   cc_uuid: '',
   cc_key: '',
+  cd2_url: DEFAULT_CD2_URL,
+  cd2_token: '',
+  cd2_dest_dir: '',
+  cd2_local_folder: '',
+  cd2_register_host: '',
 }
 /** download.rs `MAX_ACTIVE_CAP`。 */
 const MAX_ACTIVE_CAP = 16
@@ -1168,6 +1233,13 @@ function readSettings(source: Settings): SettingsForm {
     cc_url: String(source.cc_url || DEFAULT_CC_URL),
     cc_uuid: String(source.cc_uuid || ''),
     cc_key: '',
+    // CD2: 编辑对象是**显式值**(空=跟随推导, 推导结果在提示里显示为 cd2_*_effective);
+    // 令牌同密钥, 恒为空串。
+    cd2_url: String(source.cd2_url || DEFAULT_CD2_URL),
+    cd2_token: '',
+    cd2_dest_dir: String(source.cd2_dest_dir || ''),
+    cd2_local_folder: String(source.cd2_local_folder || ''),
+    cd2_register_host: String(source.cd2_register_host || ''),
   }
 }
 
@@ -1189,6 +1261,12 @@ const changedKeys = computed(() => {
   if (form.cc_url.trim() !== before.cc_url) keys.push('cookiecloud_url')
   if (form.cc_uuid.trim() !== before.cc_uuid) keys.push('cookiecloud_uuid')
   if (form.cc_key.trim() !== before.cc_key) keys.push('cookiecloud_key')
+  // CD2 五项同规则(settings-update 的 cd2_url / cd2_token / cd2_dest_dir / cd2_local_folder / cd2_register_host)。
+  if (form.cd2_url.trim() !== before.cd2_url) keys.push('cd2_url')
+  if (form.cd2_token.trim() !== before.cd2_token) keys.push('cd2_token')
+  if (form.cd2_dest_dir.trim() !== before.cd2_dest_dir) keys.push('cd2_dest_dir')
+  if (form.cd2_local_folder.trim() !== before.cd2_local_folder) keys.push('cd2_local_folder')
+  if (form.cd2_register_host.trim() !== before.cd2_register_host) keys.push('cd2_register_host')
   return keys
 })
 
@@ -1208,6 +1286,8 @@ watch(tab, (value) => {
 const savingSettings = ref(false)
 /** CookieCloud 密钥的明文/密文切换(纯前端态; 对应旧版 NInput 的 show-password-on)。 */
 const showCcKey = ref(false)
+/** CD2 令牌的明文/密文切换。 */
+const showCd2Token = ref(false)
 
 async function saveSettings() {
   if (changedKeys.value.length === 0) {
@@ -1224,6 +1304,11 @@ async function saveSettings() {
   if (changedKeys.value.includes('cookiecloud_url')) patch.cookiecloud_url = form.cc_url.trim()
   if (changedKeys.value.includes('cookiecloud_uuid')) patch.cookiecloud_uuid = form.cc_uuid.trim()
   if (changedKeys.value.includes('cookiecloud_key')) patch.cookiecloud_key = form.cc_key.trim()
+  if (changedKeys.value.includes('cd2_url')) patch.cd2_url = form.cd2_url.trim()
+  if (changedKeys.value.includes('cd2_token')) patch.cd2_token = form.cd2_token.trim()
+  if (changedKeys.value.includes('cd2_dest_dir')) patch.cd2_dest_dir = form.cd2_dest_dir.trim()
+  if (changedKeys.value.includes('cd2_local_folder')) patch.cd2_local_folder = form.cd2_local_folder.trim()
+  if (changedKeys.value.includes('cd2_register_host')) patch.cd2_register_host = form.cd2_register_host.trim()
 
   savingSettings.value = true
   try {
@@ -1239,10 +1324,11 @@ async function saveSettings() {
       baseline.value = next
     } else {
       // 响应里拿不到设置视图时按已提交值对齐 baseline; 密钥除外(见下)。
-      baseline.value = { ...form, cc_key: '' }
+      baseline.value = { ...form, cc_key: '', cd2_token: '' }
     }
     // 密钥不回显(state 与响应都不给): 保存成功后立即清掉输入框, 配置与否看「已配置」标记。
     form.cc_key = ''
+    form.cd2_token = ''
     message.success('设置已保存')
   } catch (error: unknown) {
     message.error(String((error as { message?: string })?.message || '设置保存失败'))
@@ -1250,6 +1336,50 @@ async function saveSettings() {
     savingSettings.value = false
   }
 }
+
+/** 通知自检(0.3.19): 主动发一条测试通知, 把宿主对 /api/notifications/plugin 的
+ *  **原始应答**展示出来 —— 2026-10 起自动失败通知在真机上全是 400(宿主本地校验
+ *  秒拒), 这是把原因带回给开发者的现场诊断口。 */
+const notifyBusy = ref(false)
+const notifyResult = ref('')
+
+async function testNotify() {
+  notifyBusy.value = true
+  try {
+    const result = await invoke('notify-test')
+    if (result.status === 'failed') {
+      notifyResult.value = String(result.message || '通知自检失败')
+      message.error(notifyResult.value)
+      return
+    }
+    const data = (result.data || {}) as Record<string, any>
+    const status = data.status === undefined || data.status === null ? '—' : String(data.status)
+    const parts = [`HTTP ${status}`]
+    if (data.message) parts.push(String(data.message))
+    if (data.channels) parts.push(`通道: ${String(data.channels)}`)
+    if (data.body) parts.push(`原始应答: ${String(data.body)}`)
+    notifyResult.value = parts.join(' · ')
+    if (data.sent) message.success(notifyResult.value)
+    else message.warning(notifyResult.value)
+  } catch (error: unknown) {
+    notifyResult.value = String((error as { message?: string })?.message || '通知自检失败')
+    message.error(notifyResult.value)
+  } finally {
+    notifyBusy.value = false
+  }
+}
+
+/** 最近一次通知留档(后端每次发通知都写 KV `notifydiag`, pump 收尾落盘;
+ *  status -1 = 传输层失败, 400 = 宿主校验拒绝)。 */
+const notifyDiagText = computed(() => {
+  const diag = state.value.notify_diag
+  if (!diag || typeof diag !== 'object') return ''
+  const status = Number(diag.status)
+  const head = status === -1 ? '传输层失败' : `HTTP ${Number.isFinite(status) ? status : '—'}`
+  const at = String(diag.at || '')
+  const body = String(diag.body || '')
+  return `留档${at ? `（${at}）` : ''}: ${head}${body ? ` · ${body}` : ''}`
+})
 
 const qualityOptionsForDefault = computed(() => qualityOptions('netease').concat(
   // 设置里的 quality 是网易档位名(download.rs `DEFAULT_QUALITY`), 但历史值可能是 QQ 档位:
@@ -1757,6 +1887,14 @@ const rootProbeNote = computed(() => {
         <button type="button" class="btn btn-ghost btn-xs" @click="mutexNotice = ''">知道了</button>
       </div>
 
+      <!-- 索引对账(0.3.19): 分片 task.<id> 在、索引里丢了(两阶段写入被打断)的“僵尸任务”挂回(task-adopt) -->
+      <div class="row adopt-row">
+        <input v-model="adoptId" class="input grow" placeholder="任务 id（如 2gexs25y）" @keyup.enter="adoptTask" />
+        <button type="button" class="btn btn-ghost btn-sm" :disabled="taskBusy === 'adopt'" @click="adoptTask">
+          <span v-if="taskBusy === 'adopt'" class="spin" /><RefreshCwIcon v-else :size="13" /> 索引对账
+        </button>
+      </div>
+
       <div v-if="tasks.length" class="task-list">
         <div v-for="task in tasks" :key="task.id" class="task-row">
           <div class="task-tile" :class="taskTileClass(task)"><MusicIcon :size="17" /></div>
@@ -1793,6 +1931,7 @@ const rootProbeNote = computed(() => {
         任务由后台 job `queue-pump`（每 5 分钟，见 manifest）推进；想立刻推一轮点右上角「推进队列」（与 job 同一个入口，
         单次只新开 1 首）。失败任务最多自动重试 3 次，用尽后可在这一行点重试，
         或从 Telegram 失败通知的按钮重试。「清空已完成」只删 done/failed，进行中的任务不动。
+        若重启后任务「消失」（分片还在、索引丢了），把它的 id 填进上面输入框点「索引对账」挂回。
       </p>
       <p class="hint task-foot">
         下载目录: {{ settings.target_dir || '未配置（到「设置」页填写目标目录）' }} · 命名: {歌手} - {歌名}.{格式} ·
@@ -1897,6 +2036,72 @@ const rootProbeNote = computed(() => {
         三项与上方共用「保存」按钮（settings-update 的 cookiecloud_url / cookiecloud_uuid / cookiecloud_key）；
         配好后到「扫码登录」卡片点「CookieCloud 同步」。
       </p>
+
+      <div class="divider" />
+      <h4 class="sub">CD2 直送（0.3.19）</h4>
+      <p class="hint">
+        配好 CD2 地址与令牌后，入库改走 CD2 直送：插件直接调 CD2（CloudDrive2）把暂存文件传到网盘目录，
+        绕开宿主复制对「本地目录和 CD2/AURA 挂载目录必须严格隔离」的跨边界拦截。令牌留空 = 回到旧路径（宿主复制）。
+      </p>
+      <div class="grid">
+        <label class="field">
+          <span class="label">CD2 地址（cd2_url）</span>
+          <input v-model="form.cd2_url" class="input" :placeholder="DEFAULT_CD2_URL" />
+          <span class="hint">CD2 的 gRPC-Web 地址；清空保存后后端回落到 {{ DEFAULT_CD2_URL }}（宿主同网络时用回环）。</span>
+        </label>
+        <label class="field">
+          <span class="label">API 令牌（cd2_token）</span>
+          <span class="pwd">
+            <input
+              v-model="form.cd2_token"
+              :type="showCd2Token ? 'text' : 'password'"
+              class="input grow"
+              placeholder="CD2 设置页的 API 令牌，不回显"
+            />
+            <button
+              type="button"
+              class="icon-btn eye-btn"
+              :title="showCd2Token ? '隐藏' : '显示'"
+              @click="showCd2Token = !showCd2Token"
+            >
+              <EyeOffIcon v-if="showCd2Token" :size="14" /><EyeIcon v-else :size="14" />
+            </button>
+          </span>
+          <span class="hint">{{ settings.cd2_auth_ready ? '已配置（不回显，重新输入可覆盖）' : '未配置 = 继续用宿主复制入库' }}；留空保存不会清除已配置的令牌。</span>
+        </label>
+        <label class="field">
+          <span class="label">网盘落点（cd2_dest_dir）</span>
+          <input v-model="form.cd2_dest_dir" class="input" :placeholder="settings.cd2_dest_dir_effective || '115open/音乐/音乐下载'" />
+          <span class="hint">CD2 视角的网盘目录（不带 /CloudNAS 前缀）；留空 = 从目标目录推导，当前生效：{{ settings.cd2_dest_dir_effective || '—' }}。</span>
+        </label>
+        <label class="field">
+          <span class="label">本地目录名（cd2_local_folder）</span>
+          <input v-model="form.cd2_local_folder" class="input" :placeholder="settings.cd2_local_folder_effective || 'dian115AI'" />
+          <span class="hint">CD2 里登记的本地目录名（命名空间）；留空 = 用插件工作区，当前生效：{{ settings.cd2_local_folder_effective || '—' }}。</span>
+        </label>
+        <label class="field">
+          <span class="label">登记用宿主路径（cd2_register_host）</span>
+          <input v-model="form.cd2_register_host" class="input" placeholder="已登记就留空" />
+          <span class="hint">
+            仅当 CD2 里还没登记过该本地目录时填：宿主机上该目录的绝对路径（如 /volume1/docker/dian115/dian115AI），
+            首次直送时插件用它自动登记；已登记（如 {{ settings.cd2_local_folder_effective || 'dian115AI' }}）就留空。
+          </span>
+        </label>
+      </div>
+      <p class="hint">
+        五项与上方共用「保存」按钮（settings-update 的 cd2_url / cd2_token / cd2_dest_dir / cd2_local_folder / cd2_register_host）。
+      </p>
+
+      <div class="divider" />
+      <h4 class="sub">通知自检（notify-test）</h4>
+      <div class="row">
+        <button type="button" class="btn btn-ghost btn-sm" :disabled="notifyBusy" @click="testNotify">
+          <span v-if="notifyBusy" class="spin" /><SendIcon v-else :size="13" /> 发测试通知
+        </button>
+        <span class="hint">手动发一条 info 通知，把宿主对 /api/notifications/plugin 的原始应答显示在这里（排查失败通知一直 400 用）。</span>
+      </div>
+      <p v-if="notifyResult" class="hint">{{ notifyResult }}</p>
+      <p v-if="notifyDiagText" class="hint">{{ notifyDiagText }}</p>
 
       <div class="divider" />
       <h4 class="sub">目录探测（state.roots）</h4>

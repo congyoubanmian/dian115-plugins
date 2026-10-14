@@ -334,6 +334,9 @@ impl Runtime {
         state.insert("tasks".to_string(), Value::Array(tasks::state_view()));
         state.insert("login".to_string(), login_summary());
         state.insert("roots".to_string(), download::state_probe());
+        // 通知留档(0.3.19): 最近一次 /api/notifications/plugin 的原始应答
+        // (status + 截断的响应体), pump 与 notify-test 都会刷新; 缺失 → null。
+        state.insert("notify_diag".to_string(), download::notify_diag_doc());
         state.insert("logs".to_string(), serde_json::to_value(logs).unwrap_or(Value::Array(vec![])));
         Value::Object(state)
     }
@@ -358,6 +361,8 @@ impl Runtime {
     /// | `download` | `source` / `song_id` / `name` / `singers` / `album` / `level` | [`crate::download::request_download`] |
     /// | `settings-update` | `input` 对象(可含 `qq_cookie`/`netease_cookie`) | [`crate::download::settings_update`] + [`crate::qq::save_cookie_string`]; 保存结果回填 `qq_login`/`netease_login` 键(响应键名不含 "cookie" 子串, 见 `settings-update` 分支注释) |
     /// | `task-retry` | `id` | [`crate::tasks::retry`](/读 `task.<id>` 重置排队) |
+    /// | `task-adopt` | `id` | [`crate::tasks::adopt`](0.3.19: 把孤儿分片重新挂回索引, 修复宿主被杀导致的僵尸任务) |
+    /// | `notify-test` | — | [`crate::download::notify_test`](0.3.19: 发测试通知并回显宿主原始应答, 用于通知 400 诊断) |
     /// | `task-clear` | — | [`crate::tasks::clear_finished`](/遍历索引删完结分片) |
     /// | `archive` | — | [`crate::tasks::clear_finished`] + 清日志 |
     /// | `queue-pump` | — | [`crate::tasks::queue_pump`](前台手动推进) |
@@ -544,6 +549,29 @@ impl Runtime {
                 let outcome = tasks::retry(&mut self.put_ids, &input_str(&input, "id"));
                 if outcome.is_ok() {
                     self.bump("succeeded", "任务已重新排队");
+                }
+                Ok(action_result(outcome))
+            }
+            "task-adopt" => {
+                // 0.3.19 索引对账: 分片在而索引缺失(宿主 OOM 被杀打断两次落盘)
+                // 的僵尸任务重新挂回索引, 之后的推进交给正常 pump。
+                let outcome = tasks::adopt(&mut self.put_ids, &input_str(&input, "id"));
+                if outcome.is_ok() {
+                    self.bump("succeeded", "任务已挂回索引");
+                }
+                Ok(action_result(outcome))
+            }
+            "notify-test" => {
+                // 0.3.19 通知诊断: 返回宿主对 /api/notifications/plugin 的原始
+                // 应答(自动失败通知在真机上一直 400, 根因要看原始响应)。
+                let outcome = download::notify_test(&mut self.put_ids);
+                match &outcome {
+                    Ok(value) if value.get("sent").and_then(Value::as_bool) == Some(true) => {
+                        self.bump("succeeded", "测试通知已被宿主接受");
+                    }
+                    _ => {
+                        self.bump("failed", "测试通知发送失败(详见 state 的 notify_diag)");
+                    }
                 }
                 Ok(action_result(outcome))
             }
