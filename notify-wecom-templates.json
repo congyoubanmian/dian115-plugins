@@ -1,0 +1,248 @@
+{
+  "playback_start": {
+    "title": "🎮 **开始播放**｜{{ show_name or title }}{% if season_episode %} · {{ season_episode }}{% endif %}",
+    "text": "{% if user_name or client %}👤 用户：<font color=\"comment\">{{ user_name or '未知用户' }}{% if client %} · {{ client }}{% endif %}</font>\n{% endif %}{% if quality %}🎞️ 画质：{{ quality }}\n{% endif %}{% if device_name or ip %}📺 设备：<font color=\"comment\">{{ device_name or '未知设备' }}{% if ip %} · {{ ip }}{% endif %}</font>\n{% endif %}{% if emby_instance_name %}🖥️ 实例：<font color=\"comment\">{{ emby_instance_name }}</font>\n{% endif %}{% if quality_comment %}✨ {{ quality_comment }}\n{% endif %}🕐 {{ now }}",
+    "image_mode": "off",
+    "render_mode": "classic_html"
+  },
+  "playback_stop": {
+    "title": "⏹️ **停止播放**｜{{ show_name or title }}{% if season_episode %} · {{ season_episode }}{% endif %}",
+    "text": "{% if percentage %}🏁 最终进度：{{ percentage }}%\n{% endif %}{% if user_name or device_name %}👤 用户：<font color=\"comment\">{{ user_name or '未知用户' }}{% if device_name %} · {{ device_name }}{% endif %}</font>\n{% endif %}{% if client %}📱 客户端：<font color=\"comment\">{{ client }}</font>\n{% endif %}{% if emby_instance_name %}🖥️ 实例：<font color=\"comment\">{{ emby_instance_name }}</font>\n{% endif %}{% if quality_comment %}✨ {{ quality_comment }}\n{% endif %}🕐 {{ now }}",
+    "image_mode": "off",
+    "render_mode": "classic_html"
+  },
+  "media_library_add": {
+    "title": "🎬 **资源入库**｜{{ show_name or title }}{% if season_episode %} · {{ season_episode }}{% endif %}",
+    "text": "{% if file_count %}📦 入库：{{ file_count }} 个文件{% if total_size %} · {{ total_size }}{% endif %}\n{% elif episode_count %}📺 入库：{{ episode_count }} 集\n{% elif total_size %}💾 体积：{{ total_size }}\n{% endif %}{% if quality %}🎞️ 画质：{{ quality }}\n{% endif %}{% if year or rating or genres %}ℹ️ <font color=\"comment\">{% if year %}{{ year }}{% endif %}{% if rating %} · ⭐ {{ rating }}{% endif %}{% if genres %} · {{ genres }}{% endif %}</font>\n{% endif %}{% if library_name or emby_instance_name %}🗂️ 媒体库：<font color=\"comment\">{% if library_name %}{{ library_name }}{% endif %}{% if emby_instance_name %} · {{ emby_instance_name }}{% endif %}</font>\n{% endif %}{% if quality_comment %}✨ {{ quality_comment }}\n{% endif %}🕐 {{ time_range or now }}",
+    "image_mode": "auto",
+    "render_mode": "classic_html"
+  },
+  "media_library_update": {
+    "title": "🔄 **媒体更新**｜{{ show_name or title }}{% if season_episode %} · {{ season_episode }}{% endif %}",
+    "text": "{% if media_type or year %}🎬 类型：<font color=\"comment\">{{ media_type }}{% if year %} · {{ year }}{% endif %}</font>\n{% endif %}{% if library_name %}🗂️ 媒体库：<font color=\"comment\">{{ library_name }}</font>\n{% endif %}{% if quality %}🎞️ 画质：{{ quality }}\n{% endif %}{% if emby_instance_name %}🖥️ 实例：<font color=\"comment\">{{ emby_instance_name }}</font>\n{% endif %}{% if quality_comment %}✨ {{ quality_comment }}\n{% endif %}🕐 {{ now }}",
+    "image_mode": "auto",
+    "render_mode": "classic_html"
+  },
+  "emby_user_authenticated": {
+    "title": "🔑 **Emby 登录成功**｜{{ user_name or '未知用户' }}",
+    "text": "{% if device_name %}📱 设备：<font color=\"comment\">{{ device_name }}</font>\n{% endif %}{% if description %}📝 <font color=\"comment\">{{ description }}</font>\n{% endif %}🖥️ 实例：<font color=\"comment\">{{ emby_instance_name or server_name }}</font>\n🕐 {{ now }}",
+    "image_mode": "off",
+    "render_mode": "classic_html"
+  },
+  "emby_user_authentication_failed": {
+    "title": "❌ **Emby 登录失败**｜{{ user_name or '未知用户' }}",
+    "text": "{% if description %}<font color=\"warning\">⚠️ 原因：{{ description }}</font>\n\n{% endif %}{% if severity %}🚨 级别：<font color=\"warning\">{{ severity }}</font>\n{% endif %}{% if device_name %}📱 设备：<font color=\"comment\">{{ device_name }}</font>\n{% endif %}🖥️ 实例：<font color=\"comment\">{{ emby_instance_name or server_name }}</font>\n🕐 {{ now }}",
+    "image_mode": "off",
+    "render_mode": "classic_html"
+  },
+  "emby_user_locked_out": {
+    "title": "🔒 **Emby 用户锁定**｜{{ user_name or '未知用户' }}",
+    "text": "{% if description %}<font color=\"warning\">⚠️ 原因：{{ description }}</font>\n\n{% endif %}{% if severity %}🚨 级别：<font color=\"warning\">{{ severity }}</font>\n{% endif %}🖥️ 实例：<font color=\"comment\">{{ emby_instance_name or server_name }}</font>\n🕐 {{ now }}",
+    "image_mode": "off",
+    "render_mode": "classic_html"
+  },
+  "emby_user_created": {
+    "title": "🆕 **Emby 用户已创建**｜{{ user_name or '未命名用户' }}",
+    "text": "{% if description %}📝 <font color=\"comment\">{{ description }}</font>\n{% endif %}{% if device_name %}📱 操作端：<font color=\"comment\">{{ device_name }}</font>\n{% endif %}🖥️ 实例：<font color=\"comment\">{{ emby_instance_name or server_name }}</font>\n🕐 {{ now }}",
+    "image_mode": "off",
+    "render_mode": "classic_html"
+  },
+  "emby_user_deleted": {
+    "title": "🗑️ **Emby 用户已删除**｜{{ user_name or '未知用户' }}",
+    "text": "{% if description %}📝 <font color=\"comment\">{{ description }}</font>\n{% endif %}{% if severity %}⚠️ 级别：<font color=\"warning\">{{ severity }}</font>\n{% endif %}🖥️ 实例：<font color=\"comment\">{{ emby_instance_name or server_name }}</font>\n🕐 {{ now }}",
+    "image_mode": "off",
+    "render_mode": "classic_html"
+  },
+  "emby_user_password_changed": {
+    "title": "🔑 **Emby 密码已更改**｜{{ user_name or '未知用户' }}",
+    "text": "{% if description %}📝 <font color=\"comment\">{{ description }}</font>\n{% endif %}{% if device_name %}📱 设备：<font color=\"comment\">{{ device_name }}</font>\n{% endif %}🖥️ 实例：<font color=\"comment\">{{ emby_instance_name or server_name }}</font>\n🕐 {{ now }}",
+    "image_mode": "off",
+    "render_mode": "classic_html"
+  },
+  "emby_user_policy_updated": {
+    "title": "🛡️ **Emby 用户策略更新**｜{{ user_name or '未知用户' }}",
+    "text": "{% if description %}📝 <font color=\"comment\">{{ description }}</font>\n{% endif %}{% if url %}🔗 [策略详情]({{ url }})\n{% endif %}🖥️ 实例：<font color=\"comment\">{{ emby_instance_name or server_name }}</font>\n🕐 {{ now }}",
+    "image_mode": "off",
+    "render_mode": "classic_html"
+  },
+  "library_organize_success": {
+    "title": "✅ **整理完成**｜{{ show_name or title }}{% if season_episode %} · {{ season_episode }}{% endif %}",
+    "text": "{% if file_count %}📦 整理：{{ file_count }} 个文件{% if total_size %} · {{ total_size }}{% endif %}\n{% elif episode_count %}📺 整理：{{ episode_count }} 集\n{% else %}✅ 整理已完成\n{% endif %}{% if quality %}🎞️ 画质：{{ quality }}\n{% endif %}{% if year or rating or genres %}ℹ️ <font color=\"comment\">{% if year %}{{ year }}{% endif %}{% if rating %} · ⭐ {{ rating }}{% endif %}{% if genres %} · {{ genres }}{% endif %}</font>\n{% endif %}{% if is_wash %}♻️ 洗版：<font color=\"comment\">{{ wash_status or '洗版完成' }}{% if wash_reason %} · {{ wash_reason }}{% endif %}</font>\n{% endif %}{% if quality_comment %}✨ {{ quality_comment }}\n{% endif %}🕐 {{ time_range or now }}",
+    "image_mode": "auto",
+    "render_mode": "classic_html"
+  },
+  "library_organize_skip": {
+    "title": "⏳ **整理跳过**｜{{ show_name or title }}{% if season_episode %} · {{ season_episode }}{% endif %}",
+    "text": "{% if skip_reason %}⏳ 跳过原因：<font color=\"comment\">{{ skip_reason }}</font>\n{% elif wash_reason %}⏳ 跳过原因：<font color=\"comment\">{{ wash_reason }}</font>\n{% endif %}{% if source_path %}📄 来源：<font color=\"comment\">{{ source_path }}</font>\n{% endif %}{% if quality_comment %}✨ 待整理资源：{{ quality_comment }}\n{% endif %}🕐 {{ time_range or now }}",
+    "image_mode": "auto",
+    "render_mode": "classic_html"
+  },
+  "library_organize_fail": {
+    "title": "❌ **整理失败**{% if failure_count %}｜{{ failure_count }} 项{% endif %}",
+    "text": "{% if failure_details %}<font color=\"warning\">⚠️ 失败详情</font>\n> {{ failure_details }}\n\n{% elif error_message %}<font color=\"warning\">⚠️ {{ error_message }}</font>\n\n{% else %}<font color=\"warning\">⚠️ {{ message_text }}</font>\n\n{% endif %}{% if target_path %}📂 目标：<font color=\"comment\">{{ target_path }}</font>\n{% endif %}🕐 {{ time_range or now }}",
+    "image_mode": "auto",
+    "render_mode": "classic_html"
+  },
+  "library_quality_scan": {
+    "title": "🔍 **质量扫描完成**｜{{ problem_count }} 项问题",
+    "text": "📊 共检查 {{ total_count }} 项 · 正常 {{ normal_count }} · 问题 <font color=\"warning\">{{ problem_count }}</font>\n{% if elapsed %}⏱️ 耗时：<font color=\"comment\">{{ elapsed }}</font>\n{% endif %}🕐 {{ now }}",
+    "image_mode": "off",
+    "render_mode": "classic_html"
+  },
+  "library_missing_scan": {
+    "title": "🔍 **缺集扫描完成**｜{{ problem_count }} 部待补",
+    "text": "📚 已检查 {{ total_count }} 部 · 完整 {{ normal_count }} · 缺集 <font color=\"warning\">{{ problem_count }}</font>\n{% if result_details %}📋 明细\n> {{ result_details }}\n{% endif %}{% if elapsed %}⏱️ 耗时：<font color=\"comment\">{{ elapsed }}</font>\n{% endif %}🕐 {{ now }}",
+    "image_mode": "off",
+    "render_mode": "classic_html"
+  },
+  "strm_generate": {
+    "title": "📺 **STRM 生成完成**{% if file_count %}｜{{ file_count }} 个{% endif %}",
+    "text": "{% if file_count %}📺 生成数量：{{ file_count }} 个 STRM\n{% else %}📺 STRM 生成完成\n{% endif %}{% if strm_tree %}📂 完整路径\n> {{ strm_tree }}\n{% elif strm_path %}📂 路径：<font color=\"comment\">{{ strm_path }}</font>\n{% endif %}🕐 {{ time_range or now }}",
+    "image_mode": "auto",
+    "render_mode": "classic_html"
+  },
+  "share_receive": {
+    "title": "📥 **分享转存**{{ status_text }}{% if file_name %}｜{{ file_name }}{% endif %}",
+    "text": "📊 结果：成功 {{ success_count }} · 失败 {{ failed_count }}{% if elapsed %} · 耗时 <font color=\"comment\">{{ elapsed }}</font>{% endif %}\n{% if transfer_source %}📡 来源：<font color=\"comment\">{{ transfer_source }}</font>\n{% endif %}{% if target_path %}📂 目标：<font color=\"comment\">{{ target_path }}</font>\n{% endif %}{% if error_message %}<font color=\"warning\">⚠️ {{ error_message }}</font>\n{% endif %}🕐 {{ now }}",
+    "image_mode": "auto",
+    "render_mode": "classic_html"
+  },
+  "offline_download": {
+    "title": "☁️ **离线下载**{{ status_text }}{% if url_count %}｜{{ url_count }} 个链接{% endif %}",
+    "text": "📊 结果：成功 {{ success_count }} · 失败 {{ failed_count }}{% if elapsed %} · 耗时 <font color=\"comment\">{{ elapsed }}</font>{% endif %}\n{% if target_path %}📂 保存到：<font color=\"comment\">{{ target_path }}</font>\n{% endif %}{% if transfer_source %}📡 来源：<font color=\"comment\">{{ transfer_source }}</font>\n{% endif %}{% if error_message %}<font color=\"warning\">⚠️ {{ error_message }}</font>\n{% endif %}🕐 {{ now }}",
+    "image_mode": "auto",
+    "render_mode": "classic_html"
+  },
+  "tg_auto_transfer": {
+    "title": "📲 **TG 自动转存**{{ status_text }}{% if file_name %}｜{{ file_name }}{% endif %}",
+    "text": "{% if source_name %}📣 频道：<font color=\"comment\">{{ source_name }}</font>\n{% endif %}📊 结果：成功 {{ success_count }}{% if failed_count %} · 失败 <font color=\"warning\">{{ failed_count }}</font>{% endif %}\n{% if target_path %}📂 目标：<font color=\"comment\">{{ target_path }}</font>\n{% endif %}{% if error_message %}<font color=\"warning\">⚠️ {{ error_message }}</font>\n{% endif %}🕐 {{ now }}",
+    "image_mode": "auto",
+    "render_mode": "classic_html"
+  },
+  "tg_auto_offline": {
+    "title": "🧲 **TG 自动离线**{{ status_text }}{% if file_name %}｜{{ file_name }}{% endif %}",
+    "text": "{% if source_name %}📣 频道：<font color=\"comment\">{{ source_name }}</font>\n{% endif %}{% if url_count %}🔗 链接：{{ url_count }} 个\n{% endif %}📊 结果：成功 {{ success_count }}{% if failed_count %} · 失败 <font color=\"warning\">{{ failed_count }}</font>{% endif %}\n{% if target_path %}📂 目标：<font color=\"comment\">{{ target_path }}</font>\n{% endif %}{% if error_message %}<font color=\"warning\">⚠️ {{ error_message }}</font>\n{% endif %}🕐 {{ now }}",
+    "image_mode": "auto",
+    "render_mode": "classic_html"
+  },
+  "tg_video_download": {
+    "title": "🎬 **TG 视频下载**{{ status_text }}{% if file_name %}｜{{ file_name }}{% endif %}",
+    "text": "{% if source_name %}📣 频道：<font color=\"comment\">{{ source_name }}</font>\n{% endif %}{% if total_size %}💾 体积：{{ total_size }}\n{% endif %}{% if target_path %}📂 保存到：<font color=\"comment\">{{ target_path }}</font>\n{% endif %}{% if error_message %}<font color=\"warning\">⚠️ {{ error_message }}</font>\n{% endif %}🕐 {{ now }}",
+    "image_mode": "auto",
+    "render_mode": "classic_html"
+  },
+  "account_migration": {
+    "title": "📦 **多号云迁移**{{ status_text }}{% if file_name %}｜{{ file_name }}{% endif %}",
+    "text": "📊 结果：成功 {{ success_count }} · 失败 {{ failed_count }}{% if skipped_count %} · 跳过 {{ skipped_count }}{% endif %}\n{% if scanned_count %}🔎 扫描：{{ scanned_count }} 个\n{% endif %}{% if total_size %}💾 秒传：{{ total_size }}\n{% endif %}{% if target_path %}🎯 目标：<font color=\"comment\">{{ target_path }}</font>\n{% endif %}{% if elapsed %}⏱️ 耗时：<font color=\"comment\">{{ elapsed }}</font>\n{% endif %}{% if error_message %}<font color=\"warning\">⚠️ {{ error_message }}</font>\n{% endif %}🕐 {{ now }}",
+    "image_mode": "off",
+    "render_mode": "classic_html"
+  },
+  "ed2k_task": {
+    "title": "🔗 **ED2K 任务**{{ status_text }}{% if title %}｜{{ title }}{% endif %}",
+    "text": "{% if media_type %}🎬 类型：<font color=\"comment\">{{ media_type }}{% if tmdb_id %} · TMDB {{ tmdb_id }}{% endif %}</font>\n{% endif %}📦 结果：成功 {{ success_count }} · 失败 {{ failed_count }}{% if file_count %} · 共 {{ file_count }}{% endif %}\n{% if total_size %}💾 体积：{{ total_size }}\n{% endif %}{% if transfer_source %}🧭 来源：<font color=\"comment\">{{ transfer_source }}</font>\n{% endif %}{% if elapsed %}⏱️ 耗时：<font color=\"comment\">{{ elapsed }}</font>\n{% endif %}{% if error_message %}<font color=\"warning\">⚠️ {{ error_message }}</font>\n{% endif %}🕐 {{ now }}",
+    "image_mode": "auto",
+    "render_mode": "classic_html"
+  },
+  "media_auto_share": {
+    "title": "🌐 **媒体自动分享**{{ status_text }}｜{{ title }}",
+    "text": "{% if media_type or tmdb_id %}🎬 类型：<font color=\"comment\">{{ media_type }}{% if tmdb_id %} · TMDB {{ tmdb_id }}{% endif %}</font>\n{% endif %}{% if file_count or total_size %}📦 文件：{{ file_count }} 个{% if total_size %} · {{ total_size }}{% endif %}\n{% endif %}{% if quality %}🎞️ 画质：{{ quality }}\n{% endif %}{% if target_path %}🎯 目标：<font color=\"comment\">{{ target_path }}</font>\n{% endif %}{% if details %}📝 <font color=\"comment\">{{ details }}</font>\n{% endif %}{% if quality_comment %}✨ {{ quality_comment }}\n{% endif %}🕐 {{ now }}",
+    "image_mode": "auto",
+    "render_mode": "classic_html"
+  },
+  "account_cookie_invalid": {
+    "title": "⚠️ **115 Cookie 失效**{% if account_name %}｜{{ account_name }}{% endif %}",
+    "text": "{% if status_message %}<font color=\"warning\">⚠️ {{ status_message }}</font>\n\n{% endif %}{% if details %}📝 <font color=\"comment\">{{ details }}</font>\n{% endif %}🕐 {{ now }}",
+    "image_mode": "off",
+    "render_mode": "classic_html"
+  },
+  "account_switched": {
+    "title": "🔄 **115 账号已切换**{% if account_name %}｜{{ account_name }}{% endif %}",
+    "text": "{% if status_message %}🔄 {{ status_message }}\n{% endif %}{% if operation_type %}🧭 方式：<font color=\"comment\">{{ operation_type }}</font>\n{% endif %}{% if details %}📝 <font color=\"comment\">{{ details }}</font>\n{% endif %}🕐 {{ now }}",
+    "image_mode": "off",
+    "render_mode": "classic_html"
+  },
+  "account_checkin": {
+    "title": "🗓️ **115 签到**{% if account_name %}｜{{ account_name }}{% endif %}",
+    "text": "{% if status_message %}{{ status_emoji or '✅' }} {{ status_message }}\n{% endif %}{% if points %}🎁 本次积分：{{ points }}\n{% endif %}{% if total_points %}🏆 总积分：{{ total_points }}\n{% endif %}{% if checkin_count or checkin_points %}📊 本机累计：<font color=\"comment\">{% if checkin_count %}{{ checkin_count }} 次{% endif %}{% if checkin_points %} · {{ checkin_points }} 积分{% endif %}</font>\n{% endif %}🕐 {{ now }}",
+    "image_mode": "off",
+    "render_mode": "classic_html"
+  },
+  "dianying_checkin": {
+    "title": "🗓️ **癫影签到**{% if account_name %}｜{{ account_name }}{% endif %}",
+    "text": "{% if status_message %}🗓️ {{ status_message }}\n{% endif %}{% if points %}🎁 本次积分：{{ points }}\n{% endif %}{% if total_points %}🏆 总积分：{{ total_points }}\n{% endif %}{% if details %}🎲 <font color=\"comment\">{{ details }}</font>\n{% endif %}{% if checkin_count %}📅 累计签到：{{ checkin_count }} 次\n{% endif %}🕐 {{ now }}",
+    "image_mode": "off",
+    "render_mode": "classic_html"
+  },
+  "container_update_check": {
+    "title": "🖥️ **容器更新检查**｜可更新 {{ available_count }} 个",
+    "text": "📦 共 {{ container_count }} 个 · 已最新 {{ current_count }}{% if check_error_count %} · 检查失败 <font color=\"warning\">{{ check_error_count }}</font>{% endif %}\n{% if details %}📋 明细\n> {{ details }}\n{% endif %}🕐 {{ now }}",
+    "image_mode": "off",
+    "render_mode": "classic_html"
+  },
+  "container_update_result": {
+    "title": "🖥️ **容器更新结果**｜成功 {{ success_count }} · 失败 {{ failed_count }}",
+    "text": "{% if trigger %}⚙️ 触发：<font color=\"comment\">{{ trigger }}</font>\n{% endif %}📦 处理容器：{{ container_count }} 个\n{% if failed_count %}❌ 失败：<font color=\"warning\">{{ failed_count }} 个</font>\n{% endif %}{% if details %}📋 明细\n> {{ details }}\n{% endif %}🕐 {{ now }}",
+    "image_mode": "off",
+    "render_mode": "classic_html"
+  },
+  "container_update_test": {
+    "title": "🧪 **容器通知测试**",
+    "text": "✅ {{ test_message or '容器更新消息推送通道工作正常' }}\n🕐 {{ now }}",
+    "image_mode": "off",
+    "render_mode": "classic_html"
+  },
+  "dian115_self_update": {
+    "title": "{% if update_success %}🆙 **Dian115 更新成功**{% else %}❌ **Dian115 更新失败**{% endif %}",
+    "text": "{% if update_success %}✅ 更新结果：<font color=\"comment\">自更新已完成并生效</font>\n{% endif %}{% if error_message %}<font color=\"warning\">⚠️ 原因：{{ error_message }}</font>\n{% elif details %}📝 <font color=\"comment\">{{ details }}</font>\n{% elif not update_success %}<font color=\"warning\">⚠️ 更新未成功，请检查运行日志</font>\n{% endif %}{% if current_version %}📦 当前版本：<font color=\"comment\">{{ current_version }}</font>\n{% endif %}{% if build_channel %}🏷️ 通道：<font color=\"comment\">{{ build_channel }}{% if build_commit %} · {{ build_commit }}{% endif %}</font>\n{% endif %}🕐 {{ now }}",
+    "image_mode": "off",
+    "render_mode": "classic_html"
+  },
+  "proxy_health_daily_report": {
+    "title": "📈 **Clash 监控日报**｜{{ day }}",
+    "text": "📡 请求 {{ request_count }} · 失败 {{ failure_count }} · 成功率 {{ success_rate }}\n🔀 切换 {{ switch_count }} 次{% if auto_switch_count or manual_switch_count %}（<font color=\"comment\">自动 {{ auto_switch_count }} / 手动 {{ manual_switch_count }}</font>）{% endif %}\n⬆️ 上传 <font color=\"comment\">{{ upload_bytes }} B</font> · ⬇️ 下载 <font color=\"comment\">{{ download_bytes }} B</font>\n🕐 {{ now }}",
+    "image_mode": "off",
+    "render_mode": "classic_html"
+  },
+  "proxy_health_test_report": {
+    "title": "🧪 **Clash 测试报告**｜{{ day }}",
+    "text": "✅ 通知通道可用\n📡 今日请求 {{ request_count }} · 失败 {{ failure_count }} · 成功率 {{ success_rate }}\n🔀 自动切换 {{ auto_switch_count }} · 手动切换 {{ manual_switch_count }}\n🕐 {{ now }}",
+    "image_mode": "off",
+    "render_mode": "classic_html"
+  },
+  "daily_statistics_report": {
+    "title": "📊 **每日运行统计**｜{{ report_date }}",
+    "text": "{% if period_label %}📅 <font color=\"comment\">{{ period_label }}</font>\n{% endif %}🗂 整理 {{ organized_count }} · ➕ 新增 {{ new_count }} · 🧼 洗版 {{ wash_count }}\n📥 转存 {{ transfer_count }} · 🌙 离线 {{ offline_count }}\n📄 全部文件 {{ all_files }} · 🎬 媒体库 {{ emby_media_total }}\n{% if latest_media %}🎞 最新整理\n{% for item in latest_media %}· {{ item.title }}{% if item.type_year %} · {{ item.type_year }}{% endif %}{% if item.episode %} · {{ item.episode }}{% endif %}\n{% endfor %}{% endif %}{% if signature %}✍️ <font color=\"comment\">{{ signature }}</font>\n{% endif %}🕐 {{ generated_at or now }}",
+    "image_mode": "off",
+    "render_mode": "classic_html"
+  },
+  "emby_library_statistics_report": {
+    "title": "📊 **媒体库统计**｜{{ library_name }}",
+    "text": "{% if report_date %}📅 {{ report_date }}{% if period_label %} · {{ period_label }}{% endif %}\n{% endif %}📚 媒体总数：{{ media_total }}\n🎞 电影 {{ movie_count }} · 📺 剧集 {{ series_count }} · 🗃 季 {{ season_count }} · 🎬 集 {{ episode_count }}\n📄 全部文件：{{ all_files }}\n{% if recent_media %}🆕 最近入库\n{% for item in recent_media %}· {{ item.title }}{% if item.type_year %} · {{ item.type_year }}{% endif %}{% if item.episode %} · {{ item.episode }}{% endif %}\n{% endfor %}{% endif %}{% if signature %}✍️ <font color=\"comment\">{{ signature }}</font>\n{% endif %}🕐 {{ generated_at or now }}",
+    "image_mode": "off",
+    "render_mode": "classic_html"
+  },
+  "subscribe_added": {
+    "title": "🏷️ **已添加订阅**｜{{ title_year }}{% if season_episode %} · {{ season_episode }}{% endif %}",
+    "text": "{% if media_type %}🎬 类型：<font color=\"comment\">{{ media_type }}</font>\n{% endif %}{% if needed_episodes %}🎯 待补：{{ needed_episodes }}\n{% endif %}{% if channel %}📡 渠道：<font color=\"comment\">{{ channel }}</font>\n{% endif %}{% if rating or genres %}⭐ <font color=\"comment\">{{ rating }}{% if genres %} · {{ genres }}{% endif %}</font>\n{% endif %}🕐 {{ now }}",
+    "image_mode": "auto",
+    "render_mode": "classic_html"
+  },
+  "subscribe_landed": {
+    "title": "✅ **订阅完成**｜{{ title_year }}{% if season_episode %} · {{ season_episode }}{% endif %}",
+    "text": "{% if landed_via %}📡 入库来源：<font color=\"comment\">{{ landed_via }}{% if landed_tag %} · {{ landed_tag }}{% endif %}</font>\n{% elif rating or genres %}⭐ <font color=\"comment\">{{ rating }}{% if genres %} · {{ genres }}{% endif %}</font>\n{% endif %}{% if tmdb_link %}🔗 {{ tmdb_link }}\n{% endif %}🕐 {{ now }}",
+    "image_mode": "auto",
+    "render_mode": "classic_html"
+  },
+  "subscribe_partial": {
+    "title": "⏳ **订阅部分完成**｜{{ title_year }}{% if season_episode %} · {{ season_episode }}{% endif %}",
+    "text": "{% if covered_episodes %}✅ 已覆盖：{{ covered_episodes }}\n{% endif %}{% if needed_episodes %}🎯 仍待补：<font color=\"comment\">{{ needed_episodes }}</font>\n{% endif %}{% if landed_via %}📡 入库来源：<font color=\"comment\">{{ landed_via }}{% if landed_tag %} · {{ landed_tag }}{% endif %}</font>\n{% endif %}🕐 {{ now }}",
+    "image_mode": "auto",
+    "render_mode": "classic_html"
+  },
+  "plugin_notification_message": {
+    "title": "📡 **插件任务结果**｜{{ plugin_name }}{% if level_text %} · {{ level_text }}{% endif %}",
+    "text": "📡 {{ level_icon }} {{ level_text }}\n📌 标题：{{ plugin_title }}\n📝 结果：{{ plugin_body }}\n{% if job_ref %}🔖 任务：<font color=\"comment\">{{ job_ref }}</font>\n{% endif %}🕐 {{ now }}",
+    "image_mode": "off",
+    "render_mode": "classic_html"
+  }
+}

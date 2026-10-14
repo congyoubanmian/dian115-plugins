@@ -1,0 +1,424 @@
+[
+  {
+    "event": "account_checkin",
+    "msgtype": "template_card",
+    "template_card": {
+      "card_type": "text_notice",
+      "source": {
+        "desc": "Dian115 媒体中心"
+      },
+      "main_title": {
+        "title": "🗓️ 115 签到{% if account_name %}｜{{ account_name }}{% endif %}",
+        "desc": "🕐 {{ now }}"
+      },
+      "sub_title_text": "{% if status_message %}{{ status_emoji or '✅' }} {{ status_message }}{% else %}✅ 签到完成{% endif %}",
+      "horizontal_content_list": [
+        {
+          "keyname": "本次积分",
+          "value": "{% if points %}+{{ points }}{% else %}—{% endif %}"
+        },
+        {
+          "keyname": "总积分",
+          "value": "{{ total_points or '—' }}"
+        },
+        {
+          "keyname": "本机累计",
+          "value": "{% if checkin_count %}{{ checkin_count }} 次{% if checkin_points %} · {{ checkin_points }} 积分{% endif %}{% else %}—{% endif %}"
+        }
+      ],
+      "jump_list": [
+        {
+          "type": 1,
+          "url": "https://dian115.congyoubanmian.com",
+          "title": "打开 Dian115"
+        }
+      ],
+      "card_action": {
+        "type": 1,
+        "url": "https://dian115.congyoubanmian.com"
+      }
+    }
+  },
+  {
+    "event": "account_migration",
+    "msgtype": "template_card",
+    "template_card": {
+      "card_type": "text_notice",
+      "source": {
+        "desc": "Dian115 媒体中心"
+      },
+      "main_title": {
+        "title": "📦 多号云迁移{{ status_text }}{% if file_name %}｜{{ file_name }}{% endif %}",
+        "desc": "🕐 {{ now }}"
+      },
+      "sub_title_text": "{% if error_message %}⚠️ {{ error_message }}{% else %}📊 成功 {{ success_count }} · 失败 {{ failed_count }}{% if skipped_count %} · 跳过 {{ skipped_count }}{% endif %}{% if target_path %} · 🎯 {{ target_path }}{% endif %}{% endif %}",
+      "horizontal_content_list": [
+        {
+          "keyname": "成功",
+          "value": "{{ success_count }}"
+        },
+        {
+          "keyname": "失败",
+          "value": "{{ failed_count }}"
+        },
+        {
+          "keyname": "跳过",
+          "value": "{{ skipped_count or 0 }}"
+        },
+        {
+          "keyname": "扫描",
+          "value": "{{ scanned_count or '—' }}"
+        },
+        {
+          "keyname": "秒传体积",
+          "value": "{{ total_size or '—' }}"
+        },
+        {
+          "keyname": "耗时",
+          "value": "{{ elapsed or '—' }}"
+        }
+      ],
+      "jump_list": [
+        {
+          "type": 1,
+          "url": "https://dian115.congyoubanmian.com",
+          "title": "打开 Dian115"
+        }
+      ],
+      "card_action": {
+        "type": 1,
+        "url": "https://dian115.congyoubanmian.com"
+      }
+    }
+  },
+  {
+    "event": "account_cookie_invalid",
+    "msgtype": "template_card",
+    "template_card": {
+      "card_type": "text_notice",
+      "source": {
+        "desc": "Dian115 媒体中心"
+      },
+      "main_title": {
+        "title": "⚠️ 115 Cookie 失效{% if account_name %}｜{{ account_name }}{% endif %}",
+        "desc": "🕐 {{ now }}"
+      },
+      "sub_title_text": "{% if status_message %}⚠️ {{ status_message }}{% else %}⚠️ Cookie 已失效，请重新登录 115 账号{% endif %}{% if details %} · 📝 {{ details }}{% endif %}",
+      "horizontal_content_list": [
+        {
+          "keyname": "账号",
+          "value": "{{ account_name or '未知账号' }}"
+        },
+        {
+          "keyname": "状态",
+          "value": "Cookie 失效"
+        },
+        {
+          "keyname": "时间",
+          "value": "{{ now }}"
+        }
+      ],
+      "jump_list": [
+        {
+          "type": 1,
+          "url": "https://dian115.congyoubanmian.com",
+          "title": "重新登录"
+        }
+      ],
+      "card_action": {
+        "type": 1,
+        "url": "https://dian115.congyoubanmian.com"
+      }
+    }
+  },
+  {
+    "event": "dianying_checkin",
+    "msgtype": "template_card",
+    "template_card": {
+      "card_type": "text_notice",
+      "source": {
+        "desc": "Dian115 媒体中心"
+      },
+      "main_title": {
+        "title": "🗓️ 癫影签到{% if account_name %}｜{{ account_name }}{% endif %}",
+        "desc": "🕐 {{ now }}"
+      },
+      "sub_title_text": "{% if status_message %}🗓️ {{ status_message }}{% else %}✅ 癫影签到完成{% endif %}{% if details %} · 🎲 {{ details }}{% endif %}",
+      "horizontal_content_list": [
+        {
+          "keyname": "本次积分",
+          "value": "{% if points %}+{{ points }}{% else %}—{% endif %}"
+        },
+        {
+          "keyname": "总积分",
+          "value": "{{ total_points or '—' }}"
+        },
+        {
+          "keyname": "累计签到",
+          "value": "{% if checkin_count %}{{ checkin_count }} 次{% else %}—{% endif %}"
+        }
+      ],
+      "jump_list": [
+        {
+          "type": 1,
+          "url": "https://dian115.congyoubanmian.com",
+          "title": "打开 Dian115"
+        }
+      ],
+      "card_action": {
+        "type": 1,
+        "url": "https://dian115.congyoubanmian.com"
+      }
+    }
+  },
+  {
+    "event": "subscribe_added",
+    "msgtype": "template_card",
+    "template_card": {
+      "card_type": "text_notice",
+      "source": {
+        "desc": "Dian115 媒体中心"
+      },
+      "main_title": {
+        "title": "🏷️ 已添加订阅｜{{ title_year }}{% if season_episode %} · {{ season_episode }}{% endif %}",
+        "desc": "🕐 {{ now }}"
+      },
+      "sub_title_text": "{% if media_type %}🎬 {{ media_type }}{% endif %}{% if channel %} · 📡 {{ channel }}{% endif %}{% if rating %} · ⭐ {{ rating }}{% endif %}{% if genres %} · {{ genres }}{% endif %}",
+      "horizontal_content_list": [
+        {
+          "keyname": "类型",
+          "value": "{{ media_type or '—' }}"
+        },
+        {
+          "keyname": "待补",
+          "value": "{{ needed_episodes or '—' }}"
+        },
+        {
+          "keyname": "渠道",
+          "value": "{{ channel or '—' }}"
+        },
+        {
+          "keyname": "评分",
+          "value": "{% if rating %}⭐ {{ rating }}{% else %}—{% endif %}"
+        }
+      ],
+      "jump_list": [
+        {
+          "type": 1,
+          "url": "{% if tmdb_link %}{{ tmdb_link }}{% else %}https://www.themoviedb.org{% endif %}",
+          "title": "TMDB 详情"
+        },
+        {
+          "type": 1,
+          "url": "https://dian115.congyoubanmian.com",
+          "title": "打开 Dian115"
+        }
+      ],
+      "card_action": {
+        "type": 1,
+        "url": "{% if tmdb_link %}{{ tmdb_link }}{% else %}https://dian115.congyoubanmian.com{% endif %}"
+      }
+    }
+  },
+  {
+    "event": "subscribe_partial",
+    "msgtype": "template_card",
+    "template_card": {
+      "card_type": "text_notice",
+      "source": {
+        "desc": "Dian115 媒体中心"
+      },
+      "main_title": {
+        "title": "⏳ 订阅部分完成｜{{ title_year }}{% if season_episode %} · {{ season_episode }}{% endif %}",
+        "desc": "🕐 {{ now }}"
+      },
+      "sub_title_text": "{% if landed_via %}📡 入库来源：{{ landed_via }}{% if landed_tag %} · {{ landed_tag }}{% endif %}{% else %}订阅已部分入库，继续追更剩余剧集{% endif %}",
+      "horizontal_content_list": [
+        {
+          "keyname": "已覆盖",
+          "value": "{{ covered_episodes or '—' }}"
+        },
+        {
+          "keyname": "仍待补",
+          "value": "{{ needed_episodes or '—' }}"
+        },
+        {
+          "keyname": "入库来源",
+          "value": "{% if landed_via %}{{ landed_via }}{% if landed_tag %} · {{ landed_tag }}{% endif %}{% else %}—{% endif %}"
+        }
+      ],
+      "jump_list": [
+        {
+          "type": 1,
+          "url": "{% if tmdb_link %}{{ tmdb_link }}{% else %}https://www.themoviedb.org{% endif %}",
+          "title": "TMDB 详情"
+        },
+        {
+          "type": 1,
+          "url": "https://dian115.congyoubanmian.com",
+          "title": "打开 Dian115"
+        }
+      ],
+      "card_action": {
+        "type": 1,
+        "url": "{% if tmdb_link %}{{ tmdb_link }}{% else %}https://dian115.congyoubanmian.com{% endif %}"
+      }
+    }
+  },
+  {
+    "event": "daily_statistics_report",
+    "msgtype": "template_card",
+    "template_card": {
+      "card_type": "text_notice",
+      "source": {
+        "desc": "Dian115 媒体中心"
+      },
+      "main_title": {
+        "title": "📊 每日运行统计｜{{ report_date }}",
+        "desc": "{% if period_label %}📅 {{ period_label }}{% else %}🕐 {{ generated_at or now }}{% endif %}"
+      },
+      "sub_title_text": "{% if latest_media %}🎞 最新整理：{% for item in latest_media %}{{ item.title }}{% if item.episode %} {{ item.episode }}{% endif %} {% endfor %}{% else %}📈 当日运行统计已生成{% endif %}{% if signature %} · ✍️ {{ signature }}{% endif %}",
+      "horizontal_content_list": [
+        {
+          "keyname": "整理",
+          "value": "{{ organized_count }}"
+        },
+        {
+          "keyname": "新增",
+          "value": "{{ new_count }}"
+        },
+        {
+          "keyname": "洗版",
+          "value": "{{ wash_count }}"
+        },
+        {
+          "keyname": "转存",
+          "value": "{{ transfer_count }}"
+        },
+        {
+          "keyname": "离线",
+          "value": "{{ offline_count }}"
+        },
+        {
+          "keyname": "媒体库",
+          "value": "{{ emby_media_total }}"
+        }
+      ],
+      "jump_list": [
+        {
+          "type": 1,
+          "url": "https://dian115.congyoubanmian.com",
+          "title": "打开 Dian115"
+        }
+      ],
+      "card_action": {
+        "type": 1,
+        "url": "https://dian115.congyoubanmian.com"
+      }
+    }
+  },
+  {
+    "event": "emby_library_statistics_report",
+    "msgtype": "template_card",
+    "template_card": {
+      "card_type": "text_notice",
+      "source": {
+        "desc": "Dian115 媒体中心"
+      },
+      "main_title": {
+        "title": "📊 媒体库统计｜{{ library_name }}",
+        "desc": "{% if report_date %}📅 {{ report_date }}{% if period_label %} · {{ period_label }}{% endif %}{% else %}🕐 {{ generated_at or now }}{% endif %}"
+      },
+      "sub_title_text": "{% if recent_media %}🆕 最近入库：{% for item in recent_media %}{{ item.title }}{% if item.episode %} {{ item.episode }}{% endif %} {% endfor %}{% else %}📚 媒体总数：{{ media_total }}{% endif %}{% if signature %} · ✍️ {{ signature }}{% endif %}",
+      "horizontal_content_list": [
+        {
+          "keyname": "媒体总数",
+          "value": "{{ media_total }}"
+        },
+        {
+          "keyname": "电影",
+          "value": "{{ movie_count }}"
+        },
+        {
+          "keyname": "剧集",
+          "value": "{{ series_count }}"
+        },
+        {
+          "keyname": "季",
+          "value": "{{ season_count }}"
+        },
+        {
+          "keyname": "集",
+          "value": "{{ episode_count }}"
+        },
+        {
+          "keyname": "全部文件",
+          "value": "{{ all_files }}"
+        }
+      ],
+      "jump_list": [
+        {
+          "type": 1,
+          "url": "https://dian115.congyoubanmian.com",
+          "title": "打开 Dian115"
+        }
+      ],
+      "card_action": {
+        "type": 1,
+        "url": "https://dian115.congyoubanmian.com"
+      }
+    }
+  },
+  {
+    "event": "proxy_health_daily_report",
+    "msgtype": "template_card",
+    "template_card": {
+      "card_type": "text_notice",
+      "source": {
+        "desc": "Dian115 媒体中心"
+      },
+      "main_title": {
+        "title": "📈 Clash 监控日报｜{{ day }}",
+        "desc": "🕐 {{ now }}"
+      },
+      "sub_title_text": "📡 请求 {{ request_count }} · 失败 {{ failure_count }} · 成功率 {{ success_rate }}{% if auto_switch_count or manual_switch_count %} · 🔀 自动 {{ auto_switch_count }} / 手动 {{ manual_switch_count }}{% endif %}",
+      "horizontal_content_list": [
+        {
+          "keyname": "请求",
+          "value": "{{ request_count }}"
+        },
+        {
+          "keyname": "失败",
+          "value": "{{ failure_count }}"
+        },
+        {
+          "keyname": "成功率",
+          "value": "{{ success_rate }}"
+        },
+        {
+          "keyname": "切换次数",
+          "value": "{{ switch_count }}"
+        },
+        {
+          "keyname": "上传",
+          "value": "{{ upload_bytes }} B"
+        },
+        {
+          "keyname": "下载",
+          "value": "{{ download_bytes }} B"
+        }
+      ],
+      "jump_list": [
+        {
+          "type": 1,
+          "url": "https://dian115.congyoubanmian.com",
+          "title": "打开 Dian115"
+        }
+      ],
+      "card_action": {
+        "type": 1,
+        "url": "https://dian115.congyoubanmian.com"
+      }
+    }
+  }
+]

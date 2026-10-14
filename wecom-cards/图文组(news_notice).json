@@ -1,0 +1,281 @@
+[
+  {
+    "event": "media_library_add",
+    "msgtype": "template_card",
+    "template_card": {
+      "card_type": "news_notice",
+      "source": {
+        "desc": "Dian115 媒体中心"
+      },
+      "main_title": {
+        "title": "🎬 资源入库｜{{ show_name or title }}{% if season_episode %} · {{ season_episode }}{% endif %}",
+        "desc": "🕐 {{ time_range or now }}"
+      },
+      "card_image": {
+        "url": "{% if picurl %}https://dian115.congyoubanmian.com{{ picurl }}{% endif %}",
+        "aspect_ratio": 1.78
+      },
+      "vertical_content_list": [
+        {
+          "title": "📦 入库内容",
+          "desc": "{% if file_count %}{{ file_count }} 个文件{% if total_size %} · {{ total_size }}{% endif %}{% elif episode_count %}{{ episode_count }} 集{% elif total_size %}{{ total_size }}{% else %}已完成{% endif %}"
+        },
+        {
+          "title": "ℹ️ 年份/类型",
+          "desc": "{% if year or rating or genres %}{% if year %}{{ year }}{% endif %}{% if rating %} · ⭐ {{ rating }}{% endif %}{% if genres %} · {{ genres }}{% endif %}{% else %}—{% endif %}"
+        },
+        {
+          "title": "🎞️ 画质",
+          "desc": "{% if quality %}{{ quality }}{% if quality_comment %} · {{ quality_comment }}{% endif %}{% else %}—{% endif %}"
+        },
+        {
+          "title": "🗂️ 媒体库",
+          "desc": "{% if library_name %}{{ library_name }}{% if emby_instance_name %} · {{ emby_instance_name }}{% endif %}{% else %}—{% endif %}"
+        }
+      ],
+      "card_action": {
+        "type": 1,
+        "url": "https://dian115.congyoubanmian.com"
+      }
+    }
+  },
+  {
+    "event": "media_library_update",
+    "msgtype": "template_card",
+    "template_card": {
+      "card_type": "news_notice",
+      "source": {
+        "desc": "Dian115 媒体中心"
+      },
+      "main_title": {
+        "title": "🔄 媒体更新｜{{ show_name or title }}{% if season_episode %} · {{ season_episode }}{% endif %}",
+        "desc": "🕐 {{ now }}"
+      },
+      "card_image": {
+        "url": "{% if picurl %}https://dian115.congyoubanmian.com{{ picurl }}{% endif %}",
+        "aspect_ratio": 1.78
+      },
+      "vertical_content_list": [
+        {
+          "title": "🎬 类型/年份",
+          "desc": "{% if media_type or year %}{% if media_type %}{{ media_type }}{% endif %}{% if year %} · {{ year }}{% endif %}{% else %}—{% endif %}"
+        },
+        {
+          "title": "🎞️ 画质",
+          "desc": "{% if quality %}{{ quality }}{% if quality_comment %} · {{ quality_comment }}{% endif %}{% else %}—{% endif %}"
+        },
+        {
+          "title": "🗂️ 媒体库",
+          "desc": "{% if library_name %}{{ library_name }}{% else %}—{% endif %}"
+        },
+        {
+          "title": "🖥️ 实例",
+          "desc": "{% if emby_instance_name %}{{ emby_instance_name }}{% else %}—{% endif %}"
+        }
+      ],
+      "card_action": {
+        "type": 1,
+        "url": "https://dian115.congyoubanmian.com"
+      }
+    }
+  },
+  {
+    "event": "library_organize_success",
+    "msgtype": "template_card",
+    "template_card": {
+      "card_type": "news_notice",
+      "source": {
+        "desc": "Dian115 媒体中心"
+      },
+      "main_title": {
+        "title": "✅ 整理完成｜{{ show_name or title }}{% if season_episode %} · {{ season_episode }}{% endif %}",
+        "desc": "🕐 {{ time_range or now }}"
+      },
+      "card_image": {
+        "url": "{% if picurl %}https://dian115.congyoubanmian.com{{ picurl }}{% endif %}",
+        "aspect_ratio": 1.78
+      },
+      "vertical_content_list": [
+        {
+          "title": "📦 整理内容",
+          "desc": "{% if file_count %}{{ file_count }} 个文件{% if total_size %} · {{ total_size }}{% endif %}{% elif episode_count %}{{ episode_count }} 集{% else %}整理已完成{% endif %}"
+        },
+        {
+          "title": "ℹ️ 年份/类型",
+          "desc": "{% if year or rating or genres %}{% if year %}{{ year }}{% endif %}{% if rating %} · ⭐ {{ rating }}{% endif %}{% if genres %} · {{ genres }}{% endif %}{% else %}—{% endif %}"
+        },
+        {
+          "title": "🎞️ 画质",
+          "desc": "{% if quality %}{{ quality }}{% if quality_comment %} · {{ quality_comment }}{% endif %}{% else %}—{% endif %}"
+        },
+        {
+          "title": "♻️ 洗版",
+          "desc": "{% if is_wash %}{{ wash_status or '洗版完成' }}{% if wash_reason %} · {{ wash_reason }}{% endif %}{% else %}未洗版{% endif %}"
+        }
+      ],
+      "card_action": {
+        "type": 1,
+        "url": "https://dian115.congyoubanmian.com"
+      }
+    }
+  },
+  {
+    "event": "tg_auto_transfer",
+    "msgtype": "template_card",
+    "template_card": {
+      "card_type": "news_notice",
+      "source": {
+        "desc": "Dian115 媒体中心"
+      },
+      "main_title": {
+        "title": "📲 TG 自动转存{{ status_text }}{% if file_name %}｜{{ file_name }}{% endif %}",
+        "desc": "🕐 {{ now }}"
+      },
+      "card_image": {
+        "url": "{% if picurl %}https://dian115.congyoubanmian.com{{ picurl }}{% endif %}",
+        "aspect_ratio": 1.78
+      },
+      "vertical_content_list": [
+        {
+          "title": "📣 频道",
+          "desc": "{% if source_name %}{{ source_name }}{% else %}—{% endif %}"
+        },
+        {
+          "title": "📊 结果",
+          "desc": "成功 {{ success_count }}{% if failed_count %} · 失败 {{ failed_count }}{% endif %}"
+        },
+        {
+          "title": "📂 目标",
+          "desc": "{% if target_path %}{{ target_path }}{% else %}—{% endif %}"
+        },
+        {
+          "title": "⚠️ 异常",
+          "desc": "{% if error_message %}{{ error_message }}{% else %}无{% endif %}"
+        }
+      ],
+      "card_action": {
+        "type": 1,
+        "url": "https://dian115.congyoubanmian.com"
+      }
+    }
+  },
+  {
+    "event": "subscribe_landed",
+    "msgtype": "template_card",
+    "template_card": {
+      "card_type": "news_notice",
+      "source": {
+        "desc": "Dian115 媒体中心"
+      },
+      "main_title": {
+        "title": "✅ 订阅完成｜{{ title_year }}{% if season_episode %} · {{ season_episode }}{% endif %}",
+        "desc": "🕐 {{ now }}"
+      },
+      "card_image": {
+        "url": "{% if picurl %}https://dian115.congyoubanmian.com{{ picurl }}{% endif %}",
+        "aspect_ratio": 1.78
+      },
+      "vertical_content_list": [
+        {
+          "title": "📡 入库来源",
+          "desc": "{% if landed_via %}{{ landed_via }}{% if landed_tag %} · {{ landed_tag }}{% endif %}{% else %}—{% endif %}"
+        },
+        {
+          "title": "⭐ 评分/类型",
+          "desc": "{% if rating or genres %}{% if rating %}{{ rating }}{% endif %}{% if genres %} · {{ genres }}{% endif %}{% else %}—{% endif %}"
+        }
+      ],
+      "jump_list": [
+        {
+          "type": 1,
+          "url": "{% if tmdb_link %}{{ tmdb_link }}{% else %}https://dian115.congyoubanmian.com{% endif %}",
+          "title": "TMDB 详情"
+        }
+      ],
+      "card_action": {
+        "type": 1,
+        "url": "{% if tmdb_link %}{{ tmdb_link }}{% else %}https://dian115.congyoubanmian.com{% endif %}"
+      }
+    }
+  },
+  {
+    "event": "dian115_offline_finished",
+    "msgtype": "template_card",
+    "template_card": {
+      "card_type": "news_notice",
+      "source": {
+        "desc": "Dian115 媒体中心"
+      },
+      "main_title": {
+        "title": "☁️ 115 离线下载{{ status_text }}{% if url_count %}｜{{ url_count }} 个链接{% endif %}",
+        "desc": "🕐 {{ now }}"
+      },
+      "card_image": {
+        "url": "{% if picurl %}https://dian115.congyoubanmian.com{{ picurl }}{% endif %}",
+        "aspect_ratio": 1.78
+      },
+      "vertical_content_list": [
+        {
+          "title": "📊 结果",
+          "desc": "成功 {{ success_count }} · 失败 {{ failed_count }}{% if elapsed %} · 耗时 {{ elapsed }}{% endif %}"
+        },
+        {
+          "title": "📂 保存到",
+          "desc": "{% if target_path %}{{ target_path }}{% else %}—{% endif %}"
+        },
+        {
+          "title": "📡 来源",
+          "desc": "{% if transfer_source %}{{ transfer_source }}{% else %}—{% endif %}"
+        },
+        {
+          "title": "⚠️ 异常",
+          "desc": "{% if error_message %}{{ error_message }}{% else %}无{% endif %}"
+        }
+      ],
+      "card_action": {
+        "type": 1,
+        "url": "https://dian115.congyoubanmian.com"
+      }
+    }
+  },
+  {
+    "event": "dian115_offline_task_finished",
+    "msgtype": "template_card",
+    "template_card": {
+      "card_type": "news_notice",
+      "source": {
+        "desc": "Dian115 媒体中心"
+      },
+      "main_title": {
+        "title": "✅ 115 离线任务完成{% if file_name %}｜{{ file_name }}{% endif %}",
+        "desc": "🕐 {{ now }}"
+      },
+      "card_image": {
+        "url": "{% if picurl %}https://dian115.congyoubanmian.com{{ picurl }}{% endif %}",
+        "aspect_ratio": 1.78
+      },
+      "vertical_content_list": [
+        {
+          "title": "📄 文件",
+          "desc": "{% if file_name %}{{ file_name }}{% else %}—{% endif %}"
+        },
+        {
+          "title": "💾 大小",
+          "desc": "{% if total_size %}{{ total_size }}{% else %}—{% endif %}"
+        },
+        {
+          "title": "📂 保存到",
+          "desc": "{% if target_path %}{{ target_path }}{% else %}—{% endif %}"
+        },
+        {
+          "title": "⏱️ 耗时",
+          "desc": "{% if elapsed %}{{ elapsed }}{% else %}—{% endif %}"
+        }
+      ],
+      "card_action": {
+        "type": 1,
+        "url": "https://dian115.congyoubanmian.com"
+      }
+    }
+  }
+]

@@ -1,0 +1,223 @@
+[
+  {
+    "event": "library_organize_fail",
+    "msgtype": "template_card",
+    "template_card": {
+      "card_type": "button_interaction",
+      "source": {
+        "desc": "Dian115 媒体中心"
+      },
+      "main_title": {
+        "title": "❌ 整理失败{% if failure_count %}｜{{ failure_count }} 项{% endif %}",
+        "desc": "🕐 {{ time_range or now }}"
+      },
+      "sub_title_text": "{% if failure_details %}⚠️ 失败详情：{{ failure_details }}{% elif error_message %}⚠️ {{ error_message }}{% elif message_text %}⚠️ {{ message_text }}{% else %}⚠️ 整理失败，请检查运行日志{% endif %}",
+      "horizontal_content_list": [
+        {
+          "keyname": "失败项数",
+          "value": "{{ failure_count or '未知' }}"
+        },
+        {
+          "keyname": "目标路径",
+          "value": "{{ target_path or '未提供' }}"
+        }
+      ],
+      "card_action": {
+        "type": 1,
+        "url": "https://dian115.congyoubanmian.com"
+      },
+      "button_list": [
+        {
+          "text": "重新整理",
+          "type": 0,
+          "key": "library_organize_retry",
+          "style": 1
+        },
+        {
+          "text": "打开115",
+          "type": 1,
+          "url": "https://dian115.congyoubanmian.com",
+          "style": 4
+        }
+      ]
+    }
+  },
+  {
+    "event": "library_organize_skip",
+    "msgtype": "template_card",
+    "template_card": {
+      "card_type": "button_interaction",
+      "source": {
+        "desc": "Dian115 媒体中心"
+      },
+      "main_title": {
+        "title": "⏳ 整理跳过｜{{ show_name or title }}{% if season_episode %} · {{ season_episode }}{% endif %}",
+        "desc": "🕐 {{ time_range or now }}"
+      },
+      "sub_title_text": "{% if skip_reason %}⏳ 跳过原因：{{ skip_reason }}{% elif wash_reason %}⏳ 跳过原因：{{ wash_reason }}{% else %}⏳ 整理已跳过{% endif %}{% if quality_comment %} · ✨ 待整理资源：{{ quality_comment }}{% endif %}",
+      "horizontal_content_list": [
+        {
+          "keyname": "来源文件",
+          "value": "{{ source_path or '未提供' }}"
+        }
+      ],
+      "card_action": {
+        "type": 1,
+        "url": "https://dian115.congyoubanmian.com"
+      },
+      "button_list": [
+        {
+          "text": "重新整理",
+          "type": 0,
+          "key": "library_organize_retry",
+          "style": 1
+        },
+        {
+          "text": "打开115",
+          "type": 1,
+          "url": "https://dian115.congyoubanmian.com",
+          "style": 4
+        },
+        {
+          "text": "查看TMDB",
+          "type": 1,
+          "url": "https://www.themoviedb.org",
+          "style": 4
+        }
+      ]
+    }
+  },
+  {
+    "event": "dian115_self_update",
+    "msgtype": "template_card",
+    "template_card": {
+      "card_type": "button_interaction",
+      "source": {
+        "desc": "Dian115 媒体中心"
+      },
+      "main_title": {
+        "title": "{% if update_success %}🆙 Dian115 更新成功{% else %}❌ Dian115 更新失败{% endif %}",
+        "desc": "🕐 {{ now }}"
+      },
+      "sub_title_text": "{% if update_success %}✅ 自更新已完成并生效{% elif error_message %}⚠️ 原因：{{ error_message }}{% elif details %}📝 {{ details }}{% else %}⚠️ 更新未成功，请检查运行日志{% endif %}",
+      "horizontal_content_list": [
+        {
+          "keyname": "当前版本",
+          "value": "{{ current_version or '未知' }}"
+        },
+        {
+          "keyname": "构建通道",
+          "value": "{{ build_channel or '未知' }}{% if build_commit %} · {{ build_commit }}{% endif %}"
+        }
+      ],
+      "card_action": {
+        "type": 1,
+        "url": "https://dian115.congyoubanmian.com"
+      },
+      "button_list": [
+        {
+          "text": "重新更新",
+          "type": 0,
+          "key": "dian115_update_retry",
+          "style": 1
+        },
+        {
+          "text": "打开115",
+          "type": 1,
+          "url": "https://dian115.congyoubanmian.com",
+          "style": 4
+        }
+      ]
+    }
+  },
+  {
+    "event": "strm_generate",
+    "msgtype": "template_card",
+    "template_card": {
+      "card_type": "button_interaction",
+      "source": {
+        "desc": "Dian115 媒体中心"
+      },
+      "main_title": {
+        "title": "📺 STRM 生成完成{% if file_count %}｜{{ file_count }} 个{% endif %}",
+        "desc": "🕐 {{ time_range or now }}"
+      },
+      "sub_title_text": "{% if strm_tree %}📂 完整路径：{{ strm_tree }}{% elif strm_path %}📂 路径：{{ strm_path }}{% else %}📺 STRM 生成完成{% endif %}",
+      "horizontal_content_list": [
+        {
+          "keyname": "生成数量",
+          "value": "{% if file_count %}{{ file_count }} 个{% else %}已完成{% endif %}"
+        }
+      ],
+      "card_action": {
+        "type": 1,
+        "url": "https://dian115.congyoubanmian.com"
+      },
+      "button_list": [
+        {
+          "text": "重新生成",
+          "type": 0,
+          "key": "strm_regenerate",
+          "style": 1
+        },
+        {
+          "text": "打开115",
+          "type": 1,
+          "url": "https://dian115.congyoubanmian.com",
+          "style": 4
+        }
+      ]
+    }
+  },
+  {
+    "event": "container_update_result",
+    "msgtype": "template_card",
+    "template_card": {
+      "card_type": "button_interaction",
+      "source": {
+        "desc": "Dian115 媒体中心"
+      },
+      "main_title": {
+        "title": "🖥️ 容器更新结果｜成功 {{ success_count }} · 失败 {{ failed_count }}",
+        "desc": "🕐 {{ now }}"
+      },
+      "sub_title_text": "{% if details %}📋 明细：{{ details }}{% else %}📦 本次处理 {{ container_count or '未知' }} 个容器{% if failed_count %}，失败 {{ failed_count }} 个{% endif %}{% endif %}",
+      "horizontal_content_list": [
+        {
+          "keyname": "处理容器",
+          "value": "{{ container_count or '未知' }} 个"
+        },
+        {
+          "keyname": "成功",
+          "value": "{{ success_count or 0 }}"
+        },
+        {
+          "keyname": "失败",
+          "value": "{{ failed_count or 0 }}"
+        },
+        {
+          "keyname": "触发方式",
+          "value": "{{ trigger or '未知' }}"
+        }
+      ],
+      "card_action": {
+        "type": 1,
+        "url": "https://dian115.congyoubanmian.com"
+      },
+      "button_list": [
+        {
+          "text": "重试更新",
+          "type": 0,
+          "key": "container_update_retry",
+          "style": 1
+        },
+        {
+          "text": "打开115",
+          "type": 1,
+          "url": "https://dian115.congyoubanmian.com",
+          "style": 4
+        }
+      ]
+    }
+  }
+]

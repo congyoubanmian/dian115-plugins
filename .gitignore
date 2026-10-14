@@ -27,3 +27,6 @@ node_modules/
 # music-rs: 宿主契约参考资料(打包时从官方仓库取, 不入库)与前端构建产物
 plugins/music-rs/docs-ref/
 plugins/music-rs/frontend/dist/
+
+# vite 本地缓存目录
+**/.vite/
