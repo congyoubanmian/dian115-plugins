@@ -1,7 +1,7 @@
 //! JSON-RPC 分发(`initialize` / `state` / `action` / `job` / `shutdown`)。
 //!
-//! 对照 Go 插件运行时的 `wasm.go:74` `wasmDispatch`(也在
-//! `plugins/music-dl/runtime/wasm.go:72` 与官方示例 `example/runtime/main.go:150`),
+//! 对照 Go 插件运行时的 `wasm.go:74` `wasmDispatch`(旧 Go 版已移除, 见 git 历史;
+//! 官方示例见 `example/runtime/main.go:150`),
 //! 按 dian115 Host 的真实线协议实现:
 //!
 //! ```json

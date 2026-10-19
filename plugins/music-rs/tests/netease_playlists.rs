@@ -10,7 +10,7 @@
 //!
 //! # 向量来源(不是从本实现反推的)
 //!
-//! sidecar `sidecars/music-agent/app/server.mjs` 的源码逐行取值:
+//! 旧 sidecar（已从仓库移除，见 git 历史）的 `server.mjs` 源码逐行取值:
 //! `server.mjs:308`(`NETEASE_LEVEL_ORDER` 升序表)与 `server.mjs:331-345`
 //! (歌曲映射的 `||`/`??` 回退链)。宿主网络与 KV 依赖真实环境, 不在集成测试覆盖内。
 //!

@@ -7,13 +7,12 @@
 //   * 签名消息 = UTF8("DIAN115-PLUGIN-PACKAGE-V1") 0x00 RFC8785-JCS(manifest) 0x00 RFC8785-JCS(integrity)
 //     (docs/plugin-platform/developer-guide.md §9 "Package, sign and publish");
 //   * 私钥走环境变量 DIAN115_PLUGIN_SIGNING_KEY(未设置时回退到插件目录下的
-//     developer-ed25519-private.pem; 本插件的默认 pem 从 plugins/music-dl 复制而来,
-//     与 Go 版音乐下载同一发布身份, 该文件不进 git)。
+//     developer-ed25519-private.pem, 该文件不进 git)。
 //
 // 与 douban-rs 的差异(有意为之):
 //   * WASM 产物直接取 target/wasm32-unknown-unknown/release/plugin.wasm;
 //   * 前端资产与图标都来自本插件自己的 frontend/(不复用 douban-center 的产物);
-//   * ZIP 用 node:zlib 写, 不依赖 yazl —— 本插件目录没有 node_modules。
+//   * ZIP 用 node:zlib 写, 不依赖第三方 ZIP 库。
 //
 // 用法:
 //   node package.mjs                # 打包(需要先构建好 wasm 与 frontend/dist)
@@ -27,7 +26,6 @@ import {
 } from 'node:crypto'
 import {
   chmodSync,
-  copyFileSync,
   existsSync,
   mkdirSync,
   readFileSync,
@@ -45,14 +43,10 @@ const manifestTemplatePath = join(root, 'manifest.template.json')
 const marketTemplatePath = join(root, 'market-entry.template.json')
 const wasmPath = join(root, 'target', 'wasm32-unknown-unknown', 'release', 'plugin.wasm')
 const uiAssetsRoot = join(root, 'frontend', 'dist', 'assets')
-// 图标与前端同源: 本插件 frontend/icon.svg(从 music-dl 复制而来)。
+// 图标与前端同源: 本插件 frontend/icon.svg。
 const iconPath = join(root, 'frontend', 'icon.svg')
 const releasesRoot = join(root, 'releases')
 const keyPath = resolve(process.env.DIAN115_PLUGIN_SIGNING_KEY || join(root, 'developer-ed25519-private.pem'))
-// 默认签名私钥的来源: 与 Go 版音乐下载(plugins/music-dl)同一发布身份。
-// pem 在 .gitignore 内, 全新克隆时本地没有 —— 首次打包时从 music-dl 复制一份过来,
-// 保证 `node package.mjs` 开箱可用(仍可用 DIAN115_PLUGIN_SIGNING_KEY 覆盖)。
-const defaultKeySourcePath = resolve(join(root, '..', 'music-dl', 'developer-ed25519-private.pem'))
 const generateKey = process.argv.includes('--generate-key')
 
 function sha256(value) {
@@ -82,19 +76,7 @@ function parseJSON(path) {
   return JSON.parse(readFileSync(path, 'utf8'))
 }
 
-// 默认私钥缺失时, 从 plugins/music-dl 复制(与 Go 版同一发布身份); 只在
-// 未显式指定 DIAN115_PLUGIN_SIGNING_KEY 且本地确实没有 pem 时动作。
-function ensureDefaultSigningKey() {
-  if (existsSync(keyPath) || process.env.DIAN115_PLUGIN_SIGNING_KEY) return
-  if (!existsSync(defaultKeySourcePath)) return
-  mkdirSync(dirname(keyPath), { recursive: true })
-  copyFileSync(defaultKeySourcePath, keyPath)
-  chmodSync(keyPath, 0o600)
-  process.stdout.write(`Copied default signing key from music-dl: ${keyPath}\n`)
-}
-
 function loadPrivateKey() {
-  ensureDefaultSigningKey()
   if (!existsSync(keyPath)) {
     if (!generateKey) {
       throw new Error(`Signing key not found: ${keyPath}\nRun node package.mjs --generate-key once for local development, or set DIAN115_PLUGIN_SIGNING_KEY.`)

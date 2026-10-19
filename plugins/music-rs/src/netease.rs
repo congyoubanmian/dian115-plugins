@@ -1,10 +1,9 @@
 //! 网易云音乐: 搜索 / eapi 取链 / 扫码登录。
 //!
-//! 移植来源两处:
-//! - `plugins/music-dl/runtime/netease.go` —— 协议主体(eapi 加解密、搜索、
-//!   取链、扫码 create/poll、cookie 读写);
-//! - sidecar `sidecars/music-agent/app/server.mjs` + `fetch-worker.mjs` 的网易云
-//!   部分 —— UA、随机国内 IP 头、音质阶梯与逐级回退顺序、cookie 合并保存。
+//! 移植来源两处（旧版源码已从仓库移除，见 git 历史）:
+//! - 旧 Go 版的网易云协议主体(eapi 加解密、搜索、取链、扫码 create/poll、cookie 读写);
+//! - 旧 sidecar 的网易云部分 —— UA、随机国内 IP 头、音质阶梯与逐级回退顺序、
+//!   cookie 合并保存。
 //!
 //! | 本文件 | Go 对照 | 请求的域名(已在 manifest permissions.network 声明) |
 //! |--------|---------|--------------------------------------------------|
@@ -258,11 +257,11 @@ pub fn eapi_params(api_url: &str, payload: &Value) -> String {
     hex::encode(encrypted)
 }
 
-/// 取链 payload(Go `netease.go:120-131`)。
+/// 取链 payload(旧 Go 版 `netease.go:120-131`, 源码已从仓库移除)。
 ///
-/// 0.3.9: 对齐 music-agent `fetch-worker.mjs:85-88` 的**真机验证过**形态 ——
+/// 0.3.9: 对齐旧 sidecar（已移除）`fetch-worker.mjs:85-88` 的**真机验证过**形态 ——
 /// header 是闭合 JSON(`{"os":"pc","appver":"","osver":"","deviceId":"pyncm!"}`),
-/// 无 requestId、无 immerseType。Go 版的"故意不闭合 + requestId"形态从未在
+/// 无 requestId、无 immerseType。旧版的"故意不闭合 + requestId"形态从未在
 /// broker 下验证过, 真机表现为 8 档全 200 却全部取不到链接(疑似被风控)。
 /// `request_id` 参数保留以稳定调用方签名, 不再进 payload。
 pub fn song_url_payload(song_id: &str, level: &str, _request_id: u64) -> Value {

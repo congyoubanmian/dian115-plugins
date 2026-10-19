@@ -1,7 +1,7 @@
 //! 宿主代下载管线 —— 取链 → 暂存 → 轮询 → 定名 → 复制 → 通知。
 //!
-//! 与 Go 版 music-dl(`music-agent` sidecar 本地下载)的关键差异: 字节搬运全部交给
-//! 宿主 broker, 插件只编排状态机。对照 `sidecars/music-agent/app/server.mjs`:
+//! 与旧 Go 版（已从仓库移除，行为对照见 git 历史）的关键差异: 字节搬运全部交给
+//! 宿主 broker, 插件只编排状态机:
 //!
 //! 1. **取链接**: [`crate::netease::song_url`] / [`crate::qq::song_url`] 拿到 CDN 直链;
 //! 2. **暂存**: `POST /api/plugin-host/files/downloads {url, parent_ref, name:"<短id>.part"}`

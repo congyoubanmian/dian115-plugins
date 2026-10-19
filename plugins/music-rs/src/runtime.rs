@@ -675,7 +675,7 @@ impl Runtime {
         }
     }
 
-    /// action `archive`: 清掉已终态任务并清空日志(对应 Go 版 music-dl 的 `archive`)。
+    /// action `archive`: 清掉已终态任务并清空日志(对应旧 Go 版的 `archive`)。
     pub fn archive(&mut self) -> Value {
         match tasks::clear_finished(&mut self.put_ids) {
             Ok(removed) => {

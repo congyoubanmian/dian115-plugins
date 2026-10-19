@@ -2,7 +2,7 @@
 //
 // 后端只给 `qr_content`(登录页 URL, 见 `src/netease.rs` 的 `qr_create`: "wasm 里没有
 // 二维码渲染依赖, 前端自己画"), 宿主又禁止插件 UI 直接 fetch, 所以这里自带一个
-// 纯 TS 的 QR Model 2 编码器(不引新依赖, 也不能引: 构建复用 music-dl 的 node_modules)。
+// 纯 TS 的 QR Model 2 编码器(宿主 singleton 只覆盖 vue/naive-ui/lucide, 不为二维码引入额外包)。
 //
 // 算法与常量表按 ISO/IEC 18004 实现, 结构参照 Project Nayuki 的 QR Code generator
 // (MIT License, https://www.nayuki.io/page/qr-code-generator-library) 的 TypeScript 版

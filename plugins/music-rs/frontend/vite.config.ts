@@ -4,7 +4,7 @@ import vue from '@vitejs/plugin-vue'
 import federation from '@originjs/vite-plugin-federation'
 
 // 宿主运行时支持这些 Federation singleton 标记, 但已发布的 TypeScript 声明里
-// 还没暴露 `singleton`(与 music-dl / chase-rs / example 的 vite.config.ts 同一处理)。
+// 还没暴露 `singleton`(与 chase-rs / example 的 vite.config.ts 同一处理)。
 //
 // `generate: false` = 不自带副本, 由宿主提供(宿主已把 vue / naive-ui / @lucide/vue 注入 share scope)。
 // `@lucide/vue`: 2026-10 视觉重画引入的图标库, 声明方式与 chase-rs/frontend/vite.config.ts 一致。
@@ -15,7 +15,7 @@ const hostSharedDependencies = {
 } as any
 
 // 构建入口固定在插件自己的 frontend/(而不是 process.cwd()):
-// `build-ui.mjs` 在插件根目录用 music-dl 的 vite 跑 `--config frontend/vite.config.ts`,
+// `build-ui.mjs` 在插件根目录用本插件的 vite 跑 `--config frontend/vite.config.ts`,
 // 不固定 root 的话 exposes 会按 cwd 解析, 产物也会落到别处。
 const rootDir = fileURLToPath(new URL('.', import.meta.url))
 
@@ -36,7 +36,7 @@ export default defineConfig({
   build: {
     target: 'esnext',
     // manifest.ui.federation.assets_root = frontend/dist/assets,
-    // entry = frontend/dist/assets/remoteEntry.js(与 music-dl 的 outDir/assetsDir 组合一致)。
+    // entry = frontend/dist/assets/remoteEntry.js。
     outDir: 'dist',
     assetsDir: 'assets',
     cssCodeSplit: true,

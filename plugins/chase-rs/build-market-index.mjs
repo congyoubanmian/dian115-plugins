@@ -5,7 +5,7 @@
 //   * 条目内容直接复用打包器产出的 releases/market-entry.generated.json
 //     (runtime/permissions 必须与签名 Manifest 一致, sha256 必须等于包字节哈希);
 //   * 按 id 增量更新: 只替换/追加自己的条目, 保留索引里其它插件的条目
-//     (douban.rs / music.dl 原样保留);
+//     (douban.rs / music.rs 原样保留);
 //   * 图标拷到 plugin-market/icons/<插件id>.svg, 条目里写相对路径 icons/<id>.svg。
 //
 // 用法:
@@ -60,7 +60,7 @@ try {
   existing = null
 }
 
-// 按 id 增量更新, 保留其它插件(douban.rs / music.dl)的条目。
+// 按 id 增量更新, 保留其它插件(douban.rs / music.rs)的条目。
 const plugins = Array.isArray(existing?.plugins) ? existing.plugins.filter((p) => p.id !== newEntry.id) : []
 plugins.push(newEntry)
 plugins.sort((a, b) => String(a.id).localeCompare(String(b.id)))

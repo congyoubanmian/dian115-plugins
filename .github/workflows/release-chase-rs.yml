@@ -1,7 +1,7 @@
 name: 发布追剧管家 Rust 版插件
 
 # 推一个 chase-v<版本> 标签即自动: rust:1-slim 容器里编译 WASM → 打包签名 →
-# 生成市场索引(新增 chase.rs 条目, 保留 douban.rs / music.dl) →
+# 生成市场索引(新增 chase.rs 条目, 保留 douban.rs) →
 # 创建 Release 并上传 .d115p → 把索引回写到 main。
 #
 # 前置: 仓库 Secrets 里配置 DIAN115_PLUGIN_SIGNING_KEY（插件签名私钥的 PEM 全文）。

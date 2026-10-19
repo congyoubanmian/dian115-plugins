@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // 音乐下载(Rust 版)插件界面 —— Federation 模块 `./AppPage`(见 vite.config.ts / manifest)。
 //
-// 布局与交互习惯沿用 plugins/music-dl/src/AppPage.vue: 顶部扫码登录卡片 + 搜索/我的歌单/任务/设置
+// 布局与交互习惯沿用旧 Go 版（已从仓库移除）的界面: 顶部扫码登录卡片 + 搜索/我的歌单/任务/设置
 // 四个分页 + 底部记录区。**数据通道换成本插件的 wasm 运行时**:
 //   - 状态只读 `props.runtimeState`(宿主注入), 宿主没给时用 `props.api.getState()` 兜底;
 //   - 动作一律走 `props.api.invokeAction`, 每次动作后 `await props.api.refresh()`;
@@ -715,7 +715,7 @@ async function download(song: Song): Promise<boolean> {
 
 // ─────────────────────────── ③ 我的歌单(runtime.rs: playlists / playlist-songs) ───────────────────────────
 //
-// 交互照搬 plugins/music-dl/src/AppPage.vue 的歌单页: 卡片列表(name/count/creator) → 点开分页曲目
+// 交互沿用旧 Go 版的歌单页: 卡片列表(name/count/creator) → 点开分页曲目
 // (每页 100, 加载更多; 仅用于浏览) → 每首歌独立音质下拉(浏览用) → 整单入队。
 // 调用换成 invoke('playlists', {source}) / invoke('playlist-songs', {source,id,page,page_size});
 // 「整单下载」走 `playlist-queue-all` 后端分批翻页入队(见 downloadPlaylistAll), 与已加载的曲目条数解耦。

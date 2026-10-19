@@ -21,8 +21,3 @@ node tools/conformance/project-check.mjs \
 
 本地已验证(2026-10-14): chase.rs@0.1.8 / douban.rs@0.2.4 / music.rs@0.3.17 全部 PASS,
 Rust 产物不会触发脚本里的 Go 标准编译器检查(它只认 `go:buildid` + `runtime.gc` 双标记)。
-
-## music-dl 例外
-
-`release-music-dl.yml` **不挂**此校验: 旧版运行时是 Go 标准编译器产物(3.4MiB, 超宿主
-2MiB 预算), 必然 FAIL; 该插件已处于维护模式并被 music.rs 取代, 不再投入。

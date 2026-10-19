@@ -4,16 +4,15 @@
 登录：网易云走扫码（unikey 在响应体里）；QQ 因宿主 broker 剥离 `Set-Cookie`、扫码所需的
 `qrsig` 拿不到，改为**手动粘贴浏览器 Cookie**（`qq-cookie-paste` action / `settings-update` 的
 `qq_cookie` 字段）。
-Go 版 `plugins/music-dl` 的 Rust 重写骨架 —— 本阶段只交付**能编译的骨架**：业务函数全部是
-空桩（`Err("not implemented")`，没有 `todo!()`/`unimplemented!()`），基建（reactor ABI、协议层、
-KV 存储层）从 `plugins/douban-rs` 逐字移植并剥离豆瓣业务。
+旧 Go 版（已从仓库移除）的 Rust 重写版本。基建（reactor ABI、协议层、KV 存储层）从
+`plugins/douban-rs` 移植并剥离豆瓣业务。
 
 - 运行时：WASM（`dian115:wasm@1`），Rust `wasm32-unknown-unknown` + 手写 ABI（`src/abi.rs`）
 - 目标内存：`memory_mb = 128`（Go 版 256MB → Rust 版 128MB，降内存是本次目标）
 
-## 与 Go 版（music-dl）的关键架构差异
+## 与旧 Go 版的关键架构差异
 
-1. **无 sidecar**：Go 版依赖本机 `music-agent` 服务（`http://127.0.0.1:8791`）做搜索/取链/下载；
+1. **无 sidecar**：旧版依赖本机 sidecar 服务（`http://127.0.0.1:8791`）做搜索/取链/下载；
    Rust 版把网易云 eapi 加密（AES-ECB + md5 + hex，依赖已备于 `Cargo.toml`）与 QQ 协议全部搬进
    wasm 插件内直连，manifest 只声明音乐站点域名，不再有任何独立 agent 进程。
 2. **宿主代下载两段式**：wasm 拿到 CDN 直链后不自己搬字节 ——
@@ -48,6 +47,8 @@ KV 存储层）从 `plugins/douban-rs` 逐字移植并剥离豆瓣业务。
 依赖：Node 20+、Docker（本机 docker 需要 sudo，脚本已默认带；免 sudo 环境设 `DIAN115_SUDO=0`）。
 
 ```bash
+npm ci                      # 安装 frontend/ 依赖（package-lock.json 已入库）
+node build-ui.mjs --check   # vue-tsc 类型检查 + vite 构建 frontend/dist
 node build.mjs              # dian-rust:wasm32 容器里 cargo build → 打包签名
 node build.mjs --skip-wasm  # 只用现有 target/.../plugin.wasm 重新打包
 ```
@@ -58,10 +59,9 @@ node build.mjs --skip-wasm  # 只用现有 target/.../plugin.wasm 重新打包
 sudo docker run --rm -v "$PWD":/src -w /src dian-rust:wasm32 sh -c 'cargo test'
 ```
 
-打包还需要 `frontend/dist/assets`（由本插件 `frontend/` 构建产出，骨架期尚未提供）与
+打包还需要 `frontend/dist/assets`（由本插件 `frontend/` 构建产出）与
 `frontend/icon.svg`（已就位）。签名私钥默认读插件目录下的 `developer-ed25519-private.pem`
-（从 `plugins/music-dl` 复制而来，与 Go 版同一发布身份；不进 git，也可用
-`DIAN115_PLUGIN_SIGNING_KEY` 指向别的私钥）。
+（不进 git，也可用 `DIAN115_PLUGIN_SIGNING_KEY` 指向别的私钥）。
 
 ## 与宿主交互时的注意点（沿用 douban-rs 踩过的坑）
 

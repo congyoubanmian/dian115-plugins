@@ -1,8 +1,9 @@
 #!/usr/bin/env node
-// 本插件的 UI 构建入口 —— 复用 music-dl 已经装好的 node_modules, 不在本插件里再装一份依赖。
+// 本插件的 UI 构建入口 —— 使用本插件自己的 node_modules(npm ci 安装), 不再依赖其它插件目录。
 //
 // 用法(在 plugins/music-rs 目录直接跑):
 //
+//   npm ci                       # 安装 frontend/ 依赖(package-lock.json 已入库)
 //   node build-ui.mjs            # 构建 frontend/ → frontend/dist/assets(含 remoteEntry.js)
 //   node build-ui.mjs --check    # 先跑 vue-tsc --noEmit 再构建
 //
@@ -14,9 +15,9 @@
 // 为什么要在构建期间放一个 frontend/node_modules 软链:
 //   vite 加载 `--config frontend/vite.config.ts` 时会把配置里的裸导入
 //   (vite / @vitejs/plugin-vue / @originjs/vite-plugin-federation)按"配置文件所在目录"
-//   向上找 node_modules; 本插件目录里没有 node_modules, 找不到就直接报
-//   "Failed to resolve ..."。软链指向 music-dl 的那份, 配置与源码的模块解析都能用同一套依赖。
-//   构建结束(含异常/中断)会删掉这个软链, 所以 frontend/ 里不会留下 node_modules, 也不复制任何依赖。
+//   向上找 node_modules; 本插件的依赖装在插件根目录, 软链让配置与源码的模块解析
+//   明确使用同一套依赖。构建结束(含异常/中断)会删掉这个软链, 所以 frontend/ 里
+//   不会留下 node_modules, 也不复制任何依赖。
 import { existsSync, lstatSync, readdirSync, rmSync, statSync, symlinkSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { dirname, join, relative } from 'node:path'
@@ -28,8 +29,8 @@ const configPath = join(frontendDir, 'vite.config.ts')
 const distAssets = join(frontendDir, 'dist', 'assets')
 const linkPath = join(frontendDir, 'node_modules')
 
-// 依赖来源: 同仓库的 music-dl 插件(可用 DIAN115_UI_DEPS 覆盖成别的 node_modules 目录)。
-const depsDir = process.env.DIAN115_UI_DEPS || join(root, '..', 'music-dl', 'node_modules')
+// 依赖来源: 本插件根目录的 node_modules(可用 DIAN115_UI_DEPS 覆盖成别的 node_modules 目录)。
+const depsDir = process.env.DIAN115_UI_DEPS || join(root, 'node_modules')
 const viteBin = join(depsDir, 'vite', 'bin', 'vite.js')
 const vueTscBin = join(depsDir, 'vue-tsc', 'bin', 'vue-tsc.js')
 
@@ -56,7 +57,7 @@ function isOurLink() {
 
 function ensureDepsLink() {
   if (!existsSync(depsDir)) {
-    throw new Error(`找不到依赖目录 ${depsDir}; 请确认 ${join(root, '..', 'music-dl')}/node_modules 存在, 或用 DIAN115_UI_DEPS 指定`)
+    throw new Error(`找不到依赖目录 ${depsDir}; 请先在 plugins/music-rs 运行 npm ci, 或用 DIAN115_UI_DEPS 指定`)
   }
   if (!existsSync(viteBin)) throw new Error(`找不到 vite 可执行入口 ${viteBin}`)
   if (!existsSync(configPath)) throw new Error(`找不到 ${configPath}`)

@@ -1,8 +1,8 @@
 name: 发布音乐下载 Rust 版插件
 
-# 推一个 music-rs-v<版本> 标签即自动: music-dl 依赖 npm ci → build-ui.mjs 构建本插件前端
-# (复用 music-dl 的 node_modules, 与本地构建同一路径) → rust:1-slim 容器编译 WASM →
-# 打包签名 → 生成市场索引(新增 music.rs 条目, 保留 douban.center/douban.rs/chase.rs/music.dl) →
+# 推一个 music-rs-v<版本> 标签即自动: 本插件 npm ci → build-ui.mjs 构建前端 →
+# rust:1-slim 容器编译 WASM → 打包签名 →
+# 生成市场索引(新增 music.rs 条目, 保留 douban.center/douban.rs/chase.rs) →
 # 创建 Release 并上传 .d115p → 把索引回写到 main。
 #
 # 前置: 仓库 Secrets 里配置 DIAN115_PLUGIN_SIGNING_KEY（插件签名私钥的 PEM 全文）。
@@ -52,10 +52,8 @@ jobs:
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
           echo "PACKAGE=music.rs-$VERSION.d115p" >> "$GITHUB_ENV"
 
-      # 前端不自带 node_modules: build-ui.mjs 软链复用同仓库 music-dl 的依赖,
-      # 所以先在 music-dl 里 npm ci 装出那份依赖(lockfile 已入库)。
-      - name: 安装 UI 依赖（music-dl 的 node_modules）
-        working-directory: plugins/music-dl
+      # 前端依赖由本插件自己的 package.json / package-lock.json 提供。
+      - name: 安装 UI 依赖（music-rs）
         run: npm ci
 
       - name: 构建前端产物（build-ui.mjs）
