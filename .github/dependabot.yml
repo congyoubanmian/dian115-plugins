@@ -43,6 +43,12 @@ updates:
     schedule:
       interval: "weekly"
 
+  # cargo: shared runtime crate
+  - package-ecosystem: "cargo"
+    directory: "/plugins/common"
+    schedule:
+      interval: "weekly"
+
   # cargo: chase-rs plugin
   - package-ecosystem: "cargo"
     directory: "/plugins/chase-rs"

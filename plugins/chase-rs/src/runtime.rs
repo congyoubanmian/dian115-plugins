@@ -2398,26 +2398,9 @@ fn invalid_action() -> OpError {
 }
 
 /// 业务错误: 一律映射成 `-32602`。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct OpError(pub String);
-
-impl OpError {
-    pub fn new(message: impl Into<String>) -> Self {
-        OpError(message.into())
-    }
-
-    pub fn message(&self) -> &str {
-        &self.0
-    }
-}
-
-impl std::fmt::Display for OpError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
-impl std::error::Error for OpError {}
+///
+/// 类型定义随协议层迁到 `common::protocol`, 这里保持 `runtime::OpError` 路径不变。
+pub use crate::protocol::OpError;
 
 /// 判定结果 → 状态文档里的一行。
 ///

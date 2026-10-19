@@ -15,10 +15,12 @@
 // 构建与测试的门禁由外层脚本统一执行。前端由本插件 frontend/ 产出(经 build-ui.mjs 构建)。
 import { existsSync, statSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
-import { dirname, join } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const root = dirname(fileURLToPath(import.meta.url))
+// 仓库根: common crate 与各插件同级, 容器里挂整个仓库才能解析 path 依赖。
+const repoRoot = resolve(root, '..', '..')
 const wasmPath = join(root, 'target', 'wasm32-unknown-unknown', 'release', 'plugin.wasm')
 // 前端产物放本插件自己的 frontend/dist/assets —— 与 manifest.ui.federation.assets_root 一致,
 // 不再复用 douban-center 的产物(那是 douban-rs 的做法, 本插件自带界面)。
@@ -45,7 +47,7 @@ function runDocker(dockerArgs, label) {
 }
 
 if (!skipWasm) {
-  // /src 即本插件目录 —— 与 dian-rust:wasm32 镜像的约定一致; 镜像里已装 wasm32 target,
+  // /src 是仓库根(挂载整个仓库), 工作目录是本插件 —— 与 dian-rust:wasm32 镜像的约定一致; 镜像里已装 wasm32 target,
   // rust:1-slim 这类干净镜像则先补装 target(已装时 rustup 不会联网)。
   const containerScript = [
     'set -e',
@@ -53,7 +55,7 @@ if (!skipWasm) {
     'cargo build --release --target wasm32-unknown-unknown',
   ].join('\n')
   runDocker(
-    ['run', '--rm', '-v', `${root}:/src`, '-w', '/src', '-e', 'CARGO_TERM_COLOR=always', buildImage, 'sh', '-c', containerScript],
+    ['run', '--rm', '-v', `${repoRoot}:/src`, '-w', '/src/plugins/music-rs', '-e', 'CARGO_TERM_COLOR=always', buildImage, 'sh', '-c', containerScript],
     `容器构建 wasm(${buildImage})`,
   )
 } else {

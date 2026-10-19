@@ -82,6 +82,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "dian115-common"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "digest"
 version = "0.10.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -161,6 +170,7 @@ dependencies = [
  "aes",
  "base64",
  "cbc",
+ "dian115-common",
  "ecb",
  "hex",
  "md-5",

@@ -141,8 +141,9 @@ pub fn cookie_cloud_pull(
             "CookieCloud 响应异常（UUID 不存在或服务端版本过旧）",
         ));
     }
-    // 全量浏览器 cookie 的密文可达数 MB, 在 WASM 解释器里解密会撞前台 10 秒强杀线,
-    // 因此按 Go 的口径比较 **encrypted 文本长度**, 超限直接指引限域, 不再解密。
+    // 全量浏览器 cookie 的密文可达数 MB, 在 WASM 解释器里解密会撞前台 60 秒强杀线
+    // (manifest `runtime.timeout_ms = 60000`), 因此按 Go 的口径比较 **encrypted
+    // 文本长度**, 超限直接指引限域, 不再解密。
     // (指引文案按本插件语境换成网易云/QQ 音乐的域。)
     if result.encrypted.len() > MAX_COOKIE_CLOUD_BYTES {
         return Err(OpError::new(format!(

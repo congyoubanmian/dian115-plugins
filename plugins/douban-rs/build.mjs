@@ -14,10 +14,12 @@
 // 构建与测试的门禁由外层脚本统一执行。前端资产直接复用 douban-center 的 build/frontend/dist。
 import { existsSync, statSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
-import { dirname, join } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const root = dirname(fileURLToPath(import.meta.url))
+// 仓库根: common crate 与各插件同级, 容器里挂整个仓库才能解析 path 依赖。
+const repoRoot = resolve(root, '..', '..')
 const wasmPath = join(root, 'target', 'wasm32-unknown-unknown', 'release', 'plugin.wasm')
 const uiAssetsRoot = join(root, '..', 'douban-center', 'build', 'frontend', 'dist', 'assets')
 
@@ -35,7 +37,7 @@ function run(command, commandArgs, label) {
 }
 
 if (!skipWasm) {
-  // /src 即本插件目录 —— 与 dian-rust-builder 的约定一致; 镜像里已装 wasm32 target,
+  // /src 是仓库根(挂载整个仓库), 工作目录是本插件 —— 与 dian-rust-builder 的约定一致; 镜像里已装 wasm32 target,
   // rust:1-slim 这类干净镜像则先补装 target(已装时 rustup 不会联网)。
   const containerScript = [
     'set -e',
@@ -44,7 +46,7 @@ if (!skipWasm) {
   ].join('\n')
   run(
     dockerBin,
-    ['run', '--rm', '-v', `${root}:/src`, '-w', '/src', '-e', 'CARGO_TERM_COLOR=always', buildImage, 'sh', '-c', containerScript],
+    ['run', '--rm', '-v', `${repoRoot}:/src`, '-w', '/src/plugins/douban-rs', '-e', 'CARGO_TERM_COLOR=always', buildImage, 'sh', '-c', containerScript],
     `容器构建 wasm(${buildImage})`,
   )
 } else {

@@ -13,6 +13,7 @@ crate-type = ["cdylib", "rlib"]
 doctest = false
 
 [dependencies]
+common = { package = "dian115-common", path = "../common" }
 serde = { version = "1", features = ["derive"] }
 # `raw_value`: 存储信封解包只取两个 `&RawValue` 字段(Go `json.RawMessage` 的等价物),
 # 不为 4MiB 的状态文档建 serde_json::Value 树(见 store.rs 的 `unwrap_value`)。

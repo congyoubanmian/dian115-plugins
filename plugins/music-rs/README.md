@@ -88,13 +88,14 @@ node build.mjs --skip-wasm  # 只用现有 target/.../plugin.wasm 重新打包
 
 ## 测试
 
-测试在容器里跑（本机不装 Rust 工具链）；`abi` 仅在 wasm32 编译，`cargo test` 走本机目标即可：
+测试在容器里跑（本机不装 Rust 工具链）；`abi` 仅在 wasm32 编译，`cargo test` 走本机目标即可。
+插件以 path 依赖引用 `../common`，所以要挂**仓库根**、把工作目录指到本插件：
 
 ```bash
-sudo docker run --rm -v "$PWD":/src -w /src rust:1-slim cargo test
+sudo docker run --rm -v "$PWD/../..":/src -w /src/plugins/music-rs rust:1-slim cargo test
 
 # 或使用本仓库已备好工具链的镜像
-sudo docker run --rm -v "$PWD":/src -w /src dian-rust:wasm32 cargo test
+sudo docker run --rm -v "$PWD/../..":/src -w /src/plugins/music-rs dian-rust:wasm32 cargo test
 ```
 
 覆盖各模块内的单元测试（宿主替身、KV 乐观锁、pump 内存上界等）以及 `tests/` 下的离线集成测试；

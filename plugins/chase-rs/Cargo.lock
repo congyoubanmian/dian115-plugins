@@ -13,6 +13,16 @@ name = "chase-plugin"
 version = "0.1.9"
 dependencies = [
  "base64",
+ "dian115-common",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "dian115-common"
+version = "0.1.0"
+dependencies = [
+ "base64",
  "serde",
  "serde_json",
 ]

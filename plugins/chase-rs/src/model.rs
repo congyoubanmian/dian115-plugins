@@ -60,8 +60,8 @@ pub const DEBUG_ERRORS_MAX: usize = 10;
 pub const LOGS_MAX: usize = 50;
 /// 单条日志消息的字节上限。
 pub const LOG_MESSAGE_MAX: usize = 400;
-/// `debug` 里原始响应片段的字节上限。
-pub const SAMPLE_MAX: usize = 2048;
+/// `debug` 里原始响应片段的字节上限(与 `common::raw::ParseFailure` 共用同一上限)。
+pub use common::raw::SAMPLE_MAX;
 /// `emby_instances` 上限。
 pub const INSTANCES_MAX: usize = 20;
 /// 单轮 PATCH 的**代码硬上限**(用户配置再大也不越过)。

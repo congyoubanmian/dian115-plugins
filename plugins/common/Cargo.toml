@@ -1,0 +1,23 @@
+[package]
+name = "dian115-common"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# 三个插件共用的运行时底座(arena / host / protocol / store / ...)。
+# 这里不设 [workspace], 也不设 [profile.release]: 各插件是独立的构建根,
+# release profile(opt-level/lto/panic/codegen-units/strip)由插件自身的 Cargo.toml 统一生效。
+[lib]
+name = "dian115_common"
+# 默认 rlib; 不声明 crate-type —— 真正的 wasm 导出面留在各插件的 abi shell 里。
+
+[features]
+default = []
+# chase-rs 专用的扩展面: 业务 HTTP 便捷层(host)、宽松取数与脱敏(raw)、
+# 秒级/日历时钟(clock)。music-rs / douban-rs 不启用。
+ext = []
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["raw_value"] }
+base64 = "0.22"
