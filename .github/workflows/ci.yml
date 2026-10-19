@@ -110,6 +110,15 @@ jobs:
         with:
           node-version: '20'
 
+      # 遍历全部 plugins/*，按 vendored market-index.schema.json 校验发布时
+      # 实际生成的条目（含 manifest.permissions 的 schema 兼容性），并核对
+      # runtime/package_url。模板 version 按发版流程用 manifest.version 归一化。
+      - name: 市场模板一致性检查
+        run: node tools/check-market-templates.mjs
+
+      - name: 市场模板检查回归测试
+        run: node --test tools/check-market-templates.test.mjs
+
       - name: project-check（${{ matrix.plugin }}）
         working-directory: plugins/${{ matrix.plugin }}
         run: node ../../tools/conformance/project-check.mjs

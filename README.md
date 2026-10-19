@@ -49,6 +49,7 @@ plugins/
 
 - **前端本地预览**：`plugins/chase-rs/frontend` 与 `plugins/douban-center` 直接 `npm ci && npm run dev`（内置预览桥与样例状态，无宿主也能跑）；`plugins/music-rs` 先 `npm ci`，再 `node build-ui.mjs --check`（自带依赖，构建含 `vue-tsc` 类型检查）。
 - **契约**：前端与宿主只通过 `props.runtimeState`（状态文档）和 `props.api.invokeAction`（动作）通信，动作后必须 `await props.api.refresh()`；状态响应里不得出现 cookie/密码/token 类字段（宿主会拒收）。
+- **市场模板检查**：`node tools/check-market-templates.mjs` 遍历 `plugins/*/manifest.template.json`，按 `tools/market-index.schema.json` 校验发布时实际生成的 market entry（包括 `manifest.permissions` 的字段白名单与 `apis` 上限），并核对 runtime、`package_url` 版本和本地发布包 sha256。模板 `version` 按发版流程用 manifest 版本归一化，不要求手工同步。回归测试：`node --test tools/check-market-templates.test.mjs`（CI 也会运行）。
 - **WASM 测试**：Rust 侧 `cargo test` 在 `rust:1-slim`（或本仓库的 `dian-rust`）容器里跑。三个插件都以 path 依赖引用 `plugins/common`，因此要挂仓库根：
   `docker run --rm -v "$PWD:/src" -w /src/plugins/chase-rs rust:1-slim cargo test`。
 
