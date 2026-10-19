@@ -134,7 +134,10 @@ pub fn header_first<'a>(
     // BTreeMap 的键序是确定的(大写在前); Go 遍历 map 的顺序随机, 这里取确定顺序里
     // 第一个非空值列表, 结果稳定且与 Go 的常见情形一致。
     matched.sort_by_key(|values| values.is_empty());
-    matched.first().and_then(|values| values.first()).map(String::as_str)
+    matched
+        .first()
+        .and_then(|values| values.first())
+        .map(String::as_str)
 }
 
 /// 解出 `body_base64`(Go `decodeBody`)。
@@ -208,7 +211,11 @@ pub fn unwrap_value(raw: &[u8]) -> Vec<u8> {
         // 不是合法 JSON: Go 的 Unmarshal 失败分支 → 原样返回
         Err(_) => return raw.to_vec(),
     };
-    if let Some(value) = envelope.data.as_ref().and_then(|data| data.value.as_deref()) {
+    if let Some(value) = envelope
+        .data
+        .as_ref()
+        .and_then(|data| data.value.as_deref())
+    {
         if !value.get().is_empty() {
             return value.get().as_bytes().to_vec();
         }
@@ -230,16 +237,32 @@ pub fn read(key: &str) -> StorageRead {
     if response.status != 200 {
         return StorageRead::default();
     }
-    let etag = header_first(&response.headers, "etag").unwrap_or_default().to_string();
+    let etag = header_first(&response.headers, "etag")
+        .unwrap_or_default()
+        .to_string();
     let raw = match decode_body(&response) {
         Ok(raw) => raw,
-        Err(_) => return StorageRead { value: Vec::new(), etag, ok: false },
+        Err(_) => {
+            return StorageRead {
+                value: Vec::new(),
+                etag,
+                ok: false,
+            }
+        }
     };
     let value = unwrap_value(&raw);
     if !value.is_empty() {
-        return StorageRead { value, etag, ok: true };
+        return StorageRead {
+            value,
+            etag,
+            ok: true,
+        };
     }
-    StorageRead { value: raw, etag, ok: true }
+    StorageRead {
+        value: raw,
+        etag,
+        ok: true,
+    }
 }
 
 /// Go `wasmStorageGet`: 只要值, 不关心 ETag。
@@ -261,9 +284,13 @@ pub fn get_json<T: serde::de::DeserializeOwned>(key: &str) -> Option<T> {
 }
 
 /// 序列化并写入一个 JSON 值(经 ETag 乐观锁 + 幂等键, 见 [`put`])。
-pub fn put_json<T: serde::Serialize>(ids: &mut PutIds, key: &str, value: &T) -> Result<(), StoreError> {
-    let body = serde_json::to_vec(value)
-        .map_err(|err| StoreError(format!("JSON 序列化失败: {err}")))?;
+pub fn put_json<T: serde::Serialize>(
+    ids: &mut PutIds,
+    key: &str,
+    value: &T,
+) -> Result<(), StoreError> {
+    let body =
+        serde_json::to_vec(value).map_err(|err| StoreError(format!("JSON 序列化失败: {err}")))?;
     put(ids, key, &body)
 }
 
@@ -300,7 +327,9 @@ fn send_put(
         .with_header("accept", "application/json")
         .with_header("idempotency-key", ids.next_key(key));
     if !if_match.is_empty() {
-        request.headers.insert("if-match".to_string(), if_match.to_string());
+        request
+            .headers
+            .insert("if-match".to_string(), if_match.to_string());
     }
     if !body.is_empty() {
         // Go: base64.RawStdEncoding(不带 padding)
@@ -329,7 +358,10 @@ pub fn put(ids: &mut PutIds, key: &str, value: &[u8]) -> Result<(), StoreError> 
             Ok(raw) if !raw.is_empty() => format!(": {}", util::trunc(&raw)),
             _ => String::new(),
         };
-        return Err(StoreError(format!("storage PUT HTTP {}{}", response.status, detail)));
+        return Err(StoreError(format!(
+            "storage PUT HTTP {}{}",
+            response.status, detail
+        )));
     }
     Ok(())
 }
@@ -350,7 +382,10 @@ pub fn delete(ids: &mut PutIds, key: &str) -> Result<(), StoreError> {
         Ok(raw) if !raw.is_empty() => format!(": {}", util::trunc(&raw)),
         _ => String::new(),
     };
-    Err(StoreError(format!("storage DELETE HTTP {}{}", response.status, detail)))
+    Err(StoreError(format!(
+        "storage DELETE HTTP {}{}",
+        response.status, detail
+    )))
 }
 
 /// 读取状态并做 3 次重试(Go `loadStateWithRetry`)。
@@ -386,7 +421,11 @@ mod tests {
         } else {
             STANDARD_NO_PAD.encode(body)
         };
-        HostCallResponse { status: 200, headers: Default::default(), body_base64: encoded }
+        HostCallResponse {
+            status: 200,
+            headers: Default::default(),
+            body_base64: encoded,
+        }
     }
 
     #[test]
@@ -402,7 +441,11 @@ mod tests {
                 assert_eq!(decoded, body, "padded={padded}");
             }
         }
-        let empty = HostCallResponse { status: 200, headers: Default::default(), body_base64: String::new() };
+        let empty = HostCallResponse {
+            status: 200,
+            headers: Default::default(),
+            body_base64: String::new(),
+        };
         assert_eq!(decode_body(&empty).unwrap(), Vec::<u8>::new());
 
         let bad = HostCallResponse {
@@ -430,14 +473,26 @@ mod tests {
         );
 
         let legacy = r#"{"value":{"a":1}}"#;
-        assert_eq!(String::from_utf8(unwrap_value(legacy.as_bytes())).unwrap(), r#"{"a":1}"#);
+        assert_eq!(
+            String::from_utf8(unwrap_value(legacy.as_bytes())).unwrap(),
+            r#"{"a":1}"#
+        );
 
         let bare = r#"{"tasks":[]}"#;
-        assert_eq!(String::from_utf8(unwrap_value(bare.as_bytes())).unwrap(), bare);
+        assert_eq!(
+            String::from_utf8(unwrap_value(bare.as_bytes())).unwrap(),
+            bare
+        );
 
         assert_eq!(unwrap_value(b""), Vec::<u8>::new());
-        assert_eq!(String::from_utf8(unwrap_value(br#"{"value":null}"#)).unwrap(), "null");
-        assert_eq!(String::from_utf8(unwrap_value(br#"{"data":{"value":1},"value":2}"#)).unwrap(), "1");
+        assert_eq!(
+            String::from_utf8(unwrap_value(br#"{"value":null}"#)).unwrap(),
+            "null"
+        );
+        assert_eq!(
+            String::from_utf8(unwrap_value(br#"{"data":{"value":1},"value":2}"#)).unwrap(),
+            "1"
+        );
         assert_eq!(unwrap_value(b"[1,2]"), b"[1,2]");
         // 回归: `[{"id":"t1"}]` 这类顶层数组, serde 的"序列 → 结构体"会把信封解成
         // `value = {"id":"t1"}`, 静默截掉数组外壳(任务队列就长这样)。
@@ -483,7 +538,10 @@ mod tests {
         assert!(c.starts_with("mr-put-diag-"));
         for id in [&a, &b, &c] {
             assert!((16..=128).contains(&id.len()), "幂等键长度越界: {id}");
-            assert!(id.bytes().all(|byte| byte.is_ascii_graphic()), "必须全是可打印 ASCII: {id}");
+            assert!(
+                id.bytes().all(|byte| byte.is_ascii_graphic()),
+                "必须全是可打印 ASCII: {id}"
+            );
         }
         assert_eq!(ids.seq(), 3);
     }

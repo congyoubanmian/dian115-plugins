@@ -78,7 +78,10 @@ fn encode_or_fallback<T: Serialize>(value: &T) -> Vec<u8> {
 /// 组装 `{"error":{"code":...,"message":...}}`。
 pub fn rpc_error(code: i32, message: impl Into<String>) -> Vec<u8> {
     encode_or_fallback(&ErrorResponse {
-        error: ErrorBody { code, message: message.into() },
+        error: ErrorBody {
+            code,
+            message: message.into(),
+        },
     })
 }
 
@@ -97,7 +100,10 @@ pub fn stopping() -> Vec<u8> {
 /// 走结构体而不是 `json!`/`to_value`: 后者底层是 BTreeMap, 会把键按字典序重排。
 pub fn initialize_result() -> Vec<u8> {
     encode_or_fallback(&InitializeResponse {
-        result: InitializeResult { ready: true, protocol: PROTOCOL },
+        result: InitializeResult {
+            ready: true,
+            protocol: PROTOCOL,
+        },
     })
 }
 
@@ -130,7 +136,10 @@ pub fn dispatch(runtime: &mut Runtime, request: &[u8]) -> Vec<u8> {
     };
     let method = message.get("method").and_then(Value::as_str).unwrap_or("");
     if method.is_empty() {
-        return rpc_error(CODE_INVALID_PARAMS, format!("invalid invoke: recv={}", trunc(request)));
+        return rpc_error(
+            CODE_INVALID_PARAMS,
+            format!("invalid invoke: recv={}", trunc(request)),
+        );
     }
 
     // ② 初始化握手: 直接返回 ready, 期间禁止 host.call 重入。
@@ -214,7 +223,11 @@ mod tests {
             String::from_utf8(response).unwrap(),
             r#"{"result":{"ready":true,"protocol":"dian115:wasm@1"}}"#
         );
-        assert_eq!(crate::host::observed_calls(), before, "握手期间禁止 host.call");
+        assert_eq!(
+            crate::host::observed_calls(),
+            before,
+            "握手期间禁止 host.call"
+        );
         assert!(fake.requests().is_empty());
         drop(guard);
     }
@@ -226,7 +239,9 @@ mod tests {
             &mut runtime,
             br#"{"method":"runtime.initialize","params":{"protocol":"nope"}}"#,
         );
-        assert!(String::from_utf8(response).unwrap().contains("dian115:wasm@1"));
+        assert!(String::from_utf8(response)
+            .unwrap()
+            .contains("dian115:wasm@1"));
     }
 
     #[test]
@@ -245,7 +260,10 @@ mod tests {
             br#"{"method":"runtime.invoke","params":{"envelope":{"op":""}}}"#,
         ] {
             let response: Value = serde_json::from_slice(&dispatch(&mut runtime, request)).unwrap();
-            assert_eq!(response["error"]["code"], CODE_INVALID_PARAMS, "{request:?}");
+            assert_eq!(
+                response["error"]["code"], CODE_INVALID_PARAMS,
+                "{request:?}"
+            );
             assert!(
                 response["error"]["message"]
                     .as_str()
@@ -275,7 +293,10 @@ mod tests {
         let mut runtime = Runtime::new();
         let response = invoke(&mut runtime, "teleport", json!({}));
         assert_eq!(response["error"]["code"], CODE_METHOD_NOT_FOUND);
-        assert!(response["error"]["message"].as_str().unwrap().contains("teleport"));
+        assert!(response["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("teleport"));
         drop(guard);
     }
 
@@ -316,7 +337,8 @@ mod tests {
         let guard = fake.install();
         let mut runtime = Runtime::new();
         // payload: null → Go 解成零值结构体; state 的零值 view 合法 → 正常 result
-        let request = br#"{"method":"runtime.invoke","params":{"envelope":{"op":"state","payload":null}}}"#;
+        let request =
+            br#"{"method":"runtime.invoke","params":{"envelope":{"op":"state","payload":null}}}"#;
         let response: Value = serde_json::from_slice(&dispatch(&mut runtime, request)).unwrap();
         assert!(response["result"]["state"].is_object(), "{response}");
         drop(guard);

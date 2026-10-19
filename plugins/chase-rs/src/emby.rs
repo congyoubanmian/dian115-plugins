@@ -64,7 +64,14 @@ const INDEX_KEYS: &[&str] = &[
     "number",
 ];
 /// 显式缺集列表的字段候选。
-const MISSING_KEYS: &[&str] = &["missing", "missing_episodes", "absent", "lack", "gaps", "missing_numbers"];
+const MISSING_KEYS: &[&str] = &[
+    "missing",
+    "missing_episodes",
+    "absent",
+    "lack",
+    "gaps",
+    "missing_numbers",
+];
 /// 数值兜底字段候选(仅当同时存在显式缺集列表时才认)。
 const COUNT_KEYS: &[&str] = &["episode_count", "existing_count", "have_count", "count"];
 
@@ -157,13 +164,19 @@ pub struct Selection {
 pub fn parse_instances(raw: &[u8]) -> Result<Vec<Instance>, String> {
     let value = raw::decode_json(raw)?;
     let array = raw::array_at(&value, LIST_KEYS)
-        .or_else(|| raw::descend(&value, &["data"]).and_then(|inner| raw::array_at(inner, LIST_KEYS)))
+        .or_else(|| {
+            raw::descend(&value, &["data"]).and_then(|inner| raw::array_at(inner, LIST_KEYS))
+        })
         .ok_or_else(|| "实例列表结构未识别: 缺少 items 数组".to_string())?;
 
     let mut instances = Vec::new();
     for element in array {
-        let Some(obj) = element.as_object() else { continue };
-        let Some(id) = raw::first_i64(obj, &["id", "proxy_id", "instance_id", "emby_id"]) else { continue };
+        let Some(obj) = element.as_object() else {
+            continue;
+        };
+        let Some(id) = raw::first_i64(obj, &["id", "proxy_id", "instance_id", "emby_id"]) else {
+            continue;
+        };
         if id < 0 {
             continue;
         }
@@ -171,12 +184,15 @@ pub fn parse_instances(raw: &[u8]) -> Result<Vec<Instance>, String> {
             id,
             name: raw::first_string(obj, &["name", "title", "label"]).unwrap_or_default(),
             is_default: raw::first_bool(obj, &["is_default", "default"]),
-            key_ready: raw::first_bool(obj, &[
-                "api_key_configured",
-                "has_key",
-                "configured",
-                "key_configured",
-            ]),
+            key_ready: raw::first_bool(
+                obj,
+                &[
+                    "api_key_configured",
+                    "has_key",
+                    "configured",
+                    "key_configured",
+                ],
+            ),
         });
     }
     Ok(instances)
@@ -214,7 +230,11 @@ fn selection_of(instance: &Instance) -> Selection {
         id: instance.id,
         name: instance.name.clone(),
         // id==0 是旧版单实例配置: 调用时省略 proxy_id
-        proxy_id: if instance.id == 0 { None } else { Some(instance.id) },
+        proxy_id: if instance.id == 0 {
+            None
+        } else {
+            Some(instance.id)
+        },
     }
 }
 
@@ -230,8 +250,16 @@ fn selection_of(instance: &Instance) -> Selection {
 /// 若指定的实例其实不存在, 那条 `emby/episodes` 会 HTTP 失败 ⇒ 该条零写入 + 记 debug。
 pub fn selection_from_settings(proxy_id: i64) -> Option<Selection> {
     match proxy_id {
-        0 => Some(Selection { id: 0, name: String::new(), proxy_id: None }),
-        id if id >= 1 => Some(Selection { id, name: String::new(), proxy_id: Some(id) }),
+        0 => Some(Selection {
+            id: 0,
+            name: String::new(),
+            proxy_id: None,
+        }),
+        id if id >= 1 => Some(Selection {
+            id,
+            name: String::new(),
+            proxy_id: Some(id),
+        }),
         _ => None,
     }
 }
@@ -299,7 +327,10 @@ impl EpisodeQuery {
         if let Some(proxy_id) = self.proxy_id {
             path.push_str(&format!("proxy_id={proxy_id}&"));
         }
-        path.push_str(&format!("{id_key}={}&{season_key}={}", self.tmdb_id, self.season));
+        path.push_str(&format!(
+            "{id_key}={}&{season_key}={}",
+            self.tmdb_id, self.season
+        ));
         if let Some(total) = self.total {
             path.push_str(&format!("&{total_key}={total}"));
         }
@@ -339,10 +370,21 @@ pub const CANDIDATE_VARIANTS: [u8; 4] = [1, 2, 3, 5];
 ///
 /// - V1 GET `tmdb_id`+`season`+`total_episodes`(宿主 400 报错点名的参数);
 /// - V2 GET `season_number` 变体; V3 GET `tmdbId` 驼峰变体; V5 GET `total` 变体。
-pub fn candidates(tmdb_id: i64, season: i64, proxy_id: Option<i64>, total: Option<i64>) -> Vec<EpisodeQuery> {
+pub fn candidates(
+    tmdb_id: i64,
+    season: i64,
+    proxy_id: Option<i64>,
+    total: Option<i64>,
+) -> Vec<EpisodeQuery> {
     CANDIDATE_VARIANTS
         .into_iter()
-        .map(|variant| EpisodeQuery { proxy_id, tmdb_id, season, total, variant })
+        .map(|variant| EpisodeQuery {
+            proxy_id,
+            tmdb_id,
+            season,
+            total,
+            variant,
+        })
         .collect()
 }
 
@@ -392,7 +434,9 @@ pub struct Coverage {
 impl Coverage {
     /// 已有集的最大集号(没有逐集信息时为 `None`)。
     pub fn have_max(&self) -> Option<i64> {
-        self.have.as_ref().and_then(|set| set.iter().next_back().copied())
+        self.have
+            .as_ref()
+            .and_then(|set| set.iter().next_back().copied())
     }
 
     /// 已有集条数。
@@ -433,7 +477,9 @@ impl Coverage {
 
     /// 明示缺集的最大集号。
     pub fn missing_max(&self) -> Option<i64> {
-        self.missing.as_ref().and_then(|set| set.iter().next_back().copied())
+        self.missing
+            .as_ref()
+            .and_then(|set| set.iter().next_back().copied())
     }
 
     /// 该季 `[from, to]` 是否全部已有(减方向建议的前置条件)。
@@ -475,7 +521,10 @@ pub fn parse_coverage(raw: &[u8]) -> Result<Coverage, String> {
 
     // 区间式契约(实测宿主形态)优先: `covered_episodes:"1-24"` / `needed_episodes:""`。
     // 两个字段是纯字符串, 命中即建 Coverage; 值解析不了(畸形区间)则落回后面的数组路径。
-    for source in [value.as_object(), raw::descend(&value, &["data"]).and_then(Value::as_object)] {
+    for source in [
+        value.as_object(),
+        raw::descend(&value, &["data"]).and_then(Value::as_object),
+    ] {
         let Some(obj) = source else { continue };
         let range_have = raw::first_of(obj, RANGE_HAVE_KEYS).and_then(episode_set_of);
         let range_missing = raw::first_of(obj, RANGE_MISSING_KEYS).and_then(episode_set_of);
@@ -520,7 +569,12 @@ pub fn parse_coverage(raw: &[u8]) -> Result<Coverage, String> {
         return Err("既没有集列表也没有缺集列表".to_string());
     }
 
-    let mut coverage = Coverage { have, missing, count_hint: None, shape: String::new() };
+    let mut coverage = Coverage {
+        have,
+        missing,
+        count_hint: None,
+        shape: String::new(),
+    };
     // 数值兜底只在有显式缺集列表时才认(规则: 不允许凭一个数字推断缺口)
     if coverage.missing.is_some() {
         for source in [Some(&value), raw::descend(&value, &["data"])] {
@@ -559,7 +613,9 @@ fn locate_container(value: &Value) -> Option<(&Vec<Value>, String)> {
     }
     let obj = value.as_object()?;
     for key in COVERAGE_KEYS {
-        let Some(candidate) = obj.get(*key) else { continue };
+        let Some(candidate) = obj.get(*key) else {
+            continue;
+        };
         if let Value::Array(items) = candidate {
             return Some((items, (*key).to_string()));
         }
@@ -610,7 +666,9 @@ fn missing_from(obj: &serde_json::Map<String, Value>) -> Option<BTreeSet<i64>> {
 fn index_field_name(value: &Value) -> Option<String> {
     let container = locate_container(value)?.0;
     for element in container {
-        let Some(obj) = element.as_object() else { continue };
+        let Some(obj) = element.as_object() else {
+            continue;
+        };
         for key in INDEX_KEYS {
             if obj.get(*key).and_then(raw::loose_i64).is_some() {
                 return Some((*key).to_string());
@@ -629,7 +687,9 @@ fn missing_field_name(value: &Value) -> Option<String> {
         objects.push(inner);
     }
     for candidate in objects {
-        let Some(obj) = candidate.as_object() else { continue };
+        let Some(obj) = candidate.as_object() else {
+            continue;
+        };
         for key in MISSING_KEYS {
             if obj.contains_key(*key) {
                 return Some((*key).to_string());
@@ -737,7 +797,8 @@ pub fn fetch_coverage(
             }
         }
     }
-    Err(last.unwrap_or_else(|| ParseFailure::transport("Emby 覆盖探测没有可用参数组合"))
+    Err(last
+        .unwrap_or_else(|| ParseFailure::transport("Emby 覆盖探测没有可用参数组合"))
         .with_attempts(calls))
 }
 
@@ -757,7 +818,8 @@ mod tests {
             {"id": 3, "name": "客厅", "is_default": true, "api_key_configured": true},
             {"id": 4, "name": "书房", "is_default": false, "api_key_configured": false}
           ]
-        }"#.as_bytes()
+        }"#
+        .as_bytes()
         .to_vec()
     }
 
@@ -813,10 +875,15 @@ mod tests {
     fn instance_selection_prefers_default_then_key_ready() {
         let instances = parse_instances(
             r#"[{"id":9,"name":"无密钥默认","is_default":true,"api_key_configured":false},
-                 {"id":10,"name":"有密钥","api_key_configured":true}]"#.as_bytes(),
+                 {"id":10,"name":"有密钥","api_key_configured":true}]"#
+                .as_bytes(),
         )
         .unwrap();
-        assert_eq!(select(&instances, -1).unwrap().id, 10, "默认实例没密钥时退到可用实例");
+        assert_eq!(
+            select(&instances, -1).unwrap().id,
+            10,
+            "默认实例没密钥时退到可用实例"
+        );
     }
 
     // ── episodes ──
@@ -853,18 +920,29 @@ mod tests {
             (coverage_data_fixture(), 2, 2),
         ] {
             let coverage = parse_coverage(&raw).unwrap();
-            assert_eq!(coverage.have_max(), Some(expected_max), "{:?}", coverage.shape);
+            assert_eq!(
+                coverage.have_max(),
+                Some(expected_max),
+                "{:?}",
+                coverage.shape
+            );
             assert_eq!(coverage.have_count(), Some(expected_count));
         }
 
         let coverage = parse_coverage(&coverage_array_fixture()).unwrap();
         assert_eq!(coverage.shape, "list=array;index=index_number;missing=n/a");
         let coverage = parse_coverage(&coverage_items_fixture()).unwrap();
-        assert_eq!(coverage.shape, "list=items;index=episode_number;missing=missing");
+        assert_eq!(
+            coverage.shape,
+            "list=items;index=episode_number;missing=missing"
+        );
         assert_eq!(coverage.missing_max(), Some(3));
         assert_eq!(coverage.count_hint, Some(3));
         let coverage = parse_coverage(&coverage_data_fixture()).unwrap();
-        assert_eq!(coverage.shape, "list=data.episodes;index=episode_number;missing=n/a");
+        assert_eq!(
+            coverage.shape,
+            "list=data.episodes;index=episode_number;missing=n/a"
+        );
     }
 
     #[test]
@@ -946,7 +1024,9 @@ mod tests {
             "V5 用备选总数参数名 total"
         );
         assert!(
-            queries.iter().all(|query| !query.params_label().contains("POST")),
+            queries
+                .iter()
+                .all(|query| !query.params_label().contains("POST")),
             "0.1.5 起矩阵里没有 POST 变体(宿主的权限闸门只批 GET)"
         );
         // 旧版单实例: 一律省略 proxy_id; total 未知时省略总数参数
@@ -960,16 +1040,32 @@ mod tests {
         );
 
         // v=N 段优先(新指纹), 参数名尾缀匹配兜底(旧指纹迁移)
-        assert_eq!(variant_from_shape("params=proxy_id,tmdb_id,season,total_episodes;v=1;list=items"), Some(1));
+        assert_eq!(
+            variant_from_shape("params=proxy_id,tmdb_id,season,total_episodes;v=1;list=items"),
+            Some(1)
+        );
         assert_eq!(
             variant_from_shape("params=POST:proxy_id,tmdb_id,season,total_episodes;v=4"),
             None,
             "旧版本缓存的 v=4(POST)指纹不再可用, 必须从矩阵头重试"
         );
-        assert_eq!(variant_from_shape("params=proxy_id,tmdb_id,season,total;v=5"), Some(5));
-        assert_eq!(variant_from_shape("params=proxy_id,tmdb_id,season;list=items"), Some(1), "旧指纹仍映射到 V1");
-        assert_eq!(variant_from_shape("params=tmdb_id,season_number;list=array"), Some(2));
-        assert_eq!(variant_from_shape("params=proxy_id,tmdbId,season;list=data.items"), Some(3));
+        assert_eq!(
+            variant_from_shape("params=proxy_id,tmdb_id,season,total;v=5"),
+            Some(5)
+        );
+        assert_eq!(
+            variant_from_shape("params=proxy_id,tmdb_id,season;list=items"),
+            Some(1),
+            "旧指纹仍映射到 V1"
+        );
+        assert_eq!(
+            variant_from_shape("params=tmdb_id,season_number;list=array"),
+            Some(2)
+        );
+        assert_eq!(
+            variant_from_shape("params=proxy_id,tmdbId,season;list=data.items"),
+            Some(3)
+        );
         assert_eq!(variant_from_shape("garbage"), None);
         assert_eq!(variant_from_shape("params=tmdb_id;list=items"), None);
     }
@@ -979,14 +1075,38 @@ mod tests {
         // 曾经有宿主"只吃 POST body"的假设(V4) —— 0.1.5 起不再探测它:
         // 权限闸门在安装期就否决了 POST, 每个变体都是 GET, 全失败就如实报失败。
         let fake = FakeHost::new();
-        fake.route_prefix("GET", "GET /api/plugin-host/emby/episodes?", 400, br#"{"error":"tmdb_id and total_episodes are required"}"#);
+        fake.route_prefix(
+            "GET",
+            "GET /api/plugin-host/emby/episodes?",
+            400,
+            br#"{"error":"tmdb_id and total_episodes are required"}"#,
+        );
         // 就算宿主对 POST 有响应, 也不该有人去发它
-        fake.route_prefix("POST", "POST /api/plugin-host/emby/episodes", 200, &coverage_items_fixture());
+        fake.route_prefix(
+            "POST",
+            "POST /api/plugin-host/emby/episodes",
+            200,
+            &coverage_items_fixture(),
+        );
         let guard = fake.install();
-        let failure = fetch_coverage(1396, 5, Some(3), Some(12), "params=POST:proxy_id,tmdb_id,season,total_episodes;v=4", 5)
-            .unwrap_err();
+        let failure = fetch_coverage(
+            1396,
+            5,
+            Some(3),
+            Some(12),
+            "params=POST:proxy_id,tmdb_id,season,total_episodes;v=4",
+            5,
+        )
+        .unwrap_err();
         assert!(failure.message.contains("HTTP 400"), "{}", failure.message);
-        assert_eq!(fake.requests().iter().filter(|r| r.method == "POST").count(), 0, "一次 POST 都不许发");
+        assert_eq!(
+            fake.requests()
+                .iter()
+                .filter(|r| r.method == "POST")
+                .count(),
+            0,
+            "一次 POST 都不许发"
+        );
         drop(guard);
     }
 
@@ -1015,10 +1135,15 @@ mod tests {
         assert_eq!(coverage.have_count(), Some(24));
         assert!(coverage.covers_range(1, 24), "已齐 1-24");
         assert_eq!(coverage.gap_max(24), 0, "没有超出订阅总集数的缺口");
-        assert_eq!(coverage.shape, "list=covered_episodes;index=range;missing=needed_episodes");
+        assert_eq!(
+            coverage.shape,
+            "list=covered_episodes;index=range;missing=needed_episodes"
+        );
 
         // 缺口方向: 空覆盖 + 缺 1-24
-        let empty = parse_coverage(br#"{"complete":false,"covered_episodes":"","needed_episodes":"1-24"}"#).unwrap();
+        let empty =
+            parse_coverage(br#"{"complete":false,"covered_episodes":"","needed_episodes":"1-24"}"#)
+                .unwrap();
         assert_eq!(empty.have_count(), Some(0), "空串 = 一集都没有(已知事实)");
         assert_eq!(empty.missing_max(), Some(24));
         assert_eq!(empty.gap_max(10), 24);
@@ -1052,7 +1177,12 @@ mod tests {
             &coverage_items_fixture(),
         );
         // 其它组合返回不可解析的 body
-        fake.route_prefix("GET", "GET /api/plugin-host/emby/episodes?", 200, br#"{"count":3}"#);
+        fake.route_prefix(
+            "GET",
+            "GET /api/plugin-host/emby/episodes?",
+            200,
+            br#"{"count":3}"#,
+        );
         let guard = fake.install();
 
         let (coverage, query, calls) = fetch_coverage(
@@ -1067,7 +1197,11 @@ mod tests {
         assert_eq!(query.variant, 2);
         assert_eq!(coverage.have_max(), Some(4));
         assert_eq!(calls, 1);
-        assert_eq!(crate::host::observed_calls(), 1, "指纹命中时只该发 1 次 host.call");
+        assert_eq!(
+            crate::host::observed_calls(),
+            1,
+            "指纹命中时只该发 1 次 host.call"
+        );
         drop(guard);
     }
 
@@ -1076,12 +1210,21 @@ mod tests {
         // 计数是线程本地且只增, 所以每段都取自己的基线做差。
         // 全矩阵都不可解析: 预算给 1 就只发 1 次
         let fake = FakeHost::new();
-        fake.route_prefix("GET", "GET /api/plugin-host/emby/episodes?", 200, br#"{"count":3}"#);
+        fake.route_prefix(
+            "GET",
+            "GET /api/plugin-host/emby/episodes?",
+            200,
+            br#"{"count":3}"#,
+        );
         let guard = fake.install();
         let before = crate::host::observed_calls();
         let failure = fetch_coverage(1396, 5, Some(3), None, "", 1).unwrap_err();
         assert_eq!(failure.attempts, 1);
-        assert_eq!(crate::host::observed_calls() - before, 1, "预算 1 → 只许 1 次 host.call");
+        assert_eq!(
+            crate::host::observed_calls() - before,
+            1,
+            "预算 1 → 只许 1 次 host.call"
+        );
         drop(guard);
 
         // 预算 0: 一次都不发
@@ -1096,8 +1239,18 @@ mod tests {
 
         // 预算 9 → 最多 4 次(矩阵只有 4 个组合, 全是 GET; POST 变体已随 V4 移除)
         let fake = FakeHost::new();
-        fake.route_prefix("GET", "GET /api/plugin-host/emby/episodes?", 200, br#"{"count":3}"#);
-        fake.route_prefix("POST", "POST /api/plugin-host/emby/episodes", 200, br#"{"count":9}"#);
+        fake.route_prefix(
+            "GET",
+            "GET /api/plugin-host/emby/episodes?",
+            200,
+            br#"{"count":3}"#,
+        );
+        fake.route_prefix(
+            "POST",
+            "POST /api/plugin-host/emby/episodes",
+            200,
+            br#"{"count":9}"#,
+        );
         let guard = fake.install();
         let before = crate::host::observed_calls();
         let failure = fetch_coverage(1396, 5, None, Some(12), "", 9).unwrap_err();
@@ -1109,8 +1262,18 @@ mod tests {
     #[test]
     fn fetch_coverage_reports_failure_with_raw_sample() {
         let fake = FakeHost::new();
-        fake.route_prefix("GET", "GET /api/plugin-host/emby/episodes?", 200, b"<html>nope</html>");
-        fake.route_prefix("POST", "POST /api/plugin-host/emby/episodes", 200, b"<html>nope</html>");
+        fake.route_prefix(
+            "GET",
+            "GET /api/plugin-host/emby/episodes?",
+            200,
+            b"<html>nope</html>",
+        );
+        fake.route_prefix(
+            "POST",
+            "POST /api/plugin-host/emby/episodes",
+            200,
+            b"<html>nope</html>",
+        );
         let guard = fake.install();
         let failure = fetch_coverage(1396, 5, Some(3), None, "", 3).unwrap_err();
         assert_eq!(failure.http_status, 200);
@@ -1133,7 +1296,12 @@ mod tests {
     #[test]
     fn instances_fetch_reports_http_failures() {
         let fake = FakeHost::new();
-        fake.route_prefix("GET", "GET /api/plugin-host/emby/instances", 502, b"bad gateway");
+        fake.route_prefix(
+            "GET",
+            "GET /api/plugin-host/emby/instances",
+            502,
+            b"bad gateway",
+        );
         let guard = fake.install();
         let failure = fetch_instances().unwrap_err();
         assert_eq!(failure.http_status, 502);
@@ -1141,7 +1309,12 @@ mod tests {
         drop(guard);
 
         let fake = FakeHost::new();
-        fake.route_prefix("GET", "GET /api/plugin-host/emby/instances", 200, &instances_fixture());
+        fake.route_prefix(
+            "GET",
+            "GET /api/plugin-host/emby/instances",
+            200,
+            &instances_fixture(),
+        );
         let guard = fake.install();
         assert_eq!(fetch_instances().unwrap().len(), 3);
         drop(guard);
@@ -1152,7 +1325,12 @@ mod tests {
         // 宿主原键名会命中凭据模式, 所以对外结构体用 key_ready
         assert!(raw::is_forbidden_key("api_key_configured"));
         assert!(!raw::is_forbidden_key("key_ready"));
-        let instance = Instance { id: 1, name: "x".into(), is_default: false, key_ready: true };
+        let instance = Instance {
+            id: 1,
+            name: "x".into(),
+            is_default: false,
+            key_ready: true,
+        };
         let value = json!({"id": instance.id, "key_ready": instance.key_ready});
         assert_eq!(raw::contains_forbidden_key(&value), None);
     }
@@ -1185,10 +1363,9 @@ mod tests {
         // id=0 旧版单实例: 选中且省略 proxy_id
         assert_eq!(select(&instances, 0).unwrap().proxy_id, None);
         // 列表里没有 id=0 时不能凭空造一个
-        let no_legacy = parse_instances(
-            r#"[{"id":3,"name":"客厅","api_key_configured":true}]"#.as_bytes(),
-        )
-        .unwrap();
+        let no_legacy =
+            parse_instances(r#"[{"id":3,"name":"客厅","api_key_configured":true}]"#.as_bytes())
+                .unwrap();
         assert!(select(&no_legacy, 0).is_err());
         // 空列表
         assert!(select(&[], 3).is_err());
@@ -1204,7 +1381,10 @@ mod tests {
         assert_eq!(legacy.id, 0);
         assert_eq!(legacy.proxy_id, None, "旧版单实例一律省略 proxy_id");
 
-        assert!(selection_from_settings(-1).is_none(), "跟随宿主默认时没有列表就不猜");
+        assert!(
+            selection_from_settings(-1).is_none(),
+            "跟随宿主默认时没有列表就不猜"
+        );
         assert!(selection_from_settings(-9).is_none());
     }
 
@@ -1278,7 +1458,9 @@ mod tests {
         assert_eq!(query.variant, 1);
         assert_eq!(coverage.have_max(), Some(3));
         assert!(
-            coverage.shape.starts_with("params=proxy_id,tmdb_id,season,total_episodes;v=1;"),
+            coverage
+                .shape
+                .starts_with("params=proxy_id,tmdb_id,season,total_episodes;v=1;"),
             "{}",
             coverage.shape
         );
@@ -1294,7 +1476,11 @@ mod tests {
         let failure = fetch_coverage(1396, 5, Some(3), None, "", 3).unwrap_err();
         assert_eq!(failure.kind(), "http_error", "传输层失败也归 http_error");
         assert_eq!(failure.attempts, 3, "预算 3: 每个候选都要记一次尝试");
-        assert!(failure.message.contains("Emby 覆盖请求失败"), "{}", failure.message);
+        assert!(
+            failure.message.contains("Emby 覆盖请求失败"),
+            "{}",
+            failure.message
+        );
         assert!(failure.sample().is_empty(), "传输失败没有原文可留");
         drop(guard);
     }
@@ -1334,26 +1520,40 @@ mod tests {
             empty_covered_with_needed.unknown_note()
         );
         // 有集号 → 不是 absent
-        assert!(!parse_coverage(br#"{"items":[{"index_number":1}]}"#).unwrap().is_absent());
-        assert!(!parse_coverage(br#"{"covered_episodes":"1-24","needed_episodes":""}"#)
+        assert!(!parse_coverage(br#"{"items":[{"index_number":1}]}"#)
             .unwrap()
             .is_absent());
+        assert!(
+            !parse_coverage(br#"{"covered_episodes":"1-24","needed_episodes":""}"#)
+                .unwrap()
+                .is_absent()
+        );
         // 只有缺集列表(没有逐集覆盖) → 是"未知", 不是"空"
         let missing_only = parse_coverage(br#"{"missing":[12]}"#).unwrap();
         assert_eq!(missing_only.have, None);
         assert!(!missing_only.is_absent());
-        assert_eq!(missing_only.unknown_note(), "响应只有缺集列表, 没有逐集覆盖");
+        assert_eq!(
+            missing_only.unknown_note(),
+            "响应只有缺集列表, 没有逐集覆盖"
+        );
         // `{"missing":[]}` 走区间路径时同样没有逐集覆盖 → 未知
         let empty_missing = parse_coverage(br#"{"missing":[]}"#).unwrap();
         assert!(!empty_missing.is_absent());
-        assert_eq!(empty_missing.unknown_note(), "响应只有缺集列表, 没有逐集覆盖");
+        assert_eq!(
+            empty_missing.unknown_note(),
+            "响应只有缺集列表, 没有逐集覆盖"
+        );
     }
 
     #[test]
     fn failure_is_absent_only_with_explicit_evidence() {
         // 404 空正文: **没有证据**, 按失败处理 —— 宿主路由/权限整体 404 时也是空正文,
         // 判成"未收录"会让整池误报、不进负缓存、每小时重复烧预算(实测缺陷)。
-        assert!(!failure_is_absent(&ParseFailure::http(404, Vec::new(), "Emby 覆盖 HTTP 404")));
+        assert!(!failure_is_absent(&ParseFailure::http(
+            404,
+            Vec::new(),
+            "Emby 覆盖 HTTP 404"
+        )));
         // 404 正文明确"不存在" → 才是未收录
         assert!(failure_is_absent(&ParseFailure::http(
             404,
@@ -1372,16 +1572,30 @@ mod tests {
             "Emby 覆盖 HTTP 404"
         )));
         // 400 空正文 / 500 / 400 其它原因 → 维持 failed(不许把宿主故障说成没有该剧)
-        assert!(!failure_is_absent(&ParseFailure::http(400, Vec::new(), "Emby 覆盖 HTTP 400")));
+        assert!(!failure_is_absent(&ParseFailure::http(
+            400,
+            Vec::new(),
+            "Emby 覆盖 HTTP 400"
+        )));
         assert!(!failure_is_absent(&ParseFailure::http(
             400,
             br#"{"error":"missing parameter total_episodes"}"#.to_vec(),
             "Emby 覆盖 HTTP 400"
         )));
-        assert!(!failure_is_absent(&ParseFailure::http(500, b"boom".to_vec(), "Emby 覆盖 HTTP 500")));
+        assert!(!failure_is_absent(&ParseFailure::http(
+            500,
+            b"boom".to_vec(),
+            "Emby 覆盖 HTTP 500"
+        )));
         // 传输失败(无状态码)不算
-        assert!(!failure_is_absent(&ParseFailure::transport("Emby 覆盖请求失败")));
+        assert!(!failure_is_absent(&ParseFailure::transport(
+            "Emby 覆盖请求失败"
+        )));
         // 200 但结构未识别不算
-        assert!(!failure_is_absent(&ParseFailure::http(200, b"nope".to_vec(), "结构未识别")));
+        assert!(!failure_is_absent(&ParseFailure::http(
+            200,
+            b"nope".to_vec(),
+            "结构未识别"
+        )));
     }
 }

@@ -87,7 +87,10 @@ struct InitializeResponse<'a> {
 /// 组装 `{"error":{"code":...,"message":...}}`(Go `wasm.go:122` `rpcErr`)。
 pub fn rpc_error(code: i32, message: impl Into<String>) -> Vec<u8> {
     util::encode_or_fallback(&ErrorResponse {
-        error: ErrorBody { code, message: message.into() },
+        error: ErrorBody {
+            code,
+            message: message.into(),
+        },
     })
 }
 
@@ -106,7 +109,10 @@ pub fn stopping() -> Vec<u8> {
 /// 走结构体而不是 `json!`/`to_value`: 后者底层是 BTreeMap, 会把键按字典序重排。
 pub fn initialize_result() -> Vec<u8> {
     util::encode_or_fallback(&InitializeResponse {
-        result: InitializeResult { ready: true, protocol: PROTOCOL },
+        result: InitializeResult {
+            ready: true,
+            protocol: PROTOCOL,
+        },
     })
 }
 
@@ -150,7 +156,12 @@ fn dispatch_inner(runtime: &mut Runtime, request: &[u8]) -> Vec<u8> {
     // ① 外层消息: 非 JSON / 无 method → -32602 "invalid invoke: recv=<前200字节>"
     let message = match RpcMessage::parse(request) {
         Ok(message) => message,
-        Err(_) => return rpc_error(CODE_INVALID_PARAMS, format!("invalid invoke: recv={}", util::trunc(request))),
+        Err(_) => {
+            return rpc_error(
+                CODE_INVALID_PARAMS,
+                format!("invalid invoke: recv={}", util::trunc(request)),
+            )
+        }
     };
     let method = message.method();
 
@@ -203,7 +214,10 @@ fn dispatch_inner(runtime: &mut Runtime, request: &[u8]) -> Vec<u8> {
 
 /// 与 Go `wasm.go:98` 的 `"invalid params: method=" + method + " recv=" + trunc(params)` 一致。
 fn invalid_params_message(method: &str, echoed: &[u8]) -> String {
-    format!("invalid params: method={method} recv={}", util::trunc(echoed))
+    format!(
+        "invalid params: method={method} recv={}",
+        util::trunc(echoed)
+    )
 }
 
 /// 供测试与后续阶段检查"本进程有没有发生过 host.call"。
@@ -221,7 +235,10 @@ mod tests {
         let mut runtime = Runtime::new();
         let raw = dispatch(&mut runtime, request.as_bytes());
         from_slice(&raw).unwrap_or_else(|e| {
-            panic!("响应必须是合法 JSON: {e}; 实际 {:?}", String::from_utf8_lossy(&raw))
+            panic!(
+                "响应必须是合法 JSON: {e}; 实际 {:?}",
+                String::from_utf8_lossy(&raw)
+            )
         })
     }
 
@@ -256,7 +273,11 @@ mod tests {
             let mut runtime = Runtime::new();
             let _ = dispatch(&mut runtime, request.as_bytes());
         }
-        assert_eq!(observed_host_calls(), before, "initialize 期间发生了 host.call");
+        assert_eq!(
+            observed_host_calls(),
+            before,
+            "initialize 期间发生了 host.call"
+        );
     }
 
     /// 合法 invoke: state / action / job / event / shutdown 五个 op 的响应形状。
@@ -284,7 +305,10 @@ mod tests {
         let job = dispatch_json(
             r#"{"method":"runtime.invoke","params":{"envelope":{"op":"job","invocation_id":"inv_3","payload":{"id":"no-such-job"}}}}"#,
         );
-        assert_eq!(job, json!({"result": {"status": "skipped", "message": "未声明的任务"}}));
+        assert_eq!(
+            job,
+            json!({"result": {"status": "skipped", "message": "未声明的任务"}})
+        );
 
         let event = dispatch_json(
             r#"{"method":"runtime.invoke","params":{"envelope":{"op":"event","payload":{"topic":"cron.tick","data":{}}}}}"#,
@@ -319,7 +343,10 @@ mod tests {
                 r#"{{"method":"runtime.invoke","params":{{"envelope":{{"op":"action","payload":{{"id":"{op_action}","input":{{"douban_ref":7}}}}}}}}}}"#
             );
             let out = dispatch_json(&request);
-            assert_eq!(out["result"], json!({"status": "failed", "message": "缺少 douban_ref"}));
+            assert_eq!(
+                out["result"],
+                json!({"status": "failed", "message": "缺少 douban_ref"})
+            );
         }
     }
 
@@ -340,7 +367,10 @@ mod tests {
         let out = dispatch_json(
             r#"{"method":"runtime.invoke","params":{"envelope":{"op":"state","payload":{"view":"main","if_none_match":"\"state-v0\""}}}}"#,
         );
-        assert_eq!(out, json!({"result": {"etag": "\"state-v0\"", "not_modified": true}}));
+        assert_eq!(
+            out,
+            json!({"result": {"etag": "\"state-v0\"", "not_modified": true}})
+        );
     }
 
     #[test]
@@ -348,7 +378,10 @@ mod tests {
         let out = dispatch_json(
             r#"{"method":"runtime.invoke","params":{"envelope":{"op":"teleport","invocation_id":"inv_1"}}}"#,
         );
-        assert_eq!(out, json!({"error": {"code": -32601, "message": "unsupported op: teleport"}}));
+        assert_eq!(
+            out,
+            json!({"error": {"code": -32601, "message": "unsupported op: teleport"}})
+        );
     }
 
     /// 非法消息: 逐条对齐 Go 的分支与文案。
@@ -361,7 +394,10 @@ mod tests {
             ("[1,2]", "invalid invoke: recv=[1,2]"),
             ("null", "invalid invoke: recv=null"),
             ("{}", "invalid invoke: recv={}"),
-            (r#"{"method":null}"#, "invalid invoke: recv={\"method\":null}"),
+            (
+                r#"{"method":null}"#,
+                "invalid invoke: recv={\"method\":null}",
+            ),
             (r#"{"method":7}"#, "invalid invoke: recv={\"method\":7}"),
             (r#"{"method":""}"#, "invalid invoke: recv={\"method\":\"\"}"),
             (
@@ -422,7 +458,10 @@ mod tests {
 
         let out = dispatch_json(r#"{"method":"runtime.gc"}"#);
         assert_eq!(out["error"]["code"], -32602);
-        assert_eq!(out["error"]["message"], "invalid params: method=runtime.gc recv=");
+        assert_eq!(
+            out["error"]["message"],
+            "invalid params: method=runtime.gc recv="
+        );
     }
 
     /// 业务错误一律 -32602, 文案来自 runtime。
@@ -486,7 +525,11 @@ mod tests {
             let mut runtime = Runtime::new();
             let raw = dispatch(&mut runtime, request);
             let parsed: Result<Value, _> = from_slice(&raw);
-            assert!(parsed.is_ok(), "输入 {request:?} 的响应不是 JSON: {:?}", String::from_utf8_lossy(&raw));
+            assert!(
+                parsed.is_ok(),
+                "输入 {request:?} 的响应不是 JSON: {:?}",
+                String::from_utf8_lossy(&raw)
+            );
         }
     }
 
@@ -516,11 +559,17 @@ mod tests {
         );
         assert!(ok.get("result").is_some() && ok.get("error").is_none());
 
-        let err = dispatch_json(r#"{"method":"runtime.invoke","params":{"envelope":{"op":"nope"}}}"#);
+        let err =
+            dispatch_json(r#"{"method":"runtime.invoke","params":{"envelope":{"op":"nope"}}}"#);
         assert!(err.get("result").is_none() && err.get("error").is_some());
-        assert_eq!(err["error"].as_object().unwrap().len(), 2, "error 只含 code/message");
+        assert_eq!(
+            err["error"].as_object().unwrap().len(),
+            2,
+            "error 只含 code/message"
+        );
 
-        let stopping = dispatch_json(r#"{"method":"runtime.invoke","params":{"envelope":{"op":"shutdown"}}}"#);
+        let stopping =
+            dispatch_json(r#"{"method":"runtime.invoke","params":{"envelope":{"op":"shutdown"}}}"#);
         assert_eq!(stopping.as_object().unwrap().len(), 1);
     }
 
@@ -528,7 +577,10 @@ mod tests {
     #[test]
     fn error_and_result_bytes_match_go_layout() {
         let mut runtime = Runtime::new();
-        let raw = dispatch(&mut runtime, br#"{"method":"runtime.invoke","params":{"envelope":{"op":"nope"}}}"#);
+        let raw = dispatch(
+            &mut runtime,
+            br#"{"method":"runtime.invoke","params":{"envelope":{"op":"nope"}}}"#,
+        );
         assert_eq!(
             raw,
             br#"{"error":{"code":-32601,"message":"unsupported op: nope"}}"#.to_vec()
@@ -540,13 +592,22 @@ mod tests {
     /// 夹具自检: 脱敏后的 state 文档必须是合法 JSON 且不含任何凭据。
     #[test]
     fn fixtures_are_sanitized() {
-        let state: Value = from_slice(crate::fixtures::STATE).expect("state_val.json 必须是合法 JSON");
-        let movie: Value = from_slice(crate::fixtures::WISH_MOVIE).expect("wish_movie.json 必须是合法 JSON");
+        let state: Value =
+            from_slice(crate::fixtures::STATE).expect("state_val.json 必须是合法 JSON");
+        let movie: Value =
+            from_slice(crate::fixtures::WISH_MOVIE).expect("wish_movie.json 必须是合法 JSON");
         let tv: Value = from_slice(crate::fixtures::WISH_TV).expect("wish_tv.json 必须是合法 JSON");
 
-        assert_eq!(state["wish_info"]["uid"], "123456789", "uid 必须替换为 123456789");
+        assert_eq!(
+            state["wish_info"]["uid"], "123456789",
+            "uid 必须替换为 123456789"
+        );
         // 只嗅探"cookie 名/字段名"这类非机密标记; 绝不把真实凭据本身写进仓库。
-        for (name, doc) in [("state_val", &state), ("wish_movie", &movie), ("wish_tv", &tv)] {
+        for (name, doc) in [
+            ("state_val", &state),
+            ("wish_movie", &movie),
+            ("wish_tv", &tv),
+        ] {
             for needle in ["dbcl2", "frodotk", "HMACCOUNT", "_pk_ref"] {
                 assert!(
                     !serde_json::to_string(doc).unwrap().contains(needle),

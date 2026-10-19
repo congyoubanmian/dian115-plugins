@@ -75,7 +75,8 @@ impl TestHost {
         testhost::install(Box::new(move |request: &HostCallRequest| {
             captured.borrow_mut().push(request.clone());
             for route in &routes {
-                if route.method == request.method && request.path.starts_with(route.prefix.as_str()) {
+                if route.method == request.method && request.path.starts_with(route.prefix.as_str())
+                {
                     if route.host_error {
                         return Err(HostError::new("host_call 返回长度 0"));
                     }
@@ -130,7 +131,10 @@ fn default_reply(request: &HostCallRequest) -> Result<HostCallResponse, HostErro
                 );
                 let mut headers = BTreeMap::new();
                 headers.insert("ETag".to_string(), vec!["\"pkv_1\"".to_string()]);
-                headers.insert("content-type".to_string(), vec!["application/json".to_string()]);
+                headers.insert(
+                    "content-type".to_string(),
+                    vec!["application/json".to_string()],
+                );
                 Ok(HostCallResponse {
                     status: 200,
                     headers,
@@ -147,7 +151,10 @@ fn default_reply(request: &HostCallRequest) -> Result<HostCallResponse, HostErro
 pub(crate) fn reply(status: i32, body: &[u8]) -> HostCallResponse {
     let mut headers = BTreeMap::new();
     if status < 400 {
-        headers.insert("content-type".to_string(), vec!["application/json".to_string()]);
+        headers.insert(
+            "content-type".to_string(),
+            vec!["application/json".to_string()],
+        );
     }
     HostCallResponse {
         status,

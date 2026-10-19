@@ -9,8 +9,8 @@
 //! - `tasks.idx`: 紧凑数组 `[{id,status,source,song_id,name,singers,quality,error,updated_ms}]`,
 //!   **UI state 的唯一数据源**(只截最近 [`STATE_TASKS_LIMIT`] 条)。一条约 180~290 字节,
 //!   200 条上限 → 几十 KB, 与整条队列的完整记录(每条含 `job_ref`/`staged_path` 等)
-//! 差两个数量级。0.3.14 起额外带 `source`/`song_id`(入队去重所需的最小字段), 因此
-//! 单条比 0.3.12 略大, 但仍是常数上界, 见 `download::tests::audit_measured_index_and_record_sizes`。
+//!   差两个数量级。0.3.14 起额外带 `source`/`song_id`(入队去重所需的最小字段), 因此
+//!   单条比 0.3.12 略大, 但仍是常数上界, 见 `download::tests::audit_measured_index_and_record_sizes`。
 //! - `task.<id>`: 完整 [`Task`] 记录, **只在推进那一条时**读进来, 处理完立刻 drop。
 //!
 //! pump 的一次调用因此只同时持有: `idx` + 在途任务条数(稳态 `<= settings.max_active`;
@@ -333,7 +333,10 @@ pub fn save_index(ids: &mut PutIds, index: &[TaskIndexEntry]) -> Result<(), Stri
 /// 就地排序, **不截断**: pump 写回前调用, 保证索引始终是有序的。
 pub fn sort_index(index: &mut [TaskIndexEntry]) {
     index.sort_by(|left, right| {
-        right.updated_ms.cmp(&left.updated_ms).then_with(|| right.id.cmp(&left.id))
+        right
+            .updated_ms
+            .cmp(&left.updated_ms)
+            .then_with(|| right.id.cmp(&left.id))
     });
 }
 
@@ -379,7 +382,13 @@ pub fn ensure_migrated(ids: &mut PutIds) -> Result<usize, String> {
 /// 组件清洗: `\/:*?"<>|` → `_`, 再 trim(对齐 `server.mjs` 的 `safe()` 实现)。
 pub fn sanitize_component(text: &str) -> String {
     text.chars()
-        .map(|ch| if ILLEGAL_NAME_CHARS.contains(&ch) { '_' } else { ch })
+        .map(|ch| {
+            if ILLEGAL_NAME_CHARS.contains(&ch) {
+                '_'
+            } else {
+                ch
+            }
+        })
         .collect::<String>()
         .trim()
         .to_string()
@@ -394,10 +403,22 @@ pub fn sanitize_component(text: &str) -> String {
 pub fn out_name(singers: &str, name: &str, ext: &str) -> String {
     let singers = sanitize_component(singers);
     let name = sanitize_component(name);
-    let singers = if singers.is_empty() { "未知".to_string() } else { singers };
-    let name = if name.is_empty() { "未知".to_string() } else { name };
+    let singers = if singers.is_empty() {
+        "未知".to_string()
+    } else {
+        singers
+    };
+    let name = if name.is_empty() {
+        "未知".to_string()
+    } else {
+        name
+    };
     let ext = ext.trim().trim_start_matches('.').to_ascii_lowercase();
-    let ext = if ext.is_empty() { "flac".to_string() } else { ext };
+    let ext = if ext.is_empty() {
+        "flac".to_string()
+    } else {
+        ext
+    };
     format!("{singers} - {name}.{ext}")
 }
 
@@ -438,7 +459,11 @@ pub fn short_id(seed: &str) -> String {
 /// `existing` 是**已占用的 id 集合**(分片后就是索引里全部 id, 不需要完整记录)。
 pub fn allocate_id<I: AsRef<str>>(existing: &[I], seed: &str) -> String {
     for attempt in 0..64u32 {
-        let probe = if attempt == 0 { seed.to_string() } else { format!("{seed}#{attempt}") };
+        let probe = if attempt == 0 {
+            seed.to_string()
+        } else {
+            format!("{seed}#{attempt}")
+        };
         let id = short_id(&probe);
         if !existing.iter().any(|taken| taken.as_ref() == id) {
             return id;
@@ -456,11 +481,11 @@ pub fn allocate_id<I: AsRef<str>>(existing: &[I], seed: &str) -> String {
 ///
 /// 索引条目自带 `source`/`song_id`/`quality`(见 [`TaskIndexEntry`]), 因此去重只需
 /// **读一次 `tasks.idx`** 在内存里筛 `queued`/`downloading`/`copying` 的条目, **不再逐条
-/// 读 `task.<id>`**。常规路径的 storage 调用固定为:
-/// 迁移快查 1 次(GET `tasks`) + 读索引 1 次(GET `tasks.idx`) + 写分片 1 次(PUT)
-/// + 写索引 1 次(PUT); 命中复用时不写, 只多读命中那**一条**完整记录返回给调用方。
-/// 因此批量入队(如 `playlist-queue-all`)的总读次数与**已排队条数无关**,
-/// 只随**本次处理的歌曲数**线性增长。对比 0.3.12 的 O(在途 + 排队) 次读。
+/// 读 `task.<id>`**。常规路径的 storage 调用固定为: 迁移快查 1 次(GET `tasks`) 加
+/// 读索引 1 次(GET `tasks.idx`)、写分片 1 次(PUT)、写索引 1 次(PUT); 命中复用时不写,
+/// 只多读命中那**一条**完整记录返回给调用方。因此批量入队(如 `playlist-queue-all`)
+/// 的总读次数与**已排队条数无关**, 只随**本次处理的歌曲数**线性增长。对比 0.3.12
+/// 的 O(在途 + 排队) 次读。
 ///
 /// # 一次性自愈(老索引)
 ///
@@ -491,7 +516,10 @@ pub fn enqueue(ids: &mut PutIds, request: &NewTask) -> Result<EnqueueOutcome, St
     let mut stale_ids: Vec<String> = Vec::new();
     for entry in index.iter_mut() {
         if entry.source.is_empty()
-            && matches!(entry.status.as_str(), STATUS_QUEUED | STATUS_DOWNLOADING | STATUS_COPYING)
+            && matches!(
+                entry.status.as_str(),
+                STATUS_QUEUED | STATUS_DOWNLOADING | STATUS_COPYING
+            )
         {
             stale_ids.push(entry.id.clone());
         }
@@ -516,8 +544,10 @@ pub fn enqueue(ids: &mut PutIds, request: &NewTask) -> Result<EnqueueOutcome, St
         save_index(ids, &index)?;
     }
     if let Some(hit) = index.iter().find(|entry| {
-        matches!(entry.status.as_str(), STATUS_QUEUED | STATUS_DOWNLOADING | STATUS_COPYING)
-            && entry.source == request.source
+        matches!(
+            entry.status.as_str(),
+            STATUS_QUEUED | STATUS_DOWNLOADING | STATUS_COPYING
+        ) && entry.source == request.source
             && entry.song_id == request.song_id
             && entry.quality == request.quality
     }) {
@@ -525,13 +555,19 @@ pub fn enqueue(ids: &mut PutIds, request: &NewTask) -> Result<EnqueueOutcome, St
         let Some(task) = load_task(&task_id) else {
             return Err(format!("去重命中但分片缺失: {task_id}"));
         };
-        return Ok(EnqueueOutcome { task, deduped: true });
+        return Ok(EnqueueOutcome {
+            task,
+            deduped: true,
+        });
     }
 
     // ③ 新建: id 必须避开**全队列**已有的 id(不只是进行中的), 暂存文件名靠它唯一。
     //    索引里就有全队列的 id 集合, 因此不需要再读完整记录。
     let millis = now_ms();
-    let seed = format!("{}|{}|{}|{}", request.source, request.song_id, request.quality, millis);
+    let seed = format!(
+        "{}|{}|{}|{}",
+        request.source, request.song_id, request.quality, millis
+    );
     let taken: Vec<&str> = index.iter().map(|entry| entry.id.as_str()).collect();
     let id = allocate_id(&taken, &seed);
     let task = Task {
@@ -553,7 +589,10 @@ pub fn enqueue(ids: &mut PutIds, request: &NewTask) -> Result<EnqueueOutcome, St
     index.push(TaskIndexEntry::of(&task));
     sort_index(&mut index);
     save_index(ids, &index)?;
-    Ok(EnqueueOutcome { task, deduped: false })
+    Ok(EnqueueOutcome {
+        task,
+        deduped: false,
+    })
 }
 
 /// 把一条任务重置为排队态(重试的公共逻辑)。
@@ -684,7 +723,11 @@ pub fn clear_finished(ids: &mut PutIds) -> Result<usize, String> {
         save_index(ids, &kept)?;
     }
     if !errors.is_empty() {
-        return Err(format!("清理失败 {} 条: {}", errors.len(), errors.join("; ")));
+        return Err(format!(
+            "清理失败 {} 条: {}",
+            errors.len(),
+            errors.join("; ")
+        ));
     }
     Ok(removed)
 }
@@ -703,7 +746,10 @@ pub fn state_view() -> Vec<Value> {
     let mut index = load_index();
     sort_index(&mut index);
     index.truncate(STATE_TASKS_LIMIT);
-    index.into_iter().map(|entry| serde_json::to_value(entry).unwrap_or(Value::Null)).collect()
+    index
+        .into_iter()
+        .map(|entry| serde_json::to_value(entry).unwrap_or(Value::Null))
+        .collect()
 }
 
 /// 从 `telegram.callback` 的 data 里提取按钮回调值。
@@ -713,7 +759,8 @@ pub fn state_view() -> Vec<Value> {
 pub fn extract_callback_data(data: &Value) -> Option<String> {
     let candidates = [
         data.get("callback").and_then(|value| value.get("data")),
-        data.get("callback_query").and_then(|value| value.get("data")),
+        data.get("callback_query")
+            .and_then(|value| value.get("data")),
         data.get("data"),
         data.get("callback_data"),
     ];
@@ -778,10 +825,10 @@ mod tests {
         /// 测试用 KV: 键 → (原始值, revision)。
         static FAKE_KV: RefCell<HashMap<String, (Vec<u8>, u64)>> = RefCell::new(HashMap::new());
         /// 让假宿主对指定 storage 键的 DELETE 返回 500(测删除失败时的索引一致性)。
-        static FAIL_DELETE_KEY: RefCell<Option<String>> = RefCell::new(None);
+        static FAIL_DELETE_KEY: RefCell<Option<String>> = const { RefCell::new(None) };
         /// 0.3.14 审计: 假宿主收到的每一次 storage GET 的键。用例自行清空后
         /// 跑一段操作, 用来断言"去重读次数与队列长度无关"。
-        static STORAGE_GETS: RefCell<Vec<String>> = RefCell::new(Vec::new());
+        static STORAGE_GETS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
     }
 
     /// 清空 GET 计数(审计用例在摆好初始队列后、断言前调用)。
@@ -824,7 +871,11 @@ mod tests {
                 }
                 "PUT" => {
                     // 幂等键约束: 16~128 个可打印 ASCII。
-                    let idem = request.headers.get("idempotency-key").cloned().unwrap_or_default();
+                    let idem = request
+                        .headers
+                        .get("idempotency-key")
+                        .cloned()
+                        .unwrap_or_default();
                     if !(16..=128).contains(&idem.len())
                         || !idem.bytes().all(|byte| byte.is_ascii_graphic())
                     {
@@ -862,7 +913,11 @@ mod tests {
                     })
                 }
                 "DELETE" => {
-                    let idem = request.headers.get("idempotency-key").cloned().unwrap_or_default();
+                    let idem = request
+                        .headers
+                        .get("idempotency-key")
+                        .cloned()
+                        .unwrap_or_default();
                     if !(16..=128).contains(&idem.len())
                         || !idem.bytes().all(|byte| byte.is_ascii_graphic())
                     {
@@ -915,9 +970,15 @@ mod tests {
     #[test]
     fn out_name_follows_sidecar_rules() {
         assert_eq!(out_name("周杰伦", "晴天", "flac"), "周杰伦 - 晴天.flac");
-        assert_eq!(out_name("A/B:C*?\"<>|D", "E\\F", "FLAC"), "A_B_C______D - E_F.flac");
+        assert_eq!(
+            out_name("A/B:C*?\"<>|D", "E\\F", "FLAC"),
+            "A_B_C______D - E_F.flac"
+        );
         assert_eq!(out_name("", "晴天", ""), "未知 - 晴天.flac");
-        assert_eq!(out_name("  周杰伦  ", "  晴天  ", ".mp3"), "周杰伦 - 晴天.mp3");
+        assert_eq!(
+            out_name("  周杰伦  ", "  晴天  ", ".mp3"),
+            "周杰伦 - 晴天.mp3"
+        );
         assert_eq!(out_name("周杰伦", "", "flac"), "周杰伦 - 未知.flac");
     }
 
@@ -926,10 +987,15 @@ mod tests {
         let taken = vec![short_id("seed"), short_id("seed#1")];
         let id = allocate_id(&taken, "seed");
         assert!(id.len() <= MAX_TASK_ID_LEN, "id 超长: {id}");
-        assert!(id.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'z').contains(&byte)));
+        assert!(id
+            .bytes()
+            .all(|byte: u8| byte.is_ascii_digit() || byte.is_ascii_lowercase()));
         assert_ne!(id, taken[0], "必须绕开已有 id");
         assert_ne!(id, taken[1], "必须绕开已有 id");
-        assert!(format!("retry:{id}").len() <= 32, "callback_data 限 32 字节");
+        assert!(
+            format!("retry:{id}").len() <= 32,
+            "callback_data 限 32 字节"
+        );
     }
 
     /// 把一条任务写成分片形态(完整记录 + 索引), 供测试直接摆布状态。
@@ -945,15 +1011,25 @@ mod tests {
     /// `^[A-Za-z0-9](?:[A-Za-z0-9]|[._-](?=[A-Za-z0-9]))*$` 不含 `:`。
     #[test]
     fn storage_keys_satisfy_host_pattern() {
-        assert!(key_is_host_safe(TASKS_IDX_KEY), "索引键非法: {TASKS_IDX_KEY}");
+        assert!(
+            key_is_host_safe(TASKS_IDX_KEY),
+            "索引键非法: {TASKS_IDX_KEY}"
+        );
         assert!(key_is_host_safe(TASKS_KEY), "旧键非法: {TASKS_KEY}");
         // 短 id 是 base36 字母数字, 拼出来的分片键必然合法。
-        for id in [short_id("a"), "0".to_string(), "zzzzzzzz".into(), "a1b2c3d4".into()] {
+        for id in [
+            short_id("a"),
+            "0".to_string(),
+            "zzzzzzzz".into(),
+            "a1b2c3d4".into(),
+        ] {
             let key = task_key(&id);
             assert!(key_is_host_safe(&key), "分片键非法: {key}");
         }
         // 边界: 首字符非字母数字、分隔符结尾、分隔符后非字母数字、含 `:` —— 都要被拒。
-        for bad in ["", ".task", "-x", "tasks.", "tasks..a", "tasks:a", "a b", "a/b"] {
+        for bad in [
+            "", ".task", "-x", "tasks.", "tasks..a", "tasks:a", "a b", "a/b",
+        ] {
             assert!(!key_is_host_safe(bad), "本该非法的键被判合法: {bad:?}");
         }
         assert!(!key_is_host_safe(&"a".repeat(161)), "超 160 字符必须拒绝");
@@ -1055,7 +1131,11 @@ mod tests {
     #[test]
     fn index_entry_truncates_error_to_120_bytes() {
         let long = "错".repeat(200); // 600 字节
-        let task = Task { id: "x".into(), error: long, ..Task::default() };
+        let task = Task {
+            id: "x".into(),
+            error: long,
+            ..Task::default()
+        };
         let entry = TaskIndexEntry::of(&task);
         assert!(
             entry.error.len() <= IDX_ERROR_LIMIT,
@@ -1064,7 +1144,11 @@ mod tests {
         );
         assert_eq!(entry.error.chars().count(), IDX_ERROR_LIMIT / 3);
         // 短错误原样保留。
-        let short = Task { id: "x".into(), error: "boom".into(), ..Task::default() };
+        let short = Task {
+            id: "x".into(),
+            error: "boom".into(),
+            ..Task::default()
+        };
         assert_eq!(TaskIndexEntry::of(&short).error, "boom");
     }
 
@@ -1101,7 +1185,11 @@ mod tests {
             let mut ids = PutIds::new();
             for index in 0..queued {
                 // 每首不同的 song_id, 保证都是"新建"(索引条目都带 source)。
-                enqueue(&mut ids, &request("netease", &format!("old-{index}"), "lossless")).unwrap();
+                enqueue(
+                    &mut ids,
+                    &request("netease", &format!("old-{index}"), "lossless"),
+                )
+                .unwrap();
             }
             assert_eq!(load_index().len(), queued);
             reset_get_count();
@@ -1119,7 +1207,10 @@ mod tests {
         // 常规新歌入队的 GET 组成(与队列长度无关): 迁移快查 `tasks` 1 + 读索引 `tasks.idx` 1
         // + 两次 PUT 各一次 ETag 预读(store::put 先读后写)2 = 4。关键不是这个常数本身,
         // 而是它不随已排队条数增长。
-        assert_eq!(short, 4, "常规新歌入队 GET 次数 = 4(tasks + tasks.idx + 两次 PUT 预读)");
+        assert_eq!(
+            short, 4,
+            "常规新歌入队 GET 次数 = 4(tasks + tasks.idx + 两次 PUT 预读)"
+        );
     }
 
     /// 审计续: **去重命中**的 GET 次数同样与队列长度无关(这正是 0.3.12 里 O(队列) 的路径)。
@@ -1132,7 +1223,11 @@ mod tests {
             install_fake_kv_host();
             let mut ids = PutIds::new();
             for index in 0..queued {
-                enqueue(&mut ids, &request("netease", &format!("s{index}"), "lossless")).unwrap();
+                enqueue(
+                    &mut ids,
+                    &request("netease", &format!("s{index}"), "lossless"),
+                )
+                .unwrap();
             }
             reset_get_count();
             let outcome = enqueue(&mut ids, &request("netease", target, "lossless")).unwrap();
@@ -1141,9 +1236,15 @@ mod tests {
         }
         let short = measure_dedup_gets(5, "s0");
         let long = measure_dedup_gets(30, "s0");
-        assert_eq!(short, long, "去重命中 GET 次数随队列长度变化: 5 条={short}, 30 条={long}");
+        assert_eq!(
+            short, long,
+            "去重命中 GET 次数随队列长度变化: 5 条={short}, 30 条={long}"
+        );
         // 迁移快查 + 读索引 + 读命中那一条完整记录。
-        assert_eq!(short, 3, "去重命中 GET 次数 = 3(tasks + tasks.idx + task.<id>)");
+        assert_eq!(
+            short, 3,
+            "去重命中 GET 次数 = 3(tasks + tasks.idx + task.<id>)"
+        );
     }
 
     /// 0.3.14 自愈: 老索引条目缺 `source`/`song_id` 时, 首次入队读缺字段的分片补齐索引;
@@ -1177,7 +1278,10 @@ mod tests {
 
         reset_get_count();
         let first = enqueue(&mut ids, &request("netease", "77", "lossless")).unwrap();
-        assert!(first.deduped, "补齐 source 后必须命中同 source+song_id+quality");
+        assert!(
+            first.deduped,
+            "补齐 source 后必须命中同 source+song_id+quality"
+        );
         assert_eq!(first.task.id, "old1");
         let healed_gets = get_count();
         // 迁移快查 + 读索引 + 读缺字段那一条分片(自愈) + 自愈写回索引的 ETag 预读
@@ -1240,9 +1344,25 @@ mod tests {
     fn clear_finished_removes_shards_and_rebuilds_index() {
         install_fake_kv_host();
         let mut ids = PutIds::new();
-        let done = Task { id: "d1".into(), status: STATUS_DONE.into(), updated_ms: 1, ..Task::default() };
-        let failed = Task { id: "f1".into(), status: STATUS_FAILED.into(), updated_ms: 2, ..Task::default() };
-        let live = Task { id: "l1".into(), status: STATUS_DOWNLOADING.into(), job_ref: "job-1".into(), updated_ms: 3, ..Task::default() };
+        let done = Task {
+            id: "d1".into(),
+            status: STATUS_DONE.into(),
+            updated_ms: 1,
+            ..Task::default()
+        };
+        let failed = Task {
+            id: "f1".into(),
+            status: STATUS_FAILED.into(),
+            updated_ms: 2,
+            ..Task::default()
+        };
+        let live = Task {
+            id: "l1".into(),
+            status: STATUS_DOWNLOADING.into(),
+            job_ref: "job-1".into(),
+            updated_ms: 3,
+            ..Task::default()
+        };
         for task in [&done, &failed, &live] {
             put_sharded(&mut ids, task);
         }
@@ -1269,8 +1389,18 @@ mod tests {
     fn clear_finished_keeps_entry_when_shard_delete_fails() {
         install_fake_kv_host();
         let mut ids = PutIds::new();
-        let done = Task { id: "d1".into(), status: STATUS_DONE.into(), updated_ms: 1, ..Task::default() };
-        let done2 = Task { id: "d2".into(), status: STATUS_DONE.into(), updated_ms: 2, ..Task::default() };
+        let done = Task {
+            id: "d1".into(),
+            status: STATUS_DONE.into(),
+            updated_ms: 1,
+            ..Task::default()
+        };
+        let done2 = Task {
+            id: "d2".into(),
+            status: STATUS_DONE.into(),
+            updated_ms: 2,
+            ..Task::default()
+        };
         for task in [&done, &done2] {
             put_sharded(&mut ids, task);
         }
@@ -1326,13 +1456,15 @@ mod tests {
         assert!(value["answer"].as_str().unwrap().contains("无需重试"));
 
         // 不认识的按钮: 不是本插件处理。
-        let value = on_telegram_callback(&mut ids, &json!({"callback": {"data": "other:x"}})).unwrap();
+        let value =
+            on_telegram_callback(&mut ids, &json!({"callback": {"data": "other:x"}})).unwrap();
         assert_eq!(value["handled"], false);
 
         // 缺 data: 失败(宿主可重投)。
         assert!(on_telegram_callback(&mut ids, &json!({"message": {}})).is_err());
         // 未知任务 id: 静默确认, 不触发无限重投。
-        let value = on_telegram_callback(&mut ids, &json!({"callback": {"data": "retry:zzzz"}})).unwrap();
+        let value =
+            on_telegram_callback(&mut ids, &json!({"callback": {"data": "retry:zzzz"}})).unwrap();
         assert_eq!(value["handled"], true);
         assert!(value["answer"].as_str().unwrap().contains("任务不存在"));
     }
@@ -1352,12 +1484,25 @@ mod tests {
             .collect();
         save_index(&mut ids, &entries).unwrap();
         let view = state_view();
-        assert_eq!(view.len(), STATE_TASKS_LIMIT, "state 截最近 {} 条", STATE_TASKS_LIMIT);
+        assert_eq!(
+            view.len(),
+            STATE_TASKS_LIMIT,
+            "state 截最近 {} 条",
+            STATE_TASKS_LIMIT
+        );
         assert_eq!(view[0]["updated_ms"], STATE_TASKS_LIMIT as u64);
         // 索引本身不被 state_view 改写(只截副本)。
         assert_eq!(load_index().len(), STATE_TASKS_LIMIT + 1);
         // 协议形状: 前端读的七个字段都在。
-        for key in ["id", "status", "name", "singers", "quality", "error", "updated_ms"] {
+        for key in [
+            "id",
+            "status",
+            "name",
+            "singers",
+            "quality",
+            "error",
+            "updated_ms",
+        ] {
             assert!(view[0].get(key).is_some(), "state 条目缺字段: {key}");
         }
     }

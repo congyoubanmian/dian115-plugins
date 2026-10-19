@@ -138,30 +138,30 @@ macro_rules! static_regex {
     };
 }
 
-/// Go `main.go:516` `reWant`: `([\d,]+)\s*人?\s*想看`。
+// Go `main.go:516` `reWant`: `([\d,]+)\s*人?\s*想看`。
 static_regex!(re_want, r"([0-9,]+)[\t\n\f\r ]*人?[\t\n\f\r ]*想看");
-/// Go `main.go:520` `reLiClear`: `(?s)<li class="clearfix">(.*?)</li>`。
+// Go `main.go:520` `reLiClear`: `(?s)<li class="clearfix">(.*?)</li>`。
 static_regex!(re_li_clear, r#"(?s)<li class="clearfix">(.*?)</li>"#);
-/// Go `main.go:521` `reNo`: `class="no">\s*(\d+)`。
+// Go `main.go:521` `reNo`: `class="no">\s*(\d+)`。
 static_regex!(re_no, r#"class="no">[\t\n\f\r ]*([0-9]+)"#);
-/// Go `main.go:523` `reName`: `<a[^>]*href="https://movie\.douban\.com/subject/(\d+)/"[^>]*>\s*([^<]+)`。
+// Go `main.go:523` `reName`: `<a[^>]*href="https://movie\.douban\.com/subject/(\d+)/"[^>]*>\s*([^<]+)`。
 static_regex!(
     re_name,
     r#"<a[^>]*href="https://movie\.douban\.com/subject/([0-9]+)/"[^>]*>[\t\n\f\r ]*([^<]+)"#
 );
-/// Go `main.go:525` `reItemMod`: `(?s)<div class="item mod[^"]*">.*?</div>\s*</div>`。
+// Go `main.go:525` `reItemMod`: `(?s)<div class="item mod[^"]*">.*?</div>\s*</div>`。
 static_regex!(
     re_item_mod,
     r#"(?s)<div class="item mod[^"]*">.*?</div>[\t\n\f\r ]*</div>"#
 );
-/// Go `main.go:526` `reItemSubj`: `<h3>\s*<a[^>]*href="https://movie\.douban\.com/subject/(\d+)/"[^>]*>\s*([^<]+)`。
+// Go `main.go:526` `reItemSubj`: `<h3>\s*<a[^>]*href="https://movie\.douban\.com/subject/(\d+)/"[^>]*>\s*([^<]+)`。
 static_regex!(
     re_item_subj,
     r#"<h3>[\t\n\f\r ]*<a[^>]*href="https://movie\.douban\.com/subject/([0-9]+)/"[^>]*>[\t\n\f\r ]*([^<]+)"#
 );
-/// Go `main.go:527` `reItemImg`: `<img[^>]+src="([^"]+)"`。
+// Go `main.go:527` `reItemImg`: `<img[^>]+src="([^"]+)"`。
 static_regex!(re_item_img, r#"<img[^>]+src="([^"]+)""#);
-/// Go `main.go:639`/`721` 的局部 `space`: `\s+`(标题里的连续空白压成一个空格)。
+// Go `main.go:639`/`721` 的局部 `space`: `\s+`(标题里的连续空白压成一个空格)。
 static_regex!(re_space, r"[\t\n\f\r ]+");
 
 /// Go 里定义后从未被调用的 9 条正则(`main.go:514`/`515`/`517`/`518`/`519`/`524`/
@@ -1283,7 +1283,6 @@ mod tests {
                 sort: "recommend".into(),
                 limit: 30,
                 enabled: true,
-                ..ListConfig::default()
             },
         );
         lists.insert(

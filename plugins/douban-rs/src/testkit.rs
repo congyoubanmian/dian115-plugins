@@ -106,13 +106,17 @@ impl Drop for FakeHostGuard {
 
 impl FakeHost {
     pub(crate) fn new() -> Self {
-        FakeHost { inner: Rc::new(RefCell::new(Inner::default())) }
+        FakeHost {
+            inner: Rc::new(RefCell::new(Inner::default())),
+        }
     }
 
     /// 装上本线程的 host.call 替身。
     pub(crate) fn install(&self) -> FakeHostGuard {
         let inner = Rc::clone(&self.inner);
-        testhost::install(Box::new(move |request: &HostCallRequest| handle(&inner, request)));
+        testhost::install(Box::new(move |request: &HostCallRequest| {
+            handle(&inner, request)
+        }));
         FakeHostGuard
     }
 
@@ -120,15 +124,21 @@ impl FakeHost {
     pub(crate) fn set(&self, key: &str, value: &[u8]) {
         let mut state = self.inner.borrow_mut();
         let revision = state.kv.get(key).map(|entry| entry.revision).unwrap_or(0) + 1;
-        state.kv.insert(key.to_string(), Entry { value: value.to_vec(), revision });
-    }
-
-    pub(crate) fn remove(&self, key: &str) {
-        self.inner.borrow_mut().kv.remove(key);
+        state.kv.insert(
+            key.to_string(),
+            Entry {
+                value: value.to_vec(),
+                revision,
+            },
+        );
     }
 
     pub(crate) fn value_of(&self, key: &str) -> Option<Vec<u8>> {
-        self.inner.borrow().kv.get(key).map(|entry| entry.value.clone())
+        self.inner
+            .borrow()
+            .kv
+            .get(key)
+            .map(|entry| entry.value.clone())
     }
 
     /// ETag 响应头的名字(默认 `ETag`; 改成别的拼写用于大小写不敏感断言)。
@@ -200,22 +210,24 @@ impl FakeHost {
     }
 }
 
-fn handle(inner: &Rc<RefCell<Inner>>, request: &HostCallRequest) -> Result<HostCallResponse, HostError> {
+fn handle(
+    inner: &Rc<RefCell<Inner>>,
+    request: &HostCallRequest,
+) -> Result<HostCallResponse, HostError> {
     let mut state = inner.borrow_mut();
     state.requests.push(request.clone());
     if state.fail_all {
         return Err(HostError::new("host_call 返回长度 0"));
     }
-    let key = request
-        .path
-        .rsplit('/')
-        .next()
-        .unwrap_or("")
-        .to_string();
+    let key = request.path.rsplit('/').next().unwrap_or("").to_string();
     match request.method.as_str() {
         "GET" => Ok(get_response(&mut state, &key)),
         "PUT" => Ok(put_response(&mut state, &key, request)),
-        _ => Ok(status_response(405, b"method not allowed", state.base64_padded)),
+        _ => Ok(status_response(
+            405,
+            b"method not allowed",
+            state.base64_padded,
+        )),
     }
 }
 
@@ -231,7 +243,10 @@ fn get_response(state: &mut Inner, key: &str) -> HostCallResponse {
             let body = envelope_body(state.style(), key, &entry.value, entry.revision);
             let mut headers = BTreeMap::new();
             headers.insert(state.etag_header_name().to_string(), vec![entry.etag()]);
-            headers.insert("content-type".to_string(), vec!["application/json".to_string()]);
+            headers.insert(
+                "content-type".to_string(),
+                vec!["application/json".to_string()],
+            );
             HostCallResponse {
                 status: 200,
                 headers,
@@ -244,9 +259,17 @@ fn get_response(state: &mut Inner, key: &str) -> HostCallResponse {
 
 fn put_response(state: &mut Inner, key: &str, request: &HostCallRequest) -> HostCallResponse {
     // ① 宿主文档约束: Idempotency-Key 16~128 个可打印 ASCII
-    let idem = request.headers.get("idempotency-key").cloned().unwrap_or_default();
+    let idem = request
+        .headers
+        .get("idempotency-key")
+        .cloned()
+        .unwrap_or_default();
     if !(16..=128).contains(&idem.len()) || !idem.bytes().all(|b| b.is_ascii_graphic()) {
-        return status_response(400, format!("bad idempotency-key: {idem:?}").as_bytes(), state.base64_padded);
+        return status_response(
+            400,
+            format!("bad idempotency-key: {idem:?}").as_bytes(),
+            state.base64_padded,
+        );
     }
     // ② body 必须是 {"value": ...}
     let raw_body = match decode_any(&request.body_base64) {
@@ -299,23 +322,37 @@ fn put_response(state: &mut Inner, key: &str, request: &HostCallRequest) -> Host
         None => Vec::new(),
     };
     let (revision, stored) = {
-        let entry = state
-            .kv
-            .entry(key.to_string())
-            .or_insert(Entry { value: Vec::new(), revision: 0 });
+        let entry = state.kv.entry(key.to_string()).or_insert(Entry {
+            value: Vec::new(),
+            revision: 0,
+        });
         entry.value = new_value;
         entry.revision += 1;
         (entry.revision, entry.value.clone())
     };
     let body = envelope_body(state.style(), key, &stored, revision);
     let mut headers = BTreeMap::new();
-    headers.insert(state.etag_header_name().to_string(), vec![format!("\"pkv_{revision}\"")]);
-    headers.insert("content-type".to_string(), vec!["application/json".to_string()]);
-    HostCallResponse { status: 200, headers, body_base64: encode(&body, state.base64_padded) }
+    headers.insert(
+        state.etag_header_name().to_string(),
+        vec![format!("\"pkv_{revision}\"")],
+    );
+    headers.insert(
+        "content-type".to_string(),
+        vec!["application/json".to_string()],
+    );
+    HostCallResponse {
+        status: 200,
+        headers,
+        body_base64: encode(&body, state.base64_padded),
+    }
 }
 
 fn status_response(status: i32, body: &[u8], padded: bool) -> HostCallResponse {
-    HostCallResponse { status, headers: BTreeMap::new(), body_base64: encode(body, padded) }
+    HostCallResponse {
+        status,
+        headers: BTreeMap::new(),
+        body_base64: encode(body, padded),
+    }
 }
 
 fn encode(body: &[u8], padded: bool) -> String {

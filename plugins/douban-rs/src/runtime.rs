@@ -604,11 +604,11 @@ impl Runtime {
             let key_set = obj
                 .get("cookiecloud_key")
                 .and_then(|v| v.as_str())
-                .map_or(false, |s| !s.is_empty());
+                .is_some_and(|s| !s.is_empty());
             let manual_set = obj
                 .get("manual_cookie")
                 .and_then(|v| v.as_str())
-                .map_or(false, |s| !s.is_empty());
+                .is_some_and(|s| !s.is_empty());
             obj.remove("cookiecloud_url");
             obj.remove("cookiecloud_uuid");
             obj.remove("cookiecloud_key");
@@ -2215,14 +2215,16 @@ mod host_forbidden_field_tests {
 
     #[test]
     fn state_doc_contains_no_host_forbidden_keys() {
-        let mut rt = Runtime::default();
-        rt.settings = model::Settings {
-            cookiecloud_url: "http://127.0.0.1:8088".into(),
-            cookiecloud_uuid: "uuid-x".into(),
-            cookiecloud_key: "secret-key".into(),
-            manual_cookie: "dbcl2=1:abc".into(),
-            wish_sync_enabled: true,
-            ..model::default_settings()
+        let rt = Runtime {
+            settings: model::Settings {
+                cookiecloud_url: "http://127.0.0.1:8088".into(),
+                cookiecloud_uuid: "uuid-x".into(),
+                cookiecloud_key: "secret-key".into(),
+                manual_cookie: "dbcl2=1:abc".into(),
+                wish_sync_enabled: true,
+                ..model::default_settings()
+            },
+            ..Default::default()
         };
         let state = rt.state_doc();
         assert_no_forbidden_keys(&state, "$");

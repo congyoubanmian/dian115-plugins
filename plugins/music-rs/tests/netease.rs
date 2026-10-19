@@ -31,7 +31,7 @@ use plugin::netease::{
 
 /// 本地 hex 解码(不引依赖; 长度必须是偶数)。
 fn unhex(text: &str) -> Vec<u8> {
-    assert!(text.len() % 2 == 0, "hex 长度必须是偶数: {text}");
+    assert!(text.len().is_multiple_of(2), "hex 长度必须是偶数: {text}");
     (0..text.len() / 2)
         .map(|index| {
             u8::from_str_radix(&text[index * 2..index * 2 + 2], 16).expect("必须是合法 hex")
@@ -66,7 +66,11 @@ fn aes_ecb_matches_fips_197_known_vector() {
     let key = unhex("000102030405060708090a0b0c0d0e0f");
     let plain = unhex("00112233445566778899aabbccddeeff");
     let out = aes_ecb_encrypt(&plain, &key).unwrap();
-    assert_eq!(enc_hex(&out[..16]), "69c4e0d86a7b0430d8cdb78070b4c55a", "FIPS-197 C.1");
+    assert_eq!(
+        enc_hex(&out[..16]),
+        "69c4e0d86a7b0430d8cdb78070b4c55a",
+        "FIPS-197 C.1"
+    );
     assert_eq!(
         enc_hex(&out),
         "69c4e0d86a7b0430d8cdb78070b4c55a954f64f2e4e86e9eee82d20216684899",
@@ -78,13 +82,23 @@ fn aes_ecb_matches_fips_197_known_vector() {
 #[test]
 fn aes_ecb_pads_like_go_netease() {
     assert_eq!(EAPI_KEY.len(), 16);
-    assert_eq!(enc_hex(&aes_ecb_encrypt(b"netease", EAPI_KEY).unwrap()), "4f90efeea825c5fb3f159f0a56a45736");
-    assert_eq!(enc_hex(&aes_ecb_encrypt(b"", EAPI_KEY).unwrap()), "6aa3b102fbe7296ab0db9ea5c46ad12b", "空输入补满一整块");
+    assert_eq!(
+        enc_hex(&aes_ecb_encrypt(b"netease", EAPI_KEY).unwrap()),
+        "4f90efeea825c5fb3f159f0a56a45736"
+    );
+    assert_eq!(
+        enc_hex(&aes_ecb_encrypt(b"", EAPI_KEY).unwrap()),
+        "6aa3b102fbe7296ab0db9ea5c46ad12b",
+        "空输入补满一整块"
+    );
     // 16 字节输入同样补满一整块(PKCS#7 标准行为)
     assert_eq!(aes_ecb_encrypt(&[0u8; 16], EAPI_KEY).unwrap().len(), 32);
     // 非 16 字节密钥: Go 的 aes.NewCipher 会报错, 这里返回 Err(不 panic)
     assert!(aes_ecb_encrypt(b"x", b"short").is_err());
-    assert!(aes_ecb_encrypt(b"x", &[0u8; 24]).is_err(), "本移植点只支持 16 字节常量密钥");
+    assert!(
+        aes_ecb_encrypt(b"x", &[0u8; 24]).is_err(),
+        "本移植点只支持 16 字节常量密钥"
+    );
 }
 
 /// Go `netease.go:120-131` 的 payload 字面量: 键序 = Go map 的排序键序,
@@ -112,7 +126,10 @@ fn eapi_params_matches_independent_vector_lossless() {
 fn eapi_params_matches_independent_vector_sky() {
     let payload = song_url_payload("42", "sky", 99);
     assert_eq!(eapi_params(SONG_URL_API, &payload), "fa90b329e9614f79e79598f37dc2edb487f00d1bc4c9b24cd57e6c318b9073567565d994ef3a89f5356c243f90d8099d485db260fa577059c3e1cfbfb3b6e9c157e2dbb5c19220c20ee55de2b6b8e0c0da6346d00362771113455a98a163207c96112551674ef2aa3cf342cbd2c6898dc9d0cef9466d31342b8410534bd998db9f2aa4909c0280a8118ce0a66739f41b5830b791208a4f12ea2872c174fac2b850d41794fdba57c36ee78ee82ab0503741b06992913ecb850787550925a650ddb02165b196d2fcdeb7fc1ebdcb5ba63d77bfe2fbbcfc5958fe7c3665b4f3839a");
-    assert_ne!(eapi_params(SONG_URL_API, &payload), eapi_params(SONG_URL_API, &song_url_payload("42", "hires", 99)));
+    assert_ne!(
+        eapi_params(SONG_URL_API, &payload),
+        eapi_params(SONG_URL_API, &song_url_payload("42", "hires", 99))
+    );
 }
 
 /// `strings.Replace(apiURL, "/eapi/", "/api/", 1)`: 只换第一处 `/eapi/`。
@@ -120,8 +137,14 @@ fn eapi_params_matches_independent_vector_sky() {
 fn eapi_params_replaces_only_the_first_eapi_segment() {
     let payload = song_url_payload("1", "standard", 1);
     assert_eq!(
-        eapi_params("https://interface3.music.163.com/eapi/song/enhance/player/url/v1", &payload),
-        eapi_params("https://interface3.music.163.com/api/song/enhance/player/url/v1", &payload)
+        eapi_params(
+            "https://interface3.music.163.com/eapi/song/enhance/player/url/v1",
+            &payload
+        ),
+        eapi_params(
+            "https://interface3.music.163.com/api/song/enhance/player/url/v1",
+            &payload
+        )
     );
     // 第二处 /eapi/ 保持原样: 直接断言归一化后的 path。
     // 不能拿 `eapi_params("https://x/api/a/eapi/b")` 当参照 —— 这个参照串自己也含
@@ -169,9 +192,17 @@ fn parse_cookie_string_matches_go_splitn() {
     let cookies = parse_cookie_string(
         "MUSIC_U=abc=def; __csrf_token=xyz; NMTID=; broken; =nokey; key=; a=b;c=d",
     );
-    assert_eq!(cookies.get("MUSIC_U").map(String::as_str), Some("abc=def"), "值里的 = 保留");
+    assert_eq!(
+        cookies.get("MUSIC_U").map(String::as_str),
+        Some("abc=def"),
+        "值里的 = 保留"
+    );
     assert_eq!(cookies.get("__csrf_token").map(String::as_str), Some("xyz"));
-    assert_eq!(cookies.get("NMTID").map(String::as_str), Some(""), "空值也算命中");
+    assert_eq!(
+        cookies.get("NMTID").map(String::as_str),
+        Some(""),
+        "空值也算命中"
+    );
     assert_eq!(cookies.get("key").map(String::as_str), Some(""));
     assert_eq!(cookies.get("a").map(String::as_str), Some("b"));
     assert_eq!(cookies.get("c").map(String::as_str), Some("d"));
@@ -201,7 +232,11 @@ fn cookie_header_matches_go() {
     assert_eq!(COOKIE_BASE, "os=pc; appver=; osver=; deviceId=pyncm!");
     assert_eq!(cookie_header(&BTreeMap::new()), COOKIE_BASE);
     assert_eq!(
-        cookie_header(&jar(&[("MUSIC_U", "u1"), ("__csrf_token", "t2"), ("NMTID", "n3")])),
+        cookie_header(&jar(&[
+            ("MUSIC_U", "u1"),
+            ("__csrf_token", "t2"),
+            ("NMTID", "n3")
+        ])),
         "os=pc; appver=; osver=; deviceId=pyncm!; MUSIC_U=u1; __csrf_token=t2",
         "其余 cookie 不进请求头"
     );
@@ -228,7 +263,12 @@ fn form_encode_sorts_keys_and_escapes() {
     assert_eq!(form_encode(&[]), "");
     assert_eq!(form_encode(&[("type", "3")]), "type=3");
     assert_eq!(
-        form_encode(&[("s", "晴天 & 周杰伦"), ("type", "1"), ("limit", "30"), ("offset", "30")]),
+        form_encode(&[
+            ("s", "晴天 & 周杰伦"),
+            ("type", "1"),
+            ("limit", "30"),
+            ("offset", "30")
+        ]),
         "limit=30&offset=30&s=%E6%99%B4%E5%A4%A9+%26+%E5%91%A8%E6%9D%B0%E4%BC%A6&type=1"
     );
     assert_eq!(
@@ -260,7 +300,12 @@ fn song_url_shape_matches_contract() {
     assert_eq!(back, song);
     assert_eq!(
         SongUrl::placeholder(),
-        SongUrl { url: String::new(), ext: String::new(), level: String::new(), size: 0 }
+        SongUrl {
+            url: String::new(),
+            ext: String::new(),
+            level: String::new(),
+            size: 0
+        }
     );
 }
 
@@ -283,12 +328,21 @@ fn ip_headers_match_sidecar_ranges() {
     for _ in 0..5 {
         let headers = ip_headers();
         assert_eq!(headers.len(), 2);
-        assert_eq!(headers.keys().cloned().collect::<Vec<String>>(), vec!["x-forwarded-for", "x-real-ip"]);
+        assert_eq!(
+            headers.keys().cloned().collect::<Vec<String>>(),
+            vec!["x-forwarded-for", "x-real-ip"]
+        );
         let real = headers.get("x-real-ip").expect("必须有 x-real-ip").clone();
         assert_eq!(headers.get("x-forwarded-for"), Some(&real), "两个头同值");
-        let octets: Vec<u32> = real.split('.').map(|part| part.parse().expect("十进制段")).collect();
+        let octets: Vec<u32> = real
+            .split('.')
+            .map(|part| part.parse().expect("十进制段"))
+            .collect();
         assert_eq!(octets.len(), 4, "IPv4 点分四段: {real}");
-        assert!(CN_PREFIXES.contains(&[octets[0], octets[1]]), "前缀必须来自 sidecar 的表: {real}");
+        assert!(
+            CN_PREFIXES.contains(&[octets[0], octets[1]]),
+            "前缀必须来自 sidecar 的表: {real}"
+        );
         assert!((1..=254).contains(&octets[2]), "第三段 1..=254: {real}");
         assert!((1..=254).contains(&octets[3]), "第四段 1..=254: {real}");
         seen.insert(real);

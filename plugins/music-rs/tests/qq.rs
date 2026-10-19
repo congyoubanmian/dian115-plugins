@@ -17,10 +17,9 @@ use plugin::qq::{
     normalize_cookies, parse_js_args, parse_query, parse_search, parse_set_cookie_line,
     parse_vkey_response, parse_wx_code, parse_wx_errcode, qq_status_of, qr_login_params,
     qr_show_params, qr_show_t, quality_ladder, quality_start, query_encode, query_escape,
-    search_params, set_cookie_lines,
-    song_url_request_body, uin_from_cookies, wx_check_params, wx_login_params, wx_login_payload,
-    wx_status_of, LoginKind, COOKIE_KEY, NO_LINK_ERROR, QUALITY_LADDER, QQ_COOKIE_NAMES,
-    QR_UNAVAILABLE,
+    search_params, set_cookie_lines, song_url_request_body, uin_from_cookies, wx_check_params,
+    wx_login_params, wx_login_payload, wx_status_of, LoginKind, COOKIE_KEY, NO_LINK_ERROR,
+    QQ_COOKIE_NAMES, QR_UNAVAILABLE, QUALITY_LADDER,
 };
 use serde_json::Value;
 
@@ -34,7 +33,7 @@ fn hash33_matches_go_known_vectors() {
     assert_eq!(hash33("abc"), 108966);
     assert_eq!(hash33("~"), 126);
     // Go `range` 按 rune: '测'=U+6D4B(27979), '试'=U+8BD5(35797)
-    assert_eq!(hash33("测试"), 0 + 27979 * 33 + 35797);
+    assert_eq!(hash33("测试"), (27979 * 33) + 35797);
     assert_eq!(hash33("测试"), 959104);
     // 真实 qrsig 形态(32 位十六进制)
     assert_eq!(hash33("0123456789abcdef0123456789abcdef"), 935578372);
@@ -59,7 +58,10 @@ fn query_escape_matches_go() {
 
 #[test]
 fn query_encode_sorts_keys_bytewise() {
-    assert_eq!(query_encode(&[("b", "2"), ("a", "1"), ("_", "0")]), "_=0&a=1&b=2");
+    assert_eq!(
+        query_encode(&[("b", "2"), ("a", "1"), ("_", "0")]),
+        "_=0&a=1&b=2"
+    );
     assert_eq!(query_encode(&[("k", "")]), "k=");
     assert_eq!(query_encode(&[]), "");
 }
@@ -101,7 +103,10 @@ fn wx_params_exact() {
         wx_login_params("musicdl-1759291234567890123"),
         "appid=wx48db31d50e334801&href=https%3A%2F%2Fy.qq.com%2Fmediastyle%2Fmusic_v17%2Fsrc%2Fcss%2Fpopup_wechat.css%23wechat_redirect&redirect_uri=https%3A%2F%2Fy.qq.com%2Fportal%2Fwx_redirect.html%3Flogin_type%3D2%26surl%3Dhttps%3A%2F%2Fy.qq.com%2F&response_type=code&scope=snsapi_login&state=musicdl-1759291234567890123"
     );
-    assert_eq!(wx_check_params("AbC-123_x", 1_759_291_234_567), "_=1759291234567&uuid=AbC-123_x");
+    assert_eq!(
+        wx_check_params("AbC-123_x", 1_759_291_234_567),
+        "_=1759291234567&uuid=AbC-123_x"
+    );
 }
 
 /// `qqSearch` 的 query(每页 20 条; 中文按 UTF-8 百分号编码, 空格变 `+`)。
@@ -118,7 +123,12 @@ fn search_params_exact() {
 #[test]
 fn song_url_request_body_exact() {
     assert_eq!(guid_from_nanos(1_759_291_234_567_890_123), "4567890123");
-    let body = song_url_request_body("001Qu4I30eVFYb", "1234567890", "4567890123", &QUALITY_LADDER);
+    let body = song_url_request_body(
+        "001Qu4I30eVFYb",
+        "1234567890",
+        "4567890123",
+        &QUALITY_LADDER,
+    );
     assert_eq!(
         String::from_utf8(body).unwrap(),
         "{\"comm\":{\"ct\":20,\"cv\":0,\"format\":\"json\",\"uin\":\"1234567890\"},\"req_1\":{\"method\":\"UrlGetVkey\",\"module\":\"music.vkey.GetVkey\",\"param\":{\"filename\":[\"AI00001Qu4I30eVFYb001Qu4I30eVFYb.flac\",\"Q001001Qu4I30eVFYb001Qu4I30eVFYb.flac\",\"Q000001Qu4I30eVFYb001Qu4I30eVFYb.flac\",\"F000001Qu4I30eVFYb001Qu4I30eVFYb.flac\",\"O801001Qu4I30eVFYb001Qu4I30eVFYb.ogg\",\"M800001Qu4I30eVFYb001Qu4I30eVFYb.mp3\",\"M500001Qu4I30eVFYb001Qu4I30eVFYb.mp3\"],\"guid\":\"4567890123\",\"loginflag\":1,\"platform\":\"20\",\"songmid\":[\"001Qu4I30eVFYb\"],\"songtype\":[0],\"uin\":\"1234567890\"}}}"
@@ -186,7 +196,10 @@ fn parse_js_args_reads_ptuicb_arguments() {
         ]
     );
     // 空串也是合法参数
-    assert_eq!(parse_js_args("ptuiCB('66','0','','0','','')"), vec!["66", "0", "", "0", "", ""]);
+    assert_eq!(
+        parse_js_args("ptuiCB('66','0','','0','','')"),
+        vec!["66", "0", "", "0", "", ""]
+    );
     // 没有配对的收尾引号: 最后一段不产生参数
     assert_eq!(parse_js_args("ptuiCB('0','0'"), vec!["0", "0"]);
     assert_eq!(parse_js_args("ptuiCB('0','0"), vec!["0"]);
@@ -211,10 +224,19 @@ fn status_maps_match_go() {
 
 #[test]
 fn parse_wx_errcode_handles_quotes_and_rescans() {
-    assert_eq!(parse_wx_errcode("window.wx_errcode=405;window.wx_code='CODE-1';"), Some("405".to_string()));
-    assert_eq!(parse_wx_errcode("wx_errcode = '408';"), Some("408".to_string()));
+    assert_eq!(
+        parse_wx_errcode("window.wx_errcode=405;window.wx_code='CODE-1';"),
+        Some("405".to_string())
+    );
+    assert_eq!(
+        parse_wx_errcode("wx_errcode = '408';"),
+        Some("408".to_string())
+    );
     // 第一处 `wx_errcode` 后不是 `=`: 正则继续向后找
-    assert_eq!(parse_wx_errcode("wx_errcodeXX; wx_errcode=402;"), Some("402".to_string()));
+    assert_eq!(
+        parse_wx_errcode("wx_errcodeXX; wx_errcode=402;"),
+        Some("402".to_string())
+    );
     assert_eq!(parse_wx_errcode("hello"), None);
     assert_eq!(parse_wx_errcode("wx_errcode=abc"), None);
     assert_eq!(parse_wx_errcode("wx_errcode=''"), None);
@@ -222,26 +244,38 @@ fn parse_wx_errcode_handles_quotes_and_rescans() {
 
 #[test]
 fn parse_wx_code_handles_both_quote_styles() {
-    assert_eq!(parse_wx_code("wx_code='CODE-1';"), Some("CODE-1".to_string()));
+    assert_eq!(
+        parse_wx_code("wx_code='CODE-1';"),
+        Some("CODE-1".to_string())
+    );
     assert_eq!(parse_wx_code("wx_code = \"AB\";"), Some("AB".to_string()));
     // `([^"']*)` 允许空串
     assert_eq!(parse_wx_code("wx_code='';"), Some(String::new()));
     assert_eq!(parse_wx_code("wx_code = CODE"), None);
     assert_eq!(parse_wx_code("nope"), None);
     // 第一处不可匹配时继续向后找
-    assert_eq!(parse_wx_code("wx_code=1; wx_code='Z'"), Some("Z".to_string()));
+    assert_eq!(
+        parse_wx_code("wx_code=1; wx_code='Z'"),
+        Some("Z".to_string())
+    );
 }
 
 #[test]
 fn extract_wx_uuid_tries_go_patterns_in_order() {
     let by_redirect = "<script>location.href='https://open.weixin.qq.com/connect/l/qrconnect?uuid=AbC-123_xyz&last=1'</script>";
-    assert_eq!(extract_wx_uuid(by_redirect), Some("AbC-123_xyz".to_string()));
+    assert_eq!(
+        extract_wx_uuid(by_redirect),
+        Some("AbC-123_xyz".to_string())
+    );
 
     let by_js = "<script>window.QRLogin.uuid = \"wxUuid_987-XY\";</script>";
     assert_eq!(extract_wx_uuid(by_js), Some("wxUuid_987-XY".to_string()));
 
     let by_img = "<img src=\"https://open.weixin.qq.com/connect/qrcode/0123456789abcdef\">";
-    assert_eq!(extract_wx_uuid(by_img), Some("0123456789abcdef".to_string()));
+    assert_eq!(
+        extract_wx_uuid(by_img),
+        Some("0123456789abcdef".to_string())
+    );
 
     // 第一条正则优先
     let both = "<a href='/connect/qrcode/ZZZ'>connect/l/qrconnect?uuid=AAA</a>";
@@ -261,12 +295,24 @@ fn parse_query_matches_go_get_semantics() {
         parse_query("qrsig=AbCdEf123456"),
         BTreeMap::from([("qrsig".to_string(), "AbCdEf123456".to_string())])
     );
-    assert_eq!(parse_query("flag"), BTreeMap::from([("flag".to_string(), String::new())]));
+    assert_eq!(
+        parse_query("flag"),
+        BTreeMap::from([("flag".to_string(), String::new())])
+    );
     // 同名键取第一个(`Values.Get`)
-    assert_eq!(parse_query("dup=1&dup=2").get("dup"), Some(&"1".to_string()));
+    assert_eq!(
+        parse_query("dup=1&dup=2").get("dup"),
+        Some(&"1".to_string())
+    );
     // `+` 与 `%XX` 都要还原
-    assert_eq!(parse_query("a=%E5%91%A8&b=x+y").get("a"), Some(&"周".to_string()));
-    assert_eq!(parse_query("a=%E5%91%A8&b=x+y").get("b"), Some(&"x y".to_string()));
+    assert_eq!(
+        parse_query("a=%E5%91%A8&b=x+y").get("a"),
+        Some(&"周".to_string())
+    );
+    assert_eq!(
+        parse_query("a=%E5%91%A8&b=x+y").get("b"),
+        Some(&"x y".to_string())
+    );
     // 非法转义: 该段跳过, 其余段继续解析(Go ParseQuery 记错后 `continue`)
     let after_bad = parse_query("ok=1&bad=%ZZ&after=2");
     assert_eq!(after_bad.len(), 2);
@@ -303,14 +349,23 @@ fn parse_vkey_response_picks_first_http_purl_with_ladder_index() {
 
     // 全部为空 → Go 原文报错(含绿钻提示)
     let none = br#"{"req_1":{"data":{"midurlinfo":[{"purl":"","vkey":""}]}}}"#;
-    assert_eq!(parse_vkey_response(none, &QUALITY_LADDER), Err(NO_LINK_ERROR.to_string()));
+    assert_eq!(
+        parse_vkey_response(none, &QUALITY_LADDER),
+        Err(NO_LINK_ERROR.to_string())
+    );
 
     // `null` 按 Go 的零值处理(不报解析错误), 只是取不到链接
     let null_purl = br#"{"req_1":{"data":{"midurlinfo":[{"purl":null,"vkey":null}]}}}"#;
-    assert_eq!(parse_vkey_response(null_purl, &QUALITY_LADDER), Err(NO_LINK_ERROR.to_string()));
+    assert_eq!(
+        parse_vkey_response(null_purl, &QUALITY_LADDER),
+        Err(NO_LINK_ERROR.to_string())
+    );
 
     // 结构缺失同样是零值
-    assert_eq!(parse_vkey_response(b"{}", &QUALITY_LADDER), Err(NO_LINK_ERROR.to_string()));
+    assert_eq!(
+        parse_vkey_response(b"{}", &QUALITY_LADDER),
+        Err(NO_LINK_ERROR.to_string())
+    );
 
     // 非法 JSON → Go 的 "QQ 取链解析失败"
     assert_eq!(
@@ -322,7 +377,11 @@ fn parse_vkey_response_picks_first_http_purl_with_ladder_index() {
     let sliced = br#"{"req_1":{"data":{"midurlinfo":[{"purl":"http://x/M800.mp3"},{"purl":""}]}}}"#;
     assert_eq!(
         parse_vkey_response(sliced, quality_ladder("320")),
-        Ok(("http://x/M800.mp3".to_string(), "mp3".to_string(), "M800".to_string()))
+        Ok((
+            "http://x/M800.mp3".to_string(),
+            "mp3".to_string(),
+            "M800".to_string()
+        ))
     );
 }
 
@@ -335,7 +394,8 @@ fn parse_search_maps_go_struct_fields() {
          "sizeflac":0,"size320":512,"size128":128,"singer":[]},
         {"songid":3,"songmid":"mid3","songname":"歌3","albumname":"","interval":0,
          "sizeflac":0,"size320":0,"size128":128,"singer":[{"name":"C"}]}
-    ]}}}"#.as_bytes();
+    ]}}}"#
+        .as_bytes();
     let parsed = parse_search(body, 2).unwrap();
     assert_eq!(parsed["page"], 2);
     let songs = parsed["songs"].as_array().unwrap();
@@ -358,7 +418,13 @@ fn parse_search_maps_go_struct_fields() {
     assert_eq!(parsed["songs"][0]["id"], "");
     assert_eq!(parsed["songs"][0]["quality"], "128");
     assert_eq!(parsed["songs"][0]["singers"], "");
-    assert_eq!(parse_search(b"{}", 1).unwrap()["songs"].as_array().unwrap().len(), 0);
+    assert_eq!(
+        parse_search(b"{}", 1).unwrap()["songs"]
+            .as_array()
+            .unwrap()
+            .len(),
+        0
+    );
 
     // 解析失败带上 Go 的前缀
     let err = parse_search(b"not json", 1).unwrap_err();
@@ -375,7 +441,10 @@ fn parse_search_maps_go_struct_fields() {
 fn uin_extraction_matches_go_trim_prefix_chain() {
     assert_eq!(uin_from_cookies(&BTreeMap::new()), "0", "键不存在 → \"0\"");
     assert_eq!(
-        uin_from_cookies(&BTreeMap::from([("uin".to_string(), "o0123456".to_string())])),
+        uin_from_cookies(&BTreeMap::from([(
+            "uin".to_string(),
+            "o0123456".to_string()
+        )])),
         "123456"
     );
     assert_eq!(
@@ -383,11 +452,23 @@ fn uin_extraction_matches_go_trim_prefix_chain() {
         "123"
     );
     // 只去一层前缀, 与 strings.TrimPrefix 相同
-    assert_eq!(uin_from_cookies(&BTreeMap::from([("uin".to_string(), "00".to_string())])), "0");
-    assert_eq!(uin_from_cookies(&BTreeMap::from([("uin".to_string(), "o0o1".to_string())])), "o1");
+    assert_eq!(
+        uin_from_cookies(&BTreeMap::from([("uin".to_string(), "00".to_string())])),
+        "0"
+    );
+    assert_eq!(
+        uin_from_cookies(&BTreeMap::from([("uin".to_string(), "o0o1".to_string())])),
+        "o1"
+    );
     // 键存在但为空: Go 返回 ""(不是 "0")
-    assert_eq!(uin_from_cookies(&BTreeMap::from([("uin".to_string(), String::new())])), "");
-    assert_eq!(uin_from_cookies(&BTreeMap::from([("uin".to_string(), "o".to_string())])), "");
+    assert_eq!(
+        uin_from_cookies(&BTreeMap::from([("uin".to_string(), String::new())])),
+        ""
+    );
+    assert_eq!(
+        uin_from_cookies(&BTreeMap::from([("uin".to_string(), "o".to_string())])),
+        ""
+    );
 }
 
 #[test]
@@ -413,8 +494,16 @@ fn set_cookie_filtering_matches_qq_get_whitelist() {
 
     // 白名单外的名字被丢弃
     let mut filtered = BTreeMap::new();
-    parse_set_cookie_line("foo=bar; Path=/", Some(QQ_COOKIE_NAMES.as_slice()), &mut filtered);
-    parse_set_cookie_line("__Host-x=1", Some(QQ_COOKIE_NAMES.as_slice()), &mut filtered);
+    parse_set_cookie_line(
+        "foo=bar; Path=/",
+        Some(QQ_COOKIE_NAMES.as_slice()),
+        &mut filtered,
+    );
+    parse_set_cookie_line(
+        "__Host-x=1",
+        Some(QQ_COOKIE_NAMES.as_slice()),
+        &mut filtered,
+    );
     assert!(filtered.is_empty());
 
     // Expires 里的 ", " 会被 Go 的 Split(", ") 切开, 但不影响第一个键值
@@ -438,7 +527,10 @@ fn set_cookie_headers_are_case_insensitive() {
     let mut headers: BTreeMap<String, Vec<String>> = BTreeMap::new();
     headers.insert(
         "Set-Cookie".to_string(),
-        vec!["qrsig=abc; Path=/".to_string(), "uin=o1; Path=/".to_string()],
+        vec![
+            "qrsig=abc; Path=/".to_string(),
+            "uin=o1; Path=/".to_string(),
+        ],
     );
     headers.insert("set-cookie".to_string(), vec!["skey=S; Path=/".to_string()]);
     let lines = set_cookie_lines(&headers);
@@ -499,7 +591,10 @@ fn normalize_cookies_fills_uin_and_music_key() {
 fn entry_points_degrade_without_host() {
     assert_eq!(plugin::qq::qr_poll("nope").unwrap_err(), QR_UNAVAILABLE);
     assert_eq!(plugin::qq::qr_poll("type=wx").unwrap_err(), QR_UNAVAILABLE);
-    assert_eq!(plugin::qq::qr_poll("qrsig=abc").unwrap_err(), QR_UNAVAILABLE);
+    assert_eq!(
+        plugin::qq::qr_poll("qrsig=abc").unwrap_err(),
+        QR_UNAVAILABLE
+    );
 
     let status = plugin::qq::login_status().unwrap();
     assert_eq!(status["logged_in"], Value::Bool(false));

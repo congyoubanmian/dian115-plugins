@@ -117,7 +117,9 @@ pub fn cookie_cloud_pull(
         .map_err(|err| OpError::new(format!("CookieCloud 不可达: {err}")))?;
     // Go: `status == 200 && strings.Contains(string(body), "Not Found")`
     if response.status == 200 && contains_bytes(&body, b"Not Found") {
-        return Err(OpError::new("CookieCloud 无此 UUID 数据（浏览器扩展还没同步过）"));
+        return Err(OpError::new(
+            "CookieCloud 无此 UUID 数据（浏览器扩展还没同步过）",
+        ));
     }
     if response.status >= 400 {
         return Err(OpError::new(format!(
@@ -128,10 +130,16 @@ pub fn cookie_cloud_pull(
     }
     let result: CookieCloudResult = match serde_json::from_slice(&body) {
         Ok(result) => result,
-        Err(_) => return Err(OpError::new("CookieCloud 响应异常（UUID 不存在或服务端版本过旧）")),
+        Err(_) => {
+            return Err(OpError::new(
+                "CookieCloud 响应异常（UUID 不存在或服务端版本过旧）",
+            ))
+        }
     };
     if result.encrypted.is_empty() {
-        return Err(OpError::new("CookieCloud 响应异常（UUID 不存在或服务端版本过旧）"));
+        return Err(OpError::new(
+            "CookieCloud 响应异常（UUID 不存在或服务端版本过旧）",
+        ));
     }
     // 全量浏览器 cookie 的密文可达数 MB, 在 WASM 解释器里解密会撞前台 10 秒强杀线,
     // 因此按 Go 的口径比较 **encrypted 文本长度**, 超限直接指引限域, 不再解密。
@@ -224,7 +232,7 @@ pub fn aes_cbc_decrypt(data: &[u8], key: &[u8], iv: &[u8]) -> Result<Vec<u8>, Op
     if key.len() != 16 && key.len() != 32 {
         return Err(OpError::new(format!("非法密钥长度 {}", key.len())));
     }
-    if data.is_empty() || data.len() % 16 != 0 {
+    if data.is_empty() || !data.len().is_multiple_of(16) {
         return Err(OpError::new(format!("密文长度非法 ({})", data.len())));
     }
     let mut buffer = data.to_vec();
@@ -360,11 +368,15 @@ pub fn action_cookiecloud_sync() -> Result<Value, String> {
 
     // 合并后从 KV 复核登录态(云里没带的字段不抹掉已存的登录态)。
     let netease_cookies = crate::netease::load_cookies();
-    let netease_logged_in = netease_cookies.get("MUSIC_U").map_or(false, |v| !v.is_empty())
-        || netease_cookies.get("MUSIC_A").map_or(false, |v| !v.is_empty());
+    let netease_logged_in = netease_cookies
+        .get("MUSIC_U")
+        .is_some_and(|v| !v.is_empty())
+        || netease_cookies
+            .get("MUSIC_A")
+            .is_some_and(|v| !v.is_empty());
     let qq_logged_in = crate::qq::load_cookies()
         .get("qqmusic_key")
-        .map_or(false, |v| !v.is_empty());
+        .is_some_and(|v| !v.is_empty());
 
     Ok(json!({
         "netease": {"saved": netease_jar.len(), "logged_in": netease_logged_in},
@@ -396,7 +408,9 @@ fn contains_bytes(haystack: &[u8], needle: &[u8]) -> bool {
     if needle.is_empty() {
         return true;
     }
-    haystack.windows(needle.len()).any(|window| window == needle)
+    haystack
+        .windows(needle.len())
+        .any(|window| window == needle)
 }
 
 // ─────────────────────────── 测试 ───────────────────────────
@@ -437,10 +451,16 @@ mod tests {
         buffer.resize(plain.len() + 16, 0);
         let padded_len = if key.len() == 32 {
             let encryptor = cbc::Encryptor::<Aes256>::new_from_slices(key, iv).unwrap();
-            encryptor.encrypt_padded_mut::<Pkcs7>(&mut buffer, plain.len()).unwrap().len()
+            encryptor
+                .encrypt_padded_mut::<Pkcs7>(&mut buffer, plain.len())
+                .unwrap()
+                .len()
         } else {
             let encryptor = cbc::Encryptor::<Aes128>::new_from_slices(key, iv).unwrap();
-            encryptor.encrypt_padded_mut::<Pkcs7>(&mut buffer, plain.len()).unwrap().len()
+            encryptor
+                .encrypt_padded_mut::<Pkcs7>(&mut buffer, plain.len())
+                .unwrap()
+                .len()
         };
         buffer.truncate(padded_len);
         buffer
@@ -494,10 +514,17 @@ mod tests {
                     headers: etag_headers(revision),
                     body_base64: STANDARD_NO_PAD.encode(&value),
                 }),
-                None => Ok(HostCallResponse { status: 404, ..HostCallResponse::default() }),
+                None => Ok(HostCallResponse {
+                    status: 404,
+                    ..HostCallResponse::default()
+                }),
             },
             "PUT" => {
-                let idem = request.headers.get("idempotency-key").cloned().unwrap_or_default();
+                let idem = request
+                    .headers
+                    .get("idempotency-key")
+                    .cloned()
+                    .unwrap_or_default();
                 if !(16..=128).contains(&idem.len())
                     || !idem.bytes().all(|byte| byte.is_ascii_graphic())
                 {
@@ -515,7 +542,10 @@ mod tests {
                         None => false,
                     };
                     if !matches {
-                        return Ok(HostCallResponse { status: 412, ..HostCallResponse::default() });
+                        return Ok(HostCallResponse {
+                            status: 412,
+                            ..HostCallResponse::default()
+                        });
                     }
                 }
                 let revision = current.map(|(_, revision)| revision).unwrap_or(0) + 1;
@@ -541,8 +571,8 @@ mod tests {
             let method = request.method.clone();
             let path = request.path.clone();
             let mut state = shared.borrow_mut();
-            if path.starts_with("/api/plugin-runtime/storage/") {
-                return kv_response(&mut state, request, &path["/api/plugin-runtime/storage/".len()..]);
+            if let Some(key) = path.strip_prefix("/api/plugin-runtime/storage/") {
+                return kv_response(&mut state, request, key);
             }
             if method == "GET" && path.starts_with("http://127.0.0.1:8088/get/") {
                 state.gets.push((method, path));
@@ -551,7 +581,9 @@ mod tests {
                 }
                 return json_response(state.get_status, &state.get_body);
             }
-            Err(HostError::new(format!("unexpected host call: {method} {path}")))
+            Err(HostError::new(format!(
+                "unexpected host call: {method} {path}"
+            )))
         }));
         state
     }
@@ -627,9 +659,15 @@ mod tests {
         let outcome = action_cookiecloud_sync().expect("同步必须成功");
 
         assert_no_cookie_keys(&outcome, "$");
-        assert_eq!(outcome["netease"]["saved"], 3, "MUSIC_U/__csrf_token/NMTID: {outcome}");
+        assert_eq!(
+            outcome["netease"]["saved"], 3,
+            "MUSIC_U/__csrf_token/NMTID: {outcome}"
+        );
         assert_eq!(outcome["netease"]["logged_in"], true, "MUSIC_U 已入库");
-        assert_eq!(outcome["qq"]["saved"], 3, "uin/qqmusic_key/p_skey: {outcome}");
+        assert_eq!(
+            outcome["qq"]["saved"], 3,
+            "uin/qqmusic_key/p_skey: {outcome}"
+        );
         assert_eq!(outcome["qq"]["logged_in"], true, "qqmusic_key 已入库");
         assert_eq!(
             outcome["matched_domains"], 4,
@@ -643,12 +681,18 @@ mod tests {
             netease.get("MUSIC_U").map(String::as_str),
             Some("should-not-override-first")
         );
-        assert_eq!(netease.get("__csrf_token").map(String::as_str), Some("fake-csrf"));
+        assert_eq!(
+            netease.get("__csrf_token").map(String::as_str),
+            Some("fake-csrf")
+        );
         assert_eq!(netease.get("NMTID").map(String::as_str), Some("fake-nmtid"));
         assert!(!netease.contains_key("OTHER"), "白名单外的名字不得入库");
         assert!(!netease.contains_key("dbcl2"), "豆瓣域必须被忽略");
         let qq = crate::qq::load_cookies();
-        assert_eq!(qq.get("qqmusic_key").map(String::as_str), Some("fake-qm-key"));
+        assert_eq!(
+            qq.get("qqmusic_key").map(String::as_str),
+            Some("fake-qm-key")
+        );
         assert_eq!(qq.get("uin").map(String::as_str), Some("o123456789"));
         assert_eq!(qq.get("p_skey").map(String::as_str), Some("fake-pskey"));
         assert!(!qq.contains_key("junk"), "白名单外的名字不得入库");
@@ -656,7 +700,10 @@ mod tests {
         assert_eq!(fake.borrow().gets.len(), 1, "只发一次拉取请求");
         let (method, path) = fake.borrow().gets[0].clone();
         assert_eq!(method, "GET");
-        assert_eq!(path, "http://127.0.0.1:8088/get/cc-test-uuid", "server 尾部 / 与 uuid trim");
+        assert_eq!(
+            path, "http://127.0.0.1:8088/get/cc-test-uuid",
+            "server 尾部 / 与 uuid trim"
+        );
     }
 
     /// 云里没有音乐域时: saved 全 0、matched_domains 全 0、无登录态(KV 空)。
@@ -697,7 +744,11 @@ mod tests {
     fn sync_reports_not_found_like_reference() {
         let doc = vector_doc();
         let fake = install_cloud_host();
-        seed_settings(&mut fake.borrow_mut(), doc["uuid"].as_str().unwrap(), doc["password"].as_str().unwrap());
+        seed_settings(
+            &mut fake.borrow_mut(),
+            doc["uuid"].as_str().unwrap(),
+            doc["password"].as_str().unwrap(),
+        );
         fake.borrow_mut().get_body = b"Not Found".to_vec();
         let err = action_cookiecloud_sync().unwrap_err();
         assert_eq!(err, "CookieCloud 无此 UUID 数据（浏览器扩展还没同步过）");
@@ -708,7 +759,11 @@ mod tests {
     fn sync_reports_http_error_with_body() {
         let doc = vector_doc();
         let fake = install_cloud_host();
-        seed_settings(&mut fake.borrow_mut(), doc["uuid"].as_str().unwrap(), doc["password"].as_str().unwrap());
+        seed_settings(
+            &mut fake.borrow_mut(),
+            doc["uuid"].as_str().unwrap(),
+            doc["password"].as_str().unwrap(),
+        );
         fake.borrow_mut().get_status = 500;
         fake.borrow_mut().get_body = b"boom".to_vec();
         let err = action_cookiecloud_sync().unwrap_err();
@@ -720,7 +775,11 @@ mod tests {
     fn sync_reports_unreachable_on_transport_error() {
         let doc = vector_doc();
         let fake = install_cloud_host();
-        seed_settings(&mut fake.borrow_mut(), doc["uuid"].as_str().unwrap(), doc["password"].as_str().unwrap());
+        seed_settings(
+            &mut fake.borrow_mut(),
+            doc["uuid"].as_str().unwrap(),
+            doc["password"].as_str().unwrap(),
+        );
         fake.borrow_mut().fail_get = true;
         let err = action_cookiecloud_sync().unwrap_err();
         assert_eq!(err, "CookieCloud 不可达: host_call 返回长度 0");
@@ -734,10 +793,13 @@ mod tests {
         let password = doc["password"].as_str().unwrap();
         let fake = install_cloud_host();
         seed_settings(&mut fake.borrow_mut(), uuid, password);
-        fake.borrow_mut().get_body = legacy_envelope(uuid, password, "this is not json at all: 不是 JSON")
-            .into_bytes();
+        fake.borrow_mut().get_body =
+            legacy_envelope(uuid, password, "this is not json at all: 不是 JSON").into_bytes();
         let err = action_cookiecloud_sync().unwrap_err();
-        assert!(err.starts_with("CookieCloud 解密后解析失败: "), "实际: {err}");
+        assert!(
+            err.starts_with("CookieCloud 解密后解析失败: "),
+            "实际: {err}"
+        );
     }
 
     /// 超大密文按 `encrypted` 文本长度拦截(与 douban-rs 同口径, 指引文案换成音乐域)。
@@ -745,7 +807,11 @@ mod tests {
     fn sync_rejects_oversized_encrypted_payload() {
         let doc = vector_doc();
         let fake = install_cloud_host();
-        seed_settings(&mut fake.borrow_mut(), doc["uuid"].as_str().unwrap(), doc["password"].as_str().unwrap());
+        seed_settings(
+            &mut fake.borrow_mut(),
+            doc["uuid"].as_str().unwrap(),
+            doc["password"].as_str().unwrap(),
+        );
         let huge = format!(
             r#"{{"encrypted":"{}","crypto_type":"legacy"}}"#,
             "A".repeat(MAX_COOKIE_CLOUD_BYTES + 1)
@@ -771,8 +837,16 @@ mod tests {
         ] {
             assert!(is_netease_cloud_domain(domain), "{domain} 必须命中网易云域");
         }
-        for domain in ["xmusic.163.com", "163.com", "music.163.cn", "evil.com/music.163.com"] {
-            assert!(!is_netease_cloud_domain(domain), "{domain} 不得命中网易云域");
+        for domain in [
+            "xmusic.163.com",
+            "163.com",
+            "music.163.cn",
+            "evil.com/music.163.com",
+        ] {
+            assert!(
+                !is_netease_cloud_domain(domain),
+                "{domain} 不得命中网易云域"
+            );
         }
         for domain in [
             "qq.com",
@@ -785,7 +859,12 @@ mod tests {
         ] {
             assert!(is_qq_cloud_domain(domain), "{domain} 必须命中 QQ 域");
         }
-        for domain in ["qq.cn", "yqq.com", "music.qq.com.evil.com", "weixin.qq.comx"] {
+        for domain in [
+            "qq.cn",
+            "yqq.com",
+            "music.qq.com.evil.com",
+            "weixin.qq.comx",
+        ] {
             assert!(!is_qq_cloud_domain(domain), "{domain} 不得命中 QQ 域");
         }
     }
@@ -795,7 +874,11 @@ mod tests {
     fn sync_propagates_decrypt_failures() {
         let doc = vector_doc();
         let fake = install_cloud_host();
-        seed_settings(&mut fake.borrow_mut(), doc["uuid"].as_str().unwrap(), doc["password"].as_str().unwrap());
+        seed_settings(
+            &mut fake.borrow_mut(),
+            doc["uuid"].as_str().unwrap(),
+            doc["password"].as_str().unwrap(),
+        );
         let body = serde_json::json!({
             "encrypted": doc["tampered_legacy_b64"],
             "crypto_type": "legacy",
@@ -808,7 +891,11 @@ mod tests {
 
         // 非 legacy 也非 fixed 的 crypto_type → legacy 分支 → 未知密文格式
         let fake = install_cloud_host();
-        seed_settings(&mut fake.borrow_mut(), doc["uuid"].as_str().unwrap(), doc["password"].as_str().unwrap());
+        seed_settings(
+            &mut fake.borrow_mut(),
+            doc["uuid"].as_str().unwrap(),
+            doc["password"].as_str().unwrap(),
+        );
         let body = serde_json::json!({
             "encrypted": "QUJD",
             "crypto_type": "aes-256-gcm",

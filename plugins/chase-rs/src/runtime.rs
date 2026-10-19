@@ -31,6 +31,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::{json, Map, Value};
 
+/// 对齐缓存的读视图: `(intent_id, tmdb_id, season)` → `(at, emby_have_max,
+/// emby_have_count, target_upper, target_known)`。
+type CoverageCacheMap = BTreeMap<(i64, i64, i64), (String, i64, i64, i64, bool)>;
+
 use crate::aircal;
 use crate::align::{self, Decision, Evidence};
 use crate::clock;
@@ -138,11 +142,19 @@ struct TargetFetch {
 
 impl TargetUpper {
     fn known(value: i64) -> Self {
-        TargetUpper { value: value.max(0), known: true, note: "" }
+        TargetUpper {
+            value: value.max(0),
+            known: true,
+            note: "",
+        }
     }
 
     fn unknown(note: &'static str) -> Self {
-        TargetUpper { value: 0, known: false, note }
+        TargetUpper {
+            value: 0,
+            known: false,
+            note,
+        }
     }
 }
 
@@ -250,7 +262,9 @@ impl Runtime {
 
     /// 把读到的文档并进内存; **旧版本不覆盖新版本**(免得 refresh 把内存里更新的一轮结果冲掉)。
     fn apply_loaded(&mut self, bytes: &[u8]) -> bool {
-        let Ok(document) = serde_json::from_slice::<StateDoc>(bytes) else { return false };
+        let Ok(document) = serde_json::from_slice::<StateDoc>(bytes) else {
+            return false;
+        };
         if !document.is_recognizable() || document.revision < self.state.revision {
             return false;
         }
@@ -336,7 +350,11 @@ impl Runtime {
     // ─────────────────────────── action op ───────────────────────────
 
     /// `action` op: 业务失败是**正常 result**, 只有 payload 本身非法才走 `-32602`。
-    pub fn action(&mut self, invocation_id: &str, payload: RawPayload<'_>) -> Result<Value, OpError> {
+    pub fn action(
+        &mut self,
+        invocation_id: &str,
+        payload: RawPayload<'_>,
+    ) -> Result<Value, OpError> {
         let obj = payload.as_object().map_err(|_| invalid_action())?;
         let id = raw::string_field(obj, "id").map_err(|_| invalid_action())?;
         if id.is_empty() {
@@ -383,7 +401,10 @@ impl Runtime {
     fn action_refresh(&mut self) -> Value {
         let started = clock::now_unix_secs();
         // 重读状态文档(只读; 只有更新的版本才会覆盖内存)
-        if let store::StorageRead { value, ok: true, .. } = store::read(store::STATE_KEY) {
+        if let store::StorageRead {
+            value, ok: true, ..
+        } = store::read(store::STATE_KEY)
+        {
             self.apply_loaded(&value);
         }
 
@@ -534,8 +555,12 @@ impl Runtime {
             let target_state: TargetUpper;
             let evidence = match cached {
                 Some((_, have_max, have_count, target_upper, target_known)) => {
-                    let mut evidence =
-                        Evidence::from_cache(intent.total_known, have_max, have_count, target_upper);
+                    let mut evidence = Evidence::from_cache(
+                        intent.total_known,
+                        have_max,
+                        have_count,
+                        target_upper,
+                    );
                     // 旧文档缺 target_known 时用 target_upper > 0 兜底(见 cached_coverage)
                     evidence.target_known = target_known;
                     if !target_known && evidence.target_note.is_empty() {
@@ -631,7 +656,11 @@ impl Runtime {
                             }
                             counters.failed = counters.failed.saturating_add(1);
                             counters.unknown_shape = counters.unknown_shape.saturating_add(1);
-                            self.record_failure("align-now.emby.episodes", &failure, FailSlot::Emby);
+                            self.record_failure(
+                                "align-now.emby.episodes",
+                                &failure,
+                                FailSlot::Emby,
+                            );
                             items.push(item_of(
                                 intent,
                                 Decision {
@@ -662,7 +691,9 @@ impl Runtime {
             }
             let decision = align::decide(&evidence, &settings, settings.dry_run);
             counters.matched = counters.matched.saturating_add(1);
-            counters.gap_total = counters.gap_total.saturating_add(decision.gap_max.max(0) as u32);
+            counters.gap_total = counters
+                .gap_total
+                .saturating_add(decision.gap_max.max(0) as u32);
             // 缓存命中 → 行的 at 用原始核实时刻; 真探过 → now。
             let row_at = verified_at.unwrap_or_else(|| now.clone());
             match decision.action {
@@ -834,7 +865,7 @@ impl Runtime {
                         return json!({
                             "status": "failed",
                             "message": "auto_bump 必须是布尔值(true/false)"
-                        })
+                        });
                     }
                 }
             }
@@ -843,8 +874,7 @@ impl Runtime {
                 changed.push("emby_proxy_id".to_string());
             }
             if let Some(value) = input.get("max_patch_per_run").and_then(raw::loose_u64) {
-                settings.max_patch_per_run =
-                    value.min(u64::from(model::PATCH_HARD_LIMIT)) as u8;
+                settings.max_patch_per_run = value.min(u64::from(model::PATCH_HARD_LIMIT)) as u8;
                 changed.push("max_patch_per_run".to_string());
             }
             if let Some(value) = input.get("max_raise_per_run").and_then(raw::loose_u64) {
@@ -882,8 +912,7 @@ impl Runtime {
                     changed.push("probe.emby_episodes_shape".to_string());
                 }
                 if let Some(value) = probe.get("air_calendar_shape").and_then(Value::as_str) {
-                    settings.probe.air_calendar_shape =
-                        raw::truncate_bytes(value, 200).to_string();
+                    settings.probe.air_calendar_shape = raw::truncate_bytes(value, 200).to_string();
                     changed.push("probe.air_calendar_shape".to_string());
                 }
             }
@@ -918,33 +947,34 @@ impl Runtime {
 
         // ① 实例列表(强类型, 顺便刷新界面下拉); 原文样本落 state.debug ——
         // 真实宿主出现过「200 但解析为空」: 字段没认出还是宿主没配实例, 只有原文能分辨。
-        let instances_snapshot: ProbeSnapshot;
-        match emby::fetch_instances_detailed() {
+
+        let instances_snapshot: ProbeSnapshot = match emby::fetch_instances_detailed() {
             Ok((instances, status, raw)) => {
                 self.remember_instances(&instances);
                 let shape = format!("instances={}", instances.len());
-                self.state.record_attempt("emby.instances", "(无参数)", status, &shape);
-                instances_snapshot = ProbeSnapshot {
+                self.state
+                    .record_attempt("emby.instances", "(无参数)", status, &shape);
+                ProbeSnapshot {
                     status: "ok".to_string(),
                     shape,
                     params_tried: vec!["(无参数)".to_string()],
                     http_status: status,
                     sample: raw::sample_text(&raw, SAMPLE_MAX),
                     at: now.clone(),
-                };
+                }
             }
             Err(failure) => {
                 self.record_failure("probe.emby.instances", &failure, FailSlot::None);
-                instances_snapshot = ProbeSnapshot {
+                ProbeSnapshot {
                     status: failure.kind().to_string(),
                     shape: "(未识别)".to_string(),
                     params_tried: vec!["(无参数)".to_string()],
                     http_status: failure.http_status,
                     sample: failure.sample(),
                     at: now.clone(),
-                };
+                }
             }
-        }
+        };
         self.state.debug.emby_instances = instances_snapshot;
         let settings = self.state.settings.clone();
         let selected = self.selected_instance(&settings);
@@ -960,7 +990,9 @@ impl Runtime {
             .or_else(|| {
                 intents::fetch_page(1, 0)
                     .ok()
-                    .and_then(|fetched| fetched.page.items.into_iter().find(|item| item.tmdb_id > 0))
+                    .and_then(|fetched| {
+                        fetched.page.items.into_iter().find(|item| item.tmdb_id > 0)
+                    })
                     .map(|item| (item.tmdb_id, item.season, item.total_known))
             });
 
@@ -969,9 +1001,8 @@ impl Runtime {
         let mut emby_http = 0i32;
         // 每个分支都会给这两个赋值, 所以不预置初值(预置了也只是死写)。
         let emby_sample: String;
-        let params_tried: Vec<String>;
 
-        match (selected, sample) {
+        let params_tried: Vec<String> = match (selected, sample) {
             (Some(selected), Some((tmdb_id, season, total_known))) => {
                 // 宿主明示 total_episodes 必填; total 未知时才省略(基本必 400, 仅兜底)。
                 let total = (total_known > 0).then_some(total_known);
@@ -1041,9 +1072,8 @@ impl Runtime {
                                 0,
                                 "transport_error",
                             );
-                            last_failure = Some(ParseFailure::transport(format!(
-                                "Emby 覆盖请求失败: {err}"
-                            )));
+                            last_failure =
+                                Some(ParseFailure::transport(format!("Emby 覆盖请求失败: {err}")));
                         }
                     }
                 }
@@ -1065,14 +1095,15 @@ impl Runtime {
                         self.record_failure("probe.emby.episodes", &failure, FailSlot::Emby);
                     }
                 }
-                params_tried = tried;
+                tried
             }
             _ => {
-                emby_sample = "没有可用的 TMDB 剧集样本或 Emby 实例; 先让订阅池里有 tv 条目".to_string();
+                emby_sample =
+                    "没有可用的 TMDB 剧集样本或 Emby 实例; 先让订阅池里有 tv 条目".to_string();
                 self.state.record_error("probe.emby.episodes", &emby_sample);
-                params_tried = vec!["(无参数)".to_string()];
+                vec!["(无参数)".to_string()]
             }
-        }
+        };
         self.state.debug.emby_episodes = ProbeSnapshot {
             status: emby_status.clone(),
             shape: emby_shape.clone(),
@@ -1144,7 +1175,8 @@ impl Runtime {
                                     response.status,
                                     &tmdb_shape,
                                 );
-                                self.state.remember_tmdb_target(tmdb_id, season, target, &now);
+                                self.state
+                                    .remember_tmdb_target(tmdb_id, season, target, &now);
                             }
                             Err(message) => {
                                 tmdb_status = "unparsed".to_string();
@@ -1173,12 +1205,8 @@ impl Runtime {
                         tmdb_status = "http_error".to_string();
                         tmdb_http = response.status;
                         tmdb_sample = raw::sample_text(&response.raw, SAMPLE_MAX);
-                        self.state.record_attempt(
-                            "tmdb.tv",
-                            &label,
-                            response.status,
-                            "http_error",
-                        );
+                        self.state
+                            .record_attempt("tmdb.tv", &label, response.status, "http_error");
                         self.record_failure(
                             "probe.tmdb.tv",
                             &ParseFailure::http(
@@ -1220,9 +1248,8 @@ impl Runtime {
         };
         self.state.debug.updated_at = now.clone();
 
-        let message = format!(
-            "探测完成: emby={emby_status}, calendar={calendar_status}, tmdb={tmdb_status}"
-        );
+        let message =
+            format!("探测完成: emby={emby_status}, calendar={calendar_status}, tmdb={tmdb_status}");
         self.state.status = "accepted".to_string();
         self.state.last_message = message.clone();
         self.state.last_run = now;
@@ -1304,14 +1331,16 @@ impl Runtime {
                     Ok(selected) => selection = Some(selected),
                     Err(message) => {
                         self.state.record_error("emby.select", &message);
-                        self.state.log("warning", &format!("Emby 段跳过: {message}"));
+                        self.state
+                            .log("warning", &format!("Emby 段跳过: {message}"));
                         alignment_blocked = Some(format!("本轮未对齐: {message}"));
                     }
                 }
             }
             Err(failure) => {
                 self.record_failure("emby.instances", &failure, FailSlot::None);
-                self.state.log("warning", &format!("Emby 段跳过: {}", failure.message));
+                self.state
+                    .log("warning", &format!("Emby 段跳过: {}", failure.message));
                 alignment_blocked = Some(format!("本轮未对齐: {}", failure.message));
             }
         }
@@ -1369,8 +1398,7 @@ impl Runtime {
                 .iter()
                 .filter(|intent| intent.media_type == intents::MEDIA_TYPE)
                 .count() as u32;
-            let message =
-                format!("订阅池不可解析, 整轮跳过(零写入): {}", failure.message);
+            let message = format!("订阅池不可解析, 整轮跳过(零写入): {}", failure.message);
             self.state.status = "failed".to_string();
             self.state.last_message = message.clone();
             self.state.log("error", &message);
@@ -1412,10 +1440,7 @@ impl Runtime {
                 self.record_failure("job.air-calendar", &failure, FailSlot::Calendar);
                 self.state.log(
                     "warning",
-                    &format!(
-                        "追剧日历不可解析, 日报只发补订段: {}",
-                        failure.message
-                    ),
+                    &format!("追剧日历不可解析, 日报只发补订段: {}", failure.message),
                 );
             }
         }
@@ -1497,7 +1522,9 @@ impl Runtime {
                 if intent.media_type != intents::MEDIA_TYPE {
                     continue;
                 }
-                let Some(selected) = maybe_selected else { break };
+                let Some(selected) = maybe_selected else {
+                    break;
+                };
                 if !intent.actionable() {
                     counters.skipped = counters.skipped.saturating_add(1);
                     push_align_item(
@@ -1570,7 +1597,8 @@ impl Runtime {
                                         have_max: -1,
                                         have_count: -1,
                                         gap_max: 0,
-                                        reason: "同一剧集本轮已探测失败, 不重复消耗预算".to_string(),
+                                        reason: "同一剧集本轮已探测失败, 不重复消耗预算"
+                                            .to_string(),
                                     },
                                     &now,
                                     TargetUpper::unknown("同一剧集本轮已探测失败"),
@@ -1587,7 +1615,9 @@ impl Runtime {
                         // `probe_priority` 里"失败事实太旧就重新排队"的分支也就成了死代码。
                         // 负缓存的 at 只在**真的又探了一次**时由探测结果刷新(见下面各分支)。
                         if let Some(entry) = book.get(&key) {
-                            if entry.emby == "failed" && is_fresh(&entry.at, PROBE_NEGATIVE_TTL_SECS) {
+                            if entry.emby == "failed"
+                                && is_fresh(&entry.at, PROBE_NEGATIVE_TTL_SECS)
+                            {
                                 counters.skipped = counters.skipped.saturating_add(1);
                                 push_align_item(
                                     &mut items,
@@ -1739,7 +1769,7 @@ impl Runtime {
                 let target_state = match target_cache.get(&(intent.tmdb_id, intent.season)) {
                     Some(cached) => {
                         book_target = if cached.known { "ok" } else { "unknown" };
-                        cached.clone()
+                        *cached
                     }
                     None => {
                         let remaining = settings.emby_probe_budget.saturating_sub(probes);
@@ -1786,16 +1816,13 @@ impl Runtime {
                         }
                     }
                 };
-                target_cache.insert((intent.tmdb_id, intent.season), target_state.clone());
+                target_cache.insert((intent.tmdb_id, intent.season), target_state);
                 if stop_after {
                     break;
                 }
 
-                let mut evidence = Evidence::from_coverage(
-                    intent.total_known,
-                    &coverage,
-                    target_state.value,
-                );
+                let mut evidence =
+                    Evidence::from_coverage(intent.total_known, &coverage, target_state.value);
                 evidence.target_known = target_state.known;
                 evidence.target_note = target_state.note;
                 // 「探到了, 但 Emby 该季一集都没有」单独计数(既不是失败, 也不是无缺口);
@@ -1817,8 +1844,9 @@ impl Runtime {
                     .or_insert((book_emby.to_string(), book_target.to_string()));
 
                 let decision = align::decide(&evidence, &settings, settings.dry_run);
-                counters.gap_total =
-                    counters.gap_total.saturating_add(decision.gap_max.max(0) as u32);
+                counters.gap_total = counters
+                    .gap_total
+                    .saturating_add(decision.gap_max.max(0) as u32);
 
                 match decision.action {
                     align::ACTION_PATCHED => {
@@ -1839,7 +1867,7 @@ impl Runtime {
                                         ..decision.clone()
                                     },
                                     &now,
-                                    target_state.clone(),
+                                    target_state,
                                 ),
                             );
                         } else if patches >= patch_limit {
@@ -1855,7 +1883,7 @@ impl Runtime {
                                         ..decision.clone()
                                     },
                                     &now,
-                                    target_state.clone(),
+                                    target_state,
                                 ),
                             );
                         } else {
@@ -1870,26 +1898,20 @@ impl Runtime {
                             }
                             push_align_item(
                                 &mut items,
-                                item_of(intent, outcome, &now, target_state.clone()),
+                                item_of(intent, outcome, &now, target_state),
                             );
                         }
                     }
                     align::ACTION_DRY_RUN => {
                         counters.aligned = counters.aligned.saturating_add(1);
-                        push_align_item(
-                            &mut items,
-                            item_of(intent, decision, &now, target_state.clone()),
-                        );
+                        push_align_item(&mut items, item_of(intent, decision, &now, target_state));
                     }
                     _ => {
                         // 未收录行只进 absent 桶, 不再重复进 skipped(口径与 404 路径一致)。
                         if !absent_row {
                             counters.skipped = counters.skipped.saturating_add(1);
                         }
-                        push_align_item(
-                            &mut items,
-                            item_of(intent, decision, &now, target_state.clone()),
-                        );
+                        push_align_item(&mut items, item_of(intent, decision, &now, target_state));
                     }
                 }
 
@@ -2046,7 +2068,12 @@ impl Runtime {
     ) -> Value {
         let today = clock::local_date(settings.report.tz_offset_minutes);
         let hour = clock::local_hour(settings.report.tz_offset_minutes);
-        if !notify::should_send(&settings.report, &self.state.daily.last_sent_date, &today, hour) {
+        if !notify::should_send(
+            &settings.report,
+            &self.state.daily.last_sent_date,
+            &today,
+            hour,
+        ) {
             return json!({"status": "idle", "date": today});
         }
         let patched: Vec<AlignItem> = self
@@ -2083,7 +2110,8 @@ impl Runtime {
         match notify::send("info", &title, &body, &today, run_seq) {
             Ok((outcome, status)) => {
                 notify::apply_outcome(&mut self.state.daily, &today, &outcome, now);
-                self.state.record_attempt("notifications.plugin", "chase-daily", status, "sent");
+                self.state
+                    .record_attempt("notifications.plugin", "chase-daily", status, "sent");
                 let result = self.state.daily.last_result.clone();
                 json!({
                     "status": result,
@@ -2174,7 +2202,7 @@ impl Runtime {
     /// 键里必须带 tmdb_id/season: 订阅的剧/季在 6 小时窗口内被改过时, 只按
     /// intent_id 命中就会拿**上一季**的 have_max(和目标)去判定并 PATCH, 而且
     /// 因为"缓存命中"连 Emby 都不再探测。
-    fn cached_coverage(&self) -> BTreeMap<(i64, i64, i64), (String, i64, i64, i64, bool)> {
+    fn cached_coverage(&self) -> CoverageCacheMap {
         self.state
             .align
             .items
@@ -2217,7 +2245,8 @@ impl Runtime {
                         TargetUpper::known(target)
                     }
                     Err(message) => {
-                        self.state.record_attempt("tmdb.tv", &label, response.status, "unparsed");
+                        self.state
+                            .record_attempt("tmdb.tv", &label, response.status, "unparsed");
                         self.state.record_error("job.tmdb", &message);
                         TargetUpper::unknown("该季在 TMDB 详情里取不到")
                     }
@@ -2245,7 +2274,9 @@ impl Runtime {
     /// 状态文档里 6 小时内新鲜的该季目标(整点 job 顺手取到的), 复用时不花 host.call。
     fn fresh_tmdb_target(&self, tmdb_id: i64, season: i64) -> TargetUpper {
         match self.state.tmdb_target_of(tmdb_id, season) {
-            Some(target) if is_fresh(&target.at, CACHE_FRESH_SECS) => TargetUpper::known(target.episode_count),
+            Some(target) if is_fresh(&target.at, CACHE_FRESH_SECS) => {
+                TargetUpper::known(target.episode_count)
+            }
             _ => TargetUpper::unknown("状态里没有该季的新鲜目标"),
         }
     }
@@ -2271,13 +2302,20 @@ impl Runtime {
             };
         }
         let (needed, covered) = if settings.write_episode_strings {
-            (intent.needed_episodes.as_deref(), intent.covered_episodes.as_deref())
+            (
+                intent.needed_episodes.as_deref(),
+                intent.covered_episodes.as_deref(),
+            )
         } else {
             (None, None)
         };
         let body = intents::patch_body(decision.to_total, needed, covered);
-        let key =
-            intents::patch_idempotency_key(intent.id, decision.from_total, decision.to_total, run_seq);
+        let key = intents::patch_idempotency_key(
+            intent.id,
+            decision.from_total,
+            decision.to_total,
+            run_seq,
+        );
         let path = intents::patch_path(intent.id);
         let response = host::send(
             "PATCH",
@@ -2287,13 +2325,17 @@ impl Runtime {
         );
         match response {
             Ok(response) if response.status == 200 => {
-                self.state.record_attempt("pool.intents.patch", &key, 200, "patched");
+                self.state
+                    .record_attempt("pool.intents.patch", &key, 200, "patched");
                 let log = format!(
                     "补订 intent={} {} S{}: {} → {}",
                     intent.id, intent.title, intent.season, decision.from_total, decision.to_total
                 );
                 self.state.log("info", &log);
-                Decision { action: align::ACTION_PATCHED, ..decision.clone() }
+                Decision {
+                    action: align::ACTION_PATCHED,
+                    ..decision.clone()
+                }
             }
             Ok(response) => {
                 let message = format!(
@@ -2301,7 +2343,8 @@ impl Runtime {
                     response.status,
                     raw::truncate_bytes(&response.text(), 160)
                 );
-                self.state.record_attempt("pool.intents.patch", &key, response.status, "failed");
+                self.state
+                    .record_attempt("pool.intents.patch", &key, response.status, "failed");
                 self.state.record_error("job.patch", &message);
                 Decision {
                     action: align::ACTION_FAILED,
@@ -2471,12 +2514,15 @@ mod tests {
              "title": "电影", "total_episodes_known": 1, "state": "pending"}
           ],
           "counts": {}
-        }"#.as_bytes()
+        }"#
+        .as_bytes()
         .to_vec()
     }
 
     fn instances_body() -> Vec<u8> {
-        r#"{"items":[{"id":3,"name":"客厅","is_default":true,"api_key_configured":true}]}"#.as_bytes().to_vec()
+        r#"{"items":[{"id":3,"name":"客厅","is_default":true,"api_key_configured":true}]}"#
+            .as_bytes()
+            .to_vec()
     }
 
     fn episodes_body() -> Vec<u8> {
@@ -2497,7 +2543,8 @@ mod tests {
 
     fn tmdb_body() -> Vec<u8> {
         r#"{"id":1396,"name":"绝命毒师","number_of_episodes":62,
-             "seasons":[{"season_number":5,"episode_count":16}]}"#.as_bytes()
+             "seasons":[{"season_number":5,"episode_count":16}]}"#
+            .as_bytes()
             .to_vec()
     }
 
@@ -2507,10 +2554,30 @@ mod tests {
     /// 本机没有宿主可连, 装替身之前加载只会拿到 `Unavailable`(那条路径另有专门用例覆盖)。
     fn harness() -> (FakeHost, Runtime) {
         let fake = FakeHost::new();
-        fake.route_prefix("GET", "GET /api/subscribe/pool/intents?", 200, &intents_body());
-        fake.route_prefix("GET", "GET /api/plugin-host/emby/instances", 200, &instances_body());
-        fake.route_prefix("GET", "GET /api/plugin-host/emby/episodes?", 200, &episodes_body());
-        fake.route_prefix("GET", "GET /api/subscribe/air-calendar", 200, &calendar_body());
+        fake.route_prefix(
+            "GET",
+            "GET /api/subscribe/pool/intents?",
+            200,
+            &intents_body(),
+        );
+        fake.route_prefix(
+            "GET",
+            "GET /api/plugin-host/emby/instances",
+            200,
+            &instances_body(),
+        );
+        fake.route_prefix(
+            "GET",
+            "GET /api/plugin-host/emby/episodes?",
+            200,
+            &episodes_body(),
+        );
+        fake.route_prefix(
+            "GET",
+            "GET /api/subscribe/air-calendar",
+            200,
+            &calendar_body(),
+        );
         fake.route_prefix("GET", "GET /api/tmdb/tv/", 200, &tmdb_body());
         // 订阅池的补订端点: 默认回 200(夹具里的"成功"路径)
         fake.route_prefix("PATCH", "PATCH /api/subscribe/pool/intents/", 200, b"{}");
@@ -2526,7 +2593,10 @@ mod tests {
     fn call(runtime: &mut Runtime, request: &str) -> Value {
         let raw = crate::protocol::dispatch(runtime, request.as_bytes());
         serde_json::from_slice(&raw).unwrap_or_else(|err| {
-            panic!("响应必须是合法 JSON: {err}; {:?}", String::from_utf8_lossy(&raw))
+            panic!(
+                "响应必须是合法 JSON: {err}; {:?}",
+                String::from_utf8_lossy(&raw)
+            )
         })
     }
 
@@ -2560,10 +2630,30 @@ mod tests {
     fn fresh_install_persists_and_unavailable_never_does() {
         // 存储 404 两次 → fresh → 允许落盘
         let fake = FakeHost::new();
-        fake.route_prefix("GET", "GET /api/subscribe/pool/intents?", 200, &intents_body());
-        fake.route_prefix("GET", "GET /api/plugin-host/emby/instances", 200, &instances_body());
-        fake.route_prefix("GET", "GET /api/plugin-host/emby/episodes?", 200, &episodes_body());
-        fake.route_prefix("GET", "GET /api/subscribe/air-calendar", 200, &calendar_body());
+        fake.route_prefix(
+            "GET",
+            "GET /api/subscribe/pool/intents?",
+            200,
+            &intents_body(),
+        );
+        fake.route_prefix(
+            "GET",
+            "GET /api/plugin-host/emby/instances",
+            200,
+            &instances_body(),
+        );
+        fake.route_prefix(
+            "GET",
+            "GET /api/plugin-host/emby/episodes?",
+            200,
+            &episodes_body(),
+        );
+        fake.route_prefix(
+            "GET",
+            "GET /api/subscribe/air-calendar",
+            200,
+            &calendar_body(),
+        );
         fake.route_prefix("GET", "GET /api/tmdb/tv/", 200, &tmdb_body());
         fake.route_prefix("PATCH", "PATCH /api/subscribe/pool/intents/", 200, b"{}");
         let guard = fake.install();
@@ -2591,10 +2681,30 @@ mod tests {
     #[test]
     fn stale_documents_do_not_clobber_newer_memory_state() {
         let fake = FakeHost::new();
-        fake.route_prefix("GET", "GET /api/subscribe/pool/intents?", 200, &intents_body());
-        fake.route_prefix("GET", "GET /api/plugin-host/emby/instances", 200, &instances_body());
-        fake.route_prefix("GET", "GET /api/plugin-host/emby/episodes?", 200, &episodes_body());
-        fake.route_prefix("GET", "GET /api/subscribe/air-calendar", 200, &calendar_body());
+        fake.route_prefix(
+            "GET",
+            "GET /api/subscribe/pool/intents?",
+            200,
+            &intents_body(),
+        );
+        fake.route_prefix(
+            "GET",
+            "GET /api/plugin-host/emby/instances",
+            200,
+            &instances_body(),
+        );
+        fake.route_prefix(
+            "GET",
+            "GET /api/plugin-host/emby/episodes?",
+            200,
+            &episodes_body(),
+        );
+        fake.route_prefix(
+            "GET",
+            "GET /api/subscribe/air-calendar",
+            200,
+            &calendar_body(),
+        );
         fake.route_prefix("GET", "GET /api/tmdb/tv/", 200, &tmdb_body());
         fake.route_prefix("PATCH", "PATCH /api/subscribe/pool/intents/", 200, b"{}");
         let guard = fake.install();
@@ -2652,7 +2762,10 @@ mod tests {
         assert!(fake.puts().is_empty(), "refresh 零写入");
         assert!(fake.patches().is_empty(), "refresh 零 PATCH");
         assert_eq!(runtime.state_doc().stats.tv_intents, 2);
-        assert!(crate::host::observed_calls() - before <= 4, "刷新要快: 只该有 3~4 次调用");
+        assert!(
+            crate::host::observed_calls() - before <= 4,
+            "刷新要快: 只该有 3~4 次调用"
+        );
         drop(guard);
     }
 
@@ -2672,7 +2785,11 @@ mod tests {
         );
         assert_eq!(result["status"], "succeeded");
         let settings = runtime.state_doc().settings.clone();
-        assert_eq!(settings.max_patch_per_run, model::PATCH_HARD_LIMIT, "越界值夹到硬上限");
+        assert_eq!(
+            settings.max_patch_per_run,
+            model::PATCH_HARD_LIMIT,
+            "越界值夹到硬上限"
+        );
         assert_eq!(settings.catch_up_days, 3);
         assert!(settings.report.enabled);
         assert_eq!(settings.report.hour, 7);
@@ -2690,7 +2807,10 @@ mod tests {
     }
 
     fn session_has_key(value: &Value, key: &str) -> bool {
-        value.as_object().map(|map| map.contains_key(key)).unwrap_or(false)
+        value
+            .as_object()
+            .map(|map| map.contains_key(key))
+            .unwrap_or(false)
     }
 
     // ── job: 全链路 ──
@@ -2716,7 +2836,11 @@ mod tests {
         .unwrap();
         // Emby 已有 12 集, TMDB 16 集, 订阅 10 集 → 抬到 16
         assert_eq!(String::from_utf8_lossy(&body), r#"{"total_episodes":16}"#);
-        let key = patches[0].headers.get("idempotency-key").cloned().unwrap_or_default();
+        let key = patches[0]
+            .headers
+            .get("idempotency-key")
+            .cloned()
+            .unwrap_or_default();
         assert_eq!(key, "chase-patch-41-10-16-1");
 
         // 第二条 (tmdb 1399 第 1 季): TMDB 夹具只有第 5 季 → 该季目标取不到, target=0,
@@ -2730,7 +2854,11 @@ mod tests {
         })
         .unwrap();
         assert_eq!(String::from_utf8_lossy(&body), r#"{"total_episodes":12}"#);
-        let key = patches[1].headers.get("idempotency-key").cloned().unwrap_or_default();
+        let key = patches[1]
+            .headers
+            .get("idempotency-key")
+            .cloned()
+            .unwrap_or_default();
         assert_eq!(key, "chase-patch-42-5-12-1");
 
         let doc = stored(&fake);
@@ -2754,15 +2882,30 @@ mod tests {
     fn hourly_job_never_writes_eaquel_or_lower_totals() {
         // Emby 只有 3 集, 订阅 10 集, TMDB 10 集 → 不该有任何 PATCH
         let fake = FakeHost::new();
-        fake.route_prefix("GET", "GET /api/subscribe/pool/intents?", 200, &intents_body());
-        fake.route_prefix("GET", "GET /api/plugin-host/emby/instances", 200, &instances_body());
+        fake.route_prefix(
+            "GET",
+            "GET /api/subscribe/pool/intents?",
+            200,
+            &intents_body(),
+        );
+        fake.route_prefix(
+            "GET",
+            "GET /api/plugin-host/emby/instances",
+            200,
+            &instances_body(),
+        );
         fake.route_prefix(
             "GET",
             "GET /api/plugin-host/emby/episodes?",
             200,
             br#"{"items":[{"index_number":1},{"index_number":2},{"index_number":3}]}"#,
         );
-        fake.route_prefix("GET", "GET /api/subscribe/air-calendar", 200, &calendar_body());
+        fake.route_prefix(
+            "GET",
+            "GET /api/subscribe/air-calendar",
+            200,
+            &calendar_body(),
+        );
         fake.route_prefix(
             "GET",
             "GET /api/tmdb/tv/",
@@ -2783,15 +2926,30 @@ mod tests {
     #[test]
     fn emby_unparsable_records_sample_and_writes_nothing_for_that_entry() {
         let fake = FakeHost::new();
-        fake.route_prefix("GET", "GET /api/subscribe/pool/intents?", 200, &intents_body());
-        fake.route_prefix("GET", "GET /api/plugin-host/emby/instances", 200, &instances_body());
+        fake.route_prefix(
+            "GET",
+            "GET /api/subscribe/pool/intents?",
+            200,
+            &intents_body(),
+        );
+        fake.route_prefix(
+            "GET",
+            "GET /api/plugin-host/emby/instances",
+            200,
+            &instances_body(),
+        );
         fake.route_prefix(
             "GET",
             "GET /api/plugin-host/emby/episodes?",
             200,
             r#"{"episode_count":12,"note":"只有数字"}"#.as_bytes(),
         );
-        fake.route_prefix("GET", "GET /api/subscribe/air-calendar", 200, &calendar_body());
+        fake.route_prefix(
+            "GET",
+            "GET /api/subscribe/air-calendar",
+            200,
+            &calendar_body(),
+        );
         fake.route_prefix("GET", "GET /api/tmdb/tv/", 200, &tmdb_body());
         let guard = fake.install();
         let mut runtime = Runtime::new();
@@ -2822,11 +2980,27 @@ mod tests {
                   "title":"绝命毒师","total_episodes_known":10,"state":"partial"},
                  {"id":42,"tmdb_id":1399,"title":"权力的游戏",
                   "total_episodes_known":5,"state":"partial"}
-               ],"counts":{}}"#.as_bytes(),
+               ],"counts":{}}"#
+                .as_bytes(),
         );
-        fake.route_prefix("GET", "GET /api/plugin-host/emby/instances", 200, &instances_body());
-        fake.route_prefix("GET", "GET /api/plugin-host/emby/episodes?", 200, &episodes_body());
-        fake.route_prefix("GET", "GET /api/subscribe/air-calendar", 200, &calendar_body());
+        fake.route_prefix(
+            "GET",
+            "GET /api/plugin-host/emby/instances",
+            200,
+            &instances_body(),
+        );
+        fake.route_prefix(
+            "GET",
+            "GET /api/plugin-host/emby/episodes?",
+            200,
+            &episodes_body(),
+        );
+        fake.route_prefix(
+            "GET",
+            "GET /api/subscribe/air-calendar",
+            200,
+            &calendar_body(),
+        );
         fake.route_prefix("GET", "GET /api/tmdb/tv/", 200, &tmdb_body());
         fake.route_prefix("PATCH", "PATCH /api/subscribe/pool/intents/", 200, b"{}");
         let guard = fake.install();
@@ -2835,7 +3009,10 @@ mod tests {
         let result = job(&mut runtime, "align");
         assert_eq!(result["status"], "accepted", "{result}");
         assert_eq!(result["patched"], 1, "只有字段完整的那条参与: {result}");
-        assert_eq!(result["intents_seen"], 1, "缺 season/media_type 的条目不算数");
+        assert_eq!(
+            result["intents_seen"], 1,
+            "缺 season/media_type 的条目不算数"
+        );
         assert_eq!(fake.patches().len(), 1);
 
         let doc = stored(&fake);
@@ -2846,7 +3023,10 @@ mod tests {
                 .iter()
                 .any(|entry| entry.level == "warning" && entry.message.contains("字段不完整")),
             "被跳过的畸形条目要留告警: {:?}",
-            doc.logs.iter().map(|entry| &entry.message).collect::<Vec<_>>()
+            doc.logs
+                .iter()
+                .map(|entry| &entry.message)
+                .collect::<Vec<_>>()
         );
         // 告警里不得出现被丢弃条目的具体值(更不得出现凭据键名)
         let text = String::from_utf8(doc_bytes(&fake)).unwrap();
@@ -2858,7 +3038,12 @@ mod tests {
     fn pool_list_failure_skips_the_whole_round_with_zero_writes() {
         let fake = FakeHost::new();
         fake.route_prefix("GET", "GET /api/subscribe/pool/intents?", 500, b"boom");
-        fake.route_prefix("GET", "GET /api/plugin-host/emby/instances", 200, &instances_body());
+        fake.route_prefix(
+            "GET",
+            "GET /api/plugin-host/emby/instances",
+            200,
+            &instances_body(),
+        );
         let guard = fake.install();
         let mut runtime = Runtime::new();
         runtime.ensure_loaded();
@@ -2867,16 +3052,35 @@ mod tests {
         assert!(fake.patches().is_empty());
         assert!(fake.value_of("state").is_some(), "只写 debug, 不写业务数据");
         let doc = stored(&fake);
-        assert!(doc.align.last_error.contains("订阅池"), "{:?}", doc.align.last_error);
+        assert!(
+            doc.align.last_error.contains("订阅池"),
+            "{:?}",
+            doc.align.last_error
+        );
         drop(guard);
     }
 
     #[test]
     fn missing_emby_instances_skip_alignment_but_still_report() {
         let fake = FakeHost::new();
-        fake.route_prefix("GET", "GET /api/subscribe/pool/intents?", 200, &intents_body());
-        fake.route_prefix("GET", "GET /api/plugin-host/emby/instances", 200, br#"{"items":[]}"#);
-        fake.route_prefix("GET", "GET /api/subscribe/air-calendar", 200, &calendar_body());
+        fake.route_prefix(
+            "GET",
+            "GET /api/subscribe/pool/intents?",
+            200,
+            &intents_body(),
+        );
+        fake.route_prefix(
+            "GET",
+            "GET /api/plugin-host/emby/instances",
+            200,
+            br#"{"items":[]}"#,
+        );
+        fake.route_prefix(
+            "GET",
+            "GET /api/subscribe/air-calendar",
+            200,
+            &calendar_body(),
+        );
         let guard = fake.install();
         let mut runtime = Runtime::new();
         runtime.ensure_loaded();
@@ -2885,7 +3089,11 @@ mod tests {
         assert_eq!(result["patched"], 0);
         assert!(fake.patches().is_empty(), "没有实例 → 零 PATCH");
         let doc = stored(&fake);
-        assert!(doc.debug.last_errors.iter().any(|error| error.step == "emby.select"));
+        assert!(doc
+            .debug
+            .last_errors
+            .iter()
+            .any(|error| error.step == "emby.select"));
         assert!(doc.align.items.is_empty());
         drop(guard);
     }
@@ -2901,21 +3109,43 @@ mod tests {
                    "title":"剧{index}","total_episodes_known":1,"state":"partial"}}"#
             ));
         }
-        let body = format!(r#"{{"code":"ok","data":[{}],"counts":{{}}}}"#, items.join(","));
-        fake.route_prefix("GET", "GET /api/subscribe/pool/intents?", 200, body.as_bytes());
-        fake.route_prefix("GET", "GET /api/plugin-host/emby/instances", 200, &instances_body());
+        let body = format!(
+            r#"{{"code":"ok","data":[{}],"counts":{{}}}}"#,
+            items.join(",")
+        );
+        fake.route_prefix(
+            "GET",
+            "GET /api/subscribe/pool/intents?",
+            200,
+            body.as_bytes(),
+        );
+        fake.route_prefix(
+            "GET",
+            "GET /api/plugin-host/emby/instances",
+            200,
+            &instances_body(),
+        );
         fake.route_prefix(
             "GET",
             "GET /api/plugin-host/emby/episodes?",
             200,
             br#"{"items":[{"index_number":1},{"index_number":2}]}"#,
         );
-        fake.route_prefix("GET", "GET /api/subscribe/air-calendar", 200, &calendar_body());
+        fake.route_prefix(
+            "GET",
+            "GET /api/subscribe/air-calendar",
+            200,
+            &calendar_body(),
+        );
         fake.route_prefix("PATCH", "PATCH /api/subscribe/pool/intents/", 200, b"{}");
         let guard = fake.install();
         let mut runtime = Runtime::new();
         runtime.ensure_loaded();
-        let _ = action(&mut runtime, "settings-update", json!({"max_patch_per_run": 2}));
+        let _ = action(
+            &mut runtime,
+            "settings-update",
+            json!({"max_patch_per_run": 2}),
+        );
         let result = job(&mut runtime, "align");
         assert_eq!(result["patched"], 2, "{result}");
         assert_eq!(fake.patches().len(), 2, "单轮 PATCH 不得超过配置上限");
@@ -2945,9 +3175,15 @@ mod tests {
             "GET /api/subscribe/pool/intents?",
             200,
             r#"{"code":"ok","data":[{"id":41,"tmdb_id":1396,"season":5,"media_type":"tv",
-                 "title":"绝命毒师","total_episodes_known":16,"state":"caught_up"}],"counts":{}}"#.as_bytes(),
+                 "title":"绝命毒师","total_episodes_known":16,"state":"caught_up"}],"counts":{}}"#
+                .as_bytes(),
         );
-        fake.route_prefix("GET", "GET /api/plugin-host/emby/instances", 200, &instances_body());
+        fake.route_prefix(
+            "GET",
+            "GET /api/plugin-host/emby/instances",
+            200,
+            &instances_body(),
+        );
         fake.route_prefix(
             "GET",
             "GET /api/plugin-host/emby/episodes?",
@@ -2959,7 +3195,12 @@ mod tests {
                         {"index_number":13},{"index_number":14},{"index_number":15},
                         {"index_number":16}]}"#,
         );
-        fake.route_prefix("GET", "GET /api/subscribe/air-calendar", 200, &calendar_body());
+        fake.route_prefix(
+            "GET",
+            "GET /api/subscribe/air-calendar",
+            200,
+            &calendar_body(),
+        );
         fake.route_prefix(
             "GET",
             "GET /api/tmdb/tv/",
@@ -3021,10 +3262,30 @@ mod tests {
     #[test]
     fn suppressed_reports_are_retried() {
         let fake = FakeHost::new();
-        fake.route_prefix("GET", "GET /api/subscribe/pool/intents?", 200, &intents_body());
-        fake.route_prefix("GET", "GET /api/plugin-host/emby/instances", 200, &instances_body());
-        fake.route_prefix("GET", "GET /api/plugin-host/emby/episodes?", 200, &episodes_body());
-        fake.route_prefix("GET", "GET /api/subscribe/air-calendar", 200, &calendar_body());
+        fake.route_prefix(
+            "GET",
+            "GET /api/subscribe/pool/intents?",
+            200,
+            &intents_body(),
+        );
+        fake.route_prefix(
+            "GET",
+            "GET /api/plugin-host/emby/instances",
+            200,
+            &instances_body(),
+        );
+        fake.route_prefix(
+            "GET",
+            "GET /api/plugin-host/emby/episodes?",
+            200,
+            &episodes_body(),
+        );
+        fake.route_prefix(
+            "GET",
+            "GET /api/subscribe/air-calendar",
+            200,
+            &calendar_body(),
+        );
         fake.route_prefix("GET", "GET /api/tmdb/tv/", 200, &tmdb_body());
         fake.route(
             "POST",
@@ -3045,7 +3306,10 @@ mod tests {
         let _ = job(&mut runtime, "align");
         let doc = stored(&fake);
         assert_eq!(doc.daily.last_result, "suppressed");
-        assert!(doc.daily.last_sent_date.is_empty(), "suppressed 不记日期, 下一小时重试");
+        assert!(
+            doc.daily.last_sent_date.is_empty(),
+            "suppressed 不记日期, 下一小时重试"
+        );
         assert_eq!(doc.daily.last_error, "quiet_hours");
         clock::testhooks::set_now(None);
         drop(guard);
@@ -3054,9 +3318,24 @@ mod tests {
     #[test]
     fn calendar_failure_does_not_block_alignment() {
         let fake = FakeHost::new();
-        fake.route_prefix("GET", "GET /api/subscribe/pool/intents?", 200, &intents_body());
-        fake.route_prefix("GET", "GET /api/plugin-host/emby/instances", 200, &instances_body());
-        fake.route_prefix("GET", "GET /api/plugin-host/emby/episodes?", 200, &episodes_body());
+        fake.route_prefix(
+            "GET",
+            "GET /api/subscribe/pool/intents?",
+            200,
+            &intents_body(),
+        );
+        fake.route_prefix(
+            "GET",
+            "GET /api/plugin-host/emby/instances",
+            200,
+            &instances_body(),
+        );
+        fake.route_prefix(
+            "GET",
+            "GET /api/plugin-host/emby/episodes?",
+            200,
+            &episodes_body(),
+        );
         fake.route_prefix("GET", "GET /api/subscribe/air-calendar", 503, b"nope");
         fake.route_prefix("GET", "GET /api/tmdb/tv/", 200, &tmdb_body());
         fake.route_prefix("PATCH", "PATCH /api/subscribe/pool/intents/", 200, b"{}");
@@ -3095,7 +3374,11 @@ mod tests {
         let first = job(&mut runtime, "align");
         assert_eq!(first["reused"], 0, "首轮没有可复用的行: {first}");
         let doc = stored(&fake);
-        assert!(doc.align.items[0].reason.contains("无缺口"), "{}", doc.align.items[0].reason);
+        assert!(
+            doc.align.items[0].reason.contains("无缺口"),
+            "{}",
+            doc.align.items[0].reason
+        );
         let first_at = doc.align.items[0].at.clone();
         let probed = emby_probes(&fake);
         assert!(probed >= 1, "首轮必须真的探一次 Emby");
@@ -3104,12 +3387,22 @@ mod tests {
         clock::testhooks::set_now(Some((base + 3600) as u64 * 1_000_000_000));
         let second = job(&mut runtime, "align");
         assert_eq!(second["reused"], 1, "{second}");
-        assert_eq!(second["matched"], 1, "复用行也算参与本轮判定, 口径与真探过一致: {second}");
+        assert_eq!(
+            second["matched"], 1,
+            "复用行也算参与本轮判定, 口径与真探过一致: {second}"
+        );
         assert_eq!(second["skipped"], 1, "{second}");
         assert_eq!(emby_probes(&fake), probed, "复用轮不许再探 Emby");
         let doc = stored(&fake);
-        assert!(doc.align.items[0].reason.contains("复用缓存"), "{}", doc.align.items[0].reason);
-        assert_eq!(doc.align.items[0].at, first_at, "at 必须保留真实核实时刻, 否则 TTL 永不过期");
+        assert!(
+            doc.align.items[0].reason.contains("复用缓存"),
+            "{}",
+            doc.align.items[0].reason
+        );
+        assert_eq!(
+            doc.align.items[0].at, first_at,
+            "at 必须保留真实核实时刻, 否则 TTL 永不过期"
+        );
 
         // 超过 5 小时窗口: 重新探测
         clock::testhooks::set_now(Some((base + 6 * 3600) as u64 * 1_000_000_000));
@@ -3124,7 +3417,12 @@ mod tests {
     #[test]
     fn cached_no_gap_row_rejects_everything_but_verified_no_gap() {
         let fresh = clock::now_rfc3339();
-        let row = |action: &str, total: i64, target_known: bool, have_max: i64, target_upper: i64, at: String| {
+        let row = |action: &str,
+                   total: i64,
+                   target_known: bool,
+                   have_max: i64,
+                   target_upper: i64,
+                   at: String| {
             model::AlignItem {
                 action: action.to_string(),
                 total_known: total,
@@ -3135,14 +3433,38 @@ mod tests {
                 ..Default::default()
             }
         };
-        assert!(cached_no_gap_row(&row("skipped", 16, true, 16, 16, fresh.clone()), 16), "核实过的无缺口行可复用");
-        assert!(!cached_no_gap_row(&row("skipped", 16, true, 16, 16, fresh.clone()), 12), "订阅总数变了 → 旧判定作废");
-        assert!(!cached_no_gap_row(&row("skipped", 16, false, 16, 16, fresh.clone()), 16), "目标未知 → 重探");
-        assert!(!cached_no_gap_row(&row("skipped", 16, true, -1, 16, fresh.clone()), 16), "覆盖未知/该季 0 集 → 重探");
-        assert!(!cached_no_gap_row(&row("skipped", 10, true, 12, 10, fresh.clone()), 10), "Emby 有超出订阅的集 → 先补订");
-        assert!(!cached_no_gap_row(&row("skipped", 16, true, 16, 20, fresh.clone()), 16), "目标超过订阅 → 先补订");
-        assert!(!cached_no_gap_row(&row("patched", 16, true, 16, 16, fresh.clone()), 16), "补订过的行 → 重探");
-        assert!(!cached_no_gap_row(&row("failed", 16, true, 16, 16, fresh.clone()), 16), "失败过的行 → 重探");
+        assert!(
+            cached_no_gap_row(&row("skipped", 16, true, 16, 16, fresh.clone()), 16),
+            "核实过的无缺口行可复用"
+        );
+        assert!(
+            !cached_no_gap_row(&row("skipped", 16, true, 16, 16, fresh.clone()), 12),
+            "订阅总数变了 → 旧判定作废"
+        );
+        assert!(
+            !cached_no_gap_row(&row("skipped", 16, false, 16, 16, fresh.clone()), 16),
+            "目标未知 → 重探"
+        );
+        assert!(
+            !cached_no_gap_row(&row("skipped", 16, true, -1, 16, fresh.clone()), 16),
+            "覆盖未知/该季 0 集 → 重探"
+        );
+        assert!(
+            !cached_no_gap_row(&row("skipped", 10, true, 12, 10, fresh.clone()), 10),
+            "Emby 有超出订阅的集 → 先补订"
+        );
+        assert!(
+            !cached_no_gap_row(&row("skipped", 16, true, 16, 20, fresh.clone()), 16),
+            "目标超过订阅 → 先补订"
+        );
+        assert!(
+            !cached_no_gap_row(&row("patched", 16, true, 16, 16, fresh.clone()), 16),
+            "补订过的行 → 重探"
+        );
+        assert!(
+            !cached_no_gap_row(&row("failed", 16, true, 16, 16, fresh.clone()), 16),
+            "失败过的行 → 重探"
+        );
         let stale = row(
             "skipped",
             16,
@@ -3180,7 +3502,8 @@ mod tests {
             "GET /api/subscribe/pool/intents?",
             200,
             r#"{"code":"ok","data":[{"id":41,"tmdb_id":1396,"season":5,"media_type":"tv",
-                 "title":"绝命毒师","total_episodes_known":16,"state":"caught_up"}],"counts":{}}"#.as_bytes(),
+                 "title":"绝命毒师","total_episodes_known":16,"state":"caught_up"}],"counts":{}}"#
+                .as_bytes(),
         );
         let guard = fake.install();
         let mut runtime = Runtime::new();
@@ -3194,7 +3517,10 @@ mod tests {
         assert!(fake.patches().is_empty(), "缓存命中时零 PATCH");
         assert!(fake.puts().is_empty(), "align-now 不落盘(预算约束)");
         let calls = crate::host::observed_calls() - calls_before;
-        assert_eq!(calls, 1, "缓存命中 → 只该读 1 页订阅池, 0 次 Emby 探测, 实际 {calls}");
+        assert_eq!(
+            calls, 1,
+            "缓存命中 → 只该读 1 页订阅池, 0 次 Emby 探测, 实际 {calls}"
+        );
         // 0.1.7: 缓存命中的行必须保留原始核实时刻 —— 盖成 now 会让反复点「立即对齐」
         // 把一条旧证据无限续命, 整点 job 的 5 小时无缺口复用窗口也就跟着被拉长。
         let rows = &runtime.state.align.items;
@@ -3224,9 +3550,15 @@ mod tests {
             "GET /api/subscribe/pool/intents?",
             200,
             r#"{"code":"ok","data":[{"id":41,"tmdb_id":1396,"season":5,"media_type":"tv",
-                 "title":"绝命毒师","total_episodes_known":10,"state":"partial"}],"counts":{}}"#.as_bytes(),
+                 "title":"绝命毒师","total_episodes_known":10,"state":"partial"}],"counts":{}}"#
+                .as_bytes(),
         );
-        fake.route_prefix("GET", "GET /api/plugin-host/emby/episodes?", 200, &episodes_body());
+        fake.route_prefix(
+            "GET",
+            "GET /api/plugin-host/emby/episodes?",
+            200,
+            &episodes_body(),
+        );
         fake.route_prefix("PATCH", "PATCH /api/subscribe/pool/intents/", 200, b"{}");
         let guard = fake.install();
         let mut runtime = Runtime::new();
@@ -3271,7 +3603,8 @@ mod tests {
             "GET /api/subscribe/pool/intents?",
             200,
             r#"{"code":"ok","data":[{"id":41,"tmdb_id":1396,"season":1,"media_type":"tv",
-                 "title":"绝命毒师","total_episodes_known":2,"state":"partial"}],"counts":{}}"#.as_bytes(),
+                 "title":"绝命毒师","total_episodes_known":2,"state":"partial"}],"counts":{}}"#
+                .as_bytes(),
         );
         // 第 1 季在 Emby 里只有 4 集 → 缺口 4(误用第 5 季缓存会补到 12)
         fake.route_prefix(
@@ -3301,9 +3634,14 @@ mod tests {
             "必须用第 1 季的实测覆盖, 不是第 5 季缓存里的 12 集"
         );
         let calls = crate::host::observed_calls() - calls_before;
-        assert_eq!(calls, 3, "换季后必须重新探 Emby(1 页订阅池 + 1 次探测 + 1 次 PATCH), 实际 {calls}");
+        assert_eq!(
+            calls, 3,
+            "换季后必须重新探 Emby(1 页订阅池 + 1 次探测 + 1 次 PATCH), 实际 {calls}"
+        );
         assert!(
-            fake.business_paths().iter().any(|path| path.contains("season=1")),
+            fake.business_paths()
+                .iter()
+                .any(|path| path.contains("season=1")),
             "探测的必须是新季: {:?}",
             fake.business_paths()
         );
@@ -3334,7 +3672,8 @@ mod tests {
             "GET /api/subscribe/pool/intents?",
             200,
             r#"{"code":"ok","data":[{"id":41,"tmdb_id":1396,"season":5,"media_type":"tv",
-                 "title":"绝命毒师","total_episodes_known":10,"state":"partial"}],"counts":{}}"#.as_bytes(),
+                 "title":"绝命毒师","total_episodes_known":10,"state":"partial"}],"counts":{}}"#
+                .as_bytes(),
         );
         fake.route_prefix("PATCH", "PATCH /api/subscribe/pool/intents/", 200, b"{}");
         let guard = fake.install();
@@ -3356,7 +3695,10 @@ mod tests {
             "缓存行里的该季目标(16)大于 Emby 覆盖(12), 必须用上"
         );
         let calls = crate::host::observed_calls() - calls_before;
-        assert_eq!(calls, 2, "缓存命中 → 1 页订阅池 + 1 次 PATCH, 不再探 Emby: {calls}");
+        assert_eq!(
+            calls, 2,
+            "缓存命中 → 1 页订阅池 + 1 次 PATCH, 不再探 Emby: {calls}"
+        );
         drop(guard);
     }
 
@@ -3371,9 +3713,22 @@ mod tests {
                    "title":"剧{index}","total_episodes_known":1,"state":"partial"}}"#
             ));
         }
-        let body = format!(r#"{{"code":"ok","data":[{}],"counts":{{}}}}"#, items.join(","));
-        fake.route_prefix("GET", "GET /api/subscribe/pool/intents?", 200, body.as_bytes());
-        fake.route_prefix("GET", "GET /api/plugin-host/emby/instances", 200, &instances_body());
+        let body = format!(
+            r#"{{"code":"ok","data":[{}],"counts":{{}}}}"#,
+            items.join(",")
+        );
+        fake.route_prefix(
+            "GET",
+            "GET /api/subscribe/pool/intents?",
+            200,
+            body.as_bytes(),
+        );
+        fake.route_prefix(
+            "GET",
+            "GET /api/plugin-host/emby/instances",
+            200,
+            &instances_body(),
+        );
         fake.route_prefix(
             "GET",
             "GET /api/plugin-host/emby/episodes?",
@@ -3425,13 +3780,22 @@ mod tests {
         let result = action(&mut runtime, "probe-dump", json!({}));
         assert_eq!(result["status"], "accepted");
         assert_eq!(result["emby"]["http_status"], 200, "{result}");
-        assert!(result["emby"]["shape"].as_str().unwrap_or_default().contains("params="));
+        assert!(result["emby"]["shape"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("params="));
         assert_eq!(result["calendar"]["http_status"], 200);
-        assert!(result["state_version"].as_str().unwrap_or_default().starts_with("state-v"));
+        assert!(result["state_version"]
+            .as_str()
+            .unwrap_or_default()
+            .starts_with("state-v"));
 
         let doc = stored(&fake);
         assert_eq!(doc.debug.emby_episodes.status, "ok");
-        assert!(!doc.debug.emby_episodes.sample.is_empty(), "probe-dump 必须留原文样本");
+        assert!(
+            !doc.debug.emby_episodes.sample.is_empty(),
+            "probe-dump 必须留原文样本"
+        );
         assert!(doc.debug.emby_episodes.sample.len() <= SAMPLE_MAX);
         assert_eq!(doc.debug.air_calendar.status, "ok");
         assert!(!doc.settings.probe.emby_episodes_shape.is_empty());
@@ -3441,15 +3805,30 @@ mod tests {
     #[test]
     fn probe_dump_reports_unparsed_without_panicking() {
         let fake = FakeHost::new();
-        fake.route_prefix("GET", "GET /api/plugin-host/emby/instances", 200, &instances_body());
+        fake.route_prefix(
+            "GET",
+            "GET /api/plugin-host/emby/instances",
+            200,
+            &instances_body(),
+        );
         fake.route_prefix(
             "GET",
             "GET /api/plugin-host/emby/episodes?",
             200,
             br#"{"episode_count":12}"#,
         );
-        fake.route_prefix("GET", "GET /api/subscribe/air-calendar", 200, b"<html>502</html>");
-        fake.route_prefix("GET", "GET /api/subscribe/pool/intents?", 200, &intents_body());
+        fake.route_prefix(
+            "GET",
+            "GET /api/subscribe/air-calendar",
+            200,
+            b"<html>502</html>",
+        );
+        fake.route_prefix(
+            "GET",
+            "GET /api/subscribe/pool/intents?",
+            200,
+            &intents_body(),
+        );
         let guard = fake.install();
         let mut runtime = Runtime::new();
         runtime.ensure_loaded();
@@ -3550,7 +3929,10 @@ mod tests {
             &mut runtime,
             r#"{"method":"runtime.invoke","params":{"envelope":{"op":"state","payload":{"if_none_match":"\"state-v1\""}}}}"#,
         );
-        assert_eq!(not_modified["result"]["not_modified"], true, "{not_modified}");
+        assert_eq!(
+            not_modified["result"]["not_modified"], true,
+            "{not_modified}"
+        );
         assert!(not_modified["result"].get("state").is_none());
 
         // 版本对不上 → 完整文档
@@ -3591,10 +3973,30 @@ mod tests {
         let huge_calendar = format!(r#"{{"unknown":"{}"}}"#, "剧".repeat(3000));
         assert!(huge_emby.len() > SAMPLE_MAX * 2);
         let fake = FakeHost::new();
-        fake.route_prefix("GET", "GET /api/plugin-host/emby/instances", 200, &instances_body());
-        fake.route_prefix("GET", "GET /api/plugin-host/emby/episodes?", 200, huge_emby.as_bytes());
-        fake.route_prefix("GET", "GET /api/subscribe/air-calendar", 200, huge_calendar.as_bytes());
-        fake.route_prefix("GET", "GET /api/subscribe/pool/intents?", 200, &intents_body());
+        fake.route_prefix(
+            "GET",
+            "GET /api/plugin-host/emby/instances",
+            200,
+            &instances_body(),
+        );
+        fake.route_prefix(
+            "GET",
+            "GET /api/plugin-host/emby/episodes?",
+            200,
+            huge_emby.as_bytes(),
+        );
+        fake.route_prefix(
+            "GET",
+            "GET /api/subscribe/air-calendar",
+            200,
+            huge_calendar.as_bytes(),
+        );
+        fake.route_prefix(
+            "GET",
+            "GET /api/subscribe/pool/intents?",
+            200,
+            &intents_body(),
+        );
         let guard = fake.install();
         let mut runtime = Runtime::new();
         runtime.ensure_loaded();
@@ -3604,7 +4006,10 @@ mod tests {
         let doc = stored(&fake);
         assert_eq!(doc.debug.emby_episodes.status, "unparsed");
         assert!(doc.debug.emby_episodes.sample.len() <= SAMPLE_MAX);
-        assert!(!doc.debug.emby_episodes.sample.is_empty(), "必须在 ≤2KB 内留证");
+        assert!(
+            !doc.debug.emby_episodes.sample.is_empty(),
+            "必须在 ≤2KB 内留证"
+        );
         assert_eq!(doc.debug.air_calendar.status, "unparsed");
         assert!(doc.debug.air_calendar.sample.len() <= SAMPLE_MAX);
         assert!(
@@ -3612,8 +4017,20 @@ mod tests {
             "截断必须落在 UTF-8 边界"
         );
         // 响应里回给前端的 preview 更短(200B), 不把 2KB 原文塞进 RPC 响应
-        assert!(result["emby"]["sample_preview"].as_str().unwrap_or_default().len() <= 200);
-        assert!(result["calendar"]["sample_preview"].as_str().unwrap_or_default().len() <= 200);
+        assert!(
+            result["emby"]["sample_preview"]
+                .as_str()
+                .unwrap_or_default()
+                .len()
+                <= 200
+        );
+        assert!(
+            result["calendar"]["sample_preview"]
+                .as_str()
+                .unwrap_or_default()
+                .len()
+                <= 200
+        );
         // 整份文档仍然远小于 256KB
         assert!(doc_bytes(&fake).len() <= crate::model::MAX_STATE_BYTES);
         drop(guard);
@@ -3625,9 +4042,22 @@ mod tests {
     #[test]
     fn job_pool_failure_records_the_raw_sample_in_debug() {
         let fake = FakeHost::new();
-        let body = format!(r#"{{"code":"ok","data":[{{"nope":"{}"}}]}}"#, "x".repeat(4096));
-        fake.route_prefix("GET", "GET /api/subscribe/pool/intents?", 200, body.as_bytes());
-        fake.route_prefix("GET", "GET /api/plugin-host/emby/instances", 200, &instances_body());
+        let body = format!(
+            r#"{{"code":"ok","data":[{{"nope":"{}"}}]}}"#,
+            "x".repeat(4096)
+        );
+        fake.route_prefix(
+            "GET",
+            "GET /api/subscribe/pool/intents?",
+            200,
+            body.as_bytes(),
+        );
+        fake.route_prefix(
+            "GET",
+            "GET /api/plugin-host/emby/instances",
+            200,
+            &instances_body(),
+        );
         let guard = fake.install();
         let mut runtime = Runtime::new();
         runtime.ensure_loaded();
@@ -3637,29 +4067,53 @@ mod tests {
 
         let doc = stored(&fake);
         assert_eq!(doc.debug.pool_intents.status, "unparsed");
-        assert!(doc.debug.pool_intents.sample.starts_with("{\"code\""), "留的是原文片段");
+        assert!(
+            doc.debug.pool_intents.sample.starts_with("{\"code\""),
+            "留的是原文片段"
+        );
         assert!(doc.debug.pool_intents.sample.len() <= SAMPLE_MAX);
-        assert!(doc.align.last_error.contains("订阅池"), "{:?}", doc.align.last_error);
+        assert!(
+            doc.align.last_error.contains("订阅池"),
+            "{:?}",
+            doc.align.last_error
+        );
         drop(guard);
     }
 
     #[test]
     fn refresh_records_the_pool_sample_in_memory() {
         let fake = FakeHost::new();
-        fake.route_prefix("GET", "GET /api/subscribe/pool/intents?", 200, b"<html>503</html>");
-        fake.route_prefix("GET", "GET /api/subscribe/air-calendar", 200, &calendar_body());
+        fake.route_prefix(
+            "GET",
+            "GET /api/subscribe/pool/intents?",
+            200,
+            b"<html>503</html>",
+        );
+        fake.route_prefix(
+            "GET",
+            "GET /api/subscribe/air-calendar",
+            200,
+            &calendar_body(),
+        );
         let guard = fake.install();
         let mut runtime = Runtime::new();
         runtime.ensure_loaded();
         let result = action(&mut runtime, "refresh", json!({}));
         assert_eq!(result["status"], "accepted");
         assert!(
-            result["message"].as_str().unwrap_or_default().contains("订阅池读取失败"),
+            result["message"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("订阅池读取失败"),
             "{result}"
         );
         let debug = &runtime.state_doc().debug;
         assert_eq!(debug.pool_intents.status, "unparsed");
-        assert!(debug.pool_intents.sample.contains("html"), "{:?}", debug.pool_intents.sample);
+        assert!(
+            debug.pool_intents.sample.contains("html"),
+            "{:?}",
+            debug.pool_intents.sample
+        );
         assert!(debug.pool_intents.sample.len() <= SAMPLE_MAX);
         drop(guard);
     }
@@ -3668,10 +4122,30 @@ mod tests {
     #[test]
     fn report_carries_the_unavailable_emby_reason() {
         let fake = FakeHost::new();
-        fake.route_prefix("GET", "GET /api/subscribe/pool/intents?", 200, &intents_body());
-        fake.route_prefix("GET", "GET /api/plugin-host/emby/instances", 502, b"bad gateway");
-        fake.route_prefix("GET", "GET /api/subscribe/air-calendar", 200, &calendar_body());
-        fake.route("POST", "/api/notifications/plugin", 200, br#"{"data":{"accepted":true}}"#);
+        fake.route_prefix(
+            "GET",
+            "GET /api/subscribe/pool/intents?",
+            200,
+            &intents_body(),
+        );
+        fake.route_prefix(
+            "GET",
+            "GET /api/plugin-host/emby/instances",
+            502,
+            b"bad gateway",
+        );
+        fake.route_prefix(
+            "GET",
+            "GET /api/subscribe/air-calendar",
+            200,
+            &calendar_body(),
+        );
+        fake.route(
+            "POST",
+            "/api/notifications/plugin",
+            200,
+            br#"{"data":{"accepted":true}}"#,
+        );
         let guard = fake.install();
         let mut runtime = Runtime::new();
         runtime.ensure_loaded();
@@ -3708,16 +4182,35 @@ mod tests {
     #[test]
     fn alignment_blocked_reason_is_kept_in_align_last_error() {
         let fake = FakeHost::new();
-        fake.route_prefix("GET", "GET /api/subscribe/pool/intents?", 200, &intents_body());
-        fake.route_prefix("GET", "GET /api/plugin-host/emby/instances", 200, br#"{"items":[]}"#);
-        fake.route_prefix("GET", "GET /api/subscribe/air-calendar", 200, &calendar_body());
+        fake.route_prefix(
+            "GET",
+            "GET /api/subscribe/pool/intents?",
+            200,
+            &intents_body(),
+        );
+        fake.route_prefix(
+            "GET",
+            "GET /api/plugin-host/emby/instances",
+            200,
+            br#"{"items":[]}"#,
+        );
+        fake.route_prefix(
+            "GET",
+            "GET /api/subscribe/air-calendar",
+            200,
+            &calendar_body(),
+        );
         let guard = fake.install();
         let mut runtime = Runtime::new();
         runtime.ensure_loaded();
         let result = job(&mut runtime, "align");
         assert_eq!(result["patched"], 0);
         let doc = stored(&fake);
-        assert!(doc.align.last_error.contains("本轮未对齐"), "{:?}", doc.align.last_error);
+        assert!(
+            doc.align.last_error.contains("本轮未对齐"),
+            "{:?}",
+            doc.align.last_error
+        );
         assert_eq!(doc.debug.emby_episodes.status, "skipped");
         drop(guard);
     }
@@ -3729,9 +4222,22 @@ mod tests {
     #[test]
     fn align_now_uses_a_pinned_instance_when_no_list_is_known_yet() {
         let fake = FakeHost::new();
-        fake.set("state", br#"{"schema_version":1,"revision":4,"settings":{"emby_proxy_id":3}}"#);
-        fake.route_prefix("GET", "GET /api/subscribe/pool/intents?", 200, &intents_body());
-        fake.route_prefix("GET", "GET /api/plugin-host/emby/episodes?", 200, &episodes_body());
+        fake.set(
+            "state",
+            br#"{"schema_version":1,"revision":4,"settings":{"emby_proxy_id":3}}"#,
+        );
+        fake.route_prefix(
+            "GET",
+            "GET /api/subscribe/pool/intents?",
+            200,
+            &intents_body(),
+        );
+        fake.route_prefix(
+            "GET",
+            "GET /api/plugin-host/emby/episodes?",
+            200,
+            &episodes_body(),
+        );
         fake.route_prefix("PATCH", "PATCH /api/subscribe/pool/intents/", 200, b"{}");
         let guard = fake.install();
         let mut runtime = Runtime::new();
@@ -3740,7 +4246,10 @@ mod tests {
         let before = crate::host::observed_calls();
         let result = action(&mut runtime, "align-now", json!({}));
         assert_eq!(result["status"], "accepted", "{result}");
-        assert_eq!(result["patched"], 2, "两条 tv 订阅都按实测覆盖补订: {result}");
+        assert_eq!(
+            result["patched"], 2,
+            "两条 tv 订阅都按实测覆盖补订: {result}"
+        );
         assert_eq!(fake.patches().len(), 2);
         let calls = crate::host::observed_calls() - before;
         assert!(calls <= 1 + 5 + 3, "host.call 总数超预算: {calls}");
@@ -3761,7 +4270,10 @@ mod tests {
     #[test]
     fn align_now_marks_an_absent_show_with_the_same_action_as_the_job() {
         let fake = FakeHost::new();
-        fake.set("state", br#"{"schema_version":1,"revision":4,"settings":{"emby_proxy_id":3}}"#);
+        fake.set(
+            "state",
+            br#"{"schema_version":1,"revision":4,"settings":{"emby_proxy_id":3}}"#,
+        );
         fake.route_prefix(
             "GET",
             "GET /api/subscribe/pool/intents?",
@@ -3790,7 +4302,11 @@ mod tests {
             "job 里同一事实是 failed, align-now 不许退化成 skipped: {}",
             item.reason
         );
-        assert!(item.reason.contains("Emby 未收录该剧/该季"), "{}", item.reason);
+        assert!(
+            item.reason.contains("Emby 未收录该剧/该季"),
+            "{}",
+            item.reason
+        );
         assert_eq!(item.emby_have_count, 0, "未收录 = 已知 0 集");
         drop(guard);
     }
@@ -3800,7 +4316,10 @@ mod tests {
     #[test]
     fn align_now_counts_an_empty_season_only_once() {
         let fake = FakeHost::new();
-        fake.set("state", br#"{"schema_version":1,"revision":4,"settings":{"emby_proxy_id":3}}"#);
+        fake.set(
+            "state",
+            br#"{"schema_version":1,"revision":4,"settings":{"emby_proxy_id":3}}"#,
+        );
         fake.route_prefix(
             "GET",
             "GET /api/subscribe/pool/intents?",
@@ -3832,7 +4351,12 @@ mod tests {
     fn align_now_without_a_list_and_a_default_pin_degrades_without_writes() {
         let fake = FakeHost::new();
         fake.set("state", br#"{"schema_version":1,"revision":4}"#);
-        fake.route_prefix("GET", "GET /api/subscribe/pool/intents?", 200, &intents_body());
+        fake.route_prefix(
+            "GET",
+            "GET /api/subscribe/pool/intents?",
+            200,
+            &intents_body(),
+        );
         let guard = fake.install();
         let mut runtime = Runtime::new();
         runtime.ensure_loaded();
@@ -3856,7 +4380,10 @@ mod tests {
     fn align_now_changes_idempotency_keys_between_invocations() {
         let (fake, mut runtime) = harness();
         // 钉住实例 id, 两次 align-now 都能真的补订(否则会因没有实例列表而整段跳过)
-        fake.set("state", br#"{"schema_version":1,"revision":1,"settings":{"emby_proxy_id":3}}"#);
+        fake.set(
+            "state",
+            br#"{"schema_version":1,"revision":1,"settings":{"emby_proxy_id":3}}"#,
+        );
         let guard = fake.install();
         runtime.ensure_loaded();
         let _ = action(&mut runtime, "align-now", json!({}));
@@ -3864,11 +4391,20 @@ mod tests {
         let keys: Vec<String> = fake
             .patches()
             .iter()
-            .map(|request| request.headers.get("idempotency-key").cloned().unwrap_or_default())
+            .map(|request| {
+                request
+                    .headers
+                    .get("idempotency-key")
+                    .cloned()
+                    .unwrap_or_default()
+            })
             .collect();
         assert_eq!(keys.len(), 4, "两轮 × 两条 tv: {keys:?}");
         assert_ne!(keys[0], keys[1], "同一轮内的两条条目各有各的键");
-        assert_ne!(keys[0], keys[2], "同一条目在下一轮必须换幂等键(否则宿主会判重)");
+        assert_ne!(
+            keys[0], keys[2],
+            "同一条目在下一轮必须换幂等键(否则宿主会判重)"
+        );
         assert_ne!(keys[1], keys[3]);
         assert!(keys.iter().all(|key| key.starts_with("chase-patch-")));
         drop(guard);
@@ -3887,7 +4423,10 @@ mod tests {
                 index + 1000
             ));
         }
-        let first = format!(r#"{{"code":"ok","data":[{}],"counts":{{}}}}"#, items.join(","));
+        let first = format!(
+            r#"{{"code":"ok","data":[{}],"counts":{{}}}}"#,
+            items.join(",")
+        );
         let second = r#"{"code":"ok","data":[{"id":9999,"tmdb_id":42,"season":1,"media_type":"tv","title":"末页","total_episodes_known":1,"state":"expired"}],"counts":{}}"#
             .as_bytes()
             .to_vec();
@@ -3904,8 +4443,18 @@ mod tests {
             200,
             &second,
         );
-        fake.route_prefix("GET", "GET /api/plugin-host/emby/instances", 200, &instances_body());
-        fake.route_prefix("GET", "GET /api/subscribe/air-calendar", 200, &calendar_body());
+        fake.route_prefix(
+            "GET",
+            "GET /api/plugin-host/emby/instances",
+            200,
+            &instances_body(),
+        );
+        fake.route_prefix(
+            "GET",
+            "GET /api/subscribe/air-calendar",
+            200,
+            &calendar_body(),
+        );
         let guard = fake.install();
         let mut runtime = Runtime::new();
         runtime.ensure_loaded();
@@ -3915,8 +4464,14 @@ mod tests {
         assert_eq!(result["patched"], 0, "全部 expired, 只计数不写");
         assert!(fake.patches().is_empty());
         let paths = fake.business_paths();
-        assert!(paths.iter().any(|path| path.contains("offset=0")), "{paths:?}");
-        assert!(paths.iter().any(|path| path.contains("offset=500")), "{paths:?}");
+        assert!(
+            paths.iter().any(|path| path.contains("offset=0")),
+            "{paths:?}"
+        );
+        assert!(
+            paths.iter().any(|path| path.contains("offset=500")),
+            "{paths:?}"
+        );
         let doc = stored(&fake);
         assert_eq!(doc.align.pages, 2);
         assert_eq!(doc.stats.tv_intents, 501);
@@ -3935,23 +4490,45 @@ mod tests {
                 index + 1396
             ));
         }
-        let body = format!(r#"{{"code":"ok","data":[{}],"counts":{{}}}}"#, items.join(","));
+        let body = format!(
+            r#"{{"code":"ok","data":[{}],"counts":{{}}}}"#,
+            items.join(",")
+        );
         let fake = FakeHost::new();
-        fake.route_prefix("GET", "GET /api/subscribe/pool/intents?", 200, body.as_bytes());
-        fake.route_prefix("GET", "GET /api/plugin-host/emby/instances", 200, &instances_body());
+        fake.route_prefix(
+            "GET",
+            "GET /api/subscribe/pool/intents?",
+            200,
+            body.as_bytes(),
+        );
+        fake.route_prefix(
+            "GET",
+            "GET /api/plugin-host/emby/instances",
+            200,
+            &instances_body(),
+        );
         fake.route_prefix(
             "GET",
             "GET /api/plugin-host/emby/episodes?",
             200,
             br#"{"items":[{"index_number":1},{"index_number":2}]}"#,
         );
-        fake.route_prefix("GET", "GET /api/subscribe/air-calendar", 200, &calendar_body());
+        fake.route_prefix(
+            "GET",
+            "GET /api/subscribe/air-calendar",
+            200,
+            &calendar_body(),
+        );
         fake.route_prefix("GET", "GET /api/tmdb/tv/", 200, br#"{"seasons":[]}"#);
         fake.route_prefix("PATCH", "PATCH /api/subscribe/pool/intents/", 200, b"{}");
         let guard = fake.install();
         let mut runtime = Runtime::new();
         runtime.ensure_loaded();
-        let _ = action(&mut runtime, "settings-update", json!({"emby_probe_budget": 1}));
+        let _ = action(
+            &mut runtime,
+            "settings-update",
+            json!({"emby_probe_budget": 1}),
+        );
 
         let result = job(&mut runtime, "align");
         assert_eq!(result["patched"], 1, "{result}");
@@ -3965,9 +4542,16 @@ mod tests {
 
         let doc = stored(&fake);
         assert!(
-            doc.align.items.iter().any(|item| item.reason.contains("预算用尽")),
+            doc.align
+                .items
+                .iter()
+                .any(|item| item.reason.contains("预算用尽")),
             "{:?}",
-            doc.align.items.iter().map(|item| &item.reason).collect::<Vec<_>>()
+            doc.align
+                .items
+                .iter()
+                .map(|item| &item.reason)
+                .collect::<Vec<_>>()
         );
         drop(guard);
     }
@@ -3979,10 +4563,30 @@ mod tests {
             {"id":42,"tmdb_id":1396,"season":5,"media_type":"tv","title":"绝命毒师","total_episodes_known":2,"state":"partial"}
         ],"counts":{}}"#;
         let fake = FakeHost::new();
-        fake.route_prefix("GET", "GET /api/subscribe/pool/intents?", 200, body.as_bytes());
-        fake.route_prefix("GET", "GET /api/plugin-host/emby/instances", 200, &instances_body());
-        fake.route_prefix("GET", "GET /api/plugin-host/emby/episodes?", 200, &episodes_body());
-        fake.route_prefix("GET", "GET /api/subscribe/air-calendar", 200, &calendar_body());
+        fake.route_prefix(
+            "GET",
+            "GET /api/subscribe/pool/intents?",
+            200,
+            body.as_bytes(),
+        );
+        fake.route_prefix(
+            "GET",
+            "GET /api/plugin-host/emby/instances",
+            200,
+            &instances_body(),
+        );
+        fake.route_prefix(
+            "GET",
+            "GET /api/plugin-host/emby/episodes?",
+            200,
+            &episodes_body(),
+        );
+        fake.route_prefix(
+            "GET",
+            "GET /api/subscribe/air-calendar",
+            200,
+            &calendar_body(),
+        );
         fake.route_prefix("GET", "GET /api/tmdb/tv/", 200, &tmdb_body());
         fake.route_prefix("PATCH", "PATCH /api/subscribe/pool/intents/", 200, b"{}");
         let guard = fake.install();
@@ -3993,12 +4597,18 @@ mod tests {
         assert_eq!(fake.patches().len(), 2);
         let paths = fake.business_paths();
         assert_eq!(
-            paths.iter().filter(|path| path.contains("/api/plugin-host/emby/episodes")).count(),
+            paths
+                .iter()
+                .filter(|path| path.contains("/api/plugin-host/emby/episodes"))
+                .count(),
             1,
             "同一 (实例, 剧, 季) 本轮只探一次: {paths:?}"
         );
         assert_eq!(
-            paths.iter().filter(|path| path.contains("/api/tmdb/tv/")).count(),
+            paths
+                .iter()
+                .filter(|path| path.contains("/api/tmdb/tv/"))
+                .count(),
             1,
             "TMDB 目标每 (剧, 季) 也只取一次: {paths:?}"
         );
@@ -4012,8 +4622,18 @@ mod tests {
             {"id":42,"tmdb_id":1396,"season":5,"media_type":"tv","title":"绝命毒师","total_episodes_known":2,"state":"partial"}
         ],"counts":{}}"#;
         let fake = FakeHost::new();
-        fake.route_prefix("GET", "GET /api/subscribe/pool/intents?", 200, body.as_bytes());
-        fake.route_prefix("GET", "GET /api/plugin-host/emby/instances", 200, &instances_body());
+        fake.route_prefix(
+            "GET",
+            "GET /api/subscribe/pool/intents?",
+            200,
+            body.as_bytes(),
+        );
+        fake.route_prefix(
+            "GET",
+            "GET /api/plugin-host/emby/instances",
+            200,
+            &instances_body(),
+        );
         // 只有数字, 没有逐集信息 → 三个候选参数全部 unparsed
         fake.route_prefix(
             "GET",
@@ -4021,7 +4641,12 @@ mod tests {
             200,
             br#"{"episode_count":12}"#,
         );
-        fake.route_prefix("GET", "GET /api/subscribe/air-calendar", 200, &calendar_body());
+        fake.route_prefix(
+            "GET",
+            "GET /api/subscribe/air-calendar",
+            200,
+            &calendar_body(),
+        );
         let guard = fake.install();
         let mut runtime = Runtime::new();
         runtime.ensure_loaded();
@@ -4037,9 +4662,16 @@ mod tests {
         assert_eq!(emby_calls, 3, "矩阵三个候选各一次, 不因第二条再涨");
         let doc = stored(&fake);
         assert!(
-            doc.align.items.iter().any(|item| item.reason.contains("不重复消耗预算")),
+            doc.align
+                .items
+                .iter()
+                .any(|item| item.reason.contains("不重复消耗预算")),
             "{:?}",
-            doc.align.items.iter().map(|item| &item.reason).collect::<Vec<_>>()
+            doc.align
+                .items
+                .iter()
+                .map(|item| &item.reason)
+                .collect::<Vec<_>>()
         );
         assert!(doc.debug.emby_episodes.sample.contains("episode_count"));
         drop(guard);
@@ -4100,8 +4732,15 @@ mod tests {
 
         // 同一个自然日再跑一轮: 因为没记上日期, 必须重试
         let second = job(&mut runtime, "align");
-        assert_ne!(second["report"]["status"], "idle", "失败后必须允许重试: {second}");
-        let posts = fake.requests().iter().filter(|request| request.method == "POST").count();
+        assert_ne!(
+            second["report"]["status"], "idle",
+            "失败后必须允许重试: {second}"
+        );
+        let posts = fake
+            .requests()
+            .iter()
+            .filter(|request| request.method == "POST")
+            .count();
         assert_eq!(posts, 2);
         clock::testhooks::set_now(None);
         drop(guard);
@@ -4128,12 +4767,22 @@ mod tests {
         let first = job(&mut runtime, "align");
         assert_eq!(first["report"]["status"], "deduplicated", "{first}");
         let doc = stored(&fake);
-        assert!(!doc.daily.last_sent_date.is_empty(), "宿主已有当日记录 → 同样记日期");
+        assert!(
+            !doc.daily.last_sent_date.is_empty(),
+            "宿主已有当日记录 → 同样记日期"
+        );
         assert_eq!(doc.daily.sent_total, 1);
 
         let second = job(&mut runtime, "align");
-        assert_eq!(second["report"]["status"], "idle", "宿主去重也算当天已发: {second}");
-        let posts = fake.requests().iter().filter(|request| request.method == "POST").count();
+        assert_eq!(
+            second["report"]["status"], "idle",
+            "宿主去重也算当天已发: {second}"
+        );
+        let posts = fake
+            .requests()
+            .iter()
+            .filter(|request| request.method == "POST")
+            .count();
         assert_eq!(posts, 1);
         clock::testhooks::set_now(None);
         drop(guard);
@@ -4162,7 +4811,10 @@ mod tests {
         assert_eq!(settings.report.tz_offset_minutes, -300);
         assert!(settings.report.enabled);
         assert_eq!(settings.report.hour, 9, "没传的键保持原值, 不被清零");
-        assert_eq!(settings.probe.emby_episodes_shape, "params=proxy_id,tmdb_id,season;list=items");
+        assert_eq!(
+            settings.probe.emby_episodes_shape,
+            "params=proxy_id,tmdb_id,season;list=items"
+        );
         assert!(settings.probe.air_calendar_shape.is_empty());
         // 落盘后的文档同样带着这些值
         let persisted = stored(&fake);
@@ -4174,9 +4826,22 @@ mod tests {
     #[test]
     fn unrecognizable_state_documents_block_persistence() {
         let fake = FakeHost::new();
-        fake.set("state", br#"{"schema_version":9,"revision":3,"settings":{"enabled":true}}"#);
-        fake.route_prefix("GET", "GET /api/subscribe/pool/intents?", 200, &intents_body());
-        fake.route_prefix("GET", "GET /api/plugin-host/emby/instances", 200, &instances_body());
+        fake.set(
+            "state",
+            br#"{"schema_version":9,"revision":3,"settings":{"enabled":true}}"#,
+        );
+        fake.route_prefix(
+            "GET",
+            "GET /api/subscribe/pool/intents?",
+            200,
+            &intents_body(),
+        );
+        fake.route_prefix(
+            "GET",
+            "GET /api/plugin-host/emby/instances",
+            200,
+            &instances_body(),
+        );
         let guard = fake.install();
         let mut runtime = Runtime::new();
         runtime.ensure_loaded();
@@ -4214,22 +4879,38 @@ mod tests {
         }
         push_align_item(
             &mut items,
-            AlignItem { intent_id: 999, action: "patched".into(), ..Default::default() },
+            AlignItem {
+                intent_id: 999,
+                action: "patched".into(),
+                ..Default::default()
+            },
         );
         assert_eq!(items.len(), ALIGN_ITEMS_MAX);
-        assert_eq!(items[0].intent_id, 1, "被丢的是最旧的 skipped, 而不是补订结果");
+        assert_eq!(
+            items[0].intent_id, 1,
+            "被丢的是最旧的 skipped, 而不是补订结果"
+        );
         assert_eq!(items.last().unwrap().intent_id, 999);
     }
 
     #[test]
     fn freshness_window_rejects_unparsable_and_future_timestamps() {
         let now = clock::now_unix_secs();
-        assert!(is_fresh(&clock::rfc3339_from_unix(now - 60), CACHE_FRESH_SECS));
+        assert!(is_fresh(
+            &clock::rfc3339_from_unix(now - 60),
+            CACHE_FRESH_SECS
+        ));
         assert!(is_fresh(&clock::rfc3339_from_unix(now), CACHE_FRESH_SECS));
-        assert!(!is_fresh(&clock::rfc3339_from_unix(now - 7 * 3600), CACHE_FRESH_SECS));
+        assert!(!is_fresh(
+            &clock::rfc3339_from_unix(now - 7 * 3600),
+            CACHE_FRESH_SECS
+        ));
         assert!(!is_fresh("garbage", CACHE_FRESH_SECS), "认不出就不新鲜");
         assert!(!is_fresh("", CACHE_FRESH_SECS));
-        assert!(!is_fresh(&clock::rfc3339_from_unix(now + 3600), CACHE_FRESH_SECS), "未来不算新鲜");
+        assert!(
+            !is_fresh(&clock::rfc3339_from_unix(now + 3600), CACHE_FRESH_SECS),
+            "未来不算新鲜"
+        );
     }
 
     // ── 单条 tv 的验收夹具 ──
@@ -4253,9 +4934,19 @@ mod tests {
             200,
             &one_intent_pool(41, 1396, 5, 16),
         );
-        fake.route_prefix("GET", "GET /api/plugin-host/emby/instances", 200, &instances_body());
+        fake.route_prefix(
+            "GET",
+            "GET /api/plugin-host/emby/instances",
+            200,
+            &instances_body(),
+        );
         fake.route_prefix("GET", "GET /api/plugin-host/emby/episodes?", 200, episodes);
-        fake.route_prefix("GET", "GET /api/subscribe/air-calendar", 200, &calendar_body());
+        fake.route_prefix(
+            "GET",
+            "GET /api/subscribe/air-calendar",
+            200,
+            &calendar_body(),
+        );
         fake.route_prefix("GET", "GET /api/tmdb/tv/", 200, tmdb);
         fake.route_prefix("PATCH", "PATCH /api/subscribe/pool/intents/", 200, b"{}");
         fake
@@ -4275,9 +4966,24 @@ mod tests {
             200,
             &one_intent_pool(41, 1396, 5, 10),
         );
-        fake.route_prefix("GET", "GET /api/plugin-host/emby/instances", 200, &instances_body());
-        fake.route_prefix("GET", "GET /api/plugin-host/emby/episodes?", 200, &episodes_body());
-        fake.route_prefix("GET", "GET /api/subscribe/air-calendar", 200, &calendar_body());
+        fake.route_prefix(
+            "GET",
+            "GET /api/plugin-host/emby/instances",
+            200,
+            &instances_body(),
+        );
+        fake.route_prefix(
+            "GET",
+            "GET /api/plugin-host/emby/episodes?",
+            200,
+            &episodes_body(),
+        );
+        fake.route_prefix(
+            "GET",
+            "GET /api/subscribe/air-calendar",
+            200,
+            &calendar_body(),
+        );
         // TMDB 该季取数全部 500: 这不是"TMDB 说 0 集", 是"取不到"
         fake.route_prefix("GET", "GET /api/tmdb/tv/", 500, br#"{"error":"tmdb down"}"#);
         fake.route_prefix("PATCH", "PATCH /api/subscribe/pool/intents/", 200, b"{}");
@@ -4288,7 +4994,10 @@ mod tests {
         let doc = stored(&fake);
 
         let item = &doc.align.items[0];
-        assert_eq!(item.target_upper, 0, "取不到就诚实写 0, 不许拿订阅集数/整剧集数顶替");
+        assert_eq!(
+            item.target_upper, 0,
+            "取不到就诚实写 0, 不许拿订阅集数/整剧集数顶替"
+        );
         assert!(!item.target_known, "0 集与'取不到'必须靠 target_known 分开");
         assert!(item.reason.contains("未知("), "{}", item.reason);
         assert!(!item.reason.contains("TMDB 目标 0 集"), "{}", item.reason);
@@ -4305,7 +5014,10 @@ mod tests {
             doc.debug.attempts
         );
         assert!(
-            doc.debug.last_errors.iter().any(|error| error.step == "job.tmdb"),
+            doc.debug
+                .last_errors
+                .iter()
+                .any(|error| error.step == "job.tmdb"),
             "{:?}",
             doc.debug.last_errors
         );
@@ -4337,7 +5049,11 @@ mod tests {
         let updated = action(&mut runtime, "settings-update", json!({"auto_bump": false}));
         assert_eq!(updated["status"], "succeeded", "{updated}");
         assert!(
-            updated["changed"].as_array().unwrap().iter().any(|key| key == "auto_bump"),
+            updated["changed"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|key| key == "auto_bump"),
             "{updated}"
         );
         let result = job(&mut runtime, "align");
@@ -4346,9 +5062,16 @@ mod tests {
         let doc = stored(&fake);
         assert!(!doc.settings.auto_bump);
         assert!(
-            doc.align.items.iter().any(|item| item.reason.contains("auto_bump=false")),
+            doc.align
+                .items
+                .iter()
+                .any(|item| item.reason.contains("auto_bump=false")),
             "{:?}",
-            doc.align.items.iter().map(|item| &item.reason).collect::<Vec<_>>()
+            doc.align
+                .items
+                .iter()
+                .map(|item| &item.reason)
+                .collect::<Vec<_>>()
         );
         // 显式 null = 未提供(保持现值); 非布尔值 → rejected
         let updated = action(&mut runtime, "settings-update", json!({"auto_bump": null}));
@@ -4356,7 +5079,10 @@ mod tests {
         assert!(!runtime.state_doc().settings.auto_bump, "null 不该改现值");
         let updated = action(&mut runtime, "settings-update", json!({"auto_bump": "yes"}));
         assert_eq!(updated["status"], "failed", "{updated}");
-        assert!(!runtime.state_doc().settings.auto_bump, "非法值不该改动设置");
+        assert!(
+            !runtime.state_doc().settings.auto_bump,
+            "非法值不该改动设置"
+        );
         drop(guard);
     }
 
@@ -4415,7 +5141,12 @@ mod tests {
         let result = job(&mut runtime, "align");
         let doc = stored(&fake);
         let item = &doc.align.items[0];
-        assert!(item.reason.contains("无缺口: 订阅 16 集, Emby 已有 16 集, TMDB 目标 16 集"), "{}", item.reason);
+        assert!(
+            item.reason
+                .contains("无缺口: 订阅 16 集, Emby 已有 16 集, TMDB 目标 16 集"),
+            "{}",
+            item.reason
+        );
         assert!(item.target_known, "取到了目标就得标 true");
         assert_eq!(result["absent"], 0, "{result}");
         drop(guard);
@@ -4428,14 +5159,24 @@ mod tests {
             200,
             &one_intent_pool(41, 1396, 5, 16),
         );
-        fake.route_prefix("GET", "GET /api/plugin-host/emby/instances", 200, &instances_body());
+        fake.route_prefix(
+            "GET",
+            "GET /api/plugin-host/emby/instances",
+            200,
+            &instances_body(),
+        );
         fake.route_prefix(
             "GET",
             "GET /api/plugin-host/emby/episodes?",
             404,
             r#"{"error":"没有该剧"}"#.as_bytes(),
         );
-        fake.route_prefix("GET", "GET /api/subscribe/air-calendar", 200, &calendar_body());
+        fake.route_prefix(
+            "GET",
+            "GET /api/subscribe/air-calendar",
+            200,
+            &calendar_body(),
+        );
         fake.route_prefix("GET", "GET /api/tmdb/tv/", 200, br#"{"seasons":[]}"#);
         let guard = fake.install();
         let mut runtime = Runtime::new();
@@ -4443,7 +5184,11 @@ mod tests {
         let result = job(&mut runtime, "align");
         let doc = stored(&fake);
         let item = &doc.align.items[0];
-        assert!(item.reason.contains("Emby 未收录该剧/该季"), "{}", item.reason);
+        assert!(
+            item.reason.contains("Emby 未收录该剧/该季"),
+            "{}",
+            item.reason
+        );
         assert_eq!(
             item.action, "failed",
             "行级 action 是前端 absent 徽章的判据之一, 两条路径必须一致: {}",
@@ -4465,11 +5210,26 @@ mod tests {
     #[test]
     fn empty_body_404_is_a_failure_not_an_absent_pool() {
         let fake = FakeHost::new();
-        fake.route_prefix("GET", "GET /api/subscribe/pool/intents?", 200, &intents_body());
-        fake.route_prefix("GET", "GET /api/plugin-host/emby/instances", 200, &instances_body());
+        fake.route_prefix(
+            "GET",
+            "GET /api/subscribe/pool/intents?",
+            200,
+            &intents_body(),
+        );
+        fake.route_prefix(
+            "GET",
+            "GET /api/plugin-host/emby/instances",
+            200,
+            &instances_body(),
+        );
         // 宿主路由/权限变更的形态: 该端点整体 404 且空正文
         fake.route_prefix("GET", "GET /api/plugin-host/emby/episodes?", 404, b"");
-        fake.route_prefix("GET", "GET /api/subscribe/air-calendar", 200, &calendar_body());
+        fake.route_prefix(
+            "GET",
+            "GET /api/subscribe/air-calendar",
+            200,
+            &calendar_body(),
+        );
         fake.route_prefix("GET", "GET /api/tmdb/tv/", 200, &tmdb_body());
         let guard = fake.install();
         let emby_calls = |fake: &FakeHost| {
@@ -4484,7 +5244,10 @@ mod tests {
         let mut runtime = Runtime::new();
         runtime.ensure_loaded();
         let result = job(&mut runtime, "align");
-        assert_eq!(result["absent"], 0, "空正文 404 没有'不存在'证据, 不是未收录: {result}");
+        assert_eq!(
+            result["absent"], 0,
+            "空正文 404 没有'不存在'证据, 不是未收录: {result}"
+        );
         assert_eq!(result["failed"], 2, "两条 tv 都要记失败: {result}");
         let doc = stored(&fake);
         assert!(
@@ -4493,12 +5256,22 @@ mod tests {
             doc.align.last_error
         );
         assert!(
-            doc.align.items.iter().all(|item| !item.reason.contains("未收录")),
+            doc.align
+                .items
+                .iter()
+                .all(|item| !item.reason.contains("未收录")),
             "{:?}",
-            doc.align.items.iter().map(|item| &item.reason).collect::<Vec<_>>()
+            doc.align
+                .items
+                .iter()
+                .map(|item| &item.reason)
+                .collect::<Vec<_>>()
         );
         assert_eq!(
-            doc.probe_book.iter().filter(|entry| entry.emby == "failed").count(),
+            doc.probe_book
+                .iter()
+                .filter(|entry| entry.emby == "failed")
+                .count(),
             2,
             "失败要进负缓存, 而不是按'没探过'排队: {:?}",
             doc.probe_book
@@ -4705,27 +5478,60 @@ mod tests {
                 1396 + index
             ));
         }
-        let body = format!(r#"{{"code":"ok","data":[{}],"counts":{{}}}}"#, entries.join(","));
+        let body = format!(
+            r#"{{"code":"ok","data":[{}],"counts":{{}}}}"#,
+            entries.join(",")
+        );
         let fake = FakeHost::new();
-        fake.route_prefix("GET", "GET /api/subscribe/pool/intents?", 200, body.as_bytes());
-        fake.route_prefix("GET", "GET /api/plugin-host/emby/instances", 200, &instances_body());
-        fake.route_prefix("GET", "GET /api/plugin-host/emby/episodes?", 200, &episodes_body());
-        fake.route_prefix("GET", "GET /api/subscribe/air-calendar", 200, &calendar_body());
+        fake.route_prefix(
+            "GET",
+            "GET /api/subscribe/pool/intents?",
+            200,
+            body.as_bytes(),
+        );
+        fake.route_prefix(
+            "GET",
+            "GET /api/plugin-host/emby/instances",
+            200,
+            &instances_body(),
+        );
+        fake.route_prefix(
+            "GET",
+            "GET /api/plugin-host/emby/episodes?",
+            200,
+            &episodes_body(),
+        );
+        fake.route_prefix(
+            "GET",
+            "GET /api/subscribe/air-calendar",
+            200,
+            &calendar_body(),
+        );
         fake.route_prefix("GET", "GET /api/tmdb/tv/", 200, br#"{"seasons":[]}"#);
         fake.route_prefix("PATCH", "PATCH /api/subscribe/pool/intents/", 200, b"{}");
         let guard = fake.install();
         let mut runtime = Runtime::new();
         runtime.ensure_loaded();
         // 预算 2 = 每条的常见成本(1 Emby + 1 TMDB) × 1 条
-        let _ = action(&mut runtime, "settings-update", json!({"emby_probe_budget": 2}));
+        let _ = action(
+            &mut runtime,
+            "settings-update",
+            json!({"emby_probe_budget": 2}),
+        );
 
         let result = job(&mut runtime, "align");
         assert_eq!(result["matched"], 1, "{result}");
         assert_eq!(result["pending_probe"], 2, "{result}");
         let doc = stored(&fake);
-        assert_eq!(doc.align.pending_probe, 2, "state 里必须有可见的「待探测 N 条」");
         assert_eq!(
-            doc.probe_book.iter().filter(|entry| entry.emby == "budget").count(),
+            doc.align.pending_probe, 2,
+            "state 里必须有可见的「待探测 N 条」"
+        );
+        assert_eq!(
+            doc.probe_book
+                .iter()
+                .filter(|entry| entry.emby == "budget")
+                .count(),
             2,
             "被预算挡下的条目要记进跨轮探测账簿: {:?}",
             doc.probe_book
@@ -4770,12 +5576,35 @@ mod tests {
                 1000 + index
             ));
         }
-        let body = format!(r#"{{"code":"ok","data":[{}],"counts":{{}}}}"#, entries.join(","));
+        let body = format!(
+            r#"{{"code":"ok","data":[{}],"counts":{{}}}}"#,
+            entries.join(",")
+        );
         let fake = FakeHost::new();
-        fake.route_prefix("GET", "GET /api/subscribe/pool/intents?", 200, body.as_bytes());
-        fake.route_prefix("GET", "GET /api/plugin-host/emby/instances", 200, &instances_body());
-        fake.route_prefix("GET", "GET /api/plugin-host/emby/episodes?", 200, &episodes_body());
-        fake.route_prefix("GET", "GET /api/subscribe/air-calendar", 200, &calendar_body());
+        fake.route_prefix(
+            "GET",
+            "GET /api/subscribe/pool/intents?",
+            200,
+            body.as_bytes(),
+        );
+        fake.route_prefix(
+            "GET",
+            "GET /api/plugin-host/emby/instances",
+            200,
+            &instances_body(),
+        );
+        fake.route_prefix(
+            "GET",
+            "GET /api/plugin-host/emby/episodes?",
+            200,
+            &episodes_body(),
+        );
+        fake.route_prefix(
+            "GET",
+            "GET /api/subscribe/air-calendar",
+            200,
+            &calendar_body(),
+        );
         fake.route_prefix("GET", "GET /api/tmdb/tv/", 200, br#"{"seasons":[]}"#);
         fake.route_prefix("PATCH", "PATCH /api/subscribe/pool/intents/", 200, b"{}");
         let guard = fake.install();
@@ -4786,14 +5615,23 @@ mod tests {
         assert_eq!(result["matched"], 50, "{result}");
         assert_eq!(result["pending_probe"], 0, "{result}");
         let paths = fake.business_paths();
-        let emby_calls = paths.iter().filter(|path| path.contains("/api/plugin-host/emby/episodes")).count();
-        let tmdb_calls = paths.iter().filter(|path| path.contains("/api/tmdb/tv/")).count();
+        let emby_calls = paths
+            .iter()
+            .filter(|path| path.contains("/api/plugin-host/emby/episodes"))
+            .count();
+        let tmdb_calls = paths
+            .iter()
+            .filter(|path| path.contains("/api/tmdb/tv/"))
+            .count();
         assert_eq!(emby_calls, 50, "50 条各 1 次 Emby: {emby_calls}");
         assert_eq!(tmdb_calls, 50, "50 条各 1 次 TMDB: {tmdb_calls}");
         assert!(emby_calls + tmdb_calls <= 120, "总取数必须落在默认预算内");
         let doc = stored(&fake);
         assert!(
-            doc.align.items.iter().all(|item| !item.reason.contains("预算用尽")),
+            doc.align
+                .items
+                .iter()
+                .all(|item| !item.reason.contains("预算用尽")),
             "预算 120 不该有人被挡: {:?}",
             doc.align
                 .items

@@ -74,7 +74,12 @@ pub fn parse_rfc3339(text: &str) -> Option<u64> {
     if bytes.len() < 20 {
         return None;
     }
-    if bytes[4] != b'-' || bytes[7] != b'-' || bytes[10] != b'T' || bytes[13] != b':' || bytes[16] != b':' {
+    if bytes[4] != b'-'
+        || bytes[7] != b'-'
+        || bytes[10] != b'T'
+        || bytes[13] != b':'
+        || bytes[16] != b':'
+    {
         return None;
     }
     let year = parse_digits(bytes, 0, 4)? as i64;
@@ -133,8 +138,8 @@ pub fn parse_rfc3339(text: &str) -> Option<u64> {
         return None;
     }
     let days = days_from_civil(year, month, day);
-    let seconds = days * 86_400 + hour as i64 * 3_600 + minute as i64 * 60 + second as i64
-        - offset_seconds;
+    let seconds =
+        days * 86_400 + hour as i64 * 3_600 + minute as i64 * 60 + second as i64 - offset_seconds;
     if seconds < 0 {
         return None; // 1970 之前(本插件不会写出来)
     }
@@ -399,7 +404,10 @@ mod tests {
             parse_rfc3339("2026-09-29T10:00:09.5Z"),
             Some(1_790_676_009_500_000_000)
         );
-        assert_eq!(parse_rfc3339("2026-09-29T10:00:09.000Z"), Some(1_790_676_009_000_000_000));
+        assert_eq!(
+            parse_rfc3339("2026-09-29T10:00:09.000Z"),
+            Some(1_790_676_009_000_000_000)
+        );
     }
 
     /// 非法输入必须返回 `None`(Go 的 `err != nil`), 不许 panic。
@@ -409,15 +417,15 @@ mod tests {
             "",
             "not a time",
             "2026-09-29",
-            "2026-09-29T10:00:09",   // 缺时区
-            "2026-09-29 10:00:09Z",  // 日期与时间之间必须是 T
-            "2026-13-29T10:00:09Z",  // 月份越界
-            "2026-02-30T10:00:09Z",  // 2 月没有 30 号
-            "2025-02-29T10:00:09Z",  // 平年 2 月没有 29 号
-            "2026-09-29T24:00:09Z",  // 小时越界
-            "2026-09-29T10:60:09Z",  // 分钟越界
-            "2026-09-29T10:00:09X",  // 非法时区
-            "1969-12-31T23:59:59Z",  // 1970 之前(本插件不会写出来)
+            "2026-09-29T10:00:09",  // 缺时区
+            "2026-09-29 10:00:09Z", // 日期与时间之间必须是 T
+            "2026-13-29T10:00:09Z", // 月份越界
+            "2026-02-30T10:00:09Z", // 2 月没有 30 号
+            "2025-02-29T10:00:09Z", // 平年 2 月没有 29 号
+            "2026-09-29T24:00:09Z", // 小时越界
+            "2026-09-29T10:60:09Z", // 分钟越界
+            "2026-09-29T10:00:09X", // 非法时区
+            "1969-12-31T23:59:59Z", // 1970 之前(本插件不会写出来)
         ];
         for text in cases {
             assert!(parse_rfc3339(text).is_none(), "不该解出来: {text:?}");
@@ -438,7 +446,9 @@ mod tests {
         let first = session_nonce().to_string();
         assert_eq!(first, session_nonce(), "同一会话内必须稳定");
         assert!(!first.is_empty());
-        assert!(first.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'z').contains(&b)));
+        assert!(first
+            .bytes()
+            .all(|b: u8| b.is_ascii_digit() || b.is_ascii_lowercase()));
     }
 
     #[test]

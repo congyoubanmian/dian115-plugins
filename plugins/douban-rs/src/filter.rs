@@ -175,9 +175,8 @@ pub fn intent_is_completed(state: &str) -> bool {
 /// 按"宁可漏判不可误判"不收)。
 pub fn parse_tmdb_ref(tmdb_ref: &str) -> Option<(&str, i64)> {
     let rest = tmdb_ref.strip_prefix("tmdb:")?;
-    let mut parts = rest.splitn(2, ':');
-    let media_type = parts.next()?;
-    let id_text = parts.next()?;
+    let (media_type, id_text) = rest.split_once(':')?;
+
     if media_type.is_empty() {
         return None;
     }
@@ -686,7 +685,7 @@ impl Runtime {
     /// ([`Runtime::resolve_no_resub_from_history`])在条数达到上限时视为池视图不完整,
     /// 跳过本轮判定 —— "池里查不到"只有在查询完整时才等价于"已被删除"。
     pub fn host_pool_intents(&self) -> Option<Vec<PoolIntentEntry>> {
-        let request = HostCallRequest::new("GET", &crate::subscribe::pool_intents_path())
+        let request = HostCallRequest::new("GET", crate::subscribe::pool_intents_path())
             .with_header("accept", "application/json");
         let response = host::call(&request).ok()?;
         if response.status >= 400 {
@@ -1436,7 +1435,7 @@ mod tests {
     #[test]
     fn process_due_degrades_region_and_logs_warning() {
         fixed_clock();
-        let host = subscribe_host();
+        let _host = subscribe_host();
         let mut runtime = Runtime::new();
         runtime.settings.regions = Some(vec!["美国".to_string()]);
         runtime.queue.items = Some(vec![queue_item("36808876", "奥德赛", 8.0, "2026")]);

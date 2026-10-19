@@ -67,7 +67,13 @@ struct NotifyBody<'a> {
 pub fn request_body(level: &str, title: &str, body: &str, dedupe_key: &str) -> Vec<u8> {
     let title = raw::truncate_bytes(title, TITLE_MAX);
     let body = raw::truncate_bytes(body, BODY_MAX);
-    serde_json::to_vec(&NotifyBody { level, title, body, dedupe_key }).unwrap_or_default()
+    serde_json::to_vec(&NotifyBody {
+        level,
+        title,
+        body,
+        dedupe_key,
+    })
+    .unwrap_or_default()
 }
 
 /// 去重键。
@@ -95,7 +101,10 @@ pub fn compose(
 ) -> (String, String) {
     let title = format!(
         "追剧管家 {today}: 补订 {} 条",
-        patched.iter().filter(|item| item.action == crate::align::ACTION_PATCHED).count()
+        patched
+            .iter()
+            .filter(|item| item.action == crate::align::ACTION_PATCHED)
+            .count()
     );
 
     let mut body = String::new();
@@ -104,8 +113,16 @@ pub fn compose(
         body.push_str("  今日没有订阅剧集更新\n");
     }
     for item in today_items.iter().take(TODAY_MAX) {
-        let title = if item.title.is_empty() { "未命名" } else { item.title.as_str() };
-        let clock = if item.time.is_empty() { "--:--" } else { item.time.as_str() };
+        let title = if item.title.is_empty() {
+            "未命名"
+        } else {
+            item.title.as_str()
+        };
+        let clock = if item.time.is_empty() {
+            "--:--"
+        } else {
+            item.time.as_str()
+        };
         body.push_str(&format!(
             "  {clock} {title} S{}E{}\n",
             item.season, item.episode
@@ -118,10 +135,13 @@ pub fn compose(
     let patched_items: Vec<&AlignItem> = patched
         .iter()
         .filter(|item| {
-            item.action == crate::align::ACTION_PATCHED || item.action == crate::align::ACTION_DRY_RUN
+            item.action == crate::align::ACTION_PATCHED
+                || item.action == crate::align::ACTION_DRY_RUN
         })
         .collect();
-    let dry_run = patched_items.iter().any(|item| item.action == crate::align::ACTION_DRY_RUN);
+    let dry_run = patched_items
+        .iter()
+        .any(|item| item.action == crate::align::ACTION_DRY_RUN);
     body.push_str(&format!(
         "② 本次补订({}){}\n",
         patched_items.len(),
@@ -131,14 +151,21 @@ pub fn compose(
         body.push_str("  本轮没有需要补订的条目\n");
     }
     for item in patched_items.iter().take(PATCHED_MAX) {
-        let title = if item.title.is_empty() { "未命名" } else { item.title.as_str() };
+        let title = if item.title.is_empty() {
+            "未命名"
+        } else {
+            item.title.as_str()
+        };
         body.push_str(&format!(
             "  {title} S{}: {} → {}\n",
             item.season, item.from_total, item.to_total
         ));
     }
     if patched_items.len() > PATCHED_MAX {
-        body.push_str(&format!("  …另有 {} 条\n", patched_items.len() - PATCHED_MAX));
+        body.push_str(&format!(
+            "  …另有 {} 条\n",
+            patched_items.len() - PATCHED_MAX
+        ));
     }
 
     body.push_str(&format!("③ 跳过 {skipped} 条, 失败 {failed} 条\n"));
@@ -146,7 +173,10 @@ pub fn compose(
         body.push_str(&format!("  首个原因: {first_reason}\n"));
     }
 
-    (raw::truncate_bytes(&title, TITLE_MAX).to_string(), raw::truncate_bytes(&body, BODY_MAX).to_string())
+    (
+        raw::truncate_bytes(&title, TITLE_MAX).to_string(),
+        raw::truncate_bytes(&body, BODY_MAX).to_string(),
+    )
 }
 
 /// 解析宿主通知响应。
@@ -159,7 +189,9 @@ pub fn parse_result(status: i32, raw_bytes: &[u8]) -> Result<NotifyOutcome, Stri
     let obj = value
         .as_object()
         .ok_or_else(|| "通知响应不是对象".to_string())?;
-    let data = raw::descend(&value, &["data"]).and_then(|inner| inner.as_object()).unwrap_or(obj);
+    let data = raw::descend(&value, &["data"])
+        .and_then(|inner| inner.as_object())
+        .unwrap_or(obj);
     // 通道能力上报: 老宿主/无通道配置时没有 channels 字段, 解析为空即可。
     // raw::descend 是"同层候选键"而非路径下钻, data → channels 要分两步。
     let channels = raw::descend(&value, &["data"])
@@ -237,8 +269,12 @@ pub fn apply_outcome(daily: &mut DailyState, date: &str, outcome: &NotifyOutcome
     if outcome.accepted || outcome.deduplicated {
         daily.last_sent_date = date.to_string();
         daily.sent_total = daily.sent_total.saturating_add(1);
-        daily.last_result =
-            if outcome.accepted { "accepted" } else { "deduplicated" }.to_string();
+        daily.last_result = if outcome.accepted {
+            "accepted"
+        } else {
+            "deduplicated"
+        }
+        .to_string();
         daily.last_error.clear();
         return;
     }
@@ -321,10 +357,19 @@ mod tests {
 
     #[test]
     fn compose_truncates_at_utf8_boundaries() {
-        let today: Vec<CalendarItem> =
-            (1..=20).map(|index| item(1, index, "很长的剧名在此重复", "08:00")).collect();
+        let today: Vec<CalendarItem> = (1..=20)
+            .map(|index| item(1, index, "很长的剧名在此重复", "08:00"))
+            .collect();
         let patched: Vec<AlignItem> = (1..=20)
-            .map(|index| align_item(index, "另一部非常长的剧名", 1, 2, crate::align::ACTION_PATCHED))
+            .map(|index| {
+                align_item(
+                    index,
+                    "另一部非常长的剧名",
+                    1,
+                    2,
+                    crate::align::ACTION_PATCHED,
+                )
+            })
             .collect();
         let (title, body) = compose("2026-10-01", &today, &patched, 99, 88, &"原因".repeat(200));
         assert!(title.len() <= TITLE_MAX);
@@ -339,7 +384,10 @@ mod tests {
         let text = String::from_utf8(payload).unwrap();
         assert!(!text.contains("buttons"), "{text}");
         assert!(!text.contains("image_url"), "{text}");
-        assert!(text.contains(r#""dedupe_key":"chase-daily-2026-10-01""#), "{text}");
+        assert!(
+            text.contains(r#""dedupe_key":"chase-daily-2026-10-01""#),
+            "{text}"
+        );
         assert!(text.contains(r#""level":"info""#), "{text}");
     }
 
@@ -361,7 +409,11 @@ mod tests {
         let requests = fake.requests();
         let post = &requests[0];
         assert_eq!(post.method, "POST");
-        let key = post.headers.get("idempotency-key").cloned().unwrap_or_default();
+        let key = post
+            .headers
+            .get("idempotency-key")
+            .cloned()
+            .unwrap_or_default();
         assert_eq!(key, "chase-notify-2026-10-01-3");
         assert!((16..=128).contains(&key.len()));
         assert!(key.bytes().all(|b| b.is_ascii_graphic()));
@@ -398,7 +450,10 @@ mod tests {
         )
         .unwrap();
         assert!(suppressed.suppressed);
-        assert!(!suppressed.records_date(), "suppressed 必须留给下一小时重试");
+        assert!(
+            !suppressed.records_date(),
+            "suppressed 必须留给下一小时重试"
+        );
         assert_eq!(suppressed.suppression_reason, "quiet_hours");
 
         // 扁平形态(没有 data 信封)也认
@@ -464,7 +519,10 @@ mod tests {
         apply_outcome(
             &mut daily,
             "2026-10-02",
-            &NotifyOutcome { accepted: true, ..Default::default() },
+            &NotifyOutcome {
+                accepted: true,
+                ..Default::default()
+            },
             "2026-10-02T09:00:00Z",
         );
         assert!(daily.notify_channels.is_empty());
@@ -476,7 +534,10 @@ mod tests {
         apply_outcome(
             &mut daily,
             "2026-10-01",
-            &NotifyOutcome { accepted: true, ..Default::default() },
+            &NotifyOutcome {
+                accepted: true,
+                ..Default::default()
+            },
             "2026-10-01T09:00:00Z",
         );
         assert_eq!(daily.last_sent_date, "2026-10-01");
@@ -508,14 +569,22 @@ mod tests {
 
     #[test]
     fn should_send_respects_switch_date_and_hour() {
-        let mut report = ReportSettings::default();
-        report.enabled = true;
-        report.hour = 9;
+        let mut report = ReportSettings {
+            enabled: true,
+            hour: 9,
+            ..Default::default()
+        };
         assert!(should_send(&report, "", "2026-10-01", 9));
         assert!(should_send(&report, "", "2026-10-01", 23));
         assert!(!should_send(&report, "", "2026-10-01", 8), "没到点");
-        assert!(!should_send(&report, "2026-10-01", "2026-10-01", 9), "当天已发过");
-        assert!(should_send(&report, "2026-09-30", "2026-10-01", 9), "新的一天可以再发");
+        assert!(
+            !should_send(&report, "2026-10-01", "2026-10-01", 9),
+            "当天已发过"
+        );
+        assert!(
+            should_send(&report, "2026-09-30", "2026-10-01", 9),
+            "新的一天可以再发"
+        );
         report.enabled = false;
         assert!(!should_send(&report, "", "2026-10-01", 12));
         assert!(!should_send(&report, "", "", 12), "日期为空(时钟异常)不发");
@@ -533,14 +602,22 @@ mod tests {
     fn compose_title_counts_real_patches_only() {
         let dry = vec![align_item(1, "某剧", 1, 2, crate::align::ACTION_DRY_RUN)];
         let (title, body) = compose("2026-10-01", &[], &dry, 0, 0, "");
-        assert_eq!(title, "追剧管家 2026-10-01: 补订 0 条", "dry-run 不算真补订");
+        assert_eq!(
+            title, "追剧管家 2026-10-01: 补订 0 条",
+            "dry-run 不算真补订"
+        );
         assert!(body.contains("② 本次补订(1) [dry-run 未写入]"), "{body}");
         assert!(!body.contains("① 今日播出(1)"), "{body}");
     }
 
     #[test]
     fn request_body_stays_under_host_limits_for_huge_cjk_text() {
-        let payload = request_body("info", &"追".repeat(500), &"剧".repeat(5000), "chase-daily-2026-10-01");
+        let payload = request_body(
+            "info",
+            &"追".repeat(500),
+            &"剧".repeat(5000),
+            "chase-daily-2026-10-01",
+        );
         let parsed: serde_json::Value = serde_json::from_slice(&payload).unwrap();
         let title = parsed["title"].as_str().unwrap();
         let body = parsed["body"].as_str().unwrap();
@@ -548,7 +625,10 @@ mod tests {
         assert!(body.len() <= BODY_MAX, "正文 {} 字节", body.len());
         // 截断必须落在 UTF-8 边界: 再解析一次仍然成功, 且没有替换字符
         assert!(!title.contains('\u{FFFD}') && !body.contains('\u{FFFD}'));
-        assert!(parsed.get("buttons").is_none(), "宿主 schema 要求 buttons[].url, 一律不带");
+        assert!(
+            parsed.get("buttons").is_none(),
+            "宿主 schema 要求 buttons[].url, 一律不带"
+        );
         assert!(parsed.get("image_url").is_none());
     }
 
@@ -557,21 +637,36 @@ mod tests {
         let err = parse_result(400, br#"{"error":"buttons[].url is required"}"#).unwrap_err();
         assert!(err.contains("400"), "{err}");
         assert!(err.contains("buttons"), "{err}");
-        assert!(parse_result(500, b"").is_err(), "空 body 的 500 也不能 panic");
-        assert!(parse_result(200, b"[1,2]").is_err(), "非对象响应判为解析失败");
+        assert!(
+            parse_result(500, b"").is_err(),
+            "空 body 的 500 也不能 panic"
+        );
+        assert!(
+            parse_result(200, b"[1,2]").is_err(),
+            "非对象响应判为解析失败"
+        );
         assert!(parse_result(200, b"").is_err());
     }
 
     #[test]
     fn apply_outcome_records_deduplicated_as_a_sent_day() {
-        let mut daily = DailyState { last_error: "上一轮的旧错误".into(), ..Default::default() };
+        let mut daily = DailyState {
+            last_error: "上一轮的旧错误".into(),
+            ..Default::default()
+        };
         apply_outcome(
             &mut daily,
             "2026-10-01",
-            &NotifyOutcome { deduplicated: true, ..Default::default() },
+            &NotifyOutcome {
+                deduplicated: true,
+                ..Default::default()
+            },
             "2026-10-01T09:00:00Z",
         );
-        assert_eq!(daily.last_sent_date, "2026-10-01", "宿主已有当日记录 → 同样记日期");
+        assert_eq!(
+            daily.last_sent_date, "2026-10-01",
+            "宿主已有当日记录 → 同样记日期"
+        );
         assert_eq!(daily.last_result, "deduplicated");
         assert_eq!(daily.sent_total, 1);
         assert_eq!(daily.last_error, "", "这一轮成功了, 旧错误要清掉");
@@ -588,9 +683,18 @@ mod tests {
         let keys: Vec<String> = fake
             .requests()
             .iter()
-            .map(|request| request.headers.get("idempotency-key").cloned().unwrap_or_default())
+            .map(|request| {
+                request
+                    .headers
+                    .get("idempotency-key")
+                    .cloned()
+                    .unwrap_or_default()
+            })
             .collect();
-        assert_eq!(keys, vec!["chase-notify-2026-10-01-1", "chase-notify-2026-10-01-2"]);
+        assert_eq!(
+            keys,
+            vec!["chase-notify-2026-10-01-1", "chase-notify-2026-10-01-2"]
+        );
         let bodies: Vec<String> = fake
             .requests()
             .iter()
@@ -606,7 +710,9 @@ mod tests {
                 .into_owned()
             })
             .collect();
-        assert!(bodies.iter().all(|body| body.contains(r#""dedupe_key":"chase-daily-2026-10-01""#)));
+        assert!(bodies
+            .iter()
+            .all(|body| body.contains(r#""dedupe_key":"chase-daily-2026-10-01""#)));
         drop(guard);
     }
 
@@ -617,7 +723,10 @@ mod tests {
         assert_eq!(report.hour, 9);
         assert_eq!(report.tz_offset_minutes, 480);
         report.enabled = true;
-        assert!(!should_send(&report, "", "", 23), "本地日期为空(时钟异常)不发");
+        assert!(
+            !should_send(&report, "", "", 23),
+            "本地日期为空(时钟异常)不发"
+        );
         report.hour = 0;
         assert!(should_send(&report, "", "2026-10-01", 0));
     }

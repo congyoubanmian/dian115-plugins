@@ -142,7 +142,10 @@ pub fn header_first<'a>(
     // BTreeMap 的键序是确定的(大写在前); Go 遍历 map 的顺序随机, 这里取确定顺序里
     // 第一个非空值列表, 结果稳定且与 Go 的常见情形一致。
     matched.sort_by_key(|values| values.is_empty());
-    matched.first().and_then(|values| values.first()).map(String::as_str)
+    matched
+        .first()
+        .and_then(|values| values.first())
+        .map(String::as_str)
 }
 
 /// 解出 `body_base64`(Go `main.go:2112` `decodeBody`)。
@@ -213,7 +216,11 @@ pub fn unwrap_value(raw: &[u8]) -> Vec<u8> {
         // 不是合法 JSON / 顶层不是对象: Go 的 Unmarshal 失败分支 → 原样返回
         Err(_) => return raw.to_vec(),
     };
-    if let Some(value) = envelope.data.as_ref().and_then(|data| data.value.as_deref()) {
+    if let Some(value) = envelope
+        .data
+        .as_ref()
+        .and_then(|data| data.value.as_deref())
+    {
         if !value.get().is_empty() {
             return value.get().as_bytes().to_vec();
         }
@@ -235,16 +242,32 @@ pub fn read(key: &str) -> StorageRead {
     if response.status != 200 {
         return StorageRead::default();
     }
-    let etag = header_first(&response.headers, "etag").unwrap_or_default().to_string();
+    let etag = header_first(&response.headers, "etag")
+        .unwrap_or_default()
+        .to_string();
     let raw = match decode_body(&response) {
         Ok(raw) => raw,
-        Err(_) => return StorageRead { value: Vec::new(), etag, ok: false },
+        Err(_) => {
+            return StorageRead {
+                value: Vec::new(),
+                etag,
+                ok: false,
+            }
+        }
     };
     let value = unwrap_value(&raw);
     if !value.is_empty() {
-        return StorageRead { value, etag, ok: true };
+        return StorageRead {
+            value,
+            etag,
+            ok: true,
+        };
     }
-    StorageRead { value: raw, etag, ok: true }
+    StorageRead {
+        value: raw,
+        etag,
+        ok: true,
+    }
 }
 
 /// Go `wasmStorageGet`: 只要值, 不关心 ETag。
@@ -277,13 +300,20 @@ pub fn put_body(value: &[u8]) -> Vec<u8> {
     body
 }
 
-fn send_put(ids: &mut PutIds, key: &str, body: &[u8], if_match: &str) -> Result<HostCallResponse, StoreError> {
+fn send_put(
+    ids: &mut PutIds,
+    key: &str,
+    body: &[u8],
+    if_match: &str,
+) -> Result<HostCallResponse, StoreError> {
     let mut request = HostCallRequest::new("PUT", storage_path(key))
         .with_header("content-type", "application/json")
         .with_header("accept", "application/json")
         .with_header("idempotency-key", ids.next_key(key));
     if !if_match.is_empty() {
-        request.headers.insert("if-match".to_string(), if_match.to_string());
+        request
+            .headers
+            .insert("if-match".to_string(), if_match.to_string());
     }
     if !body.is_empty() {
         // Go `wasm.go:210`: base64.RawStdEncoding(不带 padding)
@@ -312,7 +342,10 @@ pub fn put(ids: &mut PutIds, key: &str, value: &[u8]) -> Result<(), StoreError> 
             Ok(raw) if !raw.is_empty() => format!(": {}", util::trunc(&raw)),
             _ => String::new(),
         };
-        return Err(StoreError(format!("storage PUT HTTP {}{}", response.status, detail)));
+        return Err(StoreError(format!(
+            "storage PUT HTTP {}{}",
+            response.status, detail
+        )));
     }
     Ok(())
 }
@@ -342,7 +375,15 @@ pub fn load_state_with_retry() -> (Option<Vec<u8>>, LoadResult) {
 
 /// 旧版分键持久化的键名(Go `main.go:1067` `pathToKey`: `.data/history.json` → `history`)。
 pub fn legacy_keys() -> [&'static str; 7] {
-    ["settings", "snapshot", "queue", "history", "logs", "stats", "blackstate"]
+    [
+        "settings",
+        "snapshot",
+        "queue",
+        "history",
+        "logs",
+        "stats",
+        "blackstate",
+    ]
 }
 
 /// `.data/<name>.json` → 存储键(Go `pathToKey` 的移植, 供迁移与测试对照)。
@@ -363,7 +404,11 @@ mod tests {
         } else {
             STANDARD_NO_PAD.encode(body)
         };
-        HostCallResponse { status: 200, headers: Default::default(), body_base64: encoded }
+        HostCallResponse {
+            status: 200,
+            headers: Default::default(),
+            body_base64: encoded,
+        }
     }
 
     #[test]
@@ -381,7 +426,11 @@ mod tests {
             }
         }
         // 空 body_base64 → 空值, 不报错(Go 里 decodeBody 返回 nil, nil)
-        let empty = HostCallResponse { status: 200, headers: Default::default(), body_base64: String::new() };
+        let empty = HostCallResponse {
+            status: 200,
+            headers: Default::default(),
+            body_base64: String::new(),
+        };
         assert_eq!(decode_body(&empty).unwrap(), Vec::<u8>::new());
 
         // 坏 base64 → 报错(Go 的 CorruptInputError 分支)
@@ -411,27 +460,48 @@ mod tests {
         );
 
         let legacy = r#"{"value":{"a":1}}"#;
-        assert_eq!(String::from_utf8(unwrap_value(legacy.as_bytes())).unwrap(), r#"{"a":1}"#);
+        assert_eq!(
+            String::from_utf8(unwrap_value(legacy.as_bytes())).unwrap(),
+            r#"{"a":1}"#
+        );
 
         let bare = r#"{"settings":{"lists":{"hot":{}}}}"#;
-        assert_eq!(String::from_utf8(unwrap_value(bare.as_bytes())).unwrap(), bare);
+        assert_eq!(
+            String::from_utf8(unwrap_value(bare.as_bytes())).unwrap(),
+            bare
+        );
 
         assert_eq!(unwrap_value(b""), Vec::<u8>::new());
 
         // `null` 也是"有值": Go 的 json.RawMessage 会收到这 4 个字节
-        assert_eq!(String::from_utf8(unwrap_value(br#"{"value":null}"#)).unwrap(), "null");
-        assert_eq!(String::from_utf8(unwrap_value(br#"{"data":{"value":null}}"#)).unwrap(), "null");
+        assert_eq!(
+            String::from_utf8(unwrap_value(br#"{"value":null}"#)).unwrap(),
+            "null"
+        );
+        assert_eq!(
+            String::from_utf8(unwrap_value(br#"{"data":{"value":null}}"#)).unwrap(),
+            "null"
+        );
         // data 优先于 value
         assert_eq!(
             String::from_utf8(unwrap_value(br#"{"data":{"value":1},"value":2}"#)).unwrap(),
             "1"
         );
         // 没有 value 字段 → 原样
-        assert_eq!(String::from_utf8(unwrap_value(br#"{"data":{"key":"state"}}"#)).unwrap(), r#"{"data":{"key":"state"}}"#);
+        assert_eq!(
+            String::from_utf8(unwrap_value(br#"{"data":{"key":"state"}}"#)).unwrap(),
+            r#"{"data":{"key":"state"}}"#
+        );
         // data 类型不符 → Go 的 Unmarshal 失败 → 原样
-        assert_eq!(String::from_utf8(unwrap_value(br#"{"data":5,"value":2}"#)).unwrap(), r#"{"data":5,"value":2}"#);
+        assert_eq!(
+            String::from_utf8(unwrap_value(br#"{"data":5,"value":2}"#)).unwrap(),
+            r#"{"data":5,"value":2}"#
+        );
         // data 为 null → Go 里是零值结构体(不报错) → 回退到顶层 value
-        assert_eq!(String::from_utf8(unwrap_value(br#"{"data":null,"value":2}"#)).unwrap(), "2");
+        assert_eq!(
+            String::from_utf8(unwrap_value(br#"{"data":null,"value":2}"#)).unwrap(),
+            "2"
+        );
         assert_eq!(
             String::from_utf8(unwrap_value(br#"{"data":null,"value":{"a":1}}"#)).unwrap(),
             r#"{"a":1}"#
@@ -522,17 +592,39 @@ mod tests {
         assert_eq!(requests[1].method, "PUT");
         let put_request = &requests[1];
         assert_eq!(put_request.path, "/api/plugin-runtime/storage/state");
-        assert_eq!(put_request.headers.get("content-type").map(String::as_str), Some("application/json"));
-        assert_eq!(put_request.headers.get("accept").map(String::as_str), Some("application/json"));
+        assert_eq!(
+            put_request.headers.get("content-type").map(String::as_str),
+            Some("application/json")
+        );
+        assert_eq!(
+            put_request.headers.get("accept").map(String::as_str),
+            Some("application/json")
+        );
         // 键不存在 → 不带 If-Match
-        assert!(!put_request.headers.contains_key("if-match"), "新建键不该带 If-Match");
+        assert!(
+            !put_request.headers.contains_key("if-match"),
+            "新建键不该带 If-Match"
+        );
         // body_base64 必须是 RawStd(不补 padding)
         assert_eq!(put_request.body_base64, "eyJ2YWx1ZSI6eyJhIjoxfX0");
-        assert!(!put_request.body_base64.contains('='), "RawStd 不带 padding");
+        assert!(
+            !put_request.body_base64.contains('='),
+            "RawStd 不带 padding"
+        );
         // 宿主约束: 幂等键 16~128 个可打印 ASCII
-        let idem = put_request.headers.get("idempotency-key").expect("幂等键必填");
-        assert!((16..=128).contains(&idem.len()), "幂等键长度 {} 越界: {idem}", idem.len());
-        assert!(idem.bytes().all(|b| b.is_ascii_graphic()), "必须全是可打印 ASCII: {idem}");
+        let idem = put_request
+            .headers
+            .get("idempotency-key")
+            .expect("幂等键必填");
+        assert!(
+            (16..=128).contains(&idem.len()),
+            "幂等键长度 {} 越界: {idem}",
+            idem.len()
+        );
+        assert!(
+            idem.bytes().all(|b| b.is_ascii_graphic()),
+            "必须全是可打印 ASCII: {idem}"
+        );
         assert!(idem.starts_with("dc-put-state-"), "{idem}");
 
         // 第二次写入必须换一个幂等键(宿主保留 24h 幂等记录)
@@ -544,15 +636,17 @@ mod tests {
         // 键已存在 → 必须带 If-Match, 且是本次 PUT 前刚读回来的 ETag。
         // 首次插入把 revision 推到 1(ETag "pkv_1"), 第二次 PUT 前读到的就是它;
         // 这次 PUT 成功后 revision 才变成 2。
-        assert_eq!(requests[3].headers.get("if-match").map(String::as_str), Some("\"pkv_1\""));
+        assert_eq!(
+            requests[3].headers.get("if-match").map(String::as_str),
+            Some("\"pkv_1\"")
+        );
         // 值确实写进去了
         assert_eq!(host.value_of("state").unwrap(), br#"{"a":2}"#);
 
         // 请求信封形状(与 host.rs 的既有约定一致; 用同一个信封结构体, 保字段顺序)
-        let wire = String::from_utf8(
-            crate::host::encode_request(&requests[1]).expect("请求必须能编码"),
-        )
-        .unwrap();
+        let wire =
+            String::from_utf8(crate::host::encode_request(&requests[1]).expect("请求必须能编码"))
+                .unwrap();
         assert_eq!(
             wire,
             r#"{"method":"host.call","params":{"method":"PUT","path":"/api/plugin-runtime/storage/state","headers":{"accept":"application/json","content-type":"application/json","idempotency-key":""#.to_string()
@@ -576,10 +670,14 @@ mod tests {
         assert_eq!(puts.len(), 2, "412 后必须重试一次, 实际 {}", puts.len());
         assert_ne!(
             puts[0].if_match, puts[1].if_match,
-            "重试必须用重读后的新 ETag: {:?}", puts
+            "重试必须用重读后的新 ETag: {:?}",
+            puts
         );
         assert_eq!(puts[1].if_match.as_deref(), Some("\"pkv_2\""));
-        assert_ne!(puts[0].idempotency_key, puts[1].idempotency_key, "重试也要换幂等键");
+        assert_ne!(
+            puts[0].idempotency_key, puts[1].idempotency_key,
+            "重试也要换幂等键"
+        );
         assert_eq!(host.value_of("state").unwrap(), br#"{"v":2}"#);
 
         // 412 但重读回来 ok=false(键被删了) → 不再重试, 直接报错
@@ -603,7 +701,11 @@ mod tests {
         let err = put(&mut ids, "state", br#"{"v":1}"#).unwrap_err();
         let text = err.0.clone();
         assert!(text.starts_with("storage PUT HTTP 500: "), "{text}");
-        assert_eq!(text.len(), "storage PUT HTTP 500: ".len() + 200, "错误细节按 200 字节截断");
+        assert_eq!(
+            text.len(),
+            "storage PUT HTTP 500: ".len() + 200,
+            "错误细节按 200 字节截断"
+        );
     }
 
     #[test]
@@ -626,7 +728,11 @@ mod tests {
         let (raw, result) = load_state_with_retry();
         assert_eq!(result, LoadResult::Fresh);
         assert!(raw.is_none());
-        assert_eq!(clock::testhooks::take_sleeps(), vec![300], "404 需间隔 300ms 两次确认");
+        assert_eq!(
+            clock::testhooks::take_sleeps(),
+            vec![300],
+            "404 需间隔 300ms 两次确认"
+        );
 
         // ③ 宿主持续不可读 → unavailable, 3 次尝试各睡 200ms
         let host = FakeHost::new();
@@ -675,14 +781,21 @@ mod tests {
     /// 信封风格三态都要能一路读到值(真实宿主 / 0.3.6 的扁平信封 / 裸文档)。
     #[test]
     fn read_supports_all_envelope_styles() {
-        for style in [EnvelopeStyle::Host, EnvelopeStyle::LegacyFlat, EnvelopeStyle::Bare] {
+        for style in [
+            EnvelopeStyle::Host,
+            EnvelopeStyle::LegacyFlat,
+            EnvelopeStyle::Bare,
+        ] {
             let host = FakeHost::new();
             host.envelope_style(style);
             host.set("state", br#"{"settings":{"lists":{"hot":{}}}}"#);
             let _guard = host.install();
             let read = super::read("state");
             assert!(read.ok, "{style:?} 必须能读到");
-            assert_eq!(read.value, br#"{"settings":{"lists":{"hot":{}}}}"#, "{style:?}");
+            assert_eq!(
+                read.value, br#"{"settings":{"lists":{"hot":{}}}}"#,
+                "{style:?}"
+            );
         }
     }
 }

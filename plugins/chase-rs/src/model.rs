@@ -97,7 +97,11 @@ pub struct ReportSettings {
 
 impl Default for ReportSettings {
     fn default() -> Self {
-        ReportSettings { enabled: false, hour: 9, tz_offset_minutes: 480 }
+        ReportSettings {
+            enabled: false,
+            hour: 9,
+            tz_offset_minutes: 480,
+        }
     }
 }
 
@@ -181,8 +185,8 @@ where
 impl Settings {
     /// 把越界配置夹取回硬上限(前端与旧文档都可能给出离谱值)。
     pub fn clamp(&mut self) {
-        self.max_patch_per_run = self.max_patch_per_run.min(PATCH_HARD_LIMIT).max(1);
-        self.max_raise_per_run = self.max_raise_per_run.min(100).max(1);
+        self.max_patch_per_run = self.max_patch_per_run.clamp(1, PATCH_HARD_LIMIT);
+        self.max_raise_per_run = self.max_raise_per_run.clamp(1, 100);
         self.catch_up_days = self.catch_up_days.clamp(1, 30);
         self.emby_probe_budget = self.emby_probe_budget.clamp(1, 500);
         self.report.hour = self.report.hour.min(23);
@@ -346,7 +350,10 @@ pub struct ProbeSnapshot {
 impl ProbeSnapshot {
     /// 全新的空快照(状态文档的初始值)。
     pub fn never() -> Self {
-        ProbeSnapshot { status: "never".to_string(), ..Default::default() }
+        ProbeSnapshot {
+            status: "never".to_string(),
+            ..Default::default()
+        }
     }
 }
 
@@ -560,7 +567,13 @@ impl StateDoc {
     }
 
     /// 记下/更新该季的 TMDB 目标(成功取数时调用; ≤ [`TMDB_TARGETS_MAX`] 条)。
-    pub fn remember_tmdb_target(&mut self, tmdb_id: i64, season: i64, episode_count: i64, at: &str) {
+    pub fn remember_tmdb_target(
+        &mut self,
+        tmdb_id: i64,
+        season: i64,
+        episode_count: i64,
+        at: &str,
+    ) {
         self.tmdb_targets
             .retain(|target| !(target.tmdb_id == tmdb_id && target.season == season));
         self.tmdb_targets.push(TmdbTarget {
@@ -689,7 +702,8 @@ impl StateDoc {
     /// 序列化到 ≤[`MAX_STATE_BYTES`] 的字节(超限则继续裁掉最旧的诊断, 仍超限返回 Err)。
     pub fn to_bytes(&mut self) -> Result<Vec<u8>, String> {
         self.enforce_limits();
-        let mut data = serde_json::to_vec(self).map_err(|err| format!("状态文档编码失败: {err}"))?;
+        let mut data =
+            serde_json::to_vec(self).map_err(|err| format!("状态文档编码失败: {err}"))?;
         // 逐级降级: 先砍诊断, 再砍日志 —— 业务数据(settings/align/calendar)最后才动。
         for step in 0..6 {
             if data.len() <= MAX_STATE_BYTES {
@@ -788,7 +802,10 @@ mod tests {
         }
         doc.enforce_limits();
         assert_eq!(doc.tmdb_targets.len(), TMDB_TARGETS_MAX);
-        assert!(doc.tmdb_targets.iter().all(|target| target.tmdb_id != 1399), "最旧的被裁掉");
+        assert!(
+            doc.tmdb_targets.iter().all(|target| target.tmdb_id != 1399),
+            "最旧的被裁掉"
+        );
     }
 
     #[test]
@@ -808,14 +825,19 @@ mod tests {
 
     #[test]
     fn clamp_pulls_out_of_range_values_back() {
-        let mut settings = Settings::default();
-        settings.max_patch_per_run = 200;
-        settings.max_raise_per_run = 0;
-        settings.catch_up_days = 900;
-        settings.emby_probe_budget = 9_000;
-        settings.emby_proxy_id = -77;
-        settings.report.hour = 42;
-        settings.report.tz_offset_minutes = 10_000;
+        let mut settings = Settings {
+            max_patch_per_run: 200,
+            max_raise_per_run: 0,
+            catch_up_days: 900,
+            emby_probe_budget: 9_000,
+            emby_proxy_id: -77,
+            report: ReportSettings {
+                hour: 42,
+                tz_offset_minutes: 10_000,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
         settings.clamp();
         assert_eq!(settings.max_patch_per_run, PATCH_HARD_LIMIT);
         assert_eq!(settings.max_raise_per_run, 1);
@@ -839,7 +861,8 @@ mod tests {
 
         // 旧文档缺键能读; 未知键被忽略
         let legacy: StateDoc =
-            serde_json::from_slice(br#"{"schema_version":1,"revision":3,"future_key":true}"#).unwrap();
+            serde_json::from_slice(br#"{"schema_version":1,"revision":3,"future_key":true}"#)
+                .unwrap();
         assert_eq!(legacy.revision, 3);
         assert_eq!(legacy.settings.max_patch_per_run, 5);
 
@@ -869,13 +892,27 @@ mod tests {
     fn enforce_limits_caps_every_list() {
         let mut doc = StateDoc::new();
         for index in 0..80 {
-            doc.align.items.push(AlignItem { intent_id: index, ..Default::default() });
-            doc.trim_suggestions.push(TrimSuggestion { intent_id: index, ..Default::default() });
-            doc.emby_instances.push(EmbyInstanceView { id: index, ..Default::default() });
+            doc.align.items.push(AlignItem {
+                intent_id: index,
+                ..Default::default()
+            });
+            doc.trim_suggestions.push(TrimSuggestion {
+                intent_id: index,
+                ..Default::default()
+            });
+            doc.emby_instances.push(EmbyInstanceView {
+                id: index,
+                ..Default::default()
+            });
         }
         doc.calendar.days.push(CalendarDay {
             date: "2026-10-01".into(),
-            items: (0..30).map(|i| CalendarItem { episode: i, ..Default::default() }).collect(),
+            items: (0..30)
+                .map(|i| CalendarItem {
+                    episode: i,
+                    ..Default::default()
+                })
+                .collect(),
         });
         doc.enforce_limits();
         assert_eq!(doc.align.items.len(), ALIGN_ITEMS_MAX);
@@ -936,7 +973,8 @@ mod tests {
         assert_eq!(fresh.pool_intents.http_status, 0);
 
         // 旧文档缺 debug.* 键 → 槽位是 never(可直接展示的状态词)
-        let missing: StateDoc = serde_json::from_slice(br#"{"schema_version":1,"revision":2}"#).unwrap();
+        let missing: StateDoc =
+            serde_json::from_slice(br#"{"schema_version":1,"revision":2}"#).unwrap();
         assert_eq!(missing.debug.pool_intents.status, "never");
         // 显式给了空 debug 对象也一样(容器级 default 走 DebugState::new)
         let blank: StateDoc =
@@ -949,7 +987,12 @@ mod tests {
     fn record_attempt_bounds_the_list_and_truncates_fields() {
         let mut doc = StateDoc::new();
         for index in 0..30 {
-            doc.record_attempt(&format!("endpoint-{index}"), &"p".repeat(500), 200, &"s".repeat(500));
+            doc.record_attempt(
+                &format!("endpoint-{index}"),
+                &"p".repeat(500),
+                200,
+                &"s".repeat(500),
+            );
         }
         assert_eq!(doc.debug.attempts.len(), DEBUG_ATTEMPTS_MAX);
         assert_eq!(doc.debug.attempts[0].endpoint, "endpoint-10", "保留最新的");
@@ -989,7 +1032,10 @@ mod tests {
         doc.settings.max_raise_per_run = 33;
         doc.calendar.days.push(CalendarDay {
             date: "2026-10-01".into(),
-            items: vec![CalendarItem { episode: 3, ..Default::default() }],
+            items: vec![CalendarItem {
+                episode: 3,
+                ..Default::default()
+            }],
         });
         let bytes = doc.to_bytes().unwrap();
         assert!(bytes.len() <= MAX_STATE_BYTES, "实际 {} 字节", bytes.len());
@@ -997,7 +1043,10 @@ mod tests {
         assert!(parsed.debug.emby_episodes.sample.len() <= SAMPLE_MAX);
         assert!(parsed.debug.air_calendar.sample.len() <= SAMPLE_MAX);
         assert!(parsed.debug.pool_intents.sample.len() <= SAMPLE_MAX);
-        assert_eq!(parsed.settings.max_raise_per_run, 33, "业务数据不许被诊断挤掉");
+        assert_eq!(
+            parsed.settings.max_raise_per_run, 33,
+            "业务数据不许被诊断挤掉"
+        );
         assert_eq!(parsed.calendar.days.len(), 1);
         assert!(parsed.is_recognizable());
     }

@@ -93,12 +93,15 @@ mod tests {
     fn telegram_callback_entry_is_wired_to_tasks() {
         let mut ids = store::PutIds::new();
         // 缺 callback.data → 失败(宿主可重投)。
-        let err = handle_telegram_callback(&mut ids, &serde_json::json!({"message": {}})).unwrap_err();
+        let err =
+            handle_telegram_callback(&mut ids, &serde_json::json!({"message": {}})).unwrap_err();
         assert!(err.contains("缺少 callback.data"), "实际: {err}");
         // 不是本插件的按钮 → handled:false, 不算失败。
-        let value =
-            handle_telegram_callback(&mut ids, &serde_json::json!({"callback": {"data": "other"}}))
-                .unwrap();
+        let value = handle_telegram_callback(
+            &mut ids,
+            &serde_json::json!({"callback": {"data": "other"}}),
+        )
+        .unwrap();
         assert_eq!(value["handled"], false);
     }
 }

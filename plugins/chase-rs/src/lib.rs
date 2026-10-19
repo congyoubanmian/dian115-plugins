@@ -54,7 +54,9 @@ pub mod store;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod testkit;
 
-pub use protocol::{dispatch, rpc_error, CODE_INTERNAL, CODE_INVALID_PARAMS, CODE_METHOD_NOT_FOUND};
+pub use protocol::{
+    dispatch, rpc_error, CODE_INTERNAL, CODE_INVALID_PARAMS, CODE_METHOD_NOT_FOUND,
+};
 pub use runtime::{OpError, Runtime};
 
 /// 宿主 ABI 协议标识(`dian115:wasm@1`), 与 `runtime.initialize` 的响应一致。

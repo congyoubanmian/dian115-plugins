@@ -240,7 +240,8 @@ pub fn first_string(obj: &Map<String, Value>, keys: &[&str]) -> Option<String> {
 
 /// 对象里第一个候选键为 `true` 的布尔(`is_default` 这类标记)。
 pub fn first_bool(obj: &Map<String, Value>, keys: &[&str]) -> bool {
-    keys.iter().any(|key| matches!(obj.get(*key), Some(Value::Bool(true))))
+    keys.iter()
+        .any(|key| matches!(obj.get(*key), Some(Value::Bool(true))))
 }
 
 /// 下探一层: 若 `value` 是对象, 取第一个命中的候选键。
@@ -466,9 +467,14 @@ mod tests {
         assert!(p.background());
         assert!(matches!(p.payload, RawPayload::Value(_)));
 
-        assert!(params(json!({"envelope": {"op": "job"}})).unwrap().payload.is_missing());
+        assert!(params(json!({"envelope": {"op": "job"}}))
+            .unwrap()
+            .payload
+            .is_missing());
         assert!(matches!(
-            params(json!({"envelope": {"op": "job", "payload": null}})).unwrap().payload,
+            params(json!({"envelope": {"op": "job", "payload": null}}))
+                .unwrap()
+                .payload,
             RawPayload::Null
         ));
     }
@@ -518,7 +524,10 @@ mod tests {
         assert_eq!(first_u64(obj, &["season_number", "season"]), Some(2));
         assert_eq!(first_u64(obj, &["missing"]), None);
         // null 不当作命中, 继续看下一个候选
-        assert_eq!(first_string(obj, &["skip", "season"]), Some("3".to_string()));
+        assert_eq!(
+            first_string(obj, &["skip", "season"]),
+            Some("3".to_string())
+        );
     }
 
     #[test]
@@ -527,7 +536,10 @@ mod tests {
         assert_eq!(array_at(&bare, &["items"]).map(Vec::len), Some(2));
 
         let wrapped = json!({"items": [1, 2, 3]});
-        assert_eq!(array_at(&wrapped, &["items", "data"]).map(Vec::len), Some(3));
+        assert_eq!(
+            array_at(&wrapped, &["items", "data"]).map(Vec::len),
+            Some(3)
+        );
 
         let none = json!({"other": 1});
         assert!(array_at(&none, &["items"]).is_none());
@@ -606,7 +618,11 @@ mod tests {
     #[test]
     fn sample_text_bounds_large_payloads_and_keeps_utf8() {
         // 远大于 2KB 的 JSON: 截断后 ≤2048 且仍是合法 UTF-8(可能残缺 —— 它只是诊断文本)
-        let long = format!(r#"{{"items":[{}],"note":"{}"}}"#, "1,".repeat(2000), "剧".repeat(500));
+        let long = format!(
+            r#"{{"items":[{}],"note":"{}"}}"#,
+            "1,".repeat(2000),
+            "剧".repeat(500)
+        );
         assert!(long.len() > 4096);
         let sample = sample_text(long.as_bytes(), 2048);
         assert!(sample.len() <= 2048, "实际 {} 字节", sample.len());
@@ -620,8 +636,14 @@ mod tests {
     #[test]
     fn contains_forbidden_key_walks_arrays_and_nested_objects() {
         let value = json!({"a": [{"b": {"oauth_token": "x"}}], "ok": 1});
-        assert_eq!(contains_forbidden_key(&value).as_deref(), Some("oauth_token"));
-        assert_eq!(contains_forbidden_key(&json!({"a": [1, 2, {"k": true}]})), None);
+        assert_eq!(
+            contains_forbidden_key(&value).as_deref(),
+            Some("oauth_token")
+        );
+        assert_eq!(
+            contains_forbidden_key(&json!({"a": [1, 2, {"k": true}]})),
+            None
+        );
         assert_eq!(contains_forbidden_key(&json!([])), None);
         assert_eq!(contains_forbidden_key(&json!("plain")), None);
     }

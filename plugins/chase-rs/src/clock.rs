@@ -123,7 +123,8 @@ pub fn parse_rfc3339_secs(text: &str) -> Option<i64> {
     if hour > 23 || minute > 59 || second > 60 {
         return None;
     }
-    let mut seconds = days_from_civil(year, month, day) * 86_400 + hour * 3600 + minute * 60 + second;
+    let mut seconds =
+        days_from_civil(year, month, day) * 86_400 + hour * 3600 + minute * 60 + second;
 
     // 时区后缀: Z / 空(按 UTC, 与自家格式一致) / ±HH:MM
     let rest = &bytes[19..];
@@ -344,7 +345,10 @@ mod tests {
         let first = session_nonce();
         assert_eq!(first, session_nonce(), "同一会话必须复用同一个前缀");
         assert!(!first.is_empty());
-        assert!(first.bytes().all(|b| b.is_ascii_alphanumeric()), "base36: {first}");
+        assert!(
+            first.bytes().all(|b| b.is_ascii_alphanumeric()),
+            "base36: {first}"
+        );
     }
 
     #[test]
@@ -397,14 +401,26 @@ mod tests {
 
     #[test]
     fn date_arithmetic_and_normalization() {
-        assert_eq!(date_plus_days("2026-10-01", 7).as_deref(), Some("2026-10-08"));
-        assert_eq!(date_plus_days("2026-12-31", 1).as_deref(), Some("2027-01-01"));
+        assert_eq!(
+            date_plus_days("2026-10-01", 7).as_deref(),
+            Some("2026-10-08")
+        );
+        assert_eq!(
+            date_plus_days("2026-12-31", 1).as_deref(),
+            Some("2027-01-01")
+        );
         assert_eq!(date_plus_days("not-a-date", 1), None);
         assert_eq!(date_plus_days("2026-13-01", 1), None);
 
         assert_eq!(normalize_date("2026-10-01").as_deref(), Some("2026-10-01"));
-        assert_eq!(normalize_date("2026-10-01T12:00:00Z").as_deref(), Some("2026-10-01"));
-        assert_eq!(normalize_date("2026-10-01 12:00").as_deref(), Some("2026-10-01"));
+        assert_eq!(
+            normalize_date("2026-10-01T12:00:00Z").as_deref(),
+            Some("2026-10-01")
+        );
+        assert_eq!(
+            normalize_date("2026-10-01 12:00").as_deref(),
+            Some("2026-10-01")
+        );
         assert_eq!(normalize_date("2026/10/01").as_deref(), Some("2026-10-01"));
         assert_eq!(normalize_date("10月1日"), None);
         assert_eq!(normalize_date(""), None);
@@ -414,13 +430,25 @@ mod tests {
     #[test]
     fn rfc3339_parsing_inverts_formatting() {
         assert_eq!(parse_rfc3339_secs("1970-01-01T00:00:00Z"), Some(0));
-        assert_eq!(parse_rfc3339_secs("2023-11-14T22:13:20Z"), Some(1_700_000_000));
+        assert_eq!(
+            parse_rfc3339_secs("2023-11-14T22:13:20Z"),
+            Some(1_700_000_000)
+        );
         for seconds in [0_i64, 1, 59, 3_600, 86_399, 1_700_000_000, 1_790_000_000] {
-            assert_eq!(parse_rfc3339_secs(&rfc3339_from_unix(seconds)), Some(seconds));
+            assert_eq!(
+                parse_rfc3339_secs(&rfc3339_from_unix(seconds)),
+                Some(seconds)
+            );
         }
         // 带偏移的形态
-        assert_eq!(parse_rfc3339_secs("2023-11-15T06:13:20+08:00"), Some(1_700_000_000));
-        assert_eq!(parse_rfc3339_secs("2023-11-14T17:13:20-05:00"), Some(1_700_000_000));
+        assert_eq!(
+            parse_rfc3339_secs("2023-11-15T06:13:20+08:00"),
+            Some(1_700_000_000)
+        );
+        assert_eq!(
+            parse_rfc3339_secs("2023-11-14T17:13:20-05:00"),
+            Some(1_700_000_000)
+        );
         // 认不出 → None(调用方必须当作不新鲜)
         assert_eq!(parse_rfc3339_secs(""), None);
         assert_eq!(parse_rfc3339_secs("2023-11-14"), None);

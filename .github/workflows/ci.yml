@@ -36,10 +36,6 @@ jobs:
       fail-fast: false
       matrix:
         plugin: [chase-rs, douban-rs, music-rs]
-    # 暂不阻断：三个插件的历史代码有约百余条 rustfmt/clippy 欠账（集中在移植的
-    # 基础模块）。先在 CI 日志里暴露漂移，待专门的 lint 清理提交落地后去掉
-    # continue-on-error 转为门禁。
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
 

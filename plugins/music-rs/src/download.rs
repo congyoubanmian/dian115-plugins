@@ -17,7 +17,7 @@
 //!      路径无关(复制由 CD2 发起, 不经过宿主);
 //!    - **宿主直连复制**(未填令牌的旧路径): `POST /api/local-files/copy` 直接
 //!      复制 —— 宿主 5.x 起该调用被隔离策略 400 拒绝(见 [`crate::cd2`] 模块头);
-//!    两条路径最终都由 CD2 负责刮削/入库;
+//!      两条路径最终都由 CD2 负责刮削/入库;
 //! 5. **通知**: 尝试次数用尽后 `POST /api/notifications/plugin`(level=error,
 //!    标题含歌名, **不带 `buttons`** —— 官方契约只接受 `{text,url}` 且
 //!    `additionalProperties:false`, `callback_data` 未经真机验证, 重试入口在正文
@@ -169,8 +169,7 @@ pub fn wasm_memory_kb() -> u64 {
 // 让互斥用例把其它并行用例挡成 skipped(假失败), 线程局部与 wasm 的单实例串行
 // 语义一致(与 `clock::testhooks` 同一处理)。
 #[cfg(not(test))]
-static QUEUE_OP_RUNNING: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
+static QUEUE_OP_RUNNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 #[cfg(test)]
 std::thread_local! {
@@ -252,8 +251,7 @@ const NOTIFY_PLUGIN: &str = "/api/notifications/plugin";
 
 /// CD2/AURA/云端后端的识别标记(root 的 backend/kind 字段里出现即排除)。
 const CLOUD_MARKERS: [&str; 12] = [
-    "cd2", "aura", "115", "cloud", "remote", "alist", "webdav", "smb", "nfs", "ftp", "s3",
-    "oss",
+    "cd2", "aura", "115", "cloud", "remote", "alist", "webdav", "smb", "nfs", "ftp", "s3", "oss",
 ];
 
 // ─────────────────────────── 设置 ───────────────────────────
@@ -378,7 +376,9 @@ impl Settings {
 
 /// 读取设置(KV `settings`; 缺失/损坏回默认)。
 pub fn load_settings() -> Settings {
-    store::get_json::<Settings>(SETTINGS_KEY).map(Settings::normalized).unwrap_or_default()
+    store::get_json::<Settings>(SETTINGS_KEY)
+        .map(Settings::normalized)
+        .unwrap_or_default()
 }
 
 /// 写入设置。
@@ -514,7 +514,10 @@ pub fn settings_update(ids: &mut PutIds, patch: &Map<String, Value>) -> Result<V
     }
     // CD2 直送五项(0.3.19): URL/令牌纯字符串(不走路径归一化); 目录三项走路径
     // 归一化 —— 空串原样保留 = "用推导值"(目标/命名空间)或"不自动注册"(宿主路径)。
-    for (key, target) in [("cd2_url", &mut settings.cd2_url), ("cd2_token", &mut settings.cd2_token)] {
+    for (key, target) in [
+        ("cd2_url", &mut settings.cd2_url),
+        ("cd2_token", &mut settings.cd2_token),
+    ] {
         if let Some(Value::String(text)) = patch.get(key) {
             *target = text.trim().to_string();
         }
@@ -551,7 +554,8 @@ fn host_roundtrip(
             .with_header("content-type", "application/json")
             .with_body_base64(host::encode_body_base64(body));
     }
-    let response = host::call(&request).map_err(|err| format!("host.call {method} {path}: {err}"))?;
+    let response =
+        host::call(&request).map_err(|err| format!("host.call {method} {path}: {err}"))?;
     let bytes = store::decode_body(&response)
         .map_err(|err| format!("host.call {method} {path} 响应解码失败: {err}"))?;
     Ok((response.status, bytes))
@@ -627,7 +631,11 @@ fn parent_dir(path: &str) -> String {
 }
 
 fn file_name_of(path: &str) -> String {
-    path.trim_end_matches('/').rsplit('/').next().unwrap_or("").to_string()
+    path.trim_end_matches('/')
+        .rsplit('/')
+        .next()
+        .unwrap_or("")
+        .to_string()
 }
 
 /// 目录规范化: trim + 去尾部 `/`(保留根 `/` 的原义交给前缀匹配)。
@@ -718,14 +726,26 @@ fn parse_root(item: &Value) -> Option<Root> {
             if path.is_empty() {
                 return None;
             }
-            return Some(Root { path, name: String::new(), local: true, writable: true });
+            return Some(Root {
+                path,
+                name: String::new(),
+                local: true,
+                writable: true,
+            });
         }
         Value::Object(map) => (
             first_str(
                 map,
                 &[
-                    "path", "full_path", "local_path", "dir_path", "mount_path", "root_path",
-                    "root", "dir", "real_path",
+                    "path",
+                    "full_path",
+                    "local_path",
+                    "dir_path",
+                    "mount_path",
+                    "root_path",
+                    "root",
+                    "dir",
+                    "real_path",
                 ],
             )?,
             map,
@@ -739,7 +759,9 @@ fn parse_root(item: &Value) -> Option<Root> {
     let name = first_str(map, &["name", "label", "title"]).unwrap_or_default();
     let backend = first_str(
         map,
-        &["backend", "kind", "type", "source", "provider", "protocol", "storage", "fs_type"],
+        &[
+            "backend", "kind", "type", "source", "provider", "protocol", "storage", "fs_type",
+        ],
     )
     .unwrap_or_default()
     .to_ascii_lowercase();
@@ -747,7 +769,12 @@ fn parse_root(item: &Value) -> Option<Root> {
     let writable = first_bool(map, &["writable", "is_writable", "writeable", "can_write"])
         .or_else(|| first_bool(map, &["read_only", "readonly"]).map(|read_only| !read_only))
         .unwrap_or(true);
-    Some(Root { path, name, local, writable })
+    Some(Root {
+        path,
+        name,
+        local,
+        writable,
+    })
 }
 
 /// 探测宿主向插件开放的本地/云端根(`GET /api/plugin-host/files/roots`)。
@@ -755,7 +782,12 @@ pub fn probe_roots() -> RootsProbe {
     let (status, body) = match host_roundtrip("GET", FILES_ROOTS, None, None) {
         Ok(out) => out,
         Err(err) => {
-            return RootsProbe { ok: false, error: err, roots: Vec::new(), items: Vec::new() };
+            return RootsProbe {
+                ok: false,
+                error: err,
+                roots: Vec::new(),
+                items: Vec::new(),
+            };
         }
     };
     if !(200..300).contains(&status) {
@@ -766,7 +798,9 @@ pub fn probe_roots() -> RootsProbe {
             items: Vec::new(),
         };
     }
-    *DIAG_ROOTS_RAW.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = diag_b64(&body);
+    *DIAG_ROOTS_RAW
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = diag_b64(&body);
     let value: Value = match serde_json::from_slice(&body) {
         Ok(value) => value,
         Err(err) => {
@@ -778,9 +812,17 @@ pub fn probe_roots() -> RootsProbe {
             };
         }
     };
-    let roots = extract_array(&value).iter().filter_map(parse_root).collect();
+    let roots = extract_array(&value)
+        .iter()
+        .filter_map(parse_root)
+        .collect();
     let items = extract_array(&value);
-    RootsProbe { ok: true, error: String::new(), roots, items }
+    RootsProbe {
+        ok: true,
+        error: String::new(),
+        roots,
+        items,
+    }
 }
 
 /// 依据探测结果决定本次 pump 实际使用的暂存目录。
@@ -876,7 +918,10 @@ fn workspace_parent_ref(probe: &RootsProbe) -> Result<String, String> {
             .get("capabilities")
             .and_then(Value::as_array)
             .map(|list| {
-                list.iter().filter_map(Value::as_str).map(str::to_string).collect::<Vec<String>>()
+                list.iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_string)
+                    .collect::<Vec<String>>()
             })
             .unwrap_or_default();
         let writable = caps.iter().any(|cap| cap.contains("write"));
@@ -914,10 +959,7 @@ fn find_string(value: &Value, keys: &[&str], depth: u8) -> Option<String> {
     if depth > 3 {
         return None;
     }
-    let map = match value.as_object() {
-        Some(map) => map,
-        None => return None,
-    };
+    let map = value.as_object()?;
     if let Some(found) = first_str(map, keys) {
         return Some(found);
     }
@@ -998,7 +1040,10 @@ pub fn copy_to_cd2(
     let key = idem_key("copy", task_id, attempt, retry_round, &body);
     let (status, response) = host_roundtrip("POST", LOCAL_COPY, Some(&body), Some(&key))?;
     if !(200..300).contains(&status) {
-        return Err(copy_error_hint(http_error("POST", LOCAL_COPY, status, &response), &response));
+        return Err(copy_error_hint(
+            http_error("POST", LOCAL_COPY, status, &response),
+            &response,
+        ));
     }
     // SuccessResult {success:true}; 宽松处理: 2xx 且没有显式 success:false 即成功。
     if let Ok(value) = serde_json::from_slice::<Value>(&response) {
@@ -1038,20 +1083,24 @@ fn copy_error_hint(text: String, body: &[u8]) -> String {
 static NOTIFY_DIAG: std::sync::Mutex<(i64, String, String)> =
     std::sync::Mutex::new((0, String::new(), String::new()));
 /// 本次进程内是否有新的通知留档待写入 KV。
-static NOTIFY_DIAG_DIRTY: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
+static NOTIFY_DIAG_DIRTY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// 记录一次通知调用的原始应答(体截断 1KB, 防大响应钉在 static 里)。
 fn set_notify_diag(status: i64, body: &[u8]) {
     let text = util::trunc_to(body, 1024);
-    let mut diag = NOTIFY_DIAG.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut diag = NOTIFY_DIAG
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     *diag = (status, text, clock::now_rfc3339());
     NOTIFY_DIAG_DIRTY.store(true, std::sync::atomic::Ordering::SeqCst);
 }
 
 /// 最近一次通知留档的 JSON 形态(写 KV `notifydiag` / 诊断用)。
 pub fn notify_diag_value() -> Value {
-    let (status, body, at) = NOTIFY_DIAG.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone();
+    let (status, body, at) = NOTIFY_DIAG
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone();
     json!({"at": at, "status": status, "body": body})
 }
 
@@ -1142,14 +1191,14 @@ pub fn notify_test(ids: &mut PutIds) -> Result<Value, String> {
 /// 发一条插件通知: 统一走 [`host_roundtrip`] + 原始应答留档([`set_notify_diag`])。
 /// 200/202 → `Ok(channels)`; 其他 → `Err`(文案含状态与响应体截断)。
 fn notify_post(body: &[u8], idempotency_key: &str) -> Result<Option<String>, String> {
-    let (status, response) = match host_roundtrip("POST", NOTIFY_PLUGIN, Some(body), Some(idempotency_key))
-    {
-        Ok(pair) => pair,
-        Err(err) => {
-            set_notify_diag(-1, err.as_bytes());
-            return Err(err);
-        }
-    };
+    let (status, response) =
+        match host_roundtrip("POST", NOTIFY_PLUGIN, Some(body), Some(idempotency_key)) {
+            Ok(pair) => pair,
+            Err(err) => {
+                set_notify_diag(-1, err.as_bytes());
+                return Err(err);
+            }
+        };
     set_notify_diag(i64::from(status), &response);
     if status == 200 || status == 202 {
         Ok(channel_summary(&response))
@@ -1224,7 +1273,13 @@ pub fn job_state(value: &Value) -> JobState {
     }
     if matches!(
         status.as_str(),
-        "failed" | "failure" | "error" | "canceled" | "cancelled" | "aborted" | "timeout"
+        "failed"
+            | "failure"
+            | "error"
+            | "canceled"
+            | "cancelled"
+            | "aborted"
+            | "timeout"
             | "timed_out"
     ) {
         let detail = find_string(
@@ -1234,7 +1289,11 @@ pub fn job_state(value: &Value) -> JobState {
         )
         .unwrap_or_default();
         // sidecar 失败文案: `r.error || '失败'`。
-        return JobState::Failed(if detail.is_empty() { "失败".to_string() } else { detail });
+        return JobState::Failed(if detail.is_empty() {
+            "失败".to_string()
+        } else {
+            detail
+        });
     }
     JobState::Pending
 }
@@ -1242,14 +1301,22 @@ pub fn job_state(value: &Value) -> JobState {
 /// 从 job 响应里取暂存文件路径(取不到时调用方按 `<staging>/<短id>.part` 兜底)。
 /// 列工作区目录, 返回以 `prefix` 开头的最新暂存文件真实路径(含宿主去重后缀)。
 fn resolve_staged(prefix: &str) -> Option<String> {
-    let query = format!("/api/local-files?path={}", netease::query_escape(WORKSPACE_DIR));
+    let query = format!(
+        "/api/local-files?path={}",
+        netease::query_escape(WORKSPACE_DIR)
+    );
     let (status, body) = host_roundtrip("GET", &query, None, None).ok()?;
     if !(200..300).contains(&status) {
         return None;
     }
     let value: Value = serde_json::from_slice(&body).ok()?;
     let mut best: Option<(String, String)> = None;
-    for entry in value.get("entries").and_then(Value::as_array).map(Vec::as_slice).unwrap_or(&[]) {
+    for entry in value
+        .get("entries")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or(&[])
+    {
         if entry.get("is_dir").and_then(Value::as_bool).unwrap_or(true) {
             continue;
         }
@@ -1259,7 +1326,10 @@ fn resolve_staged(prefix: &str) -> Option<String> {
             continue;
         }
         let mod_time = entry.get("mod_time").and_then(Value::as_str).unwrap_or("");
-        if best.as_ref().map_or(true, |(_, best_time): &(String, String)| mod_time > best_time.as_str()) {
+        if best
+            .as_ref()
+            .is_none_or(|(_, best_time): &(String, String)| mod_time > best_time.as_str())
+        {
             best = Some((path.to_string(), mod_time.to_string()));
         }
     }
@@ -1279,9 +1349,15 @@ fn staged_name_matches(name: &str, out_name: &str) -> bool {
         Some((stem, ext)) => (stem, Some(ext)),
         None => (out_name, None),
     };
-    let Some(rest) = name.strip_prefix(stem) else { return false };
-    let Some(rest) = rest.strip_prefix(" (") else { return false };
-    let Some((num, rest)) = rest.split_once(')') else { return false };
+    let Some(rest) = name.strip_prefix(stem) else {
+        return false;
+    };
+    let Some(rest) = rest.strip_prefix(" (") else {
+        return false;
+    };
+    let Some((num, rest)) = rest.split_once(')') else {
+        return false;
+    };
     if num.is_empty() || !num.bytes().all(|byte| byte.is_ascii_digit()) {
         return false;
     }
@@ -1295,14 +1371,22 @@ fn staged_name_matches(name: &str, out_name: &str) -> bool {
 /// 取最新的匹配一份; 找不到返回 `None`(调用方退回 `task.out_name` 盲提交,
 /// CD2/宿主会明确报文件不存在)。
 fn staged_file_meta(out_name: &str) -> Option<(String, u64)> {
-    let query = format!("/api/local-files?path={}", netease::query_escape(WORKSPACE_DIR));
+    let query = format!(
+        "/api/local-files?path={}",
+        netease::query_escape(WORKSPACE_DIR)
+    );
     let (status, body) = host_roundtrip("GET", &query, None, None).ok()?;
     if !(200..300).contains(&status) {
         return None;
     }
     let value: Value = serde_json::from_slice(&body).ok()?;
     let mut best: Option<(String, u64, String)> = None;
-    for entry in value.get("entries").and_then(Value::as_array).map(Vec::as_slice).unwrap_or(&[]) {
+    for entry in value
+        .get("entries")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or(&[])
+    {
         if entry.get("is_dir").and_then(Value::as_bool).unwrap_or(true) {
             continue;
         }
@@ -1311,9 +1395,10 @@ fn staged_file_meta(out_name: &str) -> Option<(String, u64)> {
             continue;
         }
         let mod_time = entry.get("mod_time").and_then(Value::as_str).unwrap_or("");
-        if best.as_ref().map_or(true, |(_, _, best_time): &(String, u64, String)| {
-            mod_time > best_time.as_str()
-        }) {
+        if best
+            .as_ref()
+            .is_none_or(|(_, _, best_time): &(String, u64, String)| mod_time > best_time.as_str())
+        {
             let size = entry.get("size").and_then(Value::as_u64).unwrap_or(0);
             best = Some((name.to_string(), size, mod_time.to_string()));
         }
@@ -1323,12 +1408,16 @@ fn staged_file_meta(out_name: &str) -> Option<(String, u64)> {
 
 /// 删除工作区里以 `prefix` 开头的全部暂存文件(入库成功后的清理, 尽力而为)。
 fn cleanup_staged(prefix: &str) -> Result<usize, String> {
-    let query = format!("/api/local-files?path={}", netease::query_escape(WORKSPACE_DIR));
+    let query = format!(
+        "/api/local-files?path={}",
+        netease::query_escape(WORKSPACE_DIR)
+    );
     let (status, body) = host_roundtrip("GET", &query, None, None)?;
     if !(200..300).contains(&status) {
         return Err(http_error("GET", "/api/local-files", status, &body));
     }
-    let value: Value = serde_json::from_slice(&body).map_err(|err| format!("列表解析失败: {err}"))?;
+    let value: Value =
+        serde_json::from_slice(&body).map_err(|err| format!("列表解析失败: {err}"))?;
     let paths: Vec<String> = value
         .get("entries")
         .and_then(Value::as_array)
@@ -1340,9 +1429,14 @@ fn cleanup_staged(prefix: &str) -> Result<usize, String> {
                 && entry
                     .get("name")
                     .and_then(Value::as_str)
-                    .map_or(false, |name| name.starts_with(prefix))
+                    .is_some_and(|name| name.starts_with(prefix))
         })
-        .filter_map(|entry| entry.get("path").and_then(Value::as_str).map(str::to_string))
+        .filter_map(|entry| {
+            entry
+                .get("path")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
         .collect();
     if paths.is_empty() {
         return Ok(0);
@@ -1369,7 +1463,15 @@ pub fn job_result_path(value: &Value) -> Option<String> {
     for container in containers {
         if let Some(path) = find_string(
             &container,
-            &["path", "file_path", "dest_path", "output_path", "target_path", "dest", "output"],
+            &[
+                "path",
+                "file_path",
+                "dest_path",
+                "output_path",
+                "target_path",
+                "dest",
+                "output",
+            ],
             0,
         ) {
             return Some(path);
@@ -1416,7 +1518,11 @@ pub fn request_download(ids: &mut PutIds, request: &DownloadRequest) -> Result<V
     let mem_start = wasm_memory_kb();
     let settings = load_settings();
     let level = request.level.trim();
-    let quality = if level.is_empty() { settings.quality.clone() } else { level.to_string() };
+    let quality = if level.is_empty() {
+        settings.quality.clone()
+    } else {
+        level.to_string()
+    };
     let outcome = tasks::enqueue(
         ids,
         &tasks::NewTask {
@@ -1587,8 +1693,12 @@ where
                         .unwrap_or_default();
                     counts.total_seen += songs.len() as u64;
                     for song in &songs {
-                        let song_id =
-                            song.get("id").and_then(Value::as_str).unwrap_or("").trim().to_string();
+                        let song_id = song
+                            .get("id")
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .trim()
+                            .to_string();
                         if song_id.is_empty() {
                             counts.skipped += 1;
                             continue;
@@ -1596,13 +1706,21 @@ where
                         let new_task = tasks::NewTask {
                             source: source.to_string(),
                             song_id,
-                            name: song.get("name").and_then(Value::as_str).unwrap_or("").to_string(),
+                            name: song
+                                .get("name")
+                                .and_then(Value::as_str)
+                                .unwrap_or("")
+                                .to_string(),
                             singers: song
                                 .get("singers")
                                 .and_then(Value::as_str)
                                 .unwrap_or("")
                                 .to_string(),
-                            album: song.get("album").and_then(Value::as_str).unwrap_or("").to_string(),
+                            album: song
+                                .get("album")
+                                .and_then(Value::as_str)
+                                .unwrap_or("")
+                                .to_string(),
                             quality: quality.to_string(),
                         };
                         // 单首入队失败(如单条分片写入失败)不拖垮整批: 记账跳过, 继续后面的歌。
@@ -1696,7 +1814,11 @@ pub fn playlist_queue_all(ids: &mut PutIds, request: &PlaylistQueueRequest) -> V
         );
     }
     let level = request.quality.trim();
-    let quality = if level.is_empty() { load_settings().quality } else { level.to_string() };
+    let quality = if level.is_empty() {
+        load_settings().quality
+    } else {
+        level.to_string()
+    };
     if quality.trim().is_empty() {
         return queue_all_result(
             QueueCounts::default(),
@@ -1715,12 +1837,19 @@ pub fn playlist_queue_all(ids: &mut PutIds, request: &PlaylistQueueRequest) -> V
     // 续批游标不会因一次索引失败而跳页。跨批(next_page 续跑)是新的调用路径, 各自
     // 重取一次索引 —— 每批仍是 1×v6 + N×v3, 不是每页 v6。
     let mut index: Option<netease::PlaylistIndex> = None;
-    queue_playlist_pages(ids, source, quality.trim(), start_page, batch_pages, |page, size| {
-        if index.is_none() {
-            index = Some(netease::PlaylistIndex::fetch(&playlist_id)?);
-        }
-        index.as_ref().expect("上面刚填入").songs(page, size)
-    })
+    queue_playlist_pages(
+        ids,
+        source,
+        quality.trim(),
+        start_page,
+        batch_pages,
+        |page, size| {
+            if index.is_none() {
+                index = Some(netease::PlaylistIndex::fetch(&playlist_id)?);
+            }
+            index.as_ref().expect("上面刚填入").songs(page, size)
+        },
+    )
 }
 
 // ─────────────────────────── pump ───────────────────────────
@@ -1764,9 +1893,10 @@ fn fail_task(settings: &Settings, task: &mut Task, error: String, report: &mut P
         notify_failure_and_report(settings, task, &error, report);
     } else {
         task.status = tasks::STATUS_QUEUED.to_string();
-        report
-            .messages
-            .push(format!("任务 {} 第 {} 次尝试失败, 将重试: {error}", task.id, task.attempts));
+        report.messages.push(format!(
+            "任务 {} 第 {} 次尝试失败, 将重试: {error}",
+            task.id, task.attempts
+        ));
     }
 }
 
@@ -1784,7 +1914,9 @@ fn copy_failure(settings: &Settings, task: &mut Task, error: String, report: &mu
         notify_failure_and_report(settings, task, &error, report);
     } else {
         task.status = tasks::STATUS_COPYING.to_string();
-        report.messages.push(format!("任务 {} 入库失败, 将重试: {error}", task.id));
+        report
+            .messages
+            .push(format!("任务 {} 入库失败, 将重试: {error}", task.id));
     }
 }
 
@@ -1799,9 +1931,10 @@ fn notify_failure_and_report(
         return;
     }
     match notify_failure(task, error) {
-        Ok(Some(channels)) => report
-            .messages
-            .push(format!("任务 {} 失败通知已发出 · 通道: {channels}", task.id)),
+        Ok(Some(channels)) => report.messages.push(format!(
+            "任务 {} 失败通知已发出 · 通道: {channels}",
+            task.id
+        )),
         Ok(None) => {}
         Err(err) => report
             .messages
@@ -1810,12 +1943,7 @@ fn notify_failure_and_report(
 }
 
 /// 启动一个排队任务: 取链接 → 立即提交宿主下载(sidecar 的 `startDownload`)。
-fn start_task(
-    settings: &Settings,
-    parent_ref: &str,
-    task: &mut Task,
-    report: &mut PumpReport,
-) {
+fn start_task(settings: &Settings, parent_ref: &str, task: &mut Task, report: &mut PumpReport) {
     task.attempts = task.attempts.saturating_add(1);
     task.updated_ms = tasks::now_ms();
     let song = match resolve_song_url(&task.source, &task.song_id, &task.quality) {
@@ -1874,7 +2002,12 @@ fn advance_downloading(
         }
     };
     if !(200..300).contains(&status) {
-        fail_task(settings, task, http_error("GET", &path, status, &body), report);
+        fail_task(
+            settings,
+            task,
+            http_error("GET", &path, status, &body),
+            report,
+        );
         return;
     }
     let value: Value = match serde_json::from_slice(&body) {
@@ -2077,7 +2210,10 @@ fn cd2_deliver_step(
         ));
     }
     // 新提交的任务可能还没出现在列表里(或列表里仍是旧任务): 保持等待。
-    Ok(DeliveryOutcome::Uploading { uploaded: 0, total: 0 })
+    Ok(DeliveryOutcome::Uploading {
+        uploaded: 0,
+        total: 0,
+    })
 }
 
 /// 推进待复制的任务: CD2 直送(配了令牌)或宿主直连复制(旧路径)。
@@ -2107,9 +2243,10 @@ fn advance_copying(
         Ok(DeliveryOutcome::Submitted) => {
             task.updated_ms = tasks::now_ms();
             task.error.clear();
-            report
-                .messages
-                .push(format!("任务 {} 已提交 CD2 上传: {}", task.id, task.out_name));
+            report.messages.push(format!(
+                "任务 {} 已提交 CD2 上传: {}",
+                task.id, task.out_name
+            ));
         }
         Ok(DeliveryOutcome::Uploading { uploaded, total }) => {
             if total > 0 {
@@ -2157,9 +2294,10 @@ fn finish_copying(task: &mut Task, report: &mut PumpReport) {
     // 0.3.10: 清理工作区里该任务的暂存残片(含 (N) 去重残留); 定名后的成品
     // 仍在工作区(CD2 本地文件夹), 与旧行为一致, 不在此删除。
     match cleanup_staged(&task.id) {
-        Ok(count) if count > 0 => report
-            .messages
-            .push(format!("任务 {} 完成: {}; 清理暂存 {count} 个", task.id, task.out_name)),
+        Ok(count) if count > 0 => report.messages.push(format!(
+            "任务 {} 完成: {}; 清理暂存 {count} 个",
+            task.id, task.out_name
+        )),
         _ => report
             .messages
             .push(format!("任务 {} 完成: {}", task.id, task.out_name)),
@@ -2199,7 +2337,9 @@ fn finish_copying(task: &mut Task, report: &mut PumpReport) {
 /// after_start/after_finish/end), 真机上"哪个阶段把内存推到多少"有据可查。
 pub fn pump(ids: &mut PutIds) -> Result<Value, String> {
     let Some(_guard) = try_begin_queue_op() else {
-        return Ok(queue_busy_value("上一轮队列推进仍在进行, 本次跳过, 请稍后再试"));
+        return Ok(queue_busy_value(
+            "上一轮队列推进仍在进行, 本次跳过, 请稍后再试",
+        ));
     };
     // 阶段探针(0.3.15): 每个大步骤后采样一次线性内存(KB)。非 wasm(测试)目标恒 0;
     // 值全部送进末尾的 `pumpdiag.mem_kb`。各变量都在对应阶段无条件赋值。
@@ -2236,8 +2376,10 @@ pub fn pump(ids: &mut PutIds) -> Result<Value, String> {
     //    与队列总长无关。
     {
         let index = tasks::load_index();
-        queue_len_at_start =
-            index.iter().filter(|entry| entry.status == tasks::STATUS_QUEUED).count();
+        queue_len_at_start = index
+            .iter()
+            .filter(|entry| entry.status == tasks::STATUS_QUEUED)
+            .count();
         let downloading: Vec<String> = index
             .iter()
             .filter(|entry| entry.status == tasks::STATUS_DOWNLOADING)
@@ -2269,13 +2411,11 @@ pub fn pump(ids: &mut PutIds) -> Result<Value, String> {
         //    于"每轮最多 1 个": 那是下载阶段的内存门禁, copying 收尾的峰值是
         //    一条任务记录 + 一次工作区列表, 与在途条数无关。
         {
-            let mut steps = 0usize;
-            for task_id in &copying {
+            for (steps, task_id) in copying.iter().enumerate() {
                 if steps >= COPY_STEPS_PER_ROUND {
                     break;
                 }
                 step_one_copying(ids, &settings, &mut cd2_round, task_id, &mut report);
-                steps += 1;
             }
         }
         // 「收尾一个后」: 收尾阶段结束时的读数。
@@ -2287,10 +2427,18 @@ pub fn pump(ids: &mut PutIds) -> Result<Value, String> {
     //    一次读同时算出排队数/在途数/下一个候选(省 2 次 GET)。
     {
         let index = tasks::load_index();
-        let queued_count = index.iter().filter(|e| e.status == tasks::STATUS_QUEUED).count();
+        let queued_count = index
+            .iter()
+            .filter(|e| e.status == tasks::STATUS_QUEUED)
+            .count();
         let active = index
             .iter()
-            .filter(|e| matches!(e.status.as_str(), tasks::STATUS_DOWNLOADING | tasks::STATUS_COPYING))
+            .filter(|e| {
+                matches!(
+                    e.status.as_str(),
+                    tasks::STATUS_DOWNLOADING | tasks::STATUS_COPYING
+                )
+            })
             .count();
         let next_queued = index
             .iter()
@@ -2304,7 +2452,9 @@ pub fn pump(ids: &mut PutIds) -> Result<Value, String> {
                     } else {
                         staging_error.clone()
                     };
-                    report.messages.push(format!("{queued_count} 个排队任务无法启动: {reason}"));
+                    report
+                        .messages
+                        .push(format!("{queued_count} 个排队任务无法启动: {reason}"));
                 }
                 Some(_) => match workspace_parent_ref(&probe) {
                     Ok(parent_ref) => {
@@ -2378,10 +2528,18 @@ pub fn pump(ids: &mut PutIds) -> Result<Value, String> {
 
     // 摘要里的排队/在途计数从索引重算(索引已经是最新状态)。
     let index = tasks::load_index();
-    let queued = index.iter().filter(|e| e.status == tasks::STATUS_QUEUED).count();
+    let queued = index
+        .iter()
+        .filter(|e| e.status == tasks::STATUS_QUEUED)
+        .count();
     let active = index
         .iter()
-        .filter(|e| matches!(e.status.as_str(), tasks::STATUS_DOWNLOADING | tasks::STATUS_COPYING))
+        .filter(|e| {
+            matches!(
+                e.status.as_str(),
+                tasks::STATUS_DOWNLOADING | tasks::STATUS_COPYING
+            )
+        })
         .count();
 
     Ok(json!({
@@ -2431,7 +2589,9 @@ fn step_one_downloading(
     task_id: &str,
     report: &mut PumpReport,
 ) {
-    let Some(mut task) = tasks::load_task(task_id) else { return };
+    let Some(mut task) = tasks::load_task(task_id) else {
+        return;
+    };
     if task.status != tasks::STATUS_DOWNLOADING {
         return; // 上一轮已把它推进到别的状态
     }
@@ -2441,7 +2601,9 @@ fn step_one_downloading(
         merge(report, local);
     }
     if let Err(err) = tasks::persist_task(ids, &task) {
-        report.messages.push(format!("任务 {task_id} 落盘失败: {err}"));
+        report
+            .messages
+            .push(format!("任务 {task_id} 落盘失败: {err}"));
     }
     // `task` 在函数返回时释放, 不进任何长生命周期容器。
 }
@@ -2454,7 +2616,9 @@ fn step_one_copying(
     task_id: &str,
     report: &mut PumpReport,
 ) {
-    let Some(mut task) = tasks::load_task(task_id) else { return };
+    let Some(mut task) = tasks::load_task(task_id) else {
+        return;
+    };
     if task.status != tasks::STATUS_COPYING {
         return;
     }
@@ -2464,7 +2628,9 @@ fn step_one_copying(
         merge(report, local);
     }
     if let Err(err) = tasks::persist_task(ids, &task) {
-        report.messages.push(format!("任务 {task_id} 落盘失败: {err}"));
+        report
+            .messages
+            .push(format!("任务 {task_id} 落盘失败: {err}"));
     }
 }
 
@@ -2482,7 +2648,9 @@ fn step_one_start(
     report: &mut PumpReport,
     already_finalized: bool,
 ) {
-    let Some(mut task) = tasks::load_task(task_id) else { return };
+    let Some(mut task) = tasks::load_task(task_id) else {
+        return;
+    };
     if task.status != tasks::STATUS_QUEUED {
         return;
     }
@@ -2498,7 +2666,9 @@ fn step_one_start(
         }
     }
     if let Err(err) = tasks::persist_task(ids, &task) {
-        report.messages.push(format!("任务 {task_id} 落盘失败: {err}"));
+        report
+            .messages
+            .push(format!("任务 {task_id} 落盘失败: {err}"));
     }
 }
 
@@ -2534,14 +2704,22 @@ mod tests {
     /// 且 settings-update 能把无斜杠输入还原回绝对路径(往返一致)。
     #[test]
     fn settings_path_view_has_no_leading_slash_and_roundtrips() {
-        let mut settings = Settings::default();
-        settings.staging_dir = "/media/music-dl-staging".to_string();
-        settings.target_dir = "/CloudNAS/115open/音乐/音乐下载".to_string();
+        let settings = Settings {
+            staging_dir: "/media/music-dl-staging".to_string(),
+            target_dir: "/CloudNAS/115open/音乐/音乐下载".to_string(),
+            ..Default::default()
+        };
         let view = settings_view(&settings);
         assert_eq!(view["staging_dir"], "media/music-dl-staging");
         assert_eq!(view["target_dir"], "CloudNAS/115open/音乐/音乐下载");
-        assert_eq!(normalize_path("CloudNAS/115open/音乐/音乐下载"), settings.target_dir);
-        assert_eq!(normalize_path("/CloudNAS/115open/音乐/音乐下载"), settings.target_dir);
+        assert_eq!(
+            normalize_path("CloudNAS/115open/音乐/音乐下载"),
+            settings.target_dir
+        );
+        assert_eq!(
+            normalize_path("/CloudNAS/115open/音乐/音乐下载"),
+            settings.target_dir
+        );
         assert_eq!(normalize_path("  "), "");
         // 兜底清洗: 任何以 "/" 开头的字符串(如任务 error/日志里整串就是路径)必须被清空;
         // "//" 开头与路径只出现在中间的不受影响(与 douban-rs 同一宿主规则)。
@@ -2563,10 +2741,26 @@ mod tests {
         let body_b = br#"{"url":"https://cdn.example.com/a.flac?sig=2"}"#;
 
         let base = idem_key("stage", task_id, 1, 0, body_a);
-        assert_eq!(base, idem_key("stage", task_id, 1, 0, body_a), "同输入必须稳定");
-        assert_ne!(base, idem_key("stage", task_id, 2, 0, body_a), "attempt 变化换键");
-        assert_ne!(base, idem_key("stage", task_id, 1, 1, body_a), "retry_round 变化换键");
-        assert_ne!(base, idem_key("stage", task_id, 1, 0, body_b), "body 变化换键");
+        assert_eq!(
+            base,
+            idem_key("stage", task_id, 1, 0, body_a),
+            "同输入必须稳定"
+        );
+        assert_ne!(
+            base,
+            idem_key("stage", task_id, 2, 0, body_a),
+            "attempt 变化换键"
+        );
+        assert_ne!(
+            base,
+            idem_key("stage", task_id, 1, 1, body_a),
+            "retry_round 变化换键"
+        );
+        assert_ne!(
+            base,
+            idem_key("stage", task_id, 1, 0, body_b),
+            "body 变化换键"
+        );
         // 用户重试的典型形态: attempts 归零(回到 1)、retry_round 自增、body 变化。
         assert_ne!(
             idem_key("stage", task_id, 3, 0, body_a),
@@ -2595,7 +2789,10 @@ mod tests {
             attempts: 1,
             ..Task::default()
         };
-        assert_eq!(notify_idem_key(&task), "mr-dl-notify-a1b2c3d4-round2-attempt1");
+        assert_eq!(
+            notify_idem_key(&task),
+            "mr-dl-notify-a1b2c3d4-round2-attempt1"
+        );
         let mut next = task.clone();
         next.retry_round = 3;
         assert_ne!(notify_idem_key(&task), notify_idem_key(&next));
@@ -2683,7 +2880,11 @@ mod tests {
         serde_json::from_slice(&raw).unwrap_or(Value::Null)
     }
 
-    fn kv_response(state: &mut FakeHost, request: &HostCallRequest, key: &str) -> Result<HostCallResponse, HostError> {
+    fn kv_response(
+        state: &mut FakeHost,
+        request: &HostCallRequest,
+        key: &str,
+    ) -> Result<HostCallResponse, HostError> {
         kv_branch(&mut state.kv, request, key)
     }
 
@@ -2700,10 +2901,17 @@ mod tests {
                     headers: etag_headers(revision),
                     body_base64: base64::engine::general_purpose::STANDARD_NO_PAD.encode(&value),
                 }),
-                None => Ok(HostCallResponse { status: 404, ..HostCallResponse::default() }),
+                None => Ok(HostCallResponse {
+                    status: 404,
+                    ..HostCallResponse::default()
+                }),
             },
             "PUT" => {
-                let idem = request.headers.get("idempotency-key").cloned().unwrap_or_default();
+                let idem = request
+                    .headers
+                    .get("idempotency-key")
+                    .cloned()
+                    .unwrap_or_default();
                 if !(16..=128).contains(&idem.len())
                     || !idem.bytes().all(|byte| byte.is_ascii_graphic())
                 {
@@ -2718,7 +2926,10 @@ mod tests {
                         None => false,
                     };
                     if !matches {
-                        return Ok(HostCallResponse { status: 412, ..HostCallResponse::default() });
+                        return Ok(HostCallResponse {
+                            status: 412,
+                            ..HostCallResponse::default()
+                        });
                     }
                 }
                 let revision = current.map(|(_, revision)| revision).unwrap_or(0) + 1;
@@ -2730,14 +2941,21 @@ mod tests {
                 })
             }
             "DELETE" => {
-                let idem = request.headers.get("idempotency-key").cloned().unwrap_or_default();
+                let idem = request
+                    .headers
+                    .get("idempotency-key")
+                    .cloned()
+                    .unwrap_or_default();
                 if !(16..=128).contains(&idem.len())
                     || !idem.bytes().all(|byte| byte.is_ascii_graphic())
                 {
                     return json_response(400, br#"{"error":"bad idempotency key"}"#);
                 }
                 let existed = kv.remove(key).is_some();
-                Ok(HostCallResponse { status: if existed { 200 } else { 404 }, ..HostCallResponse::default() })
+                Ok(HostCallResponse {
+                    status: if existed { 200 } else { 404 },
+                    ..HostCallResponse::default()
+                })
             }
             other => Err(HostError::new(format!("unexpected KV method: {other}"))),
         }
@@ -2770,7 +2988,9 @@ mod tests {
             let mut state = shared.borrow_mut();
             if method != "GET" {
                 if let Some(key) = request.headers.get("idempotency-key") {
-                    state.write_keys.push((format!("{method} {path}"), key.clone()));
+                    state
+                        .write_keys
+                        .push((format!("{method} {path}"), key.clone()));
                 }
             }
             if let Some(key) = path.strip_prefix("/api/plugin-runtime/storage/") {
@@ -2802,7 +3022,10 @@ mod tests {
                         json!({"id": id, "name": format!("歌{id}"), "singers": "歌手", "album": "专辑"})
                     })
                     .collect();
-                return json_response(200, &serde_json::to_vec(&json!({ "songs": songs })).unwrap());
+                return json_response(
+                    200,
+                    &serde_json::to_vec(&json!({ "songs": songs })).unwrap(),
+                );
             }
             if path == FILES_ROOTS {
                 // 0.3.8: 换成宿主真实形状(data.items[] + root_id/root_entry_ref/capabilities)。
@@ -2821,10 +3044,7 @@ mod tests {
             }
             if path.starts_with(JOBS_PREFIX) {
                 if state.job_status == "succeeded" {
-                    let staged = format!(
-                        "/CloudNAS/115open/音乐/音乐下载/{}",
-                        state.staged_name
-                    );
+                    let staged = format!("/CloudNAS/115open/音乐/音乐下载/{}", state.staged_name);
                     let payload = json!({"status": "succeeded", "result": {"path": staged}});
                     return json_response(200, &serde_json::to_vec(&payload).unwrap());
                 }
@@ -2843,7 +3063,9 @@ mod tests {
                 state.notifications.push(body);
                 return json_response(202, br#"{"data":{},"meta":{}}"#);
             }
-            Err(HostError::new(format!("unexpected host call: {method} {path}")))
+            Err(HostError::new(format!(
+                "unexpected host call: {method} {path}"
+            )))
         }));
         state
     }
@@ -2890,7 +3112,7 @@ mod tests {
     fn playlist_queue_all_pages_until_exhausted() {
         let _fake = install_pipeline_host(JobOutcome::Succeeded);
         let mut ids = PutIds::new();
-        let pages = vec![
+        let pages = [
             songs_page(230, &ids_range("a", 100)),
             songs_page(230, &ids_range("b", 100)),
             songs_page(230, &ids_range("c", 30)),
@@ -2916,7 +3138,10 @@ mod tests {
         let mut ids = PutIds::new();
         let first = ids_range("a", 100);
         // 第二页只有 1 首, 且与第一页第 0 首重复; 不满 100 → 取尽。
-        let pages = vec![songs_page(101, &first), songs_page(101, &[first[0].clone()])];
+        let pages = [
+            songs_page(101, &first),
+            songs_page(101, &[first[0].clone()]),
+        ];
         let result = queue_playlist_pages(&mut ids, "netease", "lossless", 1, 5, |page, _size| {
             Ok(pages[(page - 1) as usize].clone())
         });
@@ -2933,7 +3158,7 @@ mod tests {
     fn playlist_queue_all_stops_at_batch_pages() {
         let _fake = install_pipeline_host(JobOutcome::Succeeded);
         let mut ids = PutIds::new();
-        let pages = vec![
+        let pages = [
             songs_page(300, &ids_range("a", 100)),
             songs_page(300, &ids_range("b", 100)),
             songs_page(300, &ids_range("c", 100)),
@@ -2981,8 +3206,17 @@ mod tests {
         // 全量 630 首, 且第一页那首只出现一次(续跑没有重复入队)。
         let index = tasks::load_index();
         assert_eq!(index.len(), 630);
-        assert_eq!(index.iter().filter(|entry| entry.song_id == "p1-0").count(), 1);
-        assert_eq!(index.iter().filter(|entry| entry.song_id == "p7-29").count(), 1);
+        assert_eq!(
+            index.iter().filter(|entry| entry.song_id == "p1-0").count(),
+            1
+        );
+        assert_eq!(
+            index
+                .iter()
+                .filter(|entry| entry.song_id == "p7-29")
+                .count(),
+            1
+        );
     }
 
     /// 回归(满页少返, 下架/无版权/无效 id): 当页因 `song/detail` 少返只剩 97 首, 但
@@ -2992,7 +3226,7 @@ mod tests {
         let _fake = install_pipeline_host(JobOutcome::Succeeded);
         let mut ids = PutIds::new();
         // 整单 300 首: 第 1、2 页本该各 100, 第 2 页因无效 id 只回 97; 第 3 页是尾页 100。
-        let pages = vec![
+        let pages = [
             songs_page(300, &ids_range("a", 100)),
             songs_page(300, &ids_range("b", 97)),
             songs_page(300, &ids_range("c", 100)),
@@ -3001,14 +3235,23 @@ mod tests {
             Ok(pages[(page - 1) as usize].clone())
         });
         assert_eq!(result["status"], "succeeded");
-        assert_eq!(result["data"]["total_seen"], 297, "第 2 页少返的 3 首不该截断后续页: {result}");
+        assert_eq!(
+            result["data"]["total_seen"], 297,
+            "第 2 页少返的 3 首不该截断后续页: {result}"
+        );
         assert_eq!(result["data"]["queued"], 297);
         assert_eq!(result["data"]["next_page"], 4);
-        assert_eq!(result["data"]["has_more"], false, "page 3 覆盖 300 首即整单末尾");
+        assert_eq!(
+            result["data"]["has_more"], false,
+            "page 3 覆盖 300 首即整单末尾"
+        );
         // 第 3 页确实入了队(97 < 100 未被误判为取尽)。
         let index = tasks::load_index();
         assert_eq!(index.len(), 297);
-        assert_eq!(index.iter().filter(|entry| entry.song_id == "c99").count(), 1);
+        assert_eq!(
+            index.iter().filter(|entry| entry.song_id == "c99").count(),
+            1
+        );
     }
 
     /// `total` 缺失(旧接口/异常返回)才退回当页条数判定: 不满 100 首即视为取尽。
@@ -3026,7 +3269,10 @@ mod tests {
         });
         assert_eq!(result["data"]["queued"], 200);
         assert_eq!(result["data"]["next_page"], 3);
-        assert_eq!(result["data"]["has_more"], true, "无 total: 满页应继续翻: {result}");
+        assert_eq!(
+            result["data"]["has_more"], true,
+            "无 total: 满页应继续翻: {result}"
+        );
     }
 
     /// 页面接口失败: **业务 failed**(不是协议错误), 回传已入队计数与失败页号, 不回滚。
@@ -3040,8 +3286,14 @@ mod tests {
             }
             Ok(songs_page(200, &ids_range("a", 100)))
         });
-        assert_eq!(result["status"], "failed", "页面失败是业务 failed: {result}");
-        assert!(result["message"].as_str().unwrap().contains("第 2 页"), "{result}");
+        assert_eq!(
+            result["status"], "failed",
+            "页面失败是业务 failed: {result}"
+        );
+        assert!(
+            result["message"].as_str().unwrap().contains("第 2 页"),
+            "{result}"
+        );
         assert_eq!(result["data"]["queued"], 100);
         assert_eq!(result["data"]["total_seen"], 100);
         assert_eq!(result["data"]["next_page"], 2, "失败页号即下次续跑起点");
@@ -3067,7 +3319,10 @@ mod tests {
             },
         );
         assert_eq!(qq["status"], "failed");
-        assert!(qq["message"].as_str().unwrap().contains("暂不支持歌单"), "{qq}");
+        assert!(
+            qq["message"].as_str().unwrap().contains("暂不支持歌单"),
+            "{qq}"
+        );
 
         let missing = playlist_queue_all(
             &mut ids,
@@ -3080,7 +3335,10 @@ mod tests {
             },
         );
         assert_eq!(missing["status"], "failed");
-        assert!(missing["message"].as_str().unwrap().contains("缺少歌单 id"), "{missing}");
+        assert!(
+            missing["message"].as_str().unwrap().contains("缺少歌单 id"),
+            "{missing}"
+        );
         assert_eq!(tasks::load_index().len(), 0);
     }
 
@@ -3109,7 +3367,10 @@ mod tests {
 
         {
             let state = fake.borrow();
-            assert_eq!(state.playlist_v6_calls, 1, "v6 全量索引整批只请求一次: {result}");
+            assert_eq!(
+                state.playlist_v6_calls, 1,
+                "v6 全量索引整批只请求一次: {result}"
+            );
             assert_eq!(state.playlist_v3_ids.len(), 10, "v3 详情每页一次");
             assert_eq!(state.playlist_v3_ids[0], (0..100).collect::<Vec<i64>>());
             assert_eq!(
@@ -3180,11 +3441,18 @@ mod tests {
 
         let queued = request_download(&mut ids, &download_request()).unwrap();
         assert_eq!(queued["deduped"], false);
-        assert_eq!(queued["quality"], DEFAULT_QUALITY, "空 level 用设置默认音质");
+        assert_eq!(
+            queued["quality"], DEFAULT_QUALITY,
+            "空 level 用设置默认音质"
+        );
         let task_id = queued["task_id"].as_str().unwrap().to_string();
 
         let summary = pump(&mut ids).unwrap();
-        assert_eq!(summary["completed"].as_array().unwrap().len(), 1, "{summary}");
+        assert_eq!(
+            summary["completed"].as_array().unwrap().len(),
+            1,
+            "{summary}"
+        );
         assert_eq!(summary["active"], 0);
         assert_eq!(summary["failed"].as_array().unwrap().len(), 0);
 
@@ -3192,7 +3460,10 @@ mod tests {
         assert_eq!(state.downloads.len(), 1);
         assert_eq!(state.downloads[0]["name"], format!("{task_id}.part"));
         assert_eq!(state.downloads[0]["parent_ref"], "fe_test_ws_root");
-        assert_eq!(state.downloads[0]["url"], "https://cdn.example.com/song.flac");
+        assert_eq!(
+            state.downloads[0]["url"],
+            "https://cdn.example.com/song.flac"
+        );
         assert_eq!(state.renames.len(), 1);
         assert_eq!(
             state.renames[0]["old_path"],
@@ -3209,8 +3480,14 @@ mod tests {
         // 写操作必须带 16~128 个可打印 ASCII 的幂等键。
         assert!(!state.write_keys.is_empty());
         for (what, key) in &state.write_keys {
-            assert!((16..=128).contains(&key.len()), "{what} 幂等键长度越界: {key}");
-            assert!(key.bytes().all(|byte| byte.is_ascii_graphic()), "{what} 幂等键非法: {key}");
+            assert!(
+                (16..=128).contains(&key.len()),
+                "{what} 幂等键长度越界: {key}"
+            );
+            assert!(
+                key.bytes().all(|byte| byte.is_ascii_graphic()),
+                "{what} 幂等键非法: {key}"
+            );
         }
         // 借出中的替身状态不能跨 host.call: 先归还再读 KV。
         drop(state);
@@ -3254,7 +3531,10 @@ mod tests {
         assert!(notice["body"].as_str().unwrap().contains("CDN 403"));
         // 官方契约(PluginNotificationRequest)只接受 {text,url} 按钮且
         // additionalProperties:false; callback_data 未经真机验证, 一律不发。
-        assert!(notice.get("buttons").is_none(), "失败通知不应带 buttons: {notice}");
+        assert!(
+            notice.get("buttons").is_none(),
+            "失败通知不应带 buttons: {notice}"
+        );
         assert!(notice["body"].as_str().unwrap().contains("可一键重试"));
     }
 
@@ -3280,13 +3560,24 @@ mod tests {
         assert_eq!(tasks::load_index().len(), 5);
 
         let summary = pump(&mut ids).unwrap();
-        assert_eq!(summary["started"].as_array().unwrap().len(), 1, "一次 pump 只新开 1 首: {summary}");
+        assert_eq!(
+            summary["started"].as_array().unwrap().len(),
+            1,
+            "一次 pump 只新开 1 首: {summary}"
+        );
         assert_eq!(fake.borrow().downloads.len(), 1, "只提交 1 个宿主下载 job");
-        assert_eq!(fake.borrow().copies.len(), 1, "假宿主 job 本轮就成功, 顺带收尾 1 条");
+        assert_eq!(
+            fake.borrow().copies.len(),
+            1,
+            "假宿主 job 本轮就成功, 顺带收尾 1 条"
+        );
 
         // 其余 4 首仍是排队态, 没有被"顺手"开掉。
         let index = tasks::load_index();
-        let queued = index.iter().filter(|e| e.status == tasks::STATUS_QUEUED).count();
+        let queued = index
+            .iter()
+            .filter(|e| e.status == tasks::STATUS_QUEUED)
+            .count();
         assert_eq!(queued, 4, "剩下 4 首必须还排队: {index:?}");
 
         // 再 pump 4 次: 每次正好推进一首, 5 轮全部走完。
@@ -3294,7 +3585,13 @@ mod tests {
             pump(&mut ids).unwrap();
         }
         let index = tasks::load_index();
-        assert_eq!(index.iter().filter(|e| e.status == tasks::STATUS_DONE).count(), 5);
+        assert_eq!(
+            index
+                .iter()
+                .filter(|e| e.status == tasks::STATUS_DONE)
+                .count(),
+            5
+        );
         assert_eq!(fake.borrow().downloads.len(), 5, "总共 5 个下载 job");
     }
 
@@ -3331,11 +3628,21 @@ mod tests {
         let summary = pump(&mut ids).unwrap();
         let completed = summary["completed"].as_array().unwrap().len();
         let failed = summary["failed"].as_array().unwrap().len();
-        assert!(completed + failed <= 1, "一次 pump 最多收尾 1 个: {summary}");
-        assert_eq!(fake.borrow().copies.len(), 1, "同一轮最多 1 次复制: {summary}");
+        assert!(
+            completed + failed <= 1,
+            "一次 pump 最多收尾 1 个: {summary}"
+        );
+        assert_eq!(
+            fake.borrow().copies.len(),
+            1,
+            "同一轮最多 1 次复制: {summary}"
+        );
 
         // 旧 copying 被收尾; 新开的那首只是提交(仍是 downloading), 留到下轮收尾。
-        assert_eq!(tasks::load_task("cp00001").unwrap().status, tasks::STATUS_DONE);
+        assert_eq!(
+            tasks::load_task("cp00001").unwrap().status,
+            tasks::STATUS_DONE
+        );
         let new_entry = tasks::load_index()
             .into_iter()
             .find(|e| e.id == queued_id)
@@ -3457,7 +3764,11 @@ mod tests {
         assert!(text.contains("<truncated>"), "截断标记必须可见: {text:?}");
         let marker_len = "\n<truncated>".len();
         let payload_bytes = decoded.len() - marker_len;
-        assert_eq!(payload_bytes % 3, 0, "有效载荷必须 3 字节对齐(base64 的最小编码单位)");
+        assert_eq!(
+            payload_bytes % 3,
+            0,
+            "有效载荷必须 3 字节对齐(base64 的最小编码单位)"
+        );
 
         // 关键性质: 响应再大, static 的字节数也不变(与历史峰值无关)。
         for scale in [1usize, 8, 64] {
@@ -3492,7 +3803,10 @@ mod tests {
         }
 
         // 一个远超 IDX_ERROR_LIMIT 的阻塞原因(模拟宿主返回几十个 roots 的形态)。
-        let long_reason = format!("宿主未向插件开放本地可写工作区根(roots: [{}])", "别名(后端), ".repeat(200));
+        let long_reason = format!(
+            "宿主未向插件开放本地可写工作区根(roots: [{}])",
+            "别名(后端), ".repeat(200)
+        );
         assert!(long_reason.len() > tasks::IDX_ERROR_LIMIT * 5);
         let mut report = PumpReport::default();
         mark_queued_error(&mut ids, &long_reason, &mut report);
@@ -3553,7 +3867,9 @@ mod tests {
         // 索引条目必须明显小于完整记录(这是分片的收益前提)。实测: 索引里 `error`
         // 被截到 120B, 完整记录还带 job_ref/staged_path/out_name/album 等。
         let idx_bytes = serde_json::to_vec(&index).unwrap().len() / index.len();
-        let full_bytes = serde_json::to_vec(&tasks::load_task("fin000").unwrap()).unwrap().len();
+        let full_bytes = serde_json::to_vec(&tasks::load_task("fin000").unwrap())
+            .unwrap()
+            .len();
         assert!(
             full_bytes >= idx_bytes * 2,
             "索引条目({idx_bytes}B)相对完整记录({full_bytes}B)没有明显变小"
@@ -3604,7 +3920,11 @@ mod tests {
         assert!(!reads.is_empty(), "推进那条必须读它的完整记录");
         // 读到的键只有被推进的那一条。
         let distinct: std::collections::BTreeSet<&String> = reads.iter().map(|(k, _)| k).collect();
-        assert_eq!(distinct.len(), 1, "只应读被推进的那一条, 实际读了: {distinct:?}");
+        assert_eq!(
+            distinct.len(),
+            1,
+            "只应读被推进的那一条, 实际读了: {distinct:?}"
+        );
         assert!(
             distinct.iter().all(|k| k.ends_with(&queued_id)),
             "读到的是别的任务: {distinct:?}"
@@ -3632,7 +3952,12 @@ mod tests {
             updated_ms: 1_000,
             ..Task::default()
         }];
-        store::put(&mut ids, tasks::TASKS_KEY, &serde_json::to_vec(&legacy).unwrap()).unwrap();
+        store::put(
+            &mut ids,
+            tasks::TASKS_KEY,
+            &serde_json::to_vec(&legacy).unwrap(),
+        )
+        .unwrap();
 
         // 第一次 pump: 迁移 + 推进这一条(一次只新开 1 首)。
         let summary = pump(&mut ids).unwrap();
@@ -3693,7 +4018,10 @@ mod tests {
         assert_ne!(notify_keys[0], notify_keys[1]);
         // 两轮通知都指向同一个任务(正文里的重试入口经插件页路由到 task-retry)。
         assert!(second["body"].as_str().unwrap().contains("可一键重试"));
-        assert_eq!(second["body"].as_str().unwrap(), first["body"].as_str().unwrap());
+        assert_eq!(
+            second["body"].as_str().unwrap(),
+            first["body"].as_str().unwrap()
+        );
     }
 
     #[test]
@@ -3705,8 +4033,18 @@ mod tests {
             error: String::new(),
             items: Vec::new(),
             roots: vec![
-                Root { path: "/CloudNAS/115open/音乐".into(), name: "音乐".into(), local: false, writable: true },
-                Root { path: "/volume1/music".into(), name: "本地".into(), local: true, writable: true },
+                Root {
+                    path: "/CloudNAS/115open/音乐".into(),
+                    name: "音乐".into(),
+                    local: false,
+                    writable: true,
+                },
+                Root {
+                    path: "/volume1/music".into(),
+                    name: "本地".into(),
+                    local: true,
+                    writable: true,
+                },
             ],
         };
         let (dir, warnings) = effective_staging(&settings, &probe);
@@ -3735,7 +4073,12 @@ mod tests {
             ok: true,
             error: String::new(),
             items: Vec::new(),
-            roots: vec![Root { path: "/mnt/cd2".into(), name: "CD2".into(), local: false, writable: true }],
+            roots: vec![Root {
+                path: "/mnt/cd2".into(),
+                name: "CD2".into(),
+                local: false,
+                writable: true,
+            }],
         };
         let (dir, warnings) = effective_staging(&settings, &probe);
         assert_eq!(dir.as_deref(), Some(DEFAULT_MUSIC_DIR));
@@ -3751,12 +4094,17 @@ mod tests {
 
     #[test]
     fn roots_parsing_flags_cd2_and_writability() {
-        let local = parse_root(&json!({"path": "/data/", "name": "本地", "kind": "local", "writable": true})).unwrap();
+        let local = parse_root(
+            &json!({"path": "/data/", "name": "本地", "kind": "local", "writable": true}),
+        )
+        .unwrap();
         assert_eq!(local.path, "/data");
         assert!(local.local && local.writable);
-        let cd2 = parse_root(&json!({"path": "/mnt/cd2", "backend": "cd2", "writable": true})).unwrap();
+        let cd2 =
+            parse_root(&json!({"path": "/mnt/cd2", "backend": "cd2", "writable": true})).unwrap();
         assert!(!cd2.local, "CD2 必须被排除");
-        let read_only = parse_root(&json!({"path": "/ro", "backend": "local", "read_only": true})).unwrap();
+        let read_only =
+            parse_root(&json!({"path": "/ro", "backend": "local", "read_only": true})).unwrap();
         assert!(!read_only.writable);
         let bare = parse_root(&json!("/plain/path")).unwrap();
         assert_eq!(bare.path, "/plain/path");
@@ -3764,14 +4112,26 @@ mod tests {
 
     #[test]
     fn job_state_and_result_path_are_tolerant() {
-        assert_eq!(job_state(&json!({"status": "succeeded"})), JobState::Succeeded);
-        assert_eq!(job_state(&json!({"data": {"state": "running"}})), JobState::Pending);
-        assert_eq!(job_state(&json!({"status": "not-a-state"})), JobState::Pending);
+        assert_eq!(
+            job_state(&json!({"status": "succeeded"})),
+            JobState::Succeeded
+        );
+        assert_eq!(
+            job_state(&json!({"data": {"state": "running"}})),
+            JobState::Pending
+        );
+        assert_eq!(
+            job_state(&json!({"status": "not-a-state"})),
+            JobState::Pending
+        );
         assert_eq!(
             job_state(&json!({"status": "failed", "error": "boom"})),
             JobState::Failed("boom".to_string())
         );
-        assert_eq!(job_state(&json!({"status": "failed"})), JobState::Failed("失败".to_string()));
+        assert_eq!(
+            job_state(&json!({"status": "failed"})),
+            JobState::Failed("失败".to_string())
+        );
         assert_eq!(
             job_result_path(&json!({"result": {"path": "/x/y.flac"}})),
             Some("/x/y.flac".to_string())
@@ -3795,10 +4155,16 @@ mod tests {
             "cookiecloud_key": " cc-key-1 ",
         });
         let view = settings_update(&mut ids, patch.as_object().unwrap()).unwrap();
-        assert_eq!(view["cc_url"], "http://127.0.0.1:8088/", "URL 只 trim 空白, 尾斜杠由 pull 侧去除");
+        assert_eq!(
+            view["cc_url"], "http://127.0.0.1:8088/",
+            "URL 只 trim 空白, 尾斜杠由 pull 侧去除"
+        );
         assert_eq!(view["cc_uuid"], "cc-uuid-1");
         assert_eq!(view["cc_key_ready"], true, "密钥非空 → ready 布尔");
-        assert!(view.get("cookiecloud_url").is_none(), "视图不得回显原字段名");
+        assert!(
+            view.get("cookiecloud_url").is_none(),
+            "视图不得回显原字段名"
+        );
         assert!(view.get("cookiecloud_key").is_none(), "密钥绝不回显");
 
         let reloaded = load_settings();
@@ -3846,9 +4212,11 @@ mod tests {
                 _ => {}
             }
         }
-        let mut filled = Settings::default();
-        filled.cookiecloud_uuid = "u-9".to_string();
-        filled.cookiecloud_key = "k-9".to_string();
+        let filled = Settings {
+            cookiecloud_uuid: "u-9".to_string(),
+            cookiecloud_key: "k-9".to_string(),
+            ..Default::default()
+        };
         for view in [view, settings_view(&filled)] {
             assert_view_sanitized(&view, "$");
         }
@@ -3899,12 +4267,27 @@ mod tests {
 
         let skipped_pump = pump(&mut ids).unwrap();
         assert_eq!(skipped_pump["skipped"], "queue_busy", "{skipped_pump}");
-        assert!(skipped_pump["message"].as_str().unwrap().contains("稍后再试"), "{skipped_pump}");
+        assert!(
+            skipped_pump["message"]
+                .as_str()
+                .unwrap()
+                .contains("稍后再试"),
+            "{skipped_pump}"
+        );
 
         let skipped_enqueue = request_download(&mut ids, &download_request()).unwrap();
-        assert_eq!(skipped_enqueue["skipped"], "queue_busy", "{skipped_enqueue}");
-        assert!(skipped_enqueue.get("task_id").is_none(), "跳过时不该建任务: {skipped_enqueue}");
-        assert!(skipped_enqueue["mem_kb"]["start"].is_u64(), "{skipped_enqueue}");
+        assert_eq!(
+            skipped_enqueue["skipped"], "queue_busy",
+            "{skipped_enqueue}"
+        );
+        assert!(
+            skipped_enqueue.get("task_id").is_none(),
+            "跳过时不该建任务: {skipped_enqueue}"
+        );
+        assert!(
+            skipped_enqueue["mem_kb"]["start"].is_u64(),
+            "{skipped_enqueue}"
+        );
 
         let skipped_all = playlist_queue_all(
             &mut ids,
@@ -3924,8 +4307,14 @@ mod tests {
 
         // 跳过路径不许碰存储/宿主。
         assert_eq!(tasks::load_index().len(), 0, "跳过路径不该产生任务");
-        assert!(fake.borrow().downloads.is_empty(), "跳过路径不该提交宿主下载");
-        assert!(fake.borrow().task_reads.is_empty(), "跳过路径不该读任务分片");
+        assert!(
+            fake.borrow().downloads.is_empty(),
+            "跳过路径不该提交宿主下载"
+        );
+        assert!(
+            fake.borrow().task_reads.is_empty(),
+            "跳过路径不该读任务分片"
+        );
 
         // 释放后同一入口立刻恢复正常(守卫必须复位旗标)。
         drop(held);
@@ -3951,7 +4340,10 @@ mod tests {
             }
         });
         let result = runtime
-            .action("inv-busy-1", crate::raw::RawPayload::Value(&download_payload))
+            .action(
+                "inv-busy-1",
+                crate::raw::RawPayload::Value(&download_payload),
+            )
             .unwrap();
         assert_eq!(result["status"], "skipped", "{result}");
         assert_eq!(result["skipped"], "queue_busy", "{result}");
@@ -3969,7 +4361,10 @@ mod tests {
             "input": {"source": "netease", "id": "42", "quality": "lossless", "batch_pages": 5}
         });
         let result = runtime
-            .action("inv-busy-3", crate::raw::RawPayload::Value(&playlist_payload))
+            .action(
+                "inv-busy-3",
+                crate::raw::RawPayload::Value(&playlist_payload),
+            )
             .unwrap();
         assert_eq!(result["status"], "skipped", "{result}");
         assert_eq!(result["skipped"], "queue_busy", "{result}");
@@ -3986,13 +4381,26 @@ mod tests {
         let mut ids = PutIds::new();
         let _ = request_download(&mut ids, &download_request()).unwrap();
         let summary = pump(&mut ids).unwrap();
-        assert!(summary.get("skipped").is_none(), "不忙时 pump 应正常推进: {summary}");
+        assert!(
+            summary.get("skipped").is_none(),
+            "不忙时 pump 应正常推进: {summary}"
+        );
 
         let diag = store::get_json::<Value>("pumpdiag").expect("pumpdiag 必须落盘");
         let mem = &diag["mem_kb"];
-        let keys = ["start", "after_index", "after_poll", "after_start", "after_finish", "end"];
+        let keys = [
+            "start",
+            "after_index",
+            "after_poll",
+            "after_start",
+            "after_finish",
+            "end",
+        ];
         for key in keys {
-            assert!(mem.get(key).and_then(Value::as_u64).is_some(), "mem_kb.{key} 缺失或非整数: {diag}");
+            assert!(
+                mem.get(key).and_then(Value::as_u64).is_some(),
+                "mem_kb.{key} 缺失或非整数: {diag}"
+            );
         }
         // 首次读索引时的排队数: 1 条(刚入队; 本轮 ④ 才把它启动)。
         assert_eq!(diag["queue"]["idx"], 1, "{diag}");
@@ -4018,7 +4426,7 @@ mod tests {
         assert!(enqueue["mem_kb"]["end"].is_u64(), "{enqueue}");
 
         // ② 整单入队: 两页, 每页一条 pages_mem_kb, 页号连续。
-        let pages = vec![
+        let pages = [
             songs_page(150, &ids_range("a", 100)),
             songs_page(150, &ids_range("b", 50)),
         ];
@@ -4028,8 +4436,9 @@ mod tests {
         assert_eq!(all["status"], "succeeded", "{all}");
         assert!(all["data"]["mem_kb"]["start"].is_u64(), "{all}");
         assert!(all["data"]["mem_kb"]["end"].is_u64(), "{all}");
-        let per_page =
-            all["data"]["pages_mem_kb"].as_array().expect("pages_mem_kb 必须是数组");
+        let per_page = all["data"]["pages_mem_kb"]
+            .as_array()
+            .expect("pages_mem_kb 必须是数组");
         assert_eq!(per_page.len(), 2, "每页结束记一条: {all}");
         for (index, item) in per_page.iter().enumerate() {
             assert_eq!(item["page"], (index + 1) as u64, "{all}");
@@ -4048,7 +4457,10 @@ mod tests {
             },
         );
         assert_eq!(bad["status"], "failed", "{bad}");
-        assert!(bad["data"]["pages_mem_kb"].as_array().unwrap().is_empty(), "{bad}");
+        assert!(
+            bad["data"]["pages_mem_kb"].as_array().unwrap().is_empty(),
+            "{bad}"
+        );
         assert!(bad["data"]["mem_kb"]["start"].is_u64(), "{bad}");
 
         // ④ 页面失败也记一条: 失败页的内存尖峰同样要能看到。
@@ -4060,7 +4472,11 @@ mod tests {
             Ok(songs_page(0, &[]))
         });
         assert_eq!(failed["status"], "failed", "{failed}");
-        assert_eq!(failed["data"]["pages_mem_kb"].as_array().unwrap().len(), 1, "{failed}");
+        assert_eq!(
+            failed["data"]["pages_mem_kb"].as_array().unwrap().len(),
+            1,
+            "{failed}"
+        );
 
         // 非 wasm(测试)目标: 所有探针恒 0(真值只在 wasm 下由 memory_size 给出)。
         #[cfg(not(target_arch = "wasm32"))]
@@ -4122,7 +4538,9 @@ mod tests {
             quality: "lossless".to_string(),
             ..Task::default()
         };
-        let summary = notify_failure(&task, "CDN 403").unwrap().expect("有 channels 就有摘要");
+        let summary = notify_failure(&task, "CDN 403")
+            .unwrap()
+            .expect("有 channels 就有摘要");
         assert!(summary.contains("telegram"), "{summary}");
         assert!(summary.contains("wecom(丢:callback_buttons)"), "{summary}");
         crate::host::testhost::clear();
@@ -4166,7 +4584,10 @@ mod tests {
             if pos + len > payload.len() {
                 break;
             }
-            out.insert(num, String::from_utf8_lossy(&payload[pos..pos + len]).into_owned());
+            out.insert(
+                num,
+                String::from_utf8_lossy(&payload[pos..pos + len]).into_owned(),
+            );
             pos += len;
         }
         out
@@ -4281,14 +4702,20 @@ mod tests {
                 let host_path = fields.get(&1).cloned().unwrap_or_default();
                 state.added_folders.push(host_path.clone());
                 let namespace = host_path.rsplit('/').next().unwrap_or("").to_string();
-                state.storages.push(("LocalFsAPI".to_string(), format!("/{namespace}")));
+                state
+                    .storages
+                    .push(("LocalFsAPI".to_string(), format!("/{namespace}")));
                 cd2_ok(&pb_var(1, 1))
             }
             "FindFileByPath" => {
                 let fields = grpc_request_str_fields(request);
                 let parent = fields.get(&1).cloned().unwrap_or_default();
                 let name = fields.get(&2).cloned().unwrap_or_default();
-                match state.remote_files.iter().find(|(p, n, _)| p == &parent && n == &name) {
+                match state
+                    .remote_files
+                    .iter()
+                    .find(|(p, n, _)| p == &parent && n == &name)
+                {
                     Some((_, _, size)) => cd2_ok(&pb_var(4, *size)),
                     None => cd2_status(5, "not found"),
                 }
@@ -4320,8 +4747,11 @@ mod tests {
                 let (src, dest) = state.copy_calls.last().cloned().unwrap_or_default();
                 let mut reply = Vec::new();
                 for (start, status, uploaded, total) in script {
-                    let time = [pb_var(1, start / 1_000_000_000), pb_var(2, start % 1_000_000_000)]
-                        .concat();
+                    let time = [
+                        pb_var(1, start / 1_000_000_000),
+                        pb_var(2, start % 1_000_000_000),
+                    ]
+                    .concat();
                     let entry = [
                         pb_str(3, &src),
                         pb_str(4, &dest),
@@ -4401,7 +4831,11 @@ mod tests {
                 return json_response(200, br#"{"success":true}"#);
             }
             if path == NOTIFY_PLUGIN {
-                let status = if state.notify_status == 0 { 202 } else { state.notify_status };
+                let status = if state.notify_status == 0 {
+                    202
+                } else {
+                    state.notify_status
+                };
                 let body = if state.notify_body.is_empty() {
                     br#"{"data":{},"meta":{}}"#.to_vec()
                 } else {
@@ -4409,10 +4843,14 @@ mod tests {
                 };
                 return json_response(status, &body);
             }
-            if let Some(route) = path.strip_prefix("http://127.0.0.1:19798/clouddrive.CloudDriveFileSrv/") {
+            if let Some(route) =
+                path.strip_prefix("http://127.0.0.1:19798/clouddrive.CloudDriveFileSrv/")
+            {
                 return cd2_route(&mut state, route, request);
             }
-            Err(HostError::new(format!("unexpected host call: {method} {path}")))
+            Err(HostError::new(format!(
+                "unexpected host call: {method} {path}"
+            )))
         }));
         state
     }
@@ -4436,10 +4874,11 @@ mod tests {
     }
 
     fn cd2_settings(token: &str) -> Settings {
-        let mut settings = Settings::default();
-        settings.cd2_token = token.to_string();
-        settings.target_dir = DEFAULT_MUSIC_DIR.to_string();
-        settings
+        Settings {
+            cd2_token: token.to_string(),
+            target_dir: DEFAULT_MUSIC_DIR.to_string(),
+            ..Default::default()
+        }
     }
 
     /// 设置的展示/更新规则: 令牌只给布尔, 键名与值都不过宿主过滤线, 目标目录可推导。
@@ -4449,7 +4888,10 @@ mod tests {
         let mut ids = PutIds::new();
         let mut patch = Map::new();
         patch.insert("cd2_token".to_string(), json!("tok-123"));
-        patch.insert("target_dir".to_string(), json!("/CloudNAS/115open/音乐/音乐下载"));
+        patch.insert(
+            "target_dir".to_string(),
+            json!("/CloudNAS/115open/音乐/音乐下载"),
+        );
         let view = settings_update(&mut ids, &patch).unwrap();
         assert_eq!(view["cd2_auth_ready"], true);
         // 显式值仍为空(未钉死), 生效值从 target_dir 推导。
@@ -4483,8 +4925,10 @@ mod tests {
     /// 目标目录推导: 显式配置 > `/CloudNAS` 前缀替换; 推不出给空串(投递层报错)。
     #[test]
     fn cd2_dest_derivation_prefers_explicit_and_strips_cloudnas() {
-        let mut settings = Settings::default();
-        settings.target_dir = "/CloudNAS/115open/音乐/音乐下载".to_string();
+        let mut settings = Settings {
+            target_dir: "/CloudNAS/115open/音乐/音乐下载".to_string(),
+            ..Default::default()
+        };
         assert_eq!(cd2_dest_of(&settings), "/115open/音乐/音乐下载");
         settings.cd2_dest_dir = "/115open/自定义".to_string();
         assert_eq!(cd2_dest_of(&settings), "/115open/自定义");
@@ -4499,12 +4943,30 @@ mod tests {
     /// 定名后文件名匹配: 精确名与宿主去重变体(` (N)`)都算, 前缀相近的另一首不算。
     #[test]
     fn staged_name_matches_exact_and_dedup_variants() {
-        assert!(staged_name_matches("周杰伦 - 晴天.flac", "周杰伦 - 晴天.flac"));
-        assert!(staged_name_matches("周杰伦 - 晴天 (1).flac", "周杰伦 - 晴天.flac"));
-        assert!(staged_name_matches("周杰伦 - 晴天 (12).flac", "周杰伦 - 晴天.flac"));
-        assert!(!staged_name_matches("周杰伦 - 晴天转多云.flac", "周杰伦 - 晴天.flac"));
-        assert!(!staged_name_matches("周杰伦 - 晴天.flac.part", "周杰伦 - 晴天.flac"));
-        assert!(!staged_name_matches("周杰伦 - 晴天 (x).flac", "周杰伦 - 晴天.flac"));
+        assert!(staged_name_matches(
+            "周杰伦 - 晴天.flac",
+            "周杰伦 - 晴天.flac"
+        ));
+        assert!(staged_name_matches(
+            "周杰伦 - 晴天 (1).flac",
+            "周杰伦 - 晴天.flac"
+        ));
+        assert!(staged_name_matches(
+            "周杰伦 - 晴天 (12).flac",
+            "周杰伦 - 晴天.flac"
+        ));
+        assert!(!staged_name_matches(
+            "周杰伦 - 晴天转多云.flac",
+            "周杰伦 - 晴天.flac"
+        ));
+        assert!(!staged_name_matches(
+            "周杰伦 - 晴天.flac.part",
+            "周杰伦 - 晴天.flac"
+        ));
+        assert!(!staged_name_matches(
+            "周杰伦 - 晴天 (x).flac",
+            "周杰伦 - 晴天.flac"
+        ));
     }
 
     /// 隔离策略 400 的文案带出路提示; 其它 400 原样。
@@ -4541,7 +5003,8 @@ mod tests {
         let state = Rc::new(RefCell::new(Cd2Host::with_ready_folder()));
         {
             let mut fake = state.borrow_mut();
-            fake.workspace_files.push(("周杰伦 - 晴天 (1).flac".to_string(), 29_969_443));
+            fake.workspace_files
+                .push(("周杰伦 - 晴天 (1).flac".to_string(), 29_969_443));
             // 同名不同大小 → 不触发"已送达"对账捷径, 走真实上传路径。
             fake.remote_files.push((
                 "/115open/音乐/音乐下载".to_string(),
@@ -4549,9 +5012,9 @@ mod tests {
                 111,
             ));
             fake.task_script = vec![
-                vec![],                                       // 取基线: 无任务
-                vec![(2_000_000_000, 1, 100, 200)],           // 上传中
-                vec![(2_000_000_000, 3, 200, 200)],           // 完成
+                vec![],                             // 取基线: 无任务
+                vec![(2_000_000_000, 1, 100, 200)], // 上传中
+                vec![(2_000_000_000, 3, 200, 200)], // 完成
             ];
         }
         install_cd2_host(state.clone());
@@ -4576,7 +5039,10 @@ mod tests {
         let mut report = PumpReport::default();
         advance_copying(&settings, &mut round, &mut task, &mut report);
         assert_eq!(task.status, tasks::STATUS_COPYING);
-        assert!(report.messages.iter().any(|m| m.contains("上传中")), "{report:?}");
+        assert!(
+            report.messages.iter().any(|m| m.contains("上传中")),
+            "{report:?}"
+        );
 
         // 第 3 步: 完成 → done, 基线清空, 收尾进 completed。
         let mut report = PumpReport::default();
@@ -4593,7 +5059,8 @@ mod tests {
         let state = Rc::new(RefCell::new(Cd2Host::with_ready_folder()));
         {
             let mut fake = state.borrow_mut();
-            fake.workspace_files.push(("周杰伦 - 晴天.flac".to_string(), 1024));
+            fake.workspace_files
+                .push(("周杰伦 - 晴天.flac".to_string(), 1024));
             fake.task_script = vec![vec![], vec![(2_000_000_000, 4, 0, 1024)]];
         }
         install_cd2_host(state.clone());
@@ -4607,7 +5074,10 @@ mod tests {
         assert_eq!(task.attempts, 2);
         assert!(task.cd2_ref.is_empty(), "失败后清基线, 下轮重提交");
         assert!(task.error.contains("CD2 上传失败"), "{}", task.error);
-        assert!(report.completed.is_empty() && report.failed.is_empty(), "{report:?}");
+        assert!(
+            report.completed.is_empty() && report.failed.is_empty(),
+            "{report:?}"
+        );
         crate::host::testhost::clear();
     }
 
@@ -4617,7 +5087,8 @@ mod tests {
         let state = Rc::new(RefCell::new(Cd2Host::with_ready_folder()));
         {
             let mut fake = state.borrow_mut();
-            fake.workspace_files.push(("周杰伦 - 晴天.flac".to_string(), 29_969_443));
+            fake.workspace_files
+                .push(("周杰伦 - 晴天.flac".to_string(), 29_969_443));
             fake.remote_files.push((
                 "/115open/音乐/音乐下载".to_string(),
                 "周杰伦 - 晴天.flac".to_string(),
@@ -4640,7 +5111,10 @@ mod tests {
     #[test]
     fn cd2_delivery_registers_missing_local_folder_once() {
         let state = Rc::new(RefCell::new(Cd2Host::default()));
-        state.borrow_mut().workspace_files.push(("周杰伦 - 晴天.flac".to_string(), 1024));
+        state
+            .borrow_mut()
+            .workspace_files
+            .push(("周杰伦 - 晴天.flac".to_string(), 1024));
         install_cd2_host(state.clone());
         let mut settings = cd2_settings("tok");
         settings.cd2_register_host = "/volume1/docker/dian115/dian115AI".to_string();
@@ -4654,7 +5128,11 @@ mod tests {
             vec!["/volume1/docker/dian115/dian115AI".to_string()]
         );
         advance_copying(&settings, &mut round, &mut task, &mut report);
-        assert_eq!(state.borrow().added_folders.len(), 1, "轮内缓存: 不重复注册");
+        assert_eq!(
+            state.borrow().added_folders.len(),
+            1,
+            "轮内缓存: 不重复注册"
+        );
         crate::host::testhost::clear();
     }
 
@@ -4665,7 +5143,8 @@ mod tests {
         {
             let mut fake = state.borrow_mut();
             for index in 0..3 {
-                fake.workspace_files.push((format!("歌手 - 歌{index}.flac"), 10));
+                fake.workspace_files
+                    .push((format!("歌手 - 歌{index}.flac"), 10));
             }
         }
         install_cd2_host(state.clone());
@@ -4681,7 +5160,13 @@ mod tests {
         pump(&mut ids).unwrap();
         assert_eq!(state.borrow().copy_calls.len(), 3, "一轮里三条都提交");
         let index = tasks::load_index();
-        assert_eq!(index.iter().filter(|e| e.status == tasks::STATUS_COPYING).count(), 3);
+        assert_eq!(
+            index
+                .iter()
+                .filter(|e| e.status == tasks::STATUS_COPYING)
+                .count(),
+            3
+        );
         for entry in &index {
             let full = tasks::load_task(&entry.id).unwrap();
             assert!(!full.cd2_ref.is_empty(), "{} 未记基线: {full:?}", entry.id);
@@ -4738,14 +5223,23 @@ mod tests {
         assert_eq!(outcome["sent"], false);
         assert_eq!(outcome["status"], 400);
         assert!(
-            outcome["body"].as_str().unwrap().contains("invalid notification payload"),
+            outcome["body"]
+                .as_str()
+                .unwrap()
+                .contains("invalid notification payload"),
             "{outcome}"
         );
-        assert!(outcome["message"].as_str().unwrap().contains("400"), "{outcome}");
+        assert!(
+            outcome["message"].as_str().unwrap().contains("400"),
+            "{outcome}"
+        );
         // 留档已写 KV(state 的 notify_diag 读它)。
         let diag = notify_diag_doc();
         assert_eq!(diag["status"], 400);
-        assert!(diag["body"].as_str().unwrap().contains("invalid notification payload"));
+        assert!(diag["body"]
+            .as_str()
+            .unwrap()
+            .contains("invalid notification payload"));
         crate::host::testhost::clear();
     }
 }

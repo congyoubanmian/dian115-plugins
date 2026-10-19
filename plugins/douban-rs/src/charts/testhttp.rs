@@ -74,7 +74,9 @@ impl ScriptedHttp {
     /// 装上本线程的 host.call 替身。
     pub(crate) fn install(&self) -> Guard {
         let inner = Rc::clone(&self.inner);
-        testhost::install(Box::new(move |request: &HostCallRequest| handle(&inner, request)));
+        testhost::install(Box::new(move |request: &HostCallRequest| {
+            handle(&inner, request)
+        }));
         Guard
     }
 

@@ -185,7 +185,7 @@ fn var_field(data: &[u8], num: u32) -> Option<u64> {
 }
 
 /// 收集全部 `num` 字段的嵌套消息。
-fn msg_fields<'a>(data: &'a [u8], num: u32) -> Vec<&'a [u8]> {
+fn msg_fields(data: &[u8], num: u32) -> Vec<&[u8]> {
     let mut out = Vec::new();
     for (field, value) in FieldIter::new(data) {
         if field == num {
@@ -445,7 +445,7 @@ impl Cd2 {
                 uploaded_bytes: var_field(entry, 13).unwrap_or(0),
                 error: msg_fields(entry, 15).first().and_then(|e| first_string(e)),
             };
-            if best.as_ref().map_or(true, |(time, _)| start_time >= *time) {
+            if best.as_ref().is_none_or(|(time, _)| start_time >= *time) {
                 best = Some((start_time, info));
             }
         }
@@ -563,7 +563,10 @@ mod tests {
             Err(HostError::new(format!("unexpected: {}", request.path)))
         }));
         let cd2 = Cd2::new("http://127.0.0.1:19798", "t");
-        assert_eq!(cd2.find_file("/115open/音乐", "x.flac").unwrap(), Some(123456));
+        assert_eq!(
+            cd2.find_file("/115open/音乐", "x.flac").unwrap(),
+            Some(123456)
+        );
         crate::host::testhost::clear();
     }
 
@@ -595,7 +598,9 @@ mod tests {
             Err(HostError::new(format!("unexpected: {}", request.path)))
         }));
         let cd2 = Cd2::new("http://127.0.0.1:19798", "t");
-        assert!(cd2.add_local_folder("/volume1/docker/dian115/dian115AI").unwrap());
+        assert!(cd2
+            .add_local_folder("/volume1/docker/dian115/dian115AI")
+            .unwrap());
         crate::host::testhost::clear();
     }
 
@@ -603,7 +608,11 @@ mod tests {
     fn list_storages_reads_kind_and_namespace_path() {
         let mut reply = Vec::new();
         for (kind, path) in [("LocalFsAPI", "/dian115AI"), ("115open", "/115open")] {
-            let entry = concat(&[field_str(1, kind), field_str(2, "acct"), field_str(10, path)]);
+            let entry = concat(&[
+                field_str(1, kind),
+                field_str(2, "acct"),
+                field_str(10, path),
+            ]);
             reply.extend_from_slice(&field_msg(1, &entry));
         }
         let body = grpc_body(&reply);
@@ -630,7 +639,10 @@ mod tests {
             entry.extend_from_slice(&field_var(12, 100));
             entry.extend_from_slice(&field_var(13, uploaded));
             // startTime 是嵌套消息: #1 秒 + #2 纳秒分数(真机形态)。
-            entry.extend_from_slice(&field_msg(17, &concat(&[field_var(1, sec), field_var(2, nanos)])));
+            entry.extend_from_slice(&field_msg(
+                17,
+                &concat(&[field_var(1, sec), field_var(2, nanos)]),
+            ));
             entry
         };
         // 两条同源任务: startTime 大的一条胜出(旧任务可能仍挂在列表里)。
@@ -653,7 +665,11 @@ mod tests {
         assert_eq!(found.uploaded_bytes, 40);
         assert_eq!(found.total_bytes, 100);
         assert_eq!(found.start_time, 2000 * 1_000_000_000 + 7);
-        assert_eq!(cd2.copy_task("/dian115AI/none.flac", "/115open/音乐").unwrap(), None);
+        assert_eq!(
+            cd2.copy_task("/dian115AI/none.flac", "/115open/音乐")
+                .unwrap(),
+            None
+        );
         crate::host::testhost::clear();
     }
 }

@@ -125,11 +125,16 @@ impl Runtime {
         let url = format!("{}/get/{}", server, path_escape(uuid));
         let got = self.http_get(&url, "application/json");
         if let Some(err) = got.error {
-            return Err(OpError::new(format!("CookieCloud 不可达: {}", err.message())));
+            return Err(OpError::new(format!(
+                "CookieCloud 不可达: {}",
+                err.message()
+            )));
         }
         // Go: `status == 200 && strings.Contains(string(body), "Not Found")`
         if got.status == 200 && contains_bytes(&got.body, b"Not Found") {
-            return Err(OpError::new("CookieCloud 无此 UUID 数据（浏览器扩展还没同步过）"));
+            return Err(OpError::new(
+                "CookieCloud 无此 UUID 数据（浏览器扩展还没同步过）",
+            ));
         }
         // Go 里这一支在 httpGet 之后不可达(err != nil 已经先返回); 照抄保留。
         if got.status >= 400 {
@@ -141,10 +146,16 @@ impl Runtime {
         }
         let result: CookieCloudResult = match crate::model::decode(&got.body) {
             Some(result) => result,
-            None => return Err(OpError::new("CookieCloud 响应异常（UUID 不存在或服务端版本过旧）")),
+            None => {
+                return Err(OpError::new(
+                    "CookieCloud 响应异常（UUID 不存在或服务端版本过旧）",
+                ))
+            }
         };
         if result.encrypted.is_empty() {
-            return Err(OpError::new("CookieCloud 响应异常（UUID 不存在或服务端版本过旧）"));
+            return Err(OpError::new(
+                "CookieCloud 响应异常（UUID 不存在或服务端版本过旧）",
+            ));
         }
         // 全量浏览器 cookie 的密文可达数 MB, 在 WASM 解释器里解密会撞前台 10 秒强杀线,
         // 因此按 Go 的口径比较 **encrypted 文本长度**, 超限直接指引限域, 不再解密。
@@ -243,7 +254,7 @@ pub fn aes_cbc_decrypt(data: &[u8], key: &[u8], iv: &[u8]) -> Result<Vec<u8>, Op
     if key.len() != 16 && key.len() != 32 {
         return Err(OpError::new(format!("非法密钥长度 {}", key.len())));
     }
-    if data.is_empty() || data.len() % 16 != 0 {
+    if data.is_empty() || !data.len().is_multiple_of(16) {
         return Err(OpError::new(format!("密文长度非法 ({})", data.len())));
     }
     let mut buffer = data.to_vec();
@@ -252,14 +263,14 @@ pub fn aes_cbc_decrypt(data: &[u8], key: &[u8], iv: &[u8]) -> Result<Vec<u8>, Op
     // IV 在本模块里恒为 16 字节(零 IV 或 EVP_BytesToKey 的产物), new_from_slices 只在
     // 密钥/IV 长度不符时失败 —— 密钥长度上面已检查, IV 不符属不可达分支。
     let plain: Vec<u8> = if key.len() == 16 {
-        let mut decryptor =
+        let decryptor =
             Decryptor::<Aes128>::new_from_slices(key, iv).map_err(|_| invalid_length())?;
         decryptor
             .decrypt_padded_mut::<Pkcs7>(&mut buffer)
             .map_err(|_| pad_error())?
             .to_vec()
     } else {
-        let mut decryptor =
+        let decryptor =
             Decryptor::<Aes256>::new_from_slices(key, iv).map_err(|_| invalid_length())?;
         decryptor
             .decrypt_padded_mut::<Pkcs7>(&mut buffer)
@@ -305,7 +316,7 @@ pub fn douban_cookie_from_cloud(cookie_data: &BTreeMap<String, Value>) -> (Strin
     }
     // CookieCloud 保存的值可能带引号(dbcl2="123:token"), 拼 URL 前要去掉。
     let uid = dbcl2
-        .splitn(2, ':')
+        .split(':')
         .next()
         .unwrap_or("")
         .trim_matches('"')
@@ -340,7 +351,9 @@ fn contains_bytes(haystack: &[u8], needle: &[u8]) -> bool {
     if needle.is_empty() {
         return true;
     }
-    haystack.windows(needle.len()).any(|window| window == needle)
+    haystack
+        .windows(needle.len())
+        .any(|window| window == needle)
 }
 
 /// 解码失败时回显 serde 的错误文本(Go 那边是 `json.Unmarshal` 的 `%v`)。
@@ -380,7 +393,10 @@ mod tests {
             doc["password"].as_str().unwrap(),
         );
         assert_eq!(material.len(), 16, "密钥材料固定 16 字节");
-        assert_eq!(String::from_utf8(material).unwrap(), doc["material"].as_str().unwrap());
+        assert_eq!(
+            String::from_utf8(material).unwrap(),
+            doc["material"].as_str().unwrap()
+        );
     }
 
     /// 每个向量都必须能解密回夹具里记录的**逐字节**明文。
@@ -390,7 +406,10 @@ mod tests {
         let uuid = doc["uuid"].as_str().unwrap();
         let password = doc["password"].as_str().unwrap();
         let vectors = doc["vectors"].as_array().unwrap();
-        assert!(vectors.len() >= 5, "至少覆盖 legacy 三种形态 + fixed + 非 JSON 明文");
+        assert!(
+            vectors.len() >= 5,
+            "至少覆盖 legacy 三种形态 + fixed + 非 JSON 明文"
+        );
         for vector in vectors {
             let name = vector["name"].as_str().unwrap();
             let plain = cookie_cloud_decrypt(
@@ -513,7 +532,10 @@ mod tests {
         let password = doc["password"].as_str().unwrap();
         let vector = vector(&doc, "legacy_modern_array");
         let padded = vector["encrypted"].as_str().unwrap();
-        assert!(padded.ends_with("=="), "这条向量必须带 base64 padding: {padded}");
+        assert!(
+            padded.ends_with("=="),
+            "这条向量必须带 base64 padding: {padded}"
+        );
         let unpadded = padded.trim_end_matches('=');
         for input in [padded, unpadded] {
             let plain = cookie_cloud_decrypt(input, "legacy", uuid, password)
@@ -528,20 +550,28 @@ mod tests {
     #[test]
     fn aes_cbc_decrypt_guards() {
         assert_eq!(
-            aes_cbc_decrypt(&[0u8; 16], &[0u8; 20], &[0u8; 16]).unwrap_err().message(),
+            aes_cbc_decrypt(&[0u8; 16], &[0u8; 20], &[0u8; 16])
+                .unwrap_err()
+                .message(),
             "非法密钥长度 20"
         );
         assert_eq!(
-            aes_cbc_decrypt(&[], &[0u8; 16], &[0u8; 16]).unwrap_err().message(),
+            aes_cbc_decrypt(&[], &[0u8; 16], &[0u8; 16])
+                .unwrap_err()
+                .message(),
             "密文长度非法 (0)"
         );
         assert_eq!(
-            aes_cbc_decrypt(&[0u8; 15], &[0u8; 16], &[0u8; 16]).unwrap_err().message(),
+            aes_cbc_decrypt(&[0u8; 15], &[0u8; 16], &[0u8; 16])
+                .unwrap_err()
+                .message(),
             "密文长度非法 (15)"
         );
         // 全零密文/全零 key 解出来的末字节是 0x3a(非 1..16) → 填充校验失败
         assert_eq!(
-            aes_cbc_decrypt(&[0u8; 16], &[0u8; 16], &[0u8; 16]).unwrap_err().message(),
+            aes_cbc_decrypt(&[0u8; 16], &[0u8; 16], &[0u8; 16])
+                .unwrap_err()
+                .message(),
             "填充校验失败（密钥不对或数据损坏）"
         );
     }
@@ -563,14 +593,21 @@ mod tests {
         let runtime = Runtime::new();
         // server 带首尾空白与结尾斜杠, uuid 带空白 —— 都要被 trim
         let data = runtime
-            .cookie_cloud_pull("  http://127.0.0.1:8088/  ", "  cc-test-uuid  ", "cc-test-pass")
+            .cookie_cloud_pull(
+                "  http://127.0.0.1:8088/  ",
+                "  cc-test-uuid  ",
+                "cc-test-pass",
+            )
             .expect("必须能拉取并解密");
         assert_eq!(data.len(), 2, "douban.com 与 example.com 两个域名");
         assert!(data.contains_key("douban.com"));
         let (header, uid, count) = douban_cookie_from_cloud(&data);
         assert_eq!(uid, "123456789");
         assert_eq!(count, 5);
-        assert!(header.contains("dbcl2=123456789:fakeTokenAbCdEf"), "实际: {header}");
+        assert!(
+            header.contains("dbcl2=123456789:fakeTokenAbCdEf"),
+            "实际: {header}"
+        );
         assert!(header.contains("ck=fakeCkValue"));
 
         let requests = host.requests();
@@ -599,18 +636,27 @@ mod tests {
         let runtime = Runtime::new();
         // ① 未配置
         assert_eq!(
-            runtime.cookie_cloud_pull("", "u", "k").unwrap_err().message(),
+            runtime
+                .cookie_cloud_pull("", "u", "k")
+                .unwrap_err()
+                .message(),
             "CookieCloud 地址或 UUID 未配置"
         );
         assert_eq!(
-            runtime.cookie_cloud_pull("http://x", "   ", "k").unwrap_err().message(),
+            runtime
+                .cookie_cloud_pull("http://x", "   ", "k")
+                .unwrap_err()
+                .message(),
             "CookieCloud 地址或 UUID 未配置"
         );
 
         // ② 200 且 body 含 "Not Found"
         let host = TestHost::install(vec![Route::new("GET", "http://x/get/u", 200, b"Not Found")]);
         assert_eq!(
-            runtime.cookie_cloud_pull("http://x", "u", "k").unwrap_err().message(),
+            runtime
+                .cookie_cloud_pull("http://x", "u", "k")
+                .unwrap_err()
+                .message(),
             "CookieCloud 无此 UUID 数据（浏览器扩展还没同步过）"
         );
         drop(host);
@@ -618,7 +664,10 @@ mod tests {
         // ③ host.call 失败
         let host = TestHost::install(vec![Route::fail("GET", "http://x/get/")]);
         assert_eq!(
-            runtime.cookie_cloud_pull("http://x", "u", "k").unwrap_err().message(),
+            runtime
+                .cookie_cloud_pull("http://x", "u", "k")
+                .unwrap_err()
+                .message(),
             "CookieCloud 不可达: host_call 返回长度 0"
         );
         drop(host);
@@ -626,16 +675,26 @@ mod tests {
         // ④ HTTP 4xx/5xx(Go 的 httpGet 也把它变成 error)
         let host = TestHost::install(vec![Route::new("GET", "http://x/get/", 500, b"boom")]);
         assert_eq!(
-            runtime.cookie_cloud_pull("http://x", "u", "k").unwrap_err().message(),
+            runtime
+                .cookie_cloud_pull("http://x", "u", "k")
+                .unwrap_err()
+                .message(),
             "CookieCloud 不可达: HTTP 500"
         );
         drop(host);
 
         // ⑤ 响应不是 JSON / encrypted 为空
-        for body in ["<html>oops</html>", r#"{"encrypted":"","crypto_type":"legacy"}"#, "{}"] {
+        for body in [
+            "<html>oops</html>",
+            r#"{"encrypted":"","crypto_type":"legacy"}"#,
+            "{}",
+        ] {
             let host = TestHost::install(vec![Route::json("GET", "http://x/get/", body)]);
             assert_eq!(
-                runtime.cookie_cloud_pull("http://x", "u", "k").unwrap_err().message(),
+                runtime
+                    .cookie_cloud_pull("http://x", "u", "k")
+                    .unwrap_err()
+                    .message(),
                 "CookieCloud 响应异常（UUID 不存在或服务端版本过旧）",
                 "body={body}"
             );
@@ -653,7 +712,8 @@ mod tests {
         let runtime = Runtime::new();
         let err = runtime.cookie_cloud_pull("http://x", "u", "k").unwrap_err();
         assert!(
-            err.message().starts_with("同步数据过大(0.5MB, 上限 512KB)："),
+            err.message()
+                .starts_with("同步数据过大(0.5MB, 上限 512KB)："),
             "实际: {}",
             err.message()
         );
@@ -665,7 +725,7 @@ mod tests {
             r#"{{"encrypted":"{}","crypto_type":"legacy"}}"#,
             "A".repeat(MAX_COOKIE_CLOUD_BYTES)
         );
-        let host = TestHost::install(vec![Route::json("GET", "http://x/get/", &at_limit)]);
+        let _host = TestHost::install(vec![Route::json("GET", "http://x/get/", &at_limit)]);
         let err = runtime.cookie_cloud_pull("http://x", "u", "k").unwrap_err();
         assert!(
             !err.message().starts_with("同步数据过大"),
@@ -680,7 +740,7 @@ mod tests {
         let vector = vector(&doc, "legacy_non_json_plaintext");
         let body = serde_json::json!({"encrypted": vector["encrypted"], "crypto_type": "legacy"})
             .to_string();
-        let host = TestHost::install(vec![Route::json("GET", "http://x/get/cc-test-uuid", &body)]);
+        let _host = TestHost::install(vec![Route::json("GET", "http://x/get/cc-test-uuid", &body)]);
         let runtime = Runtime::new();
         // 口令与 UUID 都要用夹具里的值: 密钥材料 = md5(uuid + "-" + password) 的 hex 前 16 位,
         // 传错 uuid 会先撞上"填充校验失败", 测不到"解密成功但明文不是 JSON"这条分支。
@@ -724,19 +784,28 @@ mod tests {
             serde_json::json!({"example.com": [{"name": "sid", "value": "x"}]}),
         )
         .unwrap();
-        assert_eq!(douban_cookie_from_cloud(&none_douban), (String::new(), String::new(), 0));
+        assert_eq!(
+            douban_cookie_from_cloud(&none_douban),
+            (String::new(), String::new(), 0)
+        );
 
         let no_dbcl2: BTreeMap<String, Value> = serde_json::from_value(
             serde_json::json!({"douban.com": [{"name": "ck", "value": "v"}]}),
         )
         .unwrap();
-        assert_eq!(douban_cookie_from_cloud(&no_dbcl2), (String::new(), String::new(), 1));
+        assert_eq!(
+            douban_cookie_from_cloud(&no_dbcl2),
+            (String::new(), String::new(), 1)
+        );
 
         // 数组形态解不出来时回落到对象形态(Go 的两段式)
         let mixed: BTreeMap<String, Value> = serde_json::from_value(serde_json::json!({
             "douban.com": [1, 2, 3]
         }))
         .unwrap();
-        assert_eq!(douban_cookie_from_cloud(&mixed), (String::new(), String::new(), 0));
+        assert_eq!(
+            douban_cookie_from_cloud(&mixed),
+            (String::new(), String::new(), 0)
+        );
     }
 }

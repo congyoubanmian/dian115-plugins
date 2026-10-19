@@ -35,7 +35,10 @@ fn section_after_cuts_real_chart_page() {
     assert!(segment.contains("罗斯"));
 
     // 锚点不存在时 Go 原样返回整份文档
-    assert_eq!(section_after(&html, "id=\"nope\"", "", "</ul>"), html.as_str());
+    assert_eq!(
+        section_after(&html, "id=\"nope\"", "", "</ul>"),
+        html.as_str()
+    );
     // 即将上映页在 Go 里的调用形式: open/close 都为空 → 从锚点到结尾
     let coming = text(COMING_HTML);
     let tail = section_after(&coming, "id=\"showing-soon\"", "", "");
@@ -79,32 +82,62 @@ fn source_cost_orders_json_before_html() {
 #[test]
 fn chart_item_serializes_with_go_field_names() {
     let document: serde_json::Value = serde_json::from_slice(STATE_JSON).expect("夹具是合法 JSON");
-    let lists = document["snapshot"]["lists"].as_object().expect("有榜单快照");
+    let lists = document["snapshot"]["lists"]
+        .as_object()
+        .expect("有榜单快照");
 
     // 口碑榜条目带 rank(Go 的 `rank,omitempty`), hotness 是 0 → 不省略
     let movie_wom = lists["movie_wom"].as_array().expect("movie_wom 是数组");
-    let mut keys: Vec<&str> = movie_wom[0].as_object().unwrap().keys().map(String::as_str).collect();
+    let mut keys: Vec<&str> = movie_wom[0]
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
     keys.sort_unstable();
     assert_eq!(
         keys,
-        vec!["douban_ref", "hotness", "poster_url", "rank", "rate", "title", "url"],
+        vec![
+            "douban_ref",
+            "hotness",
+            "poster_url",
+            "rank",
+            "rate",
+            "title",
+            "url"
+        ],
         "空 year 被 omitempty 省掉, rank 非空要出现"
     );
 
     // hot 榜单条目没有 rank(空串被省略)
     let hot = lists["hot"].as_array().expect("hot 是数组");
-    let mut keys: Vec<&str> = hot[0].as_object().unwrap().keys().map(String::as_str).collect();
+    let mut keys: Vec<&str> = hot[0]
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
     keys.sort_unstable();
     assert_eq!(
         keys,
-        vec!["douban_ref", "hotness", "poster_url", "rate", "title", "url"]
+        vec![
+            "douban_ref",
+            "hotness",
+            "poster_url",
+            "rate",
+            "title",
+            "url"
+        ]
     );
 
     // 值本身: 真实抓取结果(douban_ref 前缀 / 链接形态)
     assert_eq!(hot[0]["douban_ref"], "db:subj:36850814");
     assert_eq!(hot[0]["url"], "https://movie.douban.com/subject/36850814/");
     assert_eq!(movie_wom[0]["rank"], "1");
-    assert_eq!(movie_wom[0]["url"], "https://movie.douban.com/subject/35322132/");
+    assert_eq!(
+        movie_wom[0]["url"],
+        "https://movie.douban.com/subject/35322132/"
+    );
 
     // 反序列化回 model::ChartItem(公开 API)后字段一一对上
     let item: plugin::model::ChartItem =
@@ -126,6 +159,9 @@ fn subjects_json_fixture_decodes() {
     assert_eq!(parsed.subjects[0].id, "36850814");
     assert_eq!(parsed.subjects[0].title, "年会不能停！2");
     assert_eq!(parsed.subjects[0].rate, "6.6");
-    assert_eq!(parsed.subjects[0].url, "https://movie.douban.com/subject/36850814/");
+    assert_eq!(
+        parsed.subjects[0].url,
+        "https://movie.douban.com/subject/36850814/"
+    );
     assert!(parsed.subjects[0].cover.starts_with("https://img"));
 }

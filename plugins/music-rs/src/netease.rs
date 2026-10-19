@@ -87,10 +87,10 @@ use md5::{Digest, Md5};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
-use crate::util;
 use crate::clock;
 use crate::host::{self, HostCallRequest, HostCallResponse};
 use crate::store;
+use crate::util;
 
 /// 空桩统一返回值。
 ///
@@ -236,7 +236,8 @@ pub fn eapi_path(api_url: &str) -> String {
 pub fn eapi_params(api_url: &str, payload: &Value) -> String {
     let path = eapi_path(api_url);
     // Go `mustJSON`(wasm.go:121): 序列化失败回退到固定错误信封(对 Value 不可达)。
-    let payload_json = serde_json::to_vec(payload).unwrap_or_else(|_| crate::util::ENCODE_FAILED.to_vec());
+    let payload_json =
+        serde_json::to_vec(payload).unwrap_or_else(|_| crate::util::ENCODE_FAILED.to_vec());
 
     let mut digest_input = Vec::with_capacity(32 + path.len() + payload_json.len());
     digest_input.extend_from_slice(b"nobody");
@@ -283,7 +284,10 @@ pub fn request_id(unix_nanos: u64) -> u64 {
 
 /// Go `netease.go:113-119`: 从 `level` 命中处向下逐级尝试; 未命中(含空串)从最高档开始。
 pub fn level_ladder(level: &str) -> &'static [&'static str] {
-    let start = LEVELS.iter().position(|candidate| *candidate == level).unwrap_or(0);
+    let start = LEVELS
+        .iter()
+        .position(|candidate| *candidate == level)
+        .unwrap_or(0);
     &LEVELS[start..]
 }
 
@@ -295,7 +299,10 @@ pub fn level_ladder(level: &str) -> &'static [&'static str] {
 /// 与 JS 的 `indexOf` 一样区分大小写; 注意取的是**升序表**而非 [`LEVELS`]
 /// (两表对 `dolby` 的位次不同, 各自照抄来源)。
 pub fn qualities_for_level(max_level: &str) -> Vec<&'static str> {
-    let max_index = match LEVELS_ASCENDING.iter().position(|level| *level == max_level) {
+    let max_index = match LEVELS_ASCENDING
+        .iter()
+        .position(|level| *level == max_level)
+    {
         Some(index) => index,
         None => return Vec::new(),
     };
@@ -432,11 +439,12 @@ pub fn save_cookie_string(raw: &str) -> Result<Value, String> {
             jar.insert(name, value);
         }
     }
-    let has_login = jar.get("MUSIC_U").map_or(false, |v| !v.is_empty())
-        || jar.get("MUSIC_A").map_or(false, |v| !v.is_empty());
+    let has_login = jar.get("MUSIC_U").is_some_and(|v| !v.is_empty())
+        || jar.get("MUSIC_A").is_some_and(|v| !v.is_empty());
     if !has_login {
         return Err(
-            "未找到 MUSIC_U(或 MUSIC_A); 请确认复制的是已登录 music.163.com 的 Cookie 头".to_string(),
+            "未找到 MUSIC_U(或 MUSIC_A); 请确认复制的是已登录 music.163.com 的 Cookie 头"
+                .to_string(),
         );
     }
     save_cookies(&jar)?;
@@ -445,8 +453,16 @@ pub fn save_cookie_string(raw: &str) -> Result<Value, String> {
 
 /// 手动粘贴白名单: 已知的网易云 cookie 名。
 pub const NETEASE_COOKIE_NAMES: [&str; 10] = [
-    "MUSIC_U", "MUSIC_A", "MUSIC_A_T", "MUSIC_R_T", "MUSIC_SNS", "NMTID", "__csrf",
-    "__csrf_token", "_ntes_nuid", "_ntes_nnid",
+    "MUSIC_U",
+    "MUSIC_A",
+    "MUSIC_A_T",
+    "MUSIC_R_T",
+    "MUSIC_SNS",
+    "NMTID",
+    "__csrf",
+    "__csrf_token",
+    "_ntes_nuid",
+    "_ntes_nnid",
 ];
 
 /// 合并写入会话 cookie(键 [`COOKIE_KEY`])。
@@ -794,8 +810,8 @@ pub fn qr_poll(key: &str) -> Result<Value, String> {
                 cookies.insert(name, value);
             }
         }
-        let has_login = cookies.get("MUSIC_U").map_or(false, |v| !v.is_empty())
-            || cookies.get("MUSIC_A").map_or(false, |v| !v.is_empty());
+        let has_login = cookies.get("MUSIC_U").is_some_and(|v| !v.is_empty())
+            || cookies.get("MUSIC_A").is_some_and(|v| !v.is_empty());
         if has_login {
             // Go `netease.go:225` 忽略落盘错误(登录态以 KV 为准, 失败不改变本次结果)。
             let _ = save_cookies(&cookies);
@@ -906,7 +922,11 @@ pub fn song_url(song_id: &str, level: &str) -> Result<SongUrl, String> {
             continue;
         }
         let ext = item.kind.unwrap_or_default();
-        let ext = if ext.is_empty() { "flac".to_string() } else { ext };
+        let ext = if ext.is_empty() {
+            "flac".to_string()
+        } else {
+            ext
+        };
         return Ok(SongUrl {
             url,
             ext,
@@ -1025,7 +1045,11 @@ impl PlaylistIndex {
             .collect();
         // `pl.trackCount ?? ids.length`(`??` 只认 null/undefined, 0 也是值)。
         let total = info.track_count.unwrap_or(ids.len() as i64);
-        Ok(PlaylistIndex { name: info.name.unwrap_or_default(), total, ids })
+        Ok(PlaylistIndex {
+            name: info.name.unwrap_or_default(),
+            total,
+            ids,
+        })
     }
 
     /// 整单曲目数(`trackCount`, 缺失时回退 `trackIds` 长度)。
@@ -1044,25 +1068,46 @@ impl PlaylistIndex {
     pub fn songs(&self, page: u32, page_size: u32) -> Result<Value, String> {
         // `ids.slice(start, start + pageSize)`, `start = (page - 1) * pageSize`;
         // 起点为负(JS 会落到空页)或越界都按空页处理。
-        let start = i64::from(page).saturating_sub(1).saturating_mul(i64::from(page_size));
+        let start = i64::from(page)
+            .saturating_sub(1)
+            .saturating_mul(i64::from(page_size));
         if start < 0 {
-            return Ok(playlist_page(&self.name, self.total, page, page_size, Vec::new()));
+            return Ok(playlist_page(
+                &self.name,
+                self.total,
+                page,
+                page_size,
+                Vec::new(),
+            ));
         }
         let start = (start as usize).min(self.ids.len());
         let end = start.saturating_add(page_size as usize).min(self.ids.len());
         let page_ids = &self.ids[start..end];
         if page_ids.is_empty() {
-            return Ok(playlist_page(&self.name, self.total, page, page_size, Vec::new()));
+            return Ok(playlist_page(
+                &self.name,
+                self.total,
+                page,
+                page_size,
+                Vec::new(),
+            ));
         }
 
         let mut tracks: Vec<Value> = Vec::new();
         for chunk in page_ids.chunks(200) {
             // `c=[{"id":..},..]&ids=[..,..]`(sidecar `server.mjs:326-333`)。
             let c = serde_json::to_string(
-                &chunk.iter().map(|value| json!({ "id": value })).collect::<Vec<_>>(),
+                &chunk
+                    .iter()
+                    .map(|value| json!({ "id": value }))
+                    .collect::<Vec<_>>(),
             )
             .unwrap_or_default();
-            let ids_text = chunk.iter().map(i64::to_string).collect::<Vec<_>>().join(",");
+            let ids_text = chunk
+                .iter()
+                .map(i64::to_string)
+                .collect::<Vec<_>>()
+                .join(",");
             let form = format!("c={}&ids=[{}]", query_escape(&c), ids_text);
             let response = post_form(SONG_DETAIL_URL, playlist_form_headers(), &form)?;
             let body = store::decode_body(&response).unwrap_or_default();
@@ -1072,7 +1117,9 @@ impl PlaylistIndex {
         }
 
         let songs: Vec<Value> = tracks.iter().map(playlist_song_from_value).collect();
-        Ok(playlist_page(&self.name, self.total, page, page_size, songs))
+        Ok(playlist_page(
+            &self.name, self.total, page, page_size, songs,
+        ))
     }
 }
 
@@ -1122,8 +1169,12 @@ pub fn playlist_song_from_value(song: &Value) -> Value {
         .unwrap_or_default();
     // `(t.al || t.album)`: al 是对象(含空对象)就用 al, 否则 album。
     let album = object_field(song, "al").or_else(|| object_field(song, "album"));
-    let album_name = album.and_then(|album| truthy_string(album, "name")).unwrap_or_default();
-    let cover = album.and_then(|album| truthy_string(album, "picUrl")).unwrap_or_default();
+    let album_name = album
+        .and_then(|album| truthy_string(album, "name"))
+        .unwrap_or_default();
+    let cover = album
+        .and_then(|album| truthy_string(album, "picUrl"))
+        .unwrap_or_default();
     // `t.dt || t.duration || 0`: dt 为 0 时回退 duration。
     let duration_ms = number_field(song, "dt")
         .filter(|value| *value != 0)
@@ -1196,7 +1247,11 @@ mod tests {
     fn go_trim_space_matches_go_unicode_isspace() {
         assert_eq!(go_trim_space("  a b  "), "a b");
         assert_eq!(go_trim_space("\t\n a \r\n"), "a");
-        assert_eq!(go_trim_space("\u{85}a\u{a0}"), "a", "Go unicode.IsSpace 认 NEL/NBSP");
+        assert_eq!(
+            go_trim_space("\u{85}a\u{a0}"),
+            "a",
+            "Go unicode.IsSpace 认 NEL/NBSP"
+        );
         assert_eq!(
             go_trim_space("\u{3000}a\u{3000}"),
             "a",
@@ -1304,7 +1359,10 @@ mod tests {
             let mut state = shared.borrow_mut();
             // 歌单请求头先读 KV 里的 cookie: 未登录 → 404(空 jar)。
             if request.path.starts_with("/api/plugin-runtime/storage/") {
-                return Ok(HostCallResponse { status: 404, ..HostCallResponse::default() });
+                return Ok(HostCallResponse {
+                    status: 404,
+                    ..HostCallResponse::default()
+                });
             }
             if request.method == "GET" && request.path.starts_with(PLAYLIST_DETAIL_URL) {
                 state.v6_calls += 1;
@@ -1347,18 +1405,32 @@ mod tests {
             assert_eq!(value["page"], page);
             assert_eq!(value["page_size"], 100);
             assert_eq!(value["total"], 1000);
-            assert_eq!(value["songs"].as_array().unwrap().len(), 100, "第 {page} 页 100 首");
+            assert_eq!(
+                value["songs"].as_array().unwrap().len(),
+                100,
+                "第 {page} 页 100 首"
+            );
         }
 
         // 越界页与 page=0(起点为负 → JS 空页)都不发 v3。
-        assert!(index.songs(11, 100).unwrap()["songs"].as_array().unwrap().is_empty());
-        assert!(index.songs(0, 100).unwrap()["songs"].as_array().unwrap().is_empty());
+        assert!(index.songs(11, 100).unwrap()["songs"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+        assert!(index.songs(0, 100).unwrap()["songs"]
+            .as_array()
+            .unwrap()
+            .is_empty());
 
         let state = host.borrow();
         assert_eq!(state.v6_calls, 1, "v6 全量索引整批只请求一次");
         assert_eq!(state.v3_ids.len(), 10, "v3 每页一次(空页不发)");
         assert_eq!(state.v3_ids[0], (0..100).collect::<Vec<i64>>());
-        assert_eq!(state.v3_ids[9], (900..1000).collect::<Vec<i64>>(), "第 10 页取 900..999");
+        assert_eq!(
+            state.v3_ids[9],
+            (900..1000).collect::<Vec<i64>>(),
+            "第 10 页取 900..999"
+        );
     }
 
     /// `playlist-songs`(UI 分页浏览)复用同一形态: 一次调用仍是 1×v6 + 当页 v3,

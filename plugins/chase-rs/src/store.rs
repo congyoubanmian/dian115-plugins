@@ -137,7 +137,10 @@ pub fn header_first<'a>(
     // BTreeMap 的键序是确定的(大写在前); Go 遍历 map 的顺序随机, 这里取确定顺序里
     // 第一个非空值列表, 结果稳定。
     matched.sort_by_key(|values| values.is_empty());
-    matched.first().and_then(|values| values.first()).map(String::as_str)
+    matched
+        .first()
+        .and_then(|values| values.first())
+        .map(String::as_str)
 }
 
 /// 解出 `body_base64`。
@@ -211,7 +214,11 @@ pub fn unwrap_value(raw: &[u8]) -> Vec<u8> {
         // 不是合法 JSON / 顶层不是对象: Go 的 Unmarshal 失败分支 → 原样返回
         Err(_) => return raw.to_vec(),
     };
-    if let Some(value) = envelope.data.as_ref().and_then(|data| data.value.as_deref()) {
+    if let Some(value) = envelope
+        .data
+        .as_ref()
+        .and_then(|data| data.value.as_deref())
+    {
         if !value.get().is_empty() {
             return value.get().as_bytes().to_vec();
         }
@@ -233,16 +240,32 @@ pub fn read(key: &str) -> StorageRead {
     if response.status != 200 {
         return StorageRead::default();
     }
-    let etag = header_first(&response.headers, "etag").unwrap_or_default().to_string();
+    let etag = header_first(&response.headers, "etag")
+        .unwrap_or_default()
+        .to_string();
     let raw = match decode_body(&response) {
         Ok(raw) => raw,
-        Err(_) => return StorageRead { value: Vec::new(), etag, ok: false },
+        Err(_) => {
+            return StorageRead {
+                value: Vec::new(),
+                etag,
+                ok: false,
+            }
+        }
     };
     let value = unwrap_value(&raw);
     if !value.is_empty() {
-        return StorageRead { value, etag, ok: true };
+        return StorageRead {
+            value,
+            etag,
+            ok: true,
+        };
     }
-    StorageRead { value: raw, etag, ok: true }
+    StorageRead {
+        value: raw,
+        etag,
+        ok: true,
+    }
 }
 
 /// 只要值, 不关心 ETag。
@@ -285,7 +308,9 @@ fn send_put(
         .with_header("accept", "application/json")
         .with_header("idempotency-key", ids.next_key(key));
     if !if_match.is_empty() {
-        request.headers.insert("if-match".to_string(), if_match.to_string());
+        request
+            .headers
+            .insert("if-match".to_string(), if_match.to_string());
     }
     if !body.is_empty() {
         // Go `wasm.go:210`: base64.RawStdEncoding(不带 padding)
@@ -314,7 +339,10 @@ pub fn put(ids: &mut PutIds, key: &str, value: &[u8]) -> Result<(), StoreError> 
             Ok(raw) if !raw.is_empty() => format!(": {}", trunc(&raw)),
             _ => String::new(),
         };
-        return Err(StoreError(format!("storage PUT HTTP {}{}", response.status, detail)));
+        return Err(StoreError(format!(
+            "storage PUT HTTP {}{}",
+            response.status, detail
+        )));
     }
     Ok(())
 }
@@ -355,7 +383,11 @@ mod tests {
         if let Some(etag) = etag {
             headers.insert("ETag".to_string(), vec![etag.to_string()]);
         }
-        HostCallResponse { status, headers, body_base64: STANDARD_NO_PAD.encode(body) }
+        HostCallResponse {
+            status,
+            headers,
+            body_base64: STANDARD_NO_PAD.encode(body),
+        }
     }
 
     /// 最小内存 KV 宿主: GET/PUT + `pkv_N` 乐观锁 + 宿主信封, 够覆盖存储层契约。
@@ -377,21 +409,36 @@ mod tests {
                         Some(&format!("\"pkv_{}\"", self.revision)),
                         &envelope(value, self.revision),
                     )),
-                    None => Ok(HostCallResponse { status: 404, ..Default::default() }),
+                    None => Ok(HostCallResponse {
+                        status: 404,
+                        ..Default::default()
+                    }),
                 },
                 "PUT" => {
                     let if_match = request.headers.get("if-match").cloned().unwrap_or_default();
-                    let idem = request.headers.get("idempotency-key").cloned().unwrap_or_default();
+                    let idem = request
+                        .headers
+                        .get("idempotency-key")
+                        .cloned()
+                        .unwrap_or_default();
                     self.puts.push((if_match.clone(), idem));
                     if self.concurrent_write {
                         self.concurrent_write = false;
                         self.revision += 1;
-                        return Ok(HostCallResponse { status: 412, ..Default::default() });
+                        return Ok(HostCallResponse {
+                            status: 412,
+                            ..Default::default()
+                        });
                     }
                     if self.value.is_some() && if_match != format!("\"pkv_{}\"", self.revision) {
-                        return Ok(HostCallResponse { status: 412, ..Default::default() });
+                        return Ok(HostCallResponse {
+                            status: 412,
+                            ..Default::default()
+                        });
                     }
-                    let body = STANDARD_NO_PAD.decode(&request.body_base64).unwrap_or_default();
+                    let body = STANDARD_NO_PAD
+                        .decode(&request.body_base64)
+                        .unwrap_or_default();
                     // 宿主只接受 {"value": ...}: 剥掉这层壳再存。
                     let inner = body
                         .strip_prefix(br#"{"value":"#)
@@ -400,7 +447,11 @@ mod tests {
                         .to_vec();
                     self.value = Some(inner);
                     self.revision += 1;
-                    Ok(response(200, Some(&format!("\"pkv_{}\"", self.revision)), b""))
+                    Ok(response(
+                        200,
+                        Some(&format!("\"pkv_{}\"", self.revision)),
+                        b"",
+                    ))
                 }
                 other => Err(HostError::new(format!("意外的方法 {other}"))),
             }
@@ -435,7 +486,11 @@ mod tests {
             vec![0u8, 1, 2, 250, 251, 252, 253, 254, 255],
         ] {
             for padded in [false, true] {
-                let encoded = if padded { STANDARD.encode(&body) } else { STANDARD_NO_PAD.encode(&body) };
+                let encoded = if padded {
+                    STANDARD.encode(&body)
+                } else {
+                    STANDARD_NO_PAD.encode(&body)
+                };
                 let resp = HostCallResponse {
                     status: 200,
                     headers: Default::default(),
@@ -473,18 +528,33 @@ mod tests {
         );
 
         let legacy = r#"{"value":{"a":1}}"#;
-        assert_eq!(String::from_utf8(unwrap_value(legacy.as_bytes())).unwrap(), r#"{"a":1}"#);
+        assert_eq!(
+            String::from_utf8(unwrap_value(legacy.as_bytes())).unwrap(),
+            r#"{"a":1}"#
+        );
 
         let bare = r#"{"revision":1}"#;
-        assert_eq!(String::from_utf8(unwrap_value(bare.as_bytes())).unwrap(), bare);
+        assert_eq!(
+            String::from_utf8(unwrap_value(bare.as_bytes())).unwrap(),
+            bare
+        );
 
         assert_eq!(unwrap_value(b""), Vec::<u8>::new());
 
         // `null` 也是"有值": Go 的 json.RawMessage 会收到这 4 个字节
-        assert_eq!(String::from_utf8(unwrap_value(br#"{"value":null}"#)).unwrap(), "null");
-        assert_eq!(String::from_utf8(unwrap_value(br#"{"data":{"value":null}}"#)).unwrap(), "null");
+        assert_eq!(
+            String::from_utf8(unwrap_value(br#"{"value":null}"#)).unwrap(),
+            "null"
+        );
+        assert_eq!(
+            String::from_utf8(unwrap_value(br#"{"data":{"value":null}}"#)).unwrap(),
+            "null"
+        );
         // data 优先于 value
-        assert_eq!(String::from_utf8(unwrap_value(br#"{"data":{"value":1},"value":2}"#)).unwrap(), "1");
+        assert_eq!(
+            String::from_utf8(unwrap_value(br#"{"data":{"value":1},"value":2}"#)).unwrap(),
+            "1"
+        );
         // 没有 value 字段 → 原样
         assert_eq!(
             String::from_utf8(unwrap_value(br#"{"data":{"key":"state"}}"#)).unwrap(),
@@ -496,7 +566,10 @@ mod tests {
             r#"{"data":5,"value":2}"#
         );
         // data 为 null → Go 里是零值结构体(不报错) → 回退到顶层 value
-        assert_eq!(String::from_utf8(unwrap_value(br#"{"data":null,"value":2}"#)).unwrap(), "2");
+        assert_eq!(
+            String::from_utf8(unwrap_value(br#"{"data":null,"value":2}"#)).unwrap(),
+            "2"
+        );
         // 顶层不是对象 → 原样
         assert_eq!(unwrap_value(b"[1,2]"), b"[1,2]");
         assert_eq!(unwrap_value(b"null"), b"null");
@@ -566,7 +639,10 @@ mod tests {
 
         // 键不存在: 先 GET(404) → 不带 If-Match 的 PUT
         put(&mut ids, STATE_KEY, br#"{"revision":1}"#).unwrap();
-        assert_eq!(fake.borrow().value.as_deref(), Some(&br#"{"revision":1}"#[..]));
+        assert_eq!(
+            fake.borrow().value.as_deref(),
+            Some(&br#"{"revision":1}"#[..])
+        );
         assert_eq!(fake.borrow().puts.len(), 1);
         assert_eq!(fake.borrow().puts[0].0, "", "新建键不带 If-Match");
 
@@ -574,11 +650,17 @@ mod tests {
         put(&mut ids, STATE_KEY, br#"{"revision":2}"#).unwrap();
         let puts = fake.borrow().puts.clone();
         assert_eq!(puts.len(), 2);
-        assert_eq!(puts[1].0, "\"pkv_1\"", "第二次 PUT 必须带上一次写入后的 ETag");
+        assert_eq!(
+            puts[1].0, "\"pkv_1\"",
+            "第二次 PUT 必须带上一次写入后的 ETag"
+        );
         assert_ne!(puts[0].1, puts[1].1, "幂等键每次写入必须唯一");
         assert!(puts[0].1.starts_with("chase-put-state-"), "{}", puts[0].1);
         assert!(puts[0].1.len() >= 16 && puts[0].1.bytes().all(|b| b.is_ascii_graphic()));
-        assert_eq!(fake.borrow().value.as_deref(), Some(&br#"{"revision":2}"#[..]));
+        assert_eq!(
+            fake.borrow().value.as_deref(),
+            Some(&br#"{"revision":2}"#[..])
+        );
         testhost::clear();
     }
 
@@ -599,7 +681,10 @@ mod tests {
         assert_ne!(puts[0].0, puts[1].0, "重试必须用重读后的新 ETag: {puts:?}");
         assert_eq!(puts[1].0, "\"pkv_2\"");
         assert_ne!(puts[0].1, puts[1].1, "重试也要换幂等键");
-        assert_eq!(fake.borrow().value.as_deref(), Some(&br#"{"revision":2}"#[..]));
+        assert_eq!(
+            fake.borrow().value.as_deref(),
+            Some(&br#"{"revision":2}"#[..])
+        );
         testhost::clear();
     }
 
@@ -624,7 +709,11 @@ mod tests {
         let (raw, result) = load_state_with_retry();
         assert_eq!(result, LoadResult::Fresh);
         assert!(raw.is_none());
-        assert_eq!(clock::testhooks::take_sleeps(), vec![300], "404 需间隔 300ms 两次确认");
+        assert_eq!(
+            clock::testhooks::take_sleeps(),
+            vec![300],
+            "404 需间隔 300ms 两次确认"
+        );
         testhost::clear();
 
         // ③ 宿主持续不可读 → unavailable, 3 次尝试各睡 200ms

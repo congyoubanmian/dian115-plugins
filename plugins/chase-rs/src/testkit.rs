@@ -80,9 +80,7 @@ impl FakeHost {
     /// 安装到当前线程; 返回值必须活到用例结束。
     pub fn install(&self) -> Guard {
         let inner = Rc::clone(&self.inner);
-        host::testhost::install(Box::new(move |request| {
-            Self::handle(&inner, request)
-        }));
+        host::testhost::install(Box::new(move |request| Self::handle(&inner, request)));
         Guard { _private: () }
     }
 
@@ -291,9 +289,7 @@ impl FakeHost {
 /// 宿主存储响应信封(`{"data":{"key":..,"value":..,"revision":"pkv_N"},"meta":..}`)。
 fn host_envelope(key: &str, value: &[u8], revision: u64) -> HostCallResponse {
     let mut body = Vec::new();
-    body.extend_from_slice(
-        format!(r#"{{"data":{{"key":"{key}","value":"#).as_bytes(),
-    );
+    body.extend_from_slice(format!(r#"{{"data":{{"key":"{key}","value":"#).as_bytes());
     body.extend_from_slice(value);
     body.extend_from_slice(
         format!(

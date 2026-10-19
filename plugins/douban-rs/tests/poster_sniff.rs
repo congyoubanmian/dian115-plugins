@@ -44,5 +44,8 @@ fn sniff_image_recognizes_only_the_four_poster_formats() {
 fn poster_limits_match_go() {
     assert_eq!(POSTER_CACHE_LIMIT, 64);
     assert_eq!(MAX_POSTER_BYTES, 128 * 1024);
-    assert_eq!(IMAGE_ACCEPT, "image/avif,image/webp,image/jpeg,image/*;q=0.8");
+    assert_eq!(
+        IMAGE_ACCEPT,
+        "image/avif,image/webp,image/jpeg,image/*;q=0.8"
+    );
 }

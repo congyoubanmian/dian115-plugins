@@ -47,40 +47,40 @@ macro_rules! go_regex {
     };
 }
 
-/// Go `main.go:514` `reLi`: `(?s)<li>(.*?)</li>`。
+// Go `main.go:514` `reLi`: `(?s)<li>(.*?)</li>`。
 go_regex!(re_li, r"(?s)<li>(.*?)</li>");
 
-/// Go `main.go:515` `reSubj`: `https://movie\.douban\.com/subject/(\d+)/"[^>]*>\s*([^<]{1,120}?)\s*</a>`。
+// Go `main.go:515` `reSubj`: `https://movie\.douban\.com/subject/(\d+)/"[^>]*>\s*([^<]{1,120}?)\s*</a>`。
 go_regex!(
     re_subj,
     r#"https://movie\.douban\.com/subject/([0-9]+)/"[^>]*>[\t\n\f\r ]*([^<]{1,120}?)[\t\n\f\r ]*</a>"#
 );
 
-/// Go `main.go:517` `reRate`: `<span class="rating_nums">([\d.]+)</span>`。
+// Go `main.go:517` `reRate`: `<span class="rating_nums">([\d.]+)</span>`。
 go_regex!(re_rate, r#"<span class="rating_nums">([0-9.]+)</span>"#);
 
-/// Go `main.go:518` `reTitle`: `<a[^>]*href="https://movie\.douban\.com/subject/(\d+)/"[^>]*>([^<]{1,120})</a>`。
+// Go `main.go:518` `reTitle`: `<a[^>]*href="https://movie\.douban\.com/subject/(\d+)/"[^>]*>([^<]{1,120})</a>`。
 go_regex!(
     re_title,
     r#"<a[^>]*href="https://movie\.douban\.com/subject/([0-9]+)/"[^>]*>([^<]{1,120})</a>"#
 );
 
-/// Go `main.go:519` `reListCont`: `(?s)id="listCont2"(.*?)</ul>`。
+// Go `main.go:519` `reListCont`: `(?s)id="listCont2"(.*?)</ul>`。
 go_regex!(re_list_cont, r#"(?s)id="listCont2"(.*?)</ul>"#);
 
-/// Go `main.go:524` `reShowingSoon`: `(?s)id="showing-soon"(.*)`(贪婪到文本结尾)。
+// Go `main.go:524` `reShowingSoon`: `(?s)id="showing-soon"(.*)`(贪婪到文本结尾)。
 go_regex!(re_showing_soon, r#"(?s)id="showing-soon"(.*)"#);
 
-/// Go `main.go:626` `reRow`: `(?s)<tr>(.*?)</tr>`(旧版 `/later/` 表格)。
+// Go `main.go:626` `reRow`: `(?s)<tr>(.*?)</tr>`(旧版 `/later/` 表格)。
 go_regex!(re_row, r"(?s)<tr>(.*?)</tr>");
 
-/// Go `main.go:627` `reRowSubj`(与 [`re_subj`] 逐字同形)。
+// Go `main.go:627` `reRowSubj`(与 [`re_subj`] 逐字同形)。
 go_regex!(
     re_row_subj,
     r#"https://movie\.douban\.com/subject/([0-9]+)/"[^>]*>[\t\n\f\r ]*([^<]{1,120}?)[\t\n\f\r ]*</a>"#
 );
 
-/// Go `main.go:673` `reImg`: `<img[^>]+src="([^"]+)"`。
+// Go `main.go:673` `reImg`: `<img[^>]+src="([^"]+)"`。
 go_regex!(re_img, r#"<img[^>]+src="([^"]+)""#);
 
 // ---------------------------------------------------------------------------
@@ -108,13 +108,18 @@ mod tests {
     /// 捕获对象"的写法里借用会活不过闭包体; `Match::as_str` 返回的才是 `&'h str`。
     fn groups(re: &Regex, haystack: &str, index: usize) -> Vec<String> {
         re.captures_iter(haystack)
-            .map(|caps| caps.get(index).map(|m| m.as_str().to_string()).unwrap_or_default())
+            .map(|caps| {
+                caps.get(index)
+                    .map(|m| m.as_str().to_string())
+                    .unwrap_or_default()
+            })
             .collect()
     }
 
     /// 旧版样式的**手工最小片段**(现在的豆瓣页面已经没有这套标签; 这里只做模式对拍)。
     /// 形态照抄 Go 时代的口碑榜: `<li>` 行里带 `<span class="rating_nums">`。
-    const OLD_LI: &str = "<ul><li><a href=\"https://movie.douban.com/subject/1/\" class=\"\">甲</a>\
+    const OLD_LI: &str =
+        "<ul><li><a href=\"https://movie.douban.com/subject/1/\" class=\"\">甲</a>\
                           <span class=\"rating_nums\">8.7</span></li><li>乙</li></ul>";
 
     /// 旧版 `/later/` 表格的**手工最小片段**(每行一个 `<tr>`: 日期 / 片名链接 / 类型 / 地区 / 想看)。
@@ -160,8 +165,14 @@ mod tests {
             assert!(got.iter().all(|(_, title)| title == title.trim()));
         }
         // 旧表格片段: id 与片名对得上
-        assert_eq!(groups(re_row_subj(), OLD_TABLE, 1), vec!["36828393", "12345678"]);
-        assert_eq!(groups(re_row_subj(), OLD_TABLE, 2), vec!["野兽之心", "另一部片"]);
+        assert_eq!(
+            groups(re_row_subj(), OLD_TABLE, 1),
+            vec!["36828393", "12345678"]
+        );
+        assert_eq!(
+            groups(re_row_subj(), OLD_TABLE, 2),
+            vec!["野兽之心", "另一部片"]
+        );
     }
 
     /// `reRate` / `reTitle`: 旧版行内评分与标题链接(现在的 chart 页把评分搬走了)。
@@ -169,7 +180,11 @@ mod tests {
     fn re_rate_and_re_title_match_go_capture_groups() {
         let rated = groups(re_rate(), OLD_LI, 1);
         assert_eq!(rated, vec!["8.7"]);
-        assert_eq!(re_rate().find_iter(&text(CHART_HTML)).count(), 0, "新页面没有 rating_nums");
+        assert_eq!(
+            re_rate().find_iter(&text(CHART_HTML)).count(),
+            0,
+            "新页面没有 rating_nums"
+        );
 
         let titles: Vec<(String, String)> = re_title()
             .captures_iter(&text(CHART_HTML))

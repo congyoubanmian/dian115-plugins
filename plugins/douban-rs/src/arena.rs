@@ -35,7 +35,10 @@ pub struct Arena {
 
 impl Arena {
     pub const fn new() -> Self {
-        Arena { buf: Vec::new(), cur: 0 }
+        Arena {
+            buf: Vec::new(),
+            cur: 0,
+        }
     }
 
     /// 从游标分配 `size` 字节, 返回缓冲内偏移; 超上限或内存不足返回 `None`。
@@ -218,7 +221,10 @@ mod tests {
         let off = a.alloc(0).unwrap();
         assert_eq!(off, 0);
         assert_eq!(a.cursor(), 0, "零长度分配不移动游标");
-        assert!(a.capacity() >= 1, "必须落在真实映射内存里, 不能返回悬空指针");
+        assert!(
+            a.capacity() >= 1,
+            "必须落在真实映射内存里, 不能返回悬空指针"
+        );
     }
 
     #[test]

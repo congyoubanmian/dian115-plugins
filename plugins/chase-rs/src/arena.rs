@@ -17,7 +17,10 @@ pub struct Arena {
 
 impl Arena {
     pub const fn new() -> Self {
-        Arena { buf: Vec::new(), cur: 0 }
+        Arena {
+            buf: Vec::new(),
+            cur: 0,
+        }
     }
 
     /// 从游标分配 `size` 字节, 返回缓冲内偏移; 超上限或内存不足返回 `None`。
@@ -103,7 +106,9 @@ impl Arena {
         if total <= self.buf.len() {
             return Some(());
         }
-        let target = total.max(self.buf.len().saturating_mul(2)).min(MAX_ARENA_BYTES);
+        let target = total
+            .max(self.buf.len().saturating_mul(2))
+            .min(MAX_ARENA_BYTES);
         let extra = target - self.buf.len();
         if self.buf.try_reserve_exact(extra).is_err() {
             return None;
@@ -173,7 +178,10 @@ mod tests {
         }
         let peak = request.len() + response.len();
         let settled = a.capacity();
-        assert!(settled >= peak && settled <= peak * 2, "容量应收敛到单次调用峰值附近, 实际 {settled}");
+        assert!(
+            settled >= peak && settled <= peak * 2,
+            "容量应收敛到单次调用峰值附近, 实际 {settled}"
+        );
         for _ in 0..100 {
             let _ = a.alloc(request.len()).unwrap();
             let _ = a.publish(&response).unwrap();
@@ -188,7 +196,10 @@ mod tests {
         let off = a.alloc(0).unwrap();
         assert_eq!(off, 0);
         assert_eq!(a.cursor(), 0, "零长度分配不移动游标");
-        assert!(a.capacity() >= 1, "必须落在真实映射内存里, 不能返回悬空指针");
+        assert!(
+            a.capacity() >= 1,
+            "必须落在真实映射内存里, 不能返回悬空指针"
+        );
     }
 
     #[test]

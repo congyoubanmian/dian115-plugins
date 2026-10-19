@@ -96,8 +96,15 @@ pub fn fetch_page(limit: u32, offset: u32) -> Result<FetchedPage, ParseFailure> 
         ));
     }
     match parse_list(&response.raw) {
-        Ok(page) => Ok(FetchedPage { page, http_status: response.status }),
-        Err(message) => Err(ParseFailure::http(response.status, response.raw.clone(), message)),
+        Ok(page) => Ok(FetchedPage {
+            page,
+            http_status: response.status,
+        }),
+        Err(message) => Err(ParseFailure::http(
+            response.status,
+            response.raw.clone(),
+            message,
+        )),
     }
 }
 
@@ -155,8 +162,7 @@ pub fn parse_intent(element: &serde_json::Value) -> Option<Intent> {
     let id = raw::first_i64(obj, &["id", "intent_id"])?;
     let tmdb_id = raw::first_i64(obj, &["tmdb_id", "tmdbId"])?;
     let total_known = raw::first_i64(obj, &["total_episodes_known", "total_episodes"])?;
-    let media_type =
-        raw::first_string(obj, &["media_type"]).filter(|text| !text.is_empty())?;
+    let media_type = raw::first_string(obj, &["media_type"]).filter(|text| !text.is_empty())?;
     let season = raw::first_i64(obj, &["season"])?;
     let title = raw::first_string(obj, &["title", "name"]).unwrap_or_default();
     let state = raw::first_string(obj, &["state"]).unwrap_or_default();
@@ -186,7 +192,12 @@ pub fn patch_path(id: i64) -> String {
 ///
 /// 键里带 from→to: 即使跨 worker 会话撞上 24 小时内的旧记录, 也是同一条业务写
 /// (宿主按幂等键返回上次结果), 不会把两次不同的抬升混在一起。
-pub fn patch_idempotency_key(intent_id: i64, from_total: i64, to_total: i64, run_seq: u64) -> String {
+pub fn patch_idempotency_key(
+    intent_id: i64,
+    from_total: i64,
+    to_total: i64,
+    run_seq: u64,
+) -> String {
     format!("chase-patch-{intent_id}-{from_total}-{to_total}-{run_seq}")
 }
 
@@ -212,7 +223,8 @@ pub fn patch_body(new_total: i64, needed: Option<&str>, covered: Option<&str>) -
         needed_episodes: needed.as_deref(),
         covered_episodes: covered.as_deref(),
     };
-    serde_json::to_vec(&body).unwrap_or_else(|_| format!(r#"{{"total_episodes":{new_total}}}"#).into_bytes())
+    serde_json::to_vec(&body)
+        .unwrap_or_else(|_| format!(r#"{{"total_episodes":{new_total}}}"#).into_bytes())
 }
 
 /// 原串能否被严格解析并**逐字节往返一致**(否则绝不写回, 免得把用户的集数表达式改坏)。
@@ -252,7 +264,8 @@ mod tests {
             }
           ],
           "counts": {"partial": 1, "landed": 1}
-        }"#.as_bytes()
+        }"#
+        .as_bytes()
         .to_vec()
     }
 
@@ -263,7 +276,8 @@ mod tests {
             {"intent_id": "7", "tmdbId": "1396", "season": "5", "media_type": "tv",
              "name": "绝命毒师", "total_episodes": "13", "state": "caught_up"}
           ]}
-        }"#.as_bytes()
+        }"#
+        .as_bytes()
         .to_vec()
     }
 
@@ -298,7 +312,10 @@ mod tests {
         assert_eq!(loose.items[0].id, 7);
         assert_eq!(loose.items[0].tmdb_id, 1396);
         assert_eq!(loose.items[0].total_known, 13);
-        assert_eq!(loose.items[0].media_type, "tv", "media_type 从载荷里读, 不是默认值");
+        assert_eq!(
+            loose.items[0].media_type, "tv",
+            "media_type 从载荷里读, 不是默认值"
+        );
 
         let bare = parse_list(&bare_fixture()).unwrap();
         assert_eq!(bare.items.len(), 1);
@@ -381,13 +398,21 @@ mod tests {
             list_path(500, 1000),
             "/api/subscribe/pool/intents?media_type=tv&limit=500&offset=1000"
         );
-        assert!(list_path(9999, 0).contains("limit=500"), "limit 夹取到 schema 上限");
+        assert!(
+            list_path(9999, 0).contains("limit=500"),
+            "limit 夹取到 schema 上限"
+        );
     }
 
     #[test]
     fn fetch_page_reads_http_and_reports_failures_with_raw() {
         let fake = FakeHost::new();
-        fake.route_prefix("GET", "GET /api/subscribe/pool/intents?", 200, &strong_fixture());
+        fake.route_prefix(
+            "GET",
+            "GET /api/subscribe/pool/intents?",
+            200,
+            &strong_fixture(),
+        );
         let guard = fake.install();
         let fetched = fetch_page(500, 0).unwrap();
         assert_eq!(fetched.http_status, 200);
@@ -410,20 +435,30 @@ mod tests {
         let guard = fake.install();
         let failure = fetch_page(500, 0).unwrap_err();
         assert_eq!(failure.http_status, 0);
-        assert!(failure.message.contains("订阅池请求失败"), "{}", failure.message);
+        assert!(
+            failure.message.contains("订阅池请求失败"),
+            "{}",
+            failure.message
+        );
         drop(guard);
     }
 
     #[test]
     fn patch_body_only_writes_total_by_default() {
         // 调用方默认不传两个字符串(runtime 只在 settings 显式开启时才传)
-        assert_eq!(patch_body(13, None, None), br#"{"total_episodes":13}"#.to_vec());
+        assert_eq!(
+            patch_body(13, None, None),
+            br#"{"total_episodes":13}"#.to_vec()
+        );
     }
 
     #[test]
     fn patch_body_appends_strings_only_when_roundtrip_is_exact() {
         // 逐字节往返一致 → 允许追加
-        assert_eq!(strict_roundtrip("[11,12,13]").as_deref(), Some("[11,12,13]"));
+        assert_eq!(
+            strict_roundtrip("[11,12,13]").as_deref(),
+            Some("[11,12,13]")
+        );
         assert_eq!(
             patch_body(13, Some("[11,12,13]"), Some("[1,2,3]")),
             br#"{"total_episodes":13,"needed_episodes":"[11,12,13]","covered_episodes":"[1,2,3]"}"#
@@ -435,7 +470,10 @@ mod tests {
         assert_eq!(strict_roundtrip("[11, 12]"), None, "空格不一致就不写");
         assert_eq!(strict_roundtrip(""), None);
         assert_eq!(strict_roundtrip("[1.50]"), None, "浮点规范化后不一致");
-        assert_eq!(patch_body(13, Some("11,12,13"), None), br#"{"total_episodes":13}"#.to_vec());
+        assert_eq!(
+            patch_body(13, Some("11,12,13"), None),
+            br#"{"total_episodes":13}"#.to_vec()
+        );
     }
 
     #[test]
@@ -456,8 +494,10 @@ mod tests {
     fn patch_path_targets_the_documented_route() {
         assert_eq!(patch_path(41), "/api/subscribe/pool/intents/41/episodes");
         assert_eq!(
-            parse_intent(&json!({"id": -1, "tmdb_id": 2, "season": 0, "media_type": "movie",
-                                 "total_episodes_known": 0}))
+            parse_intent(
+                &json!({"id": -1, "tmdb_id": 2, "season": 0, "media_type": "movie",
+                                 "total_episodes_known": 0})
+            )
             .unwrap()
             .id,
             -1
@@ -470,12 +510,21 @@ mod tests {
     fn fetch_page_classifies_http_and_shape_failures_with_raw_sample() {
         // 200 但不是 JSON → unparsed, 原文随 ParseFailure 带走
         let fake = FakeHost::new();
-        fake.route_prefix("GET", "GET /api/subscribe/pool/intents?", 200, b"<html>maintenance</html>");
+        fake.route_prefix(
+            "GET",
+            "GET /api/subscribe/pool/intents?",
+            200,
+            b"<html>maintenance</html>",
+        );
         let guard = fake.install();
         let failure = fetch_page(50, 0).unwrap_err();
         assert_eq!(failure.http_status, 200);
         assert_eq!(failure.kind(), "unparsed");
-        assert!(failure.sample().contains("maintenance"), "{}", failure.sample());
+        assert!(
+            failure.sample().contains("maintenance"),
+            "{}",
+            failure.sample()
+        );
         drop(guard);
 
         // 404 → http_error(与"结构认不出"区分开, 排障时走不同分支)
@@ -492,11 +541,26 @@ mod tests {
     fn parse_intent_rejects_incomplete_entries_and_clamps_ranges() {
         // 关键字段缺一不可: 缺了就跳过, 绝不填默认值继续
         // (0 集订阅会算出假缺口; 缺 season 会去查特别篇; 缺 media_type 会把电影当追剧)
-        assert!(parse_intent(&json!({"tmdb_id": 1, "season": 1, "media_type": "tv", "total_episodes_known": 2})).is_none());
-        assert!(parse_intent(&json!({"id": 1, "season": 1, "media_type": "tv", "total_episodes_known": 2})).is_none());
-        assert!(parse_intent(&json!({"id": 1, "tmdb_id": 2, "season": 1, "media_type": "tv"})).is_none());
-        assert!(parse_intent(&json!({"id": 1, "tmdb_id": 2, "media_type": "tv", "total_episodes_known": 2})).is_none());
-        assert!(parse_intent(&json!({"id": 1, "tmdb_id": 2, "season": 1, "total_episodes_known": 2})).is_none());
+        assert!(parse_intent(
+            &json!({"tmdb_id": 1, "season": 1, "media_type": "tv", "total_episodes_known": 2})
+        )
+        .is_none());
+        assert!(parse_intent(
+            &json!({"id": 1, "season": 1, "media_type": "tv", "total_episodes_known": 2})
+        )
+        .is_none());
+        assert!(
+            parse_intent(&json!({"id": 1, "tmdb_id": 2, "season": 1, "media_type": "tv"}))
+                .is_none()
+        );
+        assert!(parse_intent(
+            &json!({"id": 1, "tmdb_id": 2, "media_type": "tv", "total_episodes_known": 2})
+        )
+        .is_none());
+        assert!(parse_intent(
+            &json!({"id": 1, "tmdb_id": 2, "season": 1, "total_episodes_known": 2})
+        )
+        .is_none());
         assert!(parse_intent(&json!({"id": "x", "tmdb_id": 2, "season": 1, "media_type": "tv", "total_episodes_known": 2})).is_none());
         assert!(parse_intent(&json!("not an object")).is_none());
         assert!(parse_intent(&json!(null)).is_none());
@@ -515,7 +579,10 @@ mod tests {
 
     #[test]
     fn intent_helpers_split_actionable_and_trim_candidates() {
-        let with_state = |state: &str| Intent { state: state.to_string(), ..Default::default() };
+        let with_state = |state: &str| Intent {
+            state: state.to_string(),
+            ..Default::default()
+        };
         assert!(with_state("partial").actionable());
         assert!(with_state("").actionable(), "缺 state 的条目仍参与补订");
         assert!(!with_state("expired").actionable(), "到期只计数, 不写");
@@ -560,7 +627,10 @@ mod tests {
             "/api/subscribe/pool/intents?media_type=tv&limit=0&offset=0"
         );
         assert!(list_path(50, 50).contains("limit=50"));
-        assert!(list_path(u32::MAX, 0).contains("limit=500"), "limit 夹到 schema 上限");
+        assert!(
+            list_path(u32::MAX, 0).contains("limit=500"),
+            "limit 夹到 schema 上限"
+        );
         assert!(list_path(18, 500).contains("offset=500"));
     }
 }

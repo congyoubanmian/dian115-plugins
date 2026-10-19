@@ -397,9 +397,9 @@ impl Runtime {
             if candidate_confidence < CONFIDENCE_THRESHOLD || item.id == 0 {
                 continue;
             }
-            let better = hit.as_ref().map_or(true, |(_, best_confidence, _)| {
-                candidate_confidence > *best_confidence
-            });
+            let better = hit
+                .as_ref()
+                .is_none_or(|(_, best_confidence, _)| candidate_confidence > *best_confidence);
             if better {
                 hit = Some((item, candidate_confidence, candidate));
             }
@@ -413,7 +413,7 @@ impl Runtime {
     /// Go `main.go:959` `hostIntentExists`: 宿主是否已有同 `(tmdb_id, media_type)` 的聚合
     /// 订阅。任何失败(host 错误 / HTTP >= 400 / 解析失败)都返回 `(false, 0)`。
     pub fn host_intent_exists(&self, tmdb_id: i64, media_type: &str) -> (bool, i64) {
-        let request = HostCallRequest::new("GET", &pool_intents_path())
+        let request = HostCallRequest::new("GET", pool_intents_path())
             .with_header("accept", "application/json");
         let response = match host::call(&request) {
             Ok(response) => response,
@@ -907,7 +907,7 @@ impl Runtime {
         let decision = self.can_subscribe(&cand);
         if !decision.allowed {
             let reason = decision.reason.clone().unwrap_or_default();
-            self.mark_queue_item_filtered(&douban_ref, &reason);
+            self.mark_queue_item_filtered(douban_ref, &reason);
             self.persist_all();
             return Ok(json!({"status": "failed", "message": reason}));
         }
@@ -928,7 +928,7 @@ impl Runtime {
             // [功能2/3] 手动入口不拦墓碑, 只在响应里带确认文案(有墓碑时; UI 据此提示)
             let mut payload =
                 json!({"status": "succeeded", "message": "订阅成功", "intent_id": intent_id});
-            if let Some(text) = self.no_resub_confirmation(&douban_ref) {
+            if let Some(text) = self.no_resub_confirmation(douban_ref) {
                 payload["no_resub_confirm"] = Value::String(text);
             }
             return Ok(payload);

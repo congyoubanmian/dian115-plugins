@@ -227,7 +227,9 @@ impl Runtime {
     ///
     /// 输入取值用 [`crate::util::string_val`](Go 的 `stringVal`,`main.go:2085`)。
     pub fn get_poster(&mut self, input: &Map<String, Value>) -> Result<Value, OpError> {
-        let poster_url = crate::util::string_val(input.get("poster_url")).trim().to_string();
+        let poster_url = crate::util::string_val(input.get("poster_url"))
+            .trim()
+            .to_string();
         if poster_url.is_empty() {
             return Ok(json!({"status": "failed", "message": "缺少 poster_url"}));
         }
@@ -289,7 +291,8 @@ impl Runtime {
                     let fallback = self.http_get(&small, IMAGE_ACCEPT);
                     if fallback.error.is_none() && fallback.status < 400 {
                         let small_mime = sniff_image(&fallback.body);
-                        if small_mime.starts_with("image/") && fallback.body.len() <= MAX_POSTER_BYTES
+                        if small_mime.starts_with("image/")
+                            && fallback.body.len() <= MAX_POSTER_BYTES
                         {
                             body = fallback.body;
                             mime = small_mime;
@@ -305,7 +308,8 @@ impl Runtime {
                 if self.poster_cache.len() > POSTER_CACHE_LIMIT {
                     self.poster_cache.clear();
                 }
-                self.poster_cache.insert(poster_url.clone(), data_url.clone());
+                self.poster_cache
+                    .insert(poster_url.clone(), data_url.clone());
                 return Ok(json!({"status": "succeeded", "url": data_url}));
             }
         }
@@ -351,7 +355,10 @@ mod tests {
         assert_eq!(sniff_image(&[]), "");
         assert_eq!(sniff_image(&[0xFF, 0xD8]), "", "长度不足 3");
         assert_eq!(sniff_image(&[0xFF, 0xD8, 0xFF]), "image/jpeg");
-        assert_eq!(sniff_image(&[0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10]), "image/jpeg");
+        assert_eq!(
+            sniff_image(&[0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10]),
+            "image/jpeg"
+        );
         // Go 只看 data[1..4], 不校验 0x89
         assert_eq!(sniff_image(b"\x00PNG\r\n"), "image/png");
         assert_eq!(sniff_image(b"\x89PNG\r\n\x1a\n"), "image/png");
@@ -364,7 +371,10 @@ mod tests {
         assert_eq!(sniff_image(b"WEBP????RIFF"), "");
         assert_eq!(sniff_image(b"<html>418 I'm a teapot</html>"), "");
         // jpeg 分支优先: 前 3 字节命中后不再看 PNG 分支
-        assert_eq!(sniff_image(&[0xFF, 0xD8, 0xFF, b'P', b'N', b'G']), "image/jpeg");
+        assert_eq!(
+            sniff_image(&[0xFF, 0xD8, 0xFF, b'P', b'N', b'G']),
+            "image/jpeg"
+        );
     }
 
     #[test]
@@ -381,12 +391,18 @@ mod tests {
         let result = runtime.get_poster(&poster_input("   ")).expect("正常返回");
         assert_eq!(result["message"], "缺少 poster_url");
 
-        for bad in ["/p2935475988.jpg", "img3.doubanio.com/x.jpg", "ftp://img3.doubanio.com/x.jpg"] {
+        for bad in [
+            "/p2935475988.jpg",
+            "img3.doubanio.com/x.jpg",
+            "ftp://img3.doubanio.com/x.jpg",
+        ] {
             let result = runtime.get_poster(&poster_input(bad)).expect("正常返回");
             assert_eq!(result["message"], "非法的海报地址", "url={bad}");
         }
         // Go 的 stringVal: 非字符串走 fmt.Sprint → 42 变成 "42" → 非法地址
-        let result = runtime.get_poster(&input_with(json!(42))).expect("正常返回");
+        let result = runtime
+            .get_poster(&input_with(json!(42)))
+            .expect("正常返回");
         assert_eq!(result["message"], "非法的海报地址");
         assert!(stub.requests().is_empty(), "校验失败不该发起任何 host.call");
     }
@@ -402,14 +418,20 @@ mod tests {
         let url = "https://img3.doubanio.com/view/photo/s_ratio_poster/public/p2935475988.jpg";
         let result = runtime.get_poster(&poster_input(url)).expect("正常返回");
         assert_eq!(result["status"], "succeeded");
-        assert_eq!(result["url"], Value::String(data_url_of("image/jpeg", &body)));
+        assert_eq!(
+            result["url"],
+            Value::String(data_url_of("image/jpeg", &body))
+        );
         assert_eq!(stub.requests().len(), 1);
         assert_eq!(
             stub.requests()[0].headers.get("accept").map(String::as_str),
             Some(IMAGE_ACCEPT)
         );
         assert_eq!(
-            stub.requests()[0].headers.get("referer").map(String::as_str),
+            stub.requests()[0]
+                .headers
+                .get("referer")
+                .map(String::as_str),
             Some("https://movie.douban.com/")
         );
 
@@ -433,15 +455,17 @@ mod tests {
         let url = "https://img9.doubanio.com/view/photo/s_ratio_poster/public/p1.jpg";
         let result = runtime.get_poster(&poster_input(url)).expect("正常返回");
         assert_eq!(result["status"], "succeeded");
-        assert_eq!(result["url"], Value::String(data_url_of("image/jpeg", &body)));
+        assert_eq!(
+            result["url"],
+            Value::String(data_url_of("image/jpeg", &body))
+        );
 
         let urls: Vec<String> = stub.requests().iter().map(|r| r.path.clone()).collect();
         assert_eq!(urls.len(), 3, "原域名试 2 次 + img3 命中 1 次");
         assert_eq!(urls[0], url);
         assert_eq!(urls[1], url);
         assert_eq!(
-            urls[2],
-            "https://img3.doubanio.com/view/photo/s_ratio_poster/public/p1.jpg",
+            urls[2], "https://img3.doubanio.com/view/photo/s_ratio_poster/public/p1.jpg",
             "候选顺序: 原域名 → img3"
         );
         assert_eq!(runtime.poster_cache.len(), 1);
@@ -460,7 +484,10 @@ mod tests {
         let url = "https://img3.doubanio.com/view/photo/s_ratio_poster/public/p2.jpg";
         let result = runtime.get_poster(&poster_input(url)).expect("正常返回");
         assert_eq!(result["status"], "succeeded");
-        assert_eq!(result["url"], Value::String(data_url_of("image/jpeg", &small)));
+        assert_eq!(
+            result["url"],
+            Value::String(data_url_of("image/jpeg", &small))
+        );
 
         let urls: Vec<String> = stub.requests().iter().map(|r| r.path.clone()).collect();
         assert_eq!(urls.len(), 2);
@@ -485,7 +512,11 @@ mod tests {
         assert_eq!(result["status"], "failed");
         assert_eq!(
             result["message"],
-            format!("海报抓取失败: 海报过大 {}B (上限 {}B)", MAX_POSTER_BYTES + 1, MAX_POSTER_BYTES)
+            format!(
+                "海报抓取失败: 海报过大 {}B (上限 {}B)",
+                MAX_POSTER_BYTES + 1,
+                MAX_POSTER_BYTES
+            )
         );
         assert_eq!(stub.requests().len(), 2);
     }
@@ -500,7 +531,9 @@ mod tests {
         let mut runtime = Runtime::new();
 
         let result = runtime
-            .get_poster(&poster_input("https://img3.doubanio.com/view/photo/public/p4.jpg"))
+            .get_poster(&poster_input(
+                "https://img3.doubanio.com/view/photo/public/p4.jpg",
+            ))
             .expect("正常返回");
         assert_eq!(result["status"], "failed");
         assert_eq!(result["message"], "海报抓取失败: HTTP 404");
@@ -528,22 +561,28 @@ mod tests {
 
         let mut runtime = Runtime::new();
         for index in 0..POSTER_CACHE_LIMIT + 1 {
-            runtime
-                .poster_cache
-                .insert(format!("https://img3.doubanio.com/cache/{index}.jpg"), "stale".to_string());
+            runtime.poster_cache.insert(
+                format!("https://img3.doubanio.com/cache/{index}.jpg"),
+                "stale".to_string(),
+            );
         }
         let url = "https://img3.doubanio.com/fresh.jpg";
         let result = runtime.get_poster(&poster_input(url)).expect("正常返回");
         assert_eq!(result["status"], "succeeded");
-        assert_eq!(runtime.poster_cache.len(), 1, "65 > 64 → 整表清空后只留新条目");
+        assert_eq!(
+            runtime.poster_cache.len(),
+            1,
+            "65 > 64 → 整表清空后只留新条目"
+        );
         assert!(runtime.poster_cache.contains_key(url));
 
         // 恰好 64 条时不清理: 插入后 65 条
         let mut runtime2 = Runtime::new();
         for index in 0..POSTER_CACHE_LIMIT {
-            runtime2
-                .poster_cache
-                .insert(format!("https://img3.doubanio.com/cache/{index}.jpg"), "stale".to_string());
+            runtime2.poster_cache.insert(
+                format!("https://img3.doubanio.com/cache/{index}.jpg"),
+                "stale".to_string(),
+            );
         }
         let result = runtime2
             .get_poster(&poster_input("https://img3.doubanio.com/fresh2.jpg"))
@@ -576,7 +615,10 @@ mod tests {
             "https://img2.doubanio.com/right.jpg"
         );
         let urls: Vec<String> = stub.requests().iter().map(|r| r.path.clone()).collect();
-        assert_eq!(urls[0], "https://movie.douban.com/j/subject_suggest?q=%E6%9F%90%E7%89%87");
+        assert_eq!(
+            urls[0],
+            "https://movie.douban.com/j/subject_suggest?q=%E6%9F%90%E7%89%87"
+        );
         assert_eq!(urls[1], "https://m.douban.com/rexxar/api/v2/movie/222");
     }
 
@@ -586,7 +628,11 @@ mod tests {
         // 不是数组 → Go 的 Unmarshal 报错 → ""
         stub.route("/j/subject_suggest", 200, br#"{"id":"1"}"#.to_vec());
         // pic.normal 是相对路径 → ""
-        stub.route("/rexxar/api/v2/movie/1", 200, br#"{"pic":{"normal":"/p1.jpg"}}"#.to_vec());
+        stub.route(
+            "/rexxar/api/v2/movie/1",
+            200,
+            br#"{"pic":{"normal":"/p1.jpg"}}"#.to_vec(),
+        );
         let _guard = stub.install();
         let runtime = Runtime::new();
 

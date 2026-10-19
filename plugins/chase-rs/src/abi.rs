@@ -82,7 +82,9 @@ unsafe impl<T> Sync for Global<T> {}
 #[cfg(target_arch = "wasm32")]
 impl<T> Global<T> {
     const fn new(value: T) -> Self {
-        Global { inner: UnsafeCell::new(value) }
+        Global {
+            inner: UnsafeCell::new(value),
+        }
     }
 
     #[inline]
@@ -179,7 +181,11 @@ mod tests {
     fn handle_publishes_response_at_offset_zero() {
         let mut arena = Arena::new();
         let mut runtime = Runtime::new();
-        let (off, len) = handle(&mut arena, &mut runtime, br#"{"method":"runtime.initialize"}"#);
+        let (off, len) = handle(
+            &mut arena,
+            &mut runtime,
+            br#"{"method":"runtime.initialize"}"#,
+        );
         assert_eq!(off, 0);
         assert_eq!(
             read(&arena, off, len).unwrap(),

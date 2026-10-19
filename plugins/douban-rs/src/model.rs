@@ -28,12 +28,12 @@ pub type GoSlice<T> = Option<Vec<T>>;
 
 /// Go `omitempty` 对 slice: nil 或空都省略。
 pub fn skip_empty_seq<T>(value: &GoSlice<T>) -> bool {
-    value.as_ref().map_or(true, |items| items.is_empty())
+    value.as_ref().is_none_or(|items| items.is_empty())
 }
 
 /// Go `omitempty` 对 map: nil 或空都省略。
 pub fn skip_empty_map<K: Ord, V>(value: &GoMap<K, V>) -> bool {
-    value.as_ref().map_or(true, |map| map.is_empty())
+    value.as_ref().is_none_or(|map| map.is_empty())
 }
 
 /// Go `omitempty` 对 int: 0 省略。

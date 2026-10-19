@@ -326,8 +326,14 @@ impl Runtime {
         let logs: Vec<LogEntry> = all_logs[log_start..].to_vec();
 
         let mut state = Map::new();
-        state.insert("status".to_string(), Value::String(self.last_status.clone()));
-        state.insert("last_message".to_string(), Value::String(self.last_message.clone()));
+        state.insert(
+            "status".to_string(),
+            Value::String(self.last_status.clone()),
+        );
+        state.insert(
+            "last_message".to_string(),
+            Value::String(self.last_message.clone()),
+        );
         state.insert("revision".to_string(), Value::from(self.revision));
         state.insert("schema".to_string(), Value::from(self.state.schema));
         state.insert("settings".to_string(), download::settings_doc());
@@ -337,7 +343,10 @@ impl Runtime {
         // 通知留档(0.3.19): 最近一次 /api/notifications/plugin 的原始应答
         // (status + 截断的响应体), pump 与 notify-test 都会刷新; 缺失 → null。
         state.insert("notify_diag".to_string(), download::notify_diag_doc());
-        state.insert("logs".to_string(), serde_json::to_value(logs).unwrap_or(Value::Array(vec![])));
+        state.insert(
+            "logs".to_string(),
+            serde_json::to_value(logs).unwrap_or(Value::Array(vec![])),
+        );
         Value::Object(state)
     }
 
@@ -371,7 +380,11 @@ impl Runtime {
     ///
     /// 业务失败是**正常 result**, 不是 JSON-RPC error; 只有 payload 本身非法
     /// (`invalid action payload`)才走 `-32602`。
-    pub fn action(&mut self, _invocation_id: &str, payload: RawPayload<'_>) -> Result<Value, OpError> {
+    pub fn action(
+        &mut self,
+        _invocation_id: &str,
+        payload: RawPayload<'_>,
+    ) -> Result<Value, OpError> {
         let obj = payload.as_object().map_err(|_| invalid_action())?;
         let id = raw::string_field(obj, "id").map_err(|_| invalid_action())?;
         if id.is_empty() {
@@ -384,7 +397,11 @@ impl Runtime {
         let source = input_str(&input, "source");
 
         match id.as_str() {
-            "search" => Ok(action_result(search(&source, &input_str(&input, "query"), input_u32(&input, "page", 1)))),
+            "search" => Ok(action_result(search(
+                &source,
+                &input_str(&input, "query"),
+                input_u32(&input, "page", 1),
+            ))),
             "song-url" => Ok(action_result(song_url(
                 &source,
                 &input_str(&input, "song_id"),
@@ -445,7 +462,11 @@ impl Runtime {
                 // `level` 优先, 兼容前端传 `quality`; 都为空时用 KV 设置里的默认音质。
                 let level = {
                     let explicit = input_str(&input, "level");
-                    if explicit.is_empty() { input_str(&input, "quality") } else { explicit }
+                    if explicit.is_empty() {
+                        input_str(&input, "quality")
+                    } else {
+                        explicit
+                    }
                 };
                 let outcome = download::request_download(
                     &mut self.put_ids,
@@ -480,9 +501,14 @@ impl Runtime {
                 // 递归拒绝 action 响应里键名含 "cookie" 子串的整个响应(见
                 // [`crate::cookiecloud`] 模块头), 键名不能沿用输入里的 `*_cookie`;
                 // 值侧只有 saved/logged_in/uin/has_key 等布尔与账号标识, 不回显凭据。
-                let pasted_qq = input.get("qq_cookie").and_then(Value::as_str).map(str::to_string);
-                let pasted_ne =
-                    input.get("netease_cookie").and_then(Value::as_str).map(str::to_string);
+                let pasted_qq = input
+                    .get("qq_cookie")
+                    .and_then(Value::as_str)
+                    .map(str::to_string);
+                let pasted_ne = input
+                    .get("netease_cookie")
+                    .and_then(Value::as_str)
+                    .map(str::to_string);
                 let mut value = self.settings_update(&input);
                 if let Some(raw) = pasted_qq {
                     value["qq_login"] = match qq::save_cookie_string(&raw) {
@@ -530,13 +556,18 @@ impl Runtime {
                 let outcome = cookiecloud::action_cookiecloud_sync();
                 match &outcome {
                     Ok(value) => {
-                        let netease_logged = value["netease"]["logged_in"].as_bool().unwrap_or(false);
+                        let netease_logged =
+                            value["netease"]["logged_in"].as_bool().unwrap_or(false);
                         let qq_logged = value["qq"]["logged_in"].as_bool().unwrap_or(false);
                         self.bump(
                             "succeeded",
                             &format!(
                                 "已从 CookieCloud 同步登录态(网易云 {}, QQ {})",
-                                if netease_logged { "已登录" } else { "未登录" },
+                                if netease_logged {
+                                    "已登录"
+                                } else {
+                                    "未登录"
+                                },
                                 if qq_logged { "已登录" } else { "未登录" },
                             ),
                         );
@@ -630,7 +661,9 @@ impl Runtime {
                     self.persist_all();
                     // 4.0.82 起宿主对 job 应答也做绝对路径过滤(与 state 同规), 摘要里的
                     // staging_dir 等以 "/" 开头的值会让整个 job 判 runtime_protocol_error。
-                    Ok(json!({"status": "accepted", "message": "任务队列已推进", "result": sanitize_state(value)}))
+                    Ok(
+                        json!({"status": "accepted", "message": "任务队列已推进", "result": sanitize_state(value)}),
+                    )
                 }
                 Err(err) => Ok(json!({"status": "skipped", "message": err})),
             },
@@ -646,7 +679,10 @@ impl Runtime {
             return Err(invalid_event());
         }
         if topic == crate::TELEGRAM_CALLBACK_TOPIC {
-            let data = obj.and_then(|map| map.get("data")).cloned().unwrap_or(Value::Null);
+            let data = obj
+                .and_then(|map| map.get("data"))
+                .cloned()
+                .unwrap_or(Value::Null);
             return match tasks::on_telegram_callback(&mut self.put_ids, &data) {
                 Ok(value) => {
                     // 状态里的任务列表每次 state 都重读, 但 revision 要推进,
@@ -728,12 +764,20 @@ pub fn looks_like_abs_path(s: &str) -> bool {
 
 /// 取字符串参数(缺失/非字符串 → 空串, 骨架阶段不做严格类型校验)。
 fn input_str(input: &Map<String, Value>, key: &str) -> String {
-    input.get(key).and_then(Value::as_str).unwrap_or("").to_string()
+    input
+        .get(key)
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string()
 }
 
 /// 取 u32 参数(缺失/类型不符 → fallback)。
 fn input_u32(input: &Map<String, Value>, key: &str, fallback: u32) -> u32 {
-    input.get(key).and_then(Value::as_u64).map(|value| value as u32).unwrap_or(fallback)
+    input
+        .get(key)
+        .and_then(Value::as_u64)
+        .map(|value| value as u32)
+        .unwrap_or(fallback)
 }
 
 /// 按来源路由搜索(空桩; 未知来源是业务失败, 不是协议错误)。
@@ -822,7 +866,9 @@ fn action_result(outcome: Result<Value, String>) -> Value {
             // 4.0.82 起宿主对 action 应答同样做绝对路径过滤, 统一过 sanitize_state。
             json!({"status": "succeeded", "data": sanitize_state(value)})
         }
-        Err(message) => json!({"status": "failed", "message": sanitize_state(Value::String(message)).as_str().unwrap_or("").to_string()}),
+        Err(message) => {
+            json!({"status": "failed", "message": sanitize_state(Value::String(message)).as_str().unwrap_or("").to_string()})
+        }
     }
 }
 
@@ -852,7 +898,9 @@ mod tests {
             "id": "playlist-queue-all",
             "input": {"source": "qq", "id": "42", "quality": "lossless", "batch_pages": 5}
         });
-        let result = runtime.action("inv-1", RawPayload::Value(&payload_value)).unwrap();
+        let result = runtime
+            .action("inv-1", RawPayload::Value(&payload_value))
+            .unwrap();
         assert_ne!(result["code"], "unknown_action", "action 未挂载: {result}");
         assert_eq!(result["status"], "failed");
         assert!(
@@ -866,7 +914,9 @@ mod tests {
     fn unknown_action_still_falls_through() {
         let mut runtime = Runtime::new();
         let payload_value = json!({"id": "no-such-action"});
-        let result = runtime.action("inv-2", RawPayload::Value(&payload_value)).unwrap();
+        let result = runtime
+            .action("inv-2", RawPayload::Value(&payload_value))
+            .unwrap();
         assert_eq!(result["code"], "unknown_action");
     }
 
@@ -879,7 +929,9 @@ mod tests {
             "id": "playlist-queue-all",
             "input": {"source": "netease", "id": "42", "quality": "lossless", "batch_pages": 5, "next_page": 6}
         });
-        let result = runtime.action("inv-3", RawPayload::Value(&payload_value)).unwrap();
+        let result = runtime
+            .action("inv-3", RawPayload::Value(&payload_value))
+            .unwrap();
         assert_eq!(result["status"], "failed", "无宿主网络应取页失败: {result}");
         assert_eq!(
             result["data"]["next_page"], 6,

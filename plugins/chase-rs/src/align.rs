@@ -98,12 +98,20 @@ impl Evidence {
         Evidence {
             from_total,
             have_max,
-            have_count: if have_count >= 0 { Some(have_count) } else { None },
+            have_count: if have_count >= 0 {
+                Some(have_count)
+            } else {
+                None
+            },
             gap_max: have_max.filter(|max| *max > from_total).unwrap_or(0),
             target_upper: target_upper.max(0),
             target_known: target_upper > 0,
             target_note: "",
-            have_note: if have_max.is_none() { "缓存行没有可用的覆盖值" } else { "" },
+            have_note: if have_max.is_none() {
+                "缓存行没有可用的覆盖值"
+            } else {
+                ""
+            },
         }
     }
 }
@@ -153,8 +161,7 @@ pub fn decide(evidence: &Evidence, settings: &Settings, dry_run: bool) -> Decisi
     // 的「该季 0 集」自相矛盾(实测缺陷)。
     // 真正未知(响应没解析出逐集覆盖, `have` 为 `None`)时 `have_count` 也是 `None`,
     // 落下面的「覆盖未知」分支 —— 两者必须分开。
-    let have_absent =
-        evidence.have_max.is_none() && evidence.have_count == Some(0);
+    let have_absent = evidence.have_max.is_none() && evidence.have_count == Some(0);
     // 目标未知时绝不能显示成"该季 0 集": 0 只代表"没取到", 由 target_known 区分。
     let target_text = if evidence.target_known {
         format!("{target_upper} 集")
@@ -250,7 +257,11 @@ pub fn decide(evidence: &Evidence, settings: &Settings, dry_run: bool) -> Decisi
     };
 
     Decision {
-        action: if dry_run { ACTION_DRY_RUN } else { ACTION_PATCHED },
+        action: if dry_run {
+            ACTION_DRY_RUN
+        } else {
+            ACTION_PATCHED
+        },
         from_total,
         to_total: new_total,
         have_max,
@@ -298,7 +309,7 @@ pub fn trim_reason(from_total: i64, target_upper: i64) -> String {
 ///
 /// 1. 顶层 `seasons[]` 里找 `season_number == season` 的那一季, 取其 `episode_count`
 ///    (兜底 `number_of_episodes`); 宿主多包一层信封(`{code, data: {...}}`)时
-///   下探 `data` 再找 —— 与同仓其它解析器(emby/intents/aircal)的容错一致;
+///    下探 `data` 再找 —— 与同仓其它解析器(emby/intents/aircal)的容错一致;
 /// 2. 找不到该季 ⇒ `Err(原因)`: 调用方把 `target_upper` 当 0 **并标记为未知**
 ///    (只用 Emby 缺口判定), **绝不猜一个数字**、绝不用订阅集数冒充。
 ///
@@ -312,12 +323,13 @@ pub fn trim_reason(from_total: i64, target_upper: i64) -> String {
 /// 返回值再夹到 `[0, TARGET_UPPER_LIMIT]`。
 pub fn parse_target_upper(raw: &[u8], season: i64) -> Result<i64, String> {
     let value = crate::raw::decode_json(raw)?;
-    let object = tmdb_detail_object(&value)
-        .ok_or_else(|| "TMDB 详情不是对象".to_string())?;
+    let object = tmdb_detail_object(&value).ok_or_else(|| "TMDB 详情不是对象".to_string())?;
 
     if let Some(seasons) = object.get("seasons").and_then(serde_json::Value::as_array) {
         for entry in seasons {
-            let Some(entry) = entry.as_object() else { continue };
+            let Some(entry) = entry.as_object() else {
+                continue;
+            };
             let number = crate::raw::first_i64(entry, &["season_number", "season", "number"]);
             if number != Some(season) {
                 continue;
@@ -343,13 +355,23 @@ pub fn parse_target_upper(raw: &[u8], season: i64) -> Result<i64, String> {
 /// (`{code, data: {...}}` 信封; 与 emby/intents/aircal 的容错一致)。
 ///
 /// 返回顶层对象作为兜底, 让调用方按"缺 seasons[]"给出可读错误 —— 不是"不是对象"。
-fn tmdb_detail_object(value: &serde_json::Value) -> Option<&serde_json::Map<String, serde_json::Value>> {
+fn tmdb_detail_object(
+    value: &serde_json::Value,
+) -> Option<&serde_json::Map<String, serde_json::Value>> {
     let object = value.as_object()?;
-    if object.get("seasons").map(serde_json::Value::is_array).unwrap_or(false) {
+    if object
+        .get("seasons")
+        .map(serde_json::Value::is_array)
+        .unwrap_or(false)
+    {
         return Some(object);
     }
     if let Some(inner) = object.get("data").and_then(serde_json::Value::as_object) {
-        if inner.get("seasons").map(serde_json::Value::is_array).unwrap_or(false) {
+        if inner
+            .get("seasons")
+            .map(serde_json::Value::is_array)
+            .unwrap_or(false)
+        {
             return Some(inner);
         }
     }
@@ -375,9 +397,10 @@ mod tests {
     }
 
     fn settings(max_raise: u8) -> Settings {
-        let mut settings = Settings::default();
-        settings.max_raise_per_run = max_raise;
-        settings
+        Settings {
+            max_raise_per_run: max_raise,
+            ..Default::default()
+        }
     }
 
     #[test]
@@ -421,10 +444,15 @@ mod tests {
 
     #[test]
     fn oversized_raise_is_skipped_as_metadata_anomaly() {
-        let evidence = Evidence::from_coverage(2, &coverage(&[1, 2, 3, 4, 5, 6, 7, 8, 9, 10], &[]), 0);
+        let evidence =
+            Evidence::from_coverage(2, &coverage(&[1, 2, 3, 4, 5, 6, 7, 8, 9, 10], &[]), 0);
         let decision = decide(&evidence, &settings(3), false);
         assert_eq!(decision.action, ACTION_SKIPPED);
-        assert!(decision.reason.contains("超过单条上限"), "{}", decision.reason);
+        assert!(
+            decision.reason.contains("超过单条上限"),
+            "{}",
+            decision.reason
+        );
         assert!(!decision.writes());
     }
 
@@ -484,7 +512,10 @@ mod tests {
         // 缓存里记录的是 -1(未知) → 不能据此补订
         let unknown = Evidence::from_cache(10, -1, -1, 0);
         assert_eq!(unknown.have_max, None);
-        assert_eq!(decide(&unknown, &settings(20), false).action, ACTION_SKIPPED);
+        assert_eq!(
+            decide(&unknown, &settings(20), false).action,
+            ACTION_SKIPPED
+        );
         // 负数目标同样夹掉, 不参与抬升
         assert_eq!(Evidence::from_cache(10, 14, 14, -3).target_upper, 0);
     }
@@ -493,10 +524,16 @@ mod tests {
     fn trim_suggestion_needs_full_coverage_and_smaller_target() {
         let full = coverage(&[1, 2, 3, 4, 5], &[]);
         assert!(should_suggest_trim(5, &full, 3, true));
-        assert!(!should_suggest_trim(5, &full, 3, false), "状态不是 caught_up/landed");
+        assert!(
+            !should_suggest_trim(5, &full, 3, false),
+            "状态不是 caught_up/landed"
+        );
         assert!(!should_suggest_trim(5, &full, 5, true), "目标不小于订阅");
         assert!(!should_suggest_trim(0, &full, 3, true));
-        assert!(!should_suggest_trim(10_000, &full, 3, true), "超过逐集核对上限");
+        assert!(
+            !should_suggest_trim(10_000, &full, 3, true),
+            "超过逐集核对上限"
+        );
 
         // 缺一集就不算"全部入库"
         let incomplete = coverage(&[1, 2, 4, 5], &[]);
@@ -525,7 +562,8 @@ mod tests {
     fn target_upper_reads_the_matching_season() {
         let body = r#"{"id":1396,"name":"绝命毒师","number_of_episodes":62,
             "seasons":[{"season_number":4,"episode_count":13},
-                       {"season_number":5,"episode_count":16}]}"#.as_bytes();
+                       {"season_number":5,"episode_count":16}]}"#
+            .as_bytes();
         assert_eq!(parse_target_upper(body, 5).unwrap(), 16);
         assert_eq!(parse_target_upper(body, 4).unwrap(), 13);
     }
@@ -535,14 +573,27 @@ mod tests {
         // 该季不在 seasons[] 里 → 拿不到"该季"集数: 顶层 number_of_episodes 是整部剧的
         // 集数(TmdbTVDetail 必填字段), 对这个多季剧是系统性高估 → Err, 不猜。
         let body = br#"{"id":1,"number_of_episodes":24,"seasons":[{"season_number":1,"episode_count":12}]}"#;
-        assert!(parse_target_upper(body, 9).is_err(), "第 9 季缺失时不得回退到全剧 24 集");
+        assert!(
+            parse_target_upper(body, 9).is_err(),
+            "第 9 季缺失时不得回退到全剧 24 集"
+        );
         // seasons 缺失(或不是数组)时同样不猜整剧集数
         assert!(parse_target_upper(br#"{"number_of_episodes":8}"#, 3).is_err());
         assert!(parse_target_upper(br#"{"seasons":"nope","number_of_episodes":8}"#, 5).is_err());
         // 松散数值: 数字串也收
-        assert_eq!(parse_target_upper(br#"{"seasons":[{"season_number":"2","episode_count":"7"}]}"#, 2).unwrap(), 7);
+        assert_eq!(
+            parse_target_upper(
+                br#"{"seasons":[{"season_number":"2","episode_count":"7"}]}"#,
+                2
+            )
+            .unwrap(),
+            7
+        );
         // 别名键
-        assert_eq!(parse_target_upper(br#"{"seasons":[{"season":2,"number_of_episodes":9}]}"#, 2).unwrap(), 9);
+        assert_eq!(
+            parse_target_upper(br#"{"seasons":[{"season":2,"number_of_episodes":9}]}"#, 2).unwrap(),
+            9
+        );
     }
 
     #[test]
@@ -560,7 +611,10 @@ mod tests {
 
         // 反面: 若把 62 当该季目标, 52 > 上限 3 → 按"元数据异常"跳过, 连 10→12 的补订都没了。
         let polluted = Evidence::from_coverage(10, &coverage(&[1, 2, 12], &[]), 62);
-        assert_eq!(decide(&polluted, &settings(3), false).action, ACTION_SKIPPED);
+        assert_eq!(
+            decide(&polluted, &settings(3), false).action,
+            ACTION_SKIPPED
+        );
     }
 
     #[test]
@@ -608,7 +662,10 @@ mod tests {
         // 未知(-1)时缓存路径不产生任何结论
         let unknown = Evidence::from_cache(10, -1, -1, 0);
         assert_eq!(unknown.have_count, None);
-        assert_eq!(decide(&unknown, &settings(20), false).action, ACTION_SKIPPED);
+        assert_eq!(
+            decide(&unknown, &settings(20), false).action,
+            ACTION_SKIPPED
+        );
     }
 
     #[test]
@@ -619,7 +676,10 @@ mod tests {
             count_hint: None,
             shape: String::new(),
         };
-        assert!(should_suggest_trim(TRIM_CHECK_LIMIT, &edge, 10, true), "上限本身允许逐集核对");
+        assert!(
+            should_suggest_trim(TRIM_CHECK_LIMIT, &edge, 10, true),
+            "上限本身允许逐集核对"
+        );
         let over = Coverage {
             have: Some((1..=TRIM_CHECK_LIMIT + 1).collect()),
             ..edge.clone()
@@ -656,8 +716,11 @@ mod tests {
         assert!(parse_target_upper(br#"{"seasons":"nope","number_of_episodes":8}"#, 5).is_err());
         // seasons 里混入非对象元素也不 panic
         assert_eq!(
-            parse_target_upper(br#"{"seasons":[1,"x",{"season_number":5,"episode_count":9}]}"#, 5)
-                .unwrap(),
+            parse_target_upper(
+                br#"{"seasons":[1,"x",{"season_number":5,"episode_count":9}]}"#,
+                5
+            )
+            .unwrap(),
             9
         );
     }
@@ -699,7 +762,11 @@ mod tests {
             "未知覆盖绝不能说成无缺口: {}",
             decision.reason
         );
-        assert!(decision.reason.contains("未知(HTTP 错误)"), "{}", decision.reason);
+        assert!(
+            decision.reason.contains("未知(HTTP 错误)"),
+            "{}",
+            decision.reason
+        );
         assert!(!decision.writes());
 
         // 缓存里没有覆盖值(-1/-1)同理
@@ -719,7 +786,11 @@ mod tests {
         let decision = decide(&evidence, &settings(20), false);
         assert_eq!(decision.action, ACTION_SKIPPED);
         assert_eq!(decision.have_count, 0, "已知 0 集必须与未知 -1 区分");
-        assert!(decision.reason.contains("Emby 该季 0 集"), "{}", decision.reason);
+        assert!(
+            decision.reason.contains("Emby 该季 0 集"),
+            "{}",
+            decision.reason
+        );
         assert!(!decision.reason.contains("无缺口"), "{}", decision.reason);
         assert!(!decision.reason.contains("覆盖未知"), "{}", decision.reason);
 
@@ -727,7 +798,11 @@ mod tests {
         let mut known_zero = Evidence::from_coverage(10, &coverage(&[1, 2], &[]), 0);
         known_zero.target_known = true;
         let decision = decide(&known_zero, &settings(20), false);
-        assert!(decision.reason.contains("TMDB 目标 0 集"), "{}", decision.reason);
+        assert!(
+            decision.reason.contains("TMDB 目标 0 集"),
+            "{}",
+            decision.reason
+        );
         let mut unknown = Evidence::from_coverage(10, &coverage(&[1, 2], &[]), 0);
         unknown.target_note = "传输失败";
         let decision = decide(&unknown, &settings(20), false);
@@ -735,7 +810,11 @@ mod tests {
         // 旧文案以「无缺口」开头, 前端 reasonBadge 会误报 no-gap 徽章 —— 实测缺陷。
         assert!(!decision.reason.contains("无缺口"), "{}", decision.reason);
         assert!(decision.reason.contains("目标未知"), "{}", decision.reason);
-        assert!(decision.reason.contains("未知(传输失败)"), "{}", decision.reason);
+        assert!(
+            decision.reason.contains("未知(传输失败)"),
+            "{}",
+            decision.reason
+        );
         assert_eq!(decision.action, ACTION_SKIPPED);
     }
 
@@ -755,13 +834,25 @@ mod tests {
             "目标未知却报无缺口 = 与模块头三类互斥矛盾: {}",
             decision.reason
         );
-        assert!(decision.reason.contains("覆盖已核实但目标未知"), "{}", decision.reason);
-        assert!(decision.reason.contains("未参与判定"), "{}", decision.reason);
+        assert!(
+            decision.reason.contains("覆盖已核实但目标未知"),
+            "{}",
+            decision.reason
+        );
+        assert!(
+            decision.reason.contains("未参与判定"),
+            "{}",
+            decision.reason
+        );
         // 反面: 目标真的取到时才允许说无缺口
         let mut known_nogap = Evidence::from_coverage(10, &coverage(&[1, 2, 3], &[]), 10);
         known_nogap.target_known = true;
         let decision = decide(&known_nogap, &settings(20), false);
-        assert!(decision.reason.contains("无缺口: 订阅 10 集"), "{}", decision.reason);
+        assert!(
+            decision.reason.contains("无缺口: 订阅 10 集"),
+            "{}",
+            decision.reason
+        );
     }
 
     /// 实测宿主的区间契约回归: `covered_episodes:""` + `needed_episodes:"1-24"`。
@@ -782,7 +873,11 @@ mod tests {
         assert_eq!(evidence.have_count, Some(0));
         let decision = decide(&evidence, &settings(20), false);
         assert_eq!(decision.action, ACTION_SKIPPED);
-        assert!(decision.reason.contains("Emby 该季 0 集"), "{}", decision.reason);
+        assert!(
+            decision.reason.contains("Emby 该季 0 集"),
+            "{}",
+            decision.reason
+        );
         assert!(
             !decision.reason.contains("覆盖未知"),
             "探测成功, 不许报覆盖未知: {}",
@@ -804,10 +899,22 @@ mod tests {
         let decision = decide(&known, &settings(20), false);
         assert_eq!(decision.action, ACTION_PATCHED);
         assert_eq!(decision.to_total, 24);
-        assert!(decision.reason.contains("TMDB 目标 24 集"), "{}", decision.reason);
-        assert!(decision.reason.contains("Emby 该季 0 集"), "{}", decision.reason);
+        assert!(
+            decision.reason.contains("TMDB 目标 24 集"),
+            "{}",
+            decision.reason
+        );
+        assert!(
+            decision.reason.contains("Emby 该季 0 集"),
+            "{}",
+            decision.reason
+        );
         assert!(!decision.reason.contains("覆盖未知"), "{}", decision.reason);
-        assert!(!decision.reason.contains("未探测成功"), "{}", decision.reason);
+        assert!(
+            !decision.reason.contains("未探测成功"),
+            "{}",
+            decision.reason
+        );
 
         // (c) 只有缺集列表、真没解析出逐集覆盖(have = None)才是「覆盖未知」, 两者不得混淆
         let missing_only = Coverage {
@@ -820,7 +927,11 @@ mod tests {
         assert_eq!(unknown.have_count, None, "没拿到逐集覆盖时绝不能说 0 条");
         let decision = decide(&unknown, &settings(20), false);
         assert!(decision.reason.contains("覆盖未知"), "{}", decision.reason);
-        assert!(!decision.reason.contains("Emby 该季 0 集"), "{}", decision.reason);
+        assert!(
+            !decision.reason.contains("Emby 该季 0 集"),
+            "{}",
+            decision.reason
+        );
         assert!(
             !decision.reason.contains("未探测成功"),
             "只说'没拿到逐集覆盖', 不替探测成败下结论: {}",

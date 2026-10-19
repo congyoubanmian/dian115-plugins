@@ -22,7 +22,10 @@ struct Guest {
 
 impl Guest {
     fn new() -> Self {
-        Guest { arena: Arena::new(), runtime: Runtime::new() }
+        Guest {
+            arena: Arena::new(),
+            runtime: Runtime::new(),
+        }
     }
 
     /// 一次完整调用: alloc → 写入请求 → handle → 读回响应。
@@ -33,11 +36,17 @@ impl Guest {
             self.arena.capacity() >= offset + request.len(),
             "分配出的区间必须落在 arena 的映射内存里"
         );
-        assert!(self.arena.write(offset, request), "请求必须能写进刚分配的区间");
+        assert!(
+            self.arena.write(offset, request),
+            "请求必须能写进刚分配的区间"
+        );
 
         let (response_offset, response_len) =
             abi::handle(&mut self.arena, &mut self.runtime, request);
-        assert_eq!(response_offset, 0, "响应固定从偏移 0 写起(上一次调用的缓冲整块回收)");
+        assert_eq!(
+            response_offset, 0,
+            "响应固定从偏移 0 写起(上一次调用的缓冲整块回收)"
+        );
         abi::read(&self.arena, response_offset, response_len).expect("响应必须能从 arena 读回")
     }
 
@@ -45,7 +54,10 @@ impl Guest {
     fn call_json(&mut self, request: &[u8]) -> serde_json::Value {
         let response = self.call(request);
         serde_json::from_slice(&response).unwrap_or_else(|e| {
-            panic!("响应必须是合法 JSON: {e}; 实际 {:?}", String::from_utf8_lossy(&response))
+            panic!(
+                "响应必须是合法 JSON: {e}; 实际 {:?}",
+                String::from_utf8_lossy(&response)
+            )
         })
     }
 }
@@ -88,7 +100,11 @@ fn repeated_abi_calls_reuse_the_same_buffer() {
     for _ in 0..50 {
         let _ = guest.call(request);
     }
-    assert_eq!(guest.arena.capacity(), settled, "稳态容量不该随调用次数增长");
+    assert_eq!(
+        guest.arena.capacity(),
+        settled,
+        "稳态容量不该随调用次数增长"
+    );
 }
 
 /// 宿主硬限制: 初始化握手期间不允许任何 host.call(否则宿主拒绝重入)。
@@ -102,9 +118,16 @@ fn initialize_never_calls_host() {
         r#"{"method":"runtime.initialize","params":{"unexpected":true}}"#,
     ] {
         let out = guest.call_json(request.as_bytes());
-        assert_eq!(out["result"]["protocol"], "dian115:wasm@1", "请求: {request}");
+        assert_eq!(
+            out["result"]["protocol"], "dian115:wasm@1",
+            "请求: {request}"
+        );
     }
-    assert_eq!(plugin::host::observed_calls(), before, "initialize 期间发生了 host.call");
+    assert_eq!(
+        plugin::host::observed_calls(),
+        before,
+        "initialize 期间发生了 host.call"
+    );
 }
 
 /// `state` op 的线形状: `{state_version, etag, state}`, 且 payload 非法才走 -32602。
@@ -174,7 +197,10 @@ fn business_paths_survive_an_unreachable_host_store() {
         br#"{"method":"runtime.invoke","params":{"envelope":{"op":"state","invocation_id":"inv_0","payload":{}}}}"#,
     );
     assert_eq!(out["result"]["state_version"], "state-v0", "实际: {out}");
-    assert_eq!(out["result"]["state"]["align"]["items"], serde_json::json!([]));
+    assert_eq!(
+        out["result"]["state"]["align"]["items"],
+        serde_json::json!([])
+    );
 
     // refresh: 订阅池读不到 → accepted + 一句可读的原因(不是 error)
     let out = guest.call_json(
@@ -200,7 +226,10 @@ fn business_paths_survive_an_unreachable_host_store() {
             .unwrap_or(false),
         "实际: {state}"
     );
-    assert_eq!(state["result"]["state_version"], "state-v0", "刷新只读, 不动 revision");
+    assert_eq!(
+        state["result"]["state_version"], "state-v0",
+        "刷新只读, 不动 revision"
+    );
 
     // align-now: 拿不到订阅池 → 正常 result 里的 failed, 且没有 PATCH
     let out = guest.call_json(
@@ -213,5 +242,8 @@ fn business_paths_survive_an_unreachable_host_store() {
         br#"{"method":"runtime.invoke","params":{"envelope":{"op":"job","invocation_id":"inv_4","payload":{"id":"align"}}}}"#,
     );
     assert_eq!(out["result"]["status"], "skipped", "实际: {out}");
-    assert!(!guest.runtime.storage_ok(), "宿主不可读时不允许标记存储可用");
+    assert!(
+        !guest.runtime.storage_ok(),
+        "宿主不可读时不允许标记存储可用"
+    );
 }

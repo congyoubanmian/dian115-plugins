@@ -33,23 +33,17 @@ fn qualities_for_level_hit_each_rung() {
     }
     // 逐字钉几个具体档位(含最低/最高档)。
     assert_eq!(qualities_for_level("standard"), vec!["standard"]);
-    assert_eq!(qualities_for_level("hires"), vec!["hires", "lossless", "exhigh", "standard"]);
+    assert_eq!(
+        qualities_for_level("hires"),
+        vec!["hires", "lossless", "exhigh", "standard"]
+    );
     assert_eq!(
         qualities_for_level("lossless"),
         vec!["lossless", "exhigh", "standard"]
     );
     assert_eq!(
         qualities_for_level("jymaster"),
-        vec![
-            "jymaster",
-            "dolby",
-            "jyeffect",
-            "sky",
-            "hires",
-            "lossless",
-            "exhigh",
-            "standard"
-        ],
+        vec!["jymaster", "dolby", "jyeffect", "sky", "hires", "lossless", "exhigh", "standard"],
         "最高档命中 → 升序表整体反转"
     );
 }
@@ -59,7 +53,10 @@ fn qualities_for_level_hit_each_rung() {
 fn qualities_for_level_miss_returns_empty() {
     assert!(qualities_for_level("").is_empty(), "空串未命中 → 空");
     assert!(qualities_for_level("bogus").is_empty());
-    assert!(qualities_for_level("STANDARD").is_empty(), "indexOf 区分大小写");
+    assert!(
+        qualities_for_level("STANDARD").is_empty(),
+        "indexOf 区分大小写"
+    );
     assert!(qualities_for_level("hires ").is_empty(), "不去空白");
     assert!(qualities_for_level("none").is_empty());
 }
@@ -113,7 +110,10 @@ fn playlist_song_falls_back_like_sidecar() {
     assert_eq!(mapped["singers"], "A/B");
     assert_eq!(mapped["album"], "B面");
     assert_eq!(mapped["cover"], "https://p1.music.126.net/x/42.jpg");
-    assert_eq!(mapped["duration_ms"], 1000, "dt=0 是 JS 假值, 回退 duration");
+    assert_eq!(
+        mapped["duration_ms"], 1000,
+        "dt=0 是 JS 假值, 回退 duration"
+    );
     assert_eq!(
         mapped["qualities"],
         serde_json::json!([

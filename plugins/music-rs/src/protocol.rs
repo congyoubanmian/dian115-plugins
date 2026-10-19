@@ -86,7 +86,10 @@ struct InitializeResponse<'a> {
 /// 组装 `{"error":{"code":...,"message":...}}`。
 pub fn rpc_error(code: i32, message: impl Into<String>) -> Vec<u8> {
     util::encode_or_fallback(&ErrorResponse {
-        error: ErrorBody { code, message: message.into() },
+        error: ErrorBody {
+            code,
+            message: message.into(),
+        },
     })
 }
 
@@ -105,7 +108,10 @@ pub fn stopping() -> Vec<u8> {
 /// 走结构体而不是 `json!`/`to_value`: 后者底层是 BTreeMap, 会把键按字典序重排。
 pub fn initialize_result() -> Vec<u8> {
     util::encode_or_fallback(&InitializeResponse {
-        result: InitializeResult { ready: true, protocol: PROTOCOL },
+        result: InitializeResult {
+            ready: true,
+            protocol: PROTOCOL,
+        },
     })
 }
 
@@ -149,7 +155,12 @@ fn dispatch_inner(runtime: &mut Runtime, request: &[u8]) -> Vec<u8> {
     // ① 外层消息: 非 JSON / 无 method → -32602 "invalid invoke: recv=<前200字节>"
     let message = match RpcMessage::parse(request) {
         Ok(message) => message,
-        Err(_) => return rpc_error(CODE_INVALID_PARAMS, format!("invalid invoke: recv={}", util::trunc(request))),
+        Err(_) => {
+            return rpc_error(
+                CODE_INVALID_PARAMS,
+                format!("invalid invoke: recv={}", util::trunc(request)),
+            )
+        }
     };
     let method = message.method();
 
@@ -200,7 +211,10 @@ fn dispatch_inner(runtime: &mut Runtime, request: &[u8]) -> Vec<u8> {
 
 /// `"invalid params: method=" + method + " recv=" + trunc(params)`。
 fn invalid_params_message(method: &str, echoed: &[u8]) -> String {
-    format!("invalid params: method={method} recv={}", util::trunc(echoed))
+    format!(
+        "invalid params: method={method} recv={}",
+        util::trunc(echoed)
+    )
 }
 
 /// 供测试与后续阶段检查"本进程有没有发生过 host.call"。
@@ -218,7 +232,10 @@ mod tests {
         let mut runtime = Runtime::new();
         let raw = dispatch(&mut runtime, request.as_bytes());
         from_slice(&raw).unwrap_or_else(|e| {
-            panic!("响应必须是合法 JSON: {e}; 实际 {:?}", String::from_utf8_lossy(&raw))
+            panic!(
+                "响应必须是合法 JSON: {e}; 实际 {:?}",
+                String::from_utf8_lossy(&raw)
+            )
         })
     }
 
@@ -253,7 +270,11 @@ mod tests {
             let mut runtime = Runtime::new();
             let _ = dispatch(&mut runtime, request.as_bytes());
         }
-        assert_eq!(observed_host_calls(), before, "initialize 期间发生了 host.call");
+        assert_eq!(
+            observed_host_calls(),
+            before,
+            "initialize 期间发生了 host.call"
+        );
     }
 
     /// 未声明的 op → -32601; shutdown 顶层 stopping。
@@ -262,7 +283,10 @@ mod tests {
         let out = dispatch_json(
             r#"{"method":"runtime.invoke","params":{"envelope":{"op":"teleport","invocation_id":"inv_1"}}}"#,
         );
-        assert_eq!(out, json!({"error": {"code": -32601, "message": "unsupported op: teleport"}}));
+        assert_eq!(
+            out,
+            json!({"error": {"code": -32601, "message": "unsupported op: teleport"}})
+        );
 
         let shutdown = dispatch_json(
             r#"{"method":"runtime.invoke","params":{"envelope":{"op":"shutdown","invocation_id":"inv_2"}}}"#,
@@ -278,7 +302,10 @@ mod tests {
             ("", "invalid invoke: recv="),
             ("not json", "invalid invoke: recv=not json"),
             ("[1,2]", "invalid invoke: recv=[1,2]"),
-            (r#"{"method":null}"#, "invalid invoke: recv={\"method\":null}"),
+            (
+                r#"{"method":null}"#,
+                "invalid invoke: recv={\"method\":null}",
+            ),
             (
                 r#"{"method":"runtime.invoke"}"#,
                 "invalid params: method=runtime.invoke recv=",
@@ -312,23 +339,35 @@ mod tests {
             let mut runtime = Runtime::new();
             let raw = dispatch(&mut runtime, request);
             let parsed: Result<Value, _> = from_slice(&raw);
-            assert!(parsed.is_ok(), "输入 {request:?} 的响应不是 JSON: {:?}", String::from_utf8_lossy(&raw));
+            assert!(
+                parsed.is_ok(),
+                "输入 {request:?} 的响应不是 JSON: {:?}",
+                String::from_utf8_lossy(&raw)
+            );
         }
     }
 
     /// 响应信封形状: 成功必须只有 result, 失败必须只有 error。
     #[test]
     fn response_envelopes_are_exclusive() {
-        let err = dispatch_json(r#"{"method":"runtime.invoke","params":{"envelope":{"op":"nope"}}}"#);
+        let err =
+            dispatch_json(r#"{"method":"runtime.invoke","params":{"envelope":{"op":"nope"}}}"#);
         assert!(err.get("result").is_none() && err.get("error").is_some());
-        assert_eq!(err["error"].as_object().unwrap().len(), 2, "error 只含 code/message");
+        assert_eq!(
+            err["error"].as_object().unwrap().len(),
+            2,
+            "error 只含 code/message"
+        );
     }
 
     /// 逐字节形状检查: 错误响应与顶层字段名。
     #[test]
     fn error_bytes_match_layout() {
         let mut runtime = Runtime::new();
-        let raw = dispatch(&mut runtime, br#"{"method":"runtime.invoke","params":{"envelope":{"op":"nope"}}}"#);
+        let raw = dispatch(
+            &mut runtime,
+            br#"{"method":"runtime.invoke","params":{"envelope":{"op":"nope"}}}"#,
+        );
         assert_eq!(
             raw,
             br#"{"error":{"code":-32601,"message":"unsupported op: nope"}}"#.to_vec()

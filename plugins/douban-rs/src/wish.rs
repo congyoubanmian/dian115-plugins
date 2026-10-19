@@ -119,7 +119,6 @@ impl WishFlexString {
 
 impl<'de> serde::Deserialize<'de> for WishFlexString {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        use serde::Deserialize as _;
         // Go 的 `UnmarshalJSON` 先解成 json.RawMessage: 字符串原样, 数字/布尔取原文。
         let value = serde_json::Value::deserialize(deserializer)?;
         let text = match value {
@@ -180,7 +179,7 @@ pub fn parse_manual_cookie(raw: &str) -> (String, String) {
         // 只给了 dbcl2 值本身(含冒号)
         return (String::new(), String::new());
     }
-    let uid = dbcl2.splitn(2, ':').next().unwrap_or("").to_string();
+    let uid = dbcl2.split(':').next().unwrap_or("").to_string();
     (raw.to_string(), uid)
 }
 
@@ -519,7 +518,7 @@ impl Runtime {
             } else {
                 // 前台(或未开自动订阅): 只入观察队列, 到期时间=现在,
                 // 由后台任务(wish-sync 每30分钟)接手订阅。
-                let duplicate = self.queue.items.as_ref().map_or(false, |items| {
+                let duplicate = self.queue.items.as_ref().is_some_and(|items| {
                     items
                         .iter()
                         .any(|entry| entry.douban_ref == item.douban_ref)

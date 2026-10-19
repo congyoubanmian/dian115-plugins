@@ -355,7 +355,12 @@ pub fn wx_check_params(uuid: &str, now_ms: i64) -> String {
 /// `qqSearch` 的 query(`w`/`format`/`p`/`n`, 每页 20 条)。
 pub fn search_params(query: &str, page: u32) -> String {
     let page = page.to_string();
-    query_encode(&[("w", query), ("format", "json"), ("p", page.as_str()), ("n", "20")])
+    query_encode(&[
+        ("w", query),
+        ("format", "json"),
+        ("p", page.as_str()),
+        ("n", "20"),
+    ])
 }
 
 /// `qqSongURL` 的 `guid`(Go `fmt.Sprintf("%d", time.Now().UnixNano()%1e10)`)。
@@ -366,12 +371,7 @@ pub fn guid_from_nanos(nanos: u64) -> String {
 /// `qqSongURL` 的 POST body(Go `json.Marshal(map[string]any{...})`;
 /// `encoding/json` 与 serde_json 都按**键排序**输出对象, 形态一致)。
 /// `ladder` 由调用方按用户档位裁剪(见 [`quality_ladder`])。
-pub fn song_url_request_body(
-    mid: &str,
-    uin: &str,
-    guid: &str,
-    ladder: &[(&str, &str)],
-) -> Vec<u8> {
+pub fn song_url_request_body(mid: &str, uin: &str, guid: &str, ladder: &[(&str, &str)]) -> Vec<u8> {
     let filenames: Vec<String> = ladder
         .iter()
         .map(|(code, ext)| format!("{code}{mid}{mid}.{ext}"))
@@ -470,7 +470,7 @@ pub fn wx_status_of(code: &str) -> &'static str {
 
 /// Go `\s`(RE2): `[ \t\n\f\r]`。
 fn skip_ascii_space(text: &str) -> &str {
-    text.trim_start_matches(|ch: char| matches!(ch, ' ' | '\t' | '\n' | '\x0c' | '\r'))
+    text.trim_start_matches([' ', '\t', '\n', '\x0c', '\r'])
 }
 
 /// 从 `wx_errcode` 的第一次**可匹配**出现处取数字(Go 正则 `wx_errcode\s*=\s*'?([0-9]+)'?`
@@ -506,7 +506,7 @@ pub fn parse_wx_code(body: &str) -> Option<String> {
             let rest = skip_ascii_space(rest);
             let quoted = rest.strip_prefix('"').or_else(|| rest.strip_prefix('\''));
             if let Some(rest) = quoted {
-                if let Some(end) = rest.find(|ch: char| ch == '"' || ch == '\'') {
+                if let Some(end) = rest.find(['"', '\'']) {
                     return Some(rest[..end].to_string());
                 }
             }
@@ -526,7 +526,10 @@ fn capture_after_marker(text: &str, marker: &str) -> Option<String> {
     let mut from = 0;
     while let Some(offset) = text[from..].find(marker) {
         let start = from + offset + marker.len();
-        let captured: String = text[start..].chars().take_while(|ch| is_uuid_char(*ch)).collect();
+        let captured: String = text[start..]
+            .chars()
+            .take_while(|ch| is_uuid_char(*ch))
+            .collect();
         if !captured.is_empty() {
             return Some(captured);
         }
@@ -578,7 +581,8 @@ pub fn parse_vkey_response(
     body: &[u8],
     ladder: &[(&str, &str)],
 ) -> Result<(String, String, String), String> {
-    let parsed: VkeyRoot = serde_json::from_slice(body).map_err(|_| "QQ 取链解析失败".to_string())?;
+    let parsed: VkeyRoot =
+        serde_json::from_slice(body).map_err(|_| "QQ 取链解析失败".to_string())?;
     for (index, info) in parsed.req_1.data.midurlinfo.iter().enumerate() {
         if info.purl.starts_with("http") {
             // Go 这里是 ladder[i], 越界会 panic; 这里跳过越界条目
@@ -777,7 +781,7 @@ pub fn collect_set_cookies(
 
 /// Go `qqPollQR` / `qqPollWXQR` 的 cookie 规范化: 补齐 `uin` 与 `qqmusic_key`。
 pub fn normalize_cookies(jar: &mut BTreeMap<String, String>, kind: LoginKind) {
-    let uin_missing = jar.get("uin").map_or(true, String::is_empty);
+    let uin_missing = jar.get("uin").is_none_or(String::is_empty);
     if uin_missing {
         let candidates: &[&str] = match kind {
             LoginKind::Qq => &["ptui_loginuin", "luin", "wxuin"],
@@ -793,7 +797,7 @@ pub fn normalize_cookies(jar: &mut BTreeMap<String, String>, kind: LoginKind) {
             }
         }
     }
-    let key_missing = jar.get("qqmusic_key").map_or(true, String::is_empty);
+    let key_missing = jar.get("qqmusic_key").is_none_or(String::is_empty);
     if key_missing {
         for name in ["p_skey", "skey", "musickey"] {
             match jar.get(name) {
@@ -884,7 +888,7 @@ pub fn save_cookie_string(raw: &str) -> Result<Value, String> {
         jar.insert(name.to_string(), value.trim().to_string());
     }
     normalize_cookies(&mut jar, LoginKind::Qq);
-    if jar.get("qqmusic_key").map_or(true, String::is_empty) {
+    if jar.get("qqmusic_key").is_none_or(String::is_empty) {
         return Err(
             "粘贴的 cookie 缺少登录凭据（需要 qqmusic_key, 或可补齐的 p_skey/skey/musickey）"
                 .to_string(),
@@ -904,7 +908,11 @@ pub fn save_cookie_string(raw: &str) -> Result<Value, String> {
 
 /// Go `qqGet`: GET + 收集 Set-Cookie, 返回 `(status, body, cookies)`;
 /// 网络失败(status 0)与 Go 一样带回空 body/空 cookie 表。
-fn qq_get(api_url: &str, referer: &str, extra_cookie: &str) -> (i32, Vec<u8>, BTreeMap<String, String>) {
+fn qq_get(
+    api_url: &str,
+    referer: &str,
+    extra_cookie: &str,
+) -> (i32, Vec<u8>, BTreeMap<String, String>) {
     let cookie = cookie_with_extra(extra_cookie);
     let request = HostCallRequest::new("GET", api_url)
         .with_header("user-agent", CHROME_UA)
@@ -934,8 +942,11 @@ pub fn qr_create() -> Result<Value, String> {
 pub fn qr_create_wx() -> Result<Value, String> {
     let state = format!("musicdl-{}", clock::now_unix_nanos());
     let params = wx_login_params(&state);
-    let (status, body, _) =
-        qq_get(&format!("{QQ_WX_CONNECT}?{params}"), "https://y.qq.com/", "");
+    let (status, body, _) = qq_get(
+        &format!("{QQ_WX_CONNECT}?{params}"),
+        "https://y.qq.com/",
+        "",
+    );
     if status != 200 {
         return Err(format!("微信二维码获取失败: HTTP {status}"));
     }
@@ -972,11 +983,10 @@ pub fn qr_poll(_key: &str) -> Result<Value, String> {
 /// 单曲搜索(Go `qqSearch`): `page` 从 1 起, 每页 20 条。
 pub fn search(query: &str, page: u32) -> Result<Value, String> {
     let params = search_params(query, page);
-    let request =
-        HostCallRequest::new("GET", format!("{QQ_SEARCH_API}?{params}"))
-            .with_header("user-agent", CHROME_UA)
-            .with_header("referer", "https://y.qq.com/")
-            .with_header("cookie", cookie_header(&load_cookies()));
+    let request = HostCallRequest::new("GET", format!("{QQ_SEARCH_API}?{params}"))
+        .with_header("user-agent", CHROME_UA)
+        .with_header("referer", "https://y.qq.com/")
+        .with_header("cookie", cookie_header(&load_cookies()));
     let response = host::call(&request).map_err(|err| err.to_string())?;
     let body = store::decode_body(&response).unwrap_or_default();
     parse_search(&body, page)
@@ -1013,7 +1023,9 @@ pub fn song_url(mid: &str, level: &str) -> Result<SongUrl, String> {
 /// 不算登录成功); `uin` 供 UI 显示账号。
 pub fn login_status() -> Result<Value, String> {
     let cookies = load_cookies();
-    let has_key = cookies.get("qqmusic_key").map_or(false, |value| !value.is_empty());
+    let has_key = cookies
+        .get("qqmusic_key")
+        .is_some_and(|value| !value.is_empty());
     Ok(json!({
         "source": "qq",
         "logged_in": has_key,
@@ -1068,7 +1080,11 @@ mod tests {
                 values.iter().map(|value| value.to_string()).collect(),
             );
         }
-        HostCallResponse { status, headers: map, body_base64: host::encode_body_base64(body) }
+        HostCallResponse {
+            status,
+            headers: map,
+            body_base64: host::encode_body_base64(body),
+        }
     }
 
     /// 存储请求的默认回复: 读 404(无会话), 写 200。
@@ -1086,7 +1102,11 @@ mod tests {
             "{} {} cookie={} body={}",
             request.method,
             request.path,
-            request.headers.get("cookie").map(String::as_str).unwrap_or("-"),
+            request
+                .headers
+                .get("cookie")
+                .map(String::as_str)
+                .unwrap_or("-"),
             request.body_base64
         ));
     }
@@ -1130,9 +1150,15 @@ mod tests {
         assert_eq!(value["source"], "qq");
         assert_eq!(value["login_type"], "wx");
         // key 与 Go url.Values.Encode 同形: 键排序
-        assert_eq!(value["key"], "state=musicdl-1790676009123456789&type=wx&uuid=Ab12Cd3E-");
+        assert_eq!(
+            value["key"],
+            "state=musicdl-1790676009123456789&type=wx&uuid=Ab12Cd3E-"
+        );
         assert_eq!(value["image_mode"], "url");
-        assert_eq!(value["image_url"], "https://open.weixin.qq.com/connect/qrcode/Ab12Cd3E-");
+        assert_eq!(
+            value["image_url"],
+            "https://open.weixin.qq.com/connect/qrcode/Ab12Cd3E-"
+        );
         assert_eq!(value["expires_in"], 300);
 
         let _stub2 = install_stub(|request| {
@@ -1159,7 +1185,10 @@ mod tests {
         assert_eq!(qr_poll("").unwrap_err(), QR_UNAVAILABLE);
         assert_eq!(qr_poll("other=1").unwrap_err(), QR_UNAVAILABLE);
         assert_eq!(qr_poll("qrsig=Ab12Cd3-").unwrap_err(), QR_UNAVAILABLE);
-        assert_eq!(qr_poll("type=wx&uuid=WxUuId-1").unwrap_err(), QR_UNAVAILABLE);
+        assert_eq!(
+            qr_poll("type=wx&uuid=WxUuId-1").unwrap_err(),
+            QR_UNAVAILABLE
+        );
     }
 
     // ─────────────────── 搜索 ───────────────────
@@ -1251,7 +1280,10 @@ mod tests {
             .expect("必须有取链 POST");
         let posted_body = posted.rsplit("body=").next().unwrap_or("");
         let decoded = BASE64_STANDARD.decode(posted_body.as_bytes()).unwrap();
-        assert_eq!(decoded, song_url_request_body(MID, "0", "9123456789", quality_ladder("")));
+        assert_eq!(
+            decoded,
+            song_url_request_body(MID, "0", "9123456789", quality_ladder(""))
+        );
     }
 
     #[test]
@@ -1278,7 +1310,10 @@ mod tests {
             }
             Ok(response(200, &[], b"<html>502</html>"))
         });
-        assert_eq!(song_url("003aAYrm3GE0Xg", "").unwrap_err(), "QQ 取链解析失败");
+        assert_eq!(
+            song_url("003aAYrm3GE0Xg", "").unwrap_err(),
+            "QQ 取链解析失败"
+        );
     }
 
     /// 用户档位参与取链: `320` 只请求 `M800`/`M500` 两档, 命中即报 `M800`。
@@ -1312,7 +1347,10 @@ mod tests {
         let posted_body = posted.rsplit("body=").next().unwrap_or("");
         let decoded = BASE64_STANDARD.decode(posted_body.as_bytes()).unwrap();
         // 请求体只含 M800/M500 两条 filename
-        assert_eq!(decoded, song_url_request_body(MID, "0", "9123456789", quality_ladder("320")));
+        assert_eq!(
+            decoded,
+            song_url_request_body(MID, "0", "9123456789", quality_ladder("320"))
+        );
         let text = String::from_utf8(decoded).unwrap();
         assert!(text.contains("M800003aAYrm3GE0Xg003aAYrm3GE0Xg.mp3"));
         assert!(text.contains("M500003aAYrm3GE0Xg003aAYrm3GE0Xg.mp3"));

@@ -12,8 +12,8 @@
 //!   里"tmdb_search → match_tmdb → 阈值判定"那段), 不改签名、不加参数;
 //! - 功能 2/3 只在**订阅入口**加一道前置守卫(调 `can_subscribe` / `no_resub_guard`),
 //!   也不改签名。
-//! 两路都不会碰到对方的行 —— 合并时不需要解冲突。前端 `AppPage.vue` 的改动
-//! (设置抽屉三个输入 + 想看区墓碑数与按钮)属于功能 2/3 一路, 本阶段（契约冻结）不动。
+//!   两路都不会碰到对方的行 —— 合并时不需要解冲突。前端 `AppPage.vue` 的改动
+//!   (设置抽屉三个输入 + 想看区墓碑数与按钮)属于功能 2/3 一路, 本阶段（契约冻结）不动。
 //!
 //! # 真实响应取证(先 curl 再冻结, 不许猜字段名)
 //!
@@ -236,14 +236,16 @@ mod tests {
         assert_eq!(movie.fallback_titles(), vec!["The Odyssey".to_string()]);
 
         // 人工样本: 空串与重复项去掉, 顺序保持
-        let mut custom = SubjectDetail::default();
-        custom.original_title = "Same".to_string();
-        custom.aka = Some(vec![
-            "Same".to_string(),
-            String::new(),
-            "Other".to_string(),
-            "Same".to_string(),
-        ]);
+        let custom = SubjectDetail {
+            original_title: "Same".to_string(),
+            aka: Some(vec![
+                "Same".to_string(),
+                String::new(),
+                "Other".to_string(),
+                "Same".to_string(),
+            ]),
+            ..Default::default()
+        };
         assert_eq!(
             custom.fallback_titles(),
             vec!["Same".to_string(), "Other".to_string()]
@@ -342,7 +344,7 @@ mod tests {
         drop(host);
 
         // 评分整体为 null → rating 保持 None(id 之外的字段全零值)
-        let host = TestHost::install(vec![Route::json(
+        let _host = TestHost::install(vec![Route::json(
             "GET",
             "https://m.douban.com/rexxar/api/v2/movie/5",
             r#"{"id":"5","original_title":"X","aka":[],"rating":null}"#,
@@ -381,7 +383,7 @@ mod tests {
         drop(host);
 
         // 响应 id 与请求不符
-        let host = TestHost::install(vec![Route::json(
+        let _host = TestHost::install(vec![Route::json(
             "GET",
             "https://m.douban.com/rexxar/api/v2/movie/1",
             r#"{"id":"2","original_title":"别的条目"}"#,
@@ -410,7 +412,7 @@ mod tests {
         drop(host);
 
         // 缺 type 字段(serde default 空串)→ 不判错
-        let host = TestHost::install(vec![Route::json(
+        let _host = TestHost::install(vec![Route::json(
             "GET",
             "https://m.douban.com/rexxar/api/v2/movie/1",
             r#"{"id":"1","original_title":"X","aka":[]}"#,

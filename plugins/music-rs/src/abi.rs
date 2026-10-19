@@ -35,7 +35,9 @@ unsafe impl<T> Sync for Global<T> {}
 
 impl<T> Global<T> {
     const fn new(value: T) -> Self {
-        Global { inner: UnsafeCell::new(value) }
+        Global {
+            inner: UnsafeCell::new(value),
+        }
     }
 
     #[inline]
@@ -84,7 +86,8 @@ fn handle_bytes(request: &[u8]) -> (usize, usize) {
         Some(slot) => slot,
         None => {
             // arena 顶到上限: 退化成固定的内部错误响应, 保证宿主总能读到合法 JSON
-            let fallback = protocol::rpc_error(protocol::CODE_INTERNAL, "arena 容量不足, 响应未写出");
+            let fallback =
+                protocol::rpc_error(protocol::CODE_INTERNAL, "arena 容量不足, 响应未写出");
             with_arena(|arena| arena.publish(&fallback)).unwrap_or((0, 0))
         }
     }

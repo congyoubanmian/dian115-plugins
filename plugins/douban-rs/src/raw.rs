@@ -166,7 +166,9 @@ mod tests {
         assert!(RpcMessage::parse(br#"[1,2]"#).is_err());
         assert!(RpcMessage::parse(br#"null"#).is_err());
         // 未知字段忽略(与 Go 一致)
-        assert!(RpcMessage::parse(br#"{"jsonrpc":"2.0","id":1,"method":"runtime.invoke"}"#).is_ok());
+        assert!(
+            RpcMessage::parse(br#"{"jsonrpc":"2.0","id":1,"method":"runtime.invoke"}"#).is_ok()
+        );
     }
 
     #[test]
@@ -174,7 +176,11 @@ mod tests {
         let msg = RpcMessage::parse(br#"{"method":"runtime.invoke"}"#).unwrap();
         assert!(msg.params.is_none(), "缺失必须是 None");
         let msg = RpcMessage::parse(br#"{"method":"runtime.invoke","params":null}"#).unwrap();
-        assert_eq!(msg.params, Some(Value::Null), "null 必须保留(None 与 null 文案不同)");
+        assert_eq!(
+            msg.params,
+            Some(Value::Null),
+            "null 必须保留(None 与 null 文案不同)"
+        );
     }
 
     #[test]
@@ -247,13 +253,17 @@ mod tests {
         let empty = json!({});
         let map = empty.as_object().unwrap();
         assert_eq!(string_field(Some(map), "nope").unwrap(), "");
-        assert_eq!(bool_field(Some(map), "nope").unwrap(), false);
-        assert_eq!(string_field(None, "any").unwrap(), "", "payload 为 null 时字段都是零值");
+        assert!(!bool_field(Some(map), "nope").unwrap());
+        assert_eq!(
+            string_field(None, "any").unwrap(),
+            "",
+            "payload 为 null 时字段都是零值"
+        );
 
         let nulls = json!({"s": null, "b": null});
         let map = nulls.as_object().unwrap();
         assert_eq!(string_field(Some(map), "s").unwrap(), "");
-        assert_eq!(bool_field(Some(map), "b").unwrap(), false);
+        assert!(!bool_field(Some(map), "b").unwrap());
 
         let wrong = json!({"s": 1, "b": "no"});
         let map = wrong.as_object().unwrap();

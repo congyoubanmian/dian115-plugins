@@ -29,7 +29,13 @@ const ROOT_KEYS: &[&str] = &["data", "items", "calendar", "days", "shows", "epis
 /// 分组形态里"这一天的条目"候选键。
 const GROUP_KEYS: &[&str] = &["items", "episodes", "shows", "list", "calendar"];
 /// 日期字段候选。
-const DATE_KEYS: &[&str] = &["air_date", "airDate", "date", "first_air_date", "premiere_date"];
+const DATE_KEYS: &[&str] = &[
+    "air_date",
+    "airDate",
+    "date",
+    "first_air_date",
+    "premiere_date",
+];
 /// 剧集 id 候选。
 const TMDB_KEYS: &[&str] = &["tmdb_id", "tmdbId", "id"];
 /// 季号候选。
@@ -59,7 +65,9 @@ impl AirCalendar {
     ///
     /// `from` 是本地日期 `YYYY-MM-DD`; 非法日期或窗口为空都返回空表(界面显示空态)。
     pub fn window(&self, from: &str, days: i64) -> Vec<CalendarDay> {
-        let Some(start) = clock::parse_date_days(from) else { return Vec::new() };
+        let Some(start) = clock::parse_date_days(from) else {
+            return Vec::new();
+        };
         let end = start + days.max(0);
         self.days
             .iter()
@@ -105,8 +113,8 @@ pub fn fetch() -> Result<AirCalendar, ParseFailure> {
 /// 解析追剧日历。
 pub fn parse(raw: &[u8]) -> Result<AirCalendar, String> {
     let value = raw::decode_json(raw)?;
-    let (elements, container_name) = locate_root(&value)
-        .ok_or_else(|| "日历结构未识别: 未命中容器字段候选".to_string())?;
+    let (elements, container_name) =
+        locate_root(&value).ok_or_else(|| "日历结构未识别: 未命中容器字段候选".to_string())?;
 
     let mut grouped: BTreeMap<String, Vec<CalendarItem>> = BTreeMap::new();
     let mut items_seen = 0usize;
@@ -120,7 +128,9 @@ pub fn parse(raw: &[u8]) -> Result<AirCalendar, String> {
             continue;
         };
         let date_text = raw::first_string(obj, DATE_KEYS);
-        let date = date_text.clone().and_then(|text| clock::normalize_date(&text));
+        let date = date_text
+            .clone()
+            .and_then(|text| clock::normalize_date(&text));
         // 分组形态: 这一天自带 date + 一个条目数组
         if let Some(inner) = raw::first_of(obj, GROUP_KEYS).and_then(Value::as_array) {
             grouped_form = true;
@@ -155,8 +165,11 @@ pub fn parse(raw: &[u8]) -> Result<AirCalendar, String> {
         .into_iter()
         .map(|(date, mut items)| {
             items.sort_by(|left, right| {
-                (left.season, left.episode, left.time.clone())
-                    .cmp(&(right.season, right.episode, right.time.clone()))
+                (left.season, left.episode, left.time.clone()).cmp(&(
+                    right.season,
+                    right.episode,
+                    right.time.clone(),
+                ))
             });
             items.truncate(crate::model::CALENDAR_ITEMS_MAX);
             CalendarDay { date, items }
@@ -169,9 +182,17 @@ pub fn parse(raw: &[u8]) -> Result<AirCalendar, String> {
     let shape = format!(
         "root={container_name};grouped={};date={}",
         if grouped_form { "yes" } else { "no" },
-        if flat_date_key.is_empty() { "n/a" } else { &flat_date_key }
+        if flat_date_key.is_empty() {
+            "n/a"
+        } else {
+            &flat_date_key
+        }
     );
-    Ok(AirCalendar { days, shape, items_seen })
+    Ok(AirCalendar {
+        days,
+        shape,
+        items_seen,
+    })
 }
 
 /// 定位根容器: 返回 (元素数组, 命中的键名)。
@@ -180,7 +201,9 @@ fn locate_root(value: &Value) -> Option<(&Vec<Value>, String)> {
         Value::Array(items) => Some((items, "array".to_string())),
         Value::Object(map) => {
             for key in ROOT_KEYS {
-                let Some(candidate) = map.get(*key) else { continue };
+                let Some(candidate) = map.get(*key) else {
+                    continue;
+                };
                 if let Value::Array(items) = candidate {
                     return Some((items, (*key).to_string()));
                 }
@@ -239,7 +262,8 @@ mod tests {
             {"tmdb_id": 1396, "season": 5, "episode": 2, "title": "绝命毒师",
              "date": "2026-10-02", "time": "12:00"}
           ]
-        }"#.as_bytes()
+        }"#
+        .as_bytes()
         .to_vec()
     }
 
@@ -256,7 +280,8 @@ mod tests {
               ]}
             ]
           }
-        }"#.as_bytes()
+        }"#
+        .as_bytes()
         .to_vec()
     }
 
@@ -266,7 +291,8 @@ mod tests {
           {"tmdb_id": 42, "season": 2, "episode": 9, "title": "某剧", "air_date": "2026/10/03"},
           {"tmdb_id": 43, "season": 1, "episode": 1, "title": "没有日期"},
           "not an object"
-        ]"#.as_bytes()
+        ]"#
+        .as_bytes()
         .to_vec()
     }
 
@@ -309,10 +335,17 @@ mod tests {
             let date = clock::date_plus_days("2026-10-01", offset).unwrap();
             days.push(CalendarDay {
                 date,
-                items: vec![CalendarItem { episode: offset, ..Default::default() }],
+                items: vec![CalendarItem {
+                    episode: offset,
+                    ..Default::default()
+                }],
             });
         }
-        let calendar = AirCalendar { days, shape: String::new(), items_seen: 12 };
+        let calendar = AirCalendar {
+            days,
+            shape: String::new(),
+            items_seen: 12,
+        };
         let window = calendar.window("2026-10-01", 7);
         assert_eq!(window.len(), 8, "含今日共 8 天");
         assert_eq!(window[0].date, "2026-10-01");
@@ -337,7 +370,10 @@ mod tests {
         }
         let raw = serde_json::to_vec(&serde_json::json!({"items": items})).unwrap();
         let calendar = parse(&raw).unwrap();
-        assert_eq!(calendar.days[0].items.len(), crate::model::CALENDAR_ITEMS_MAX);
+        assert_eq!(
+            calendar.days[0].items.len(),
+            crate::model::CALENDAR_ITEMS_MAX
+        );
         assert_eq!(calendar.days[0].items[0].episode, 1, "按集号升序");
     }
 
@@ -352,7 +388,12 @@ mod tests {
         drop(guard);
 
         let fake = FakeHost::new();
-        fake.route_prefix("GET", "GET /api/subscribe/air-calendar", 200, &flat_fixture());
+        fake.route_prefix(
+            "GET",
+            "GET /api/subscribe/air-calendar",
+            200,
+            &flat_fixture(),
+        );
         let guard = fake.install();
         assert_eq!(fetch().unwrap().days.len(), 2);
         drop(guard);
@@ -396,9 +437,21 @@ mod tests {
                 items: Vec::new(),
             });
         }
-        let calendar = AirCalendar { days, shape: String::new(), items_seen: 0 };
-        assert_eq!(calendar.window("2026-10-01", 0).len(), 1, "0 天窗口只留今天");
-        assert_eq!(calendar.window("2026-10-01", -3).len(), 1, "负数按 0 天处理");
+        let calendar = AirCalendar {
+            days,
+            shape: String::new(),
+            items_seen: 0,
+        };
+        assert_eq!(
+            calendar.window("2026-10-01", 0).len(),
+            1,
+            "0 天窗口只留今天"
+        );
+        assert_eq!(
+            calendar.window("2026-10-01", -3).len(),
+            1,
+            "负数按 0 天处理"
+        );
         assert_eq!(calendar.window("2026-10-02", 7).len(), 3);
         assert!(calendar.window("oops", 7).is_empty());
     }
