@@ -1080,19 +1080,45 @@ fn copy_error_hint(text: String, body: &[u8]) -> String {
 /// 仍可能拒绝通知。
 /// 每次通知调用(含自动失败通知与 `notify-test`)都刷新这里; pump 末尾落 KV
 /// `notifydiag`, UI 从 state 的 `notify_diag` 键读取。status -1 = 传输层失败。
+///
+/// 这是"进程内最近一次"的全局视图: 并发调用(测试并行、未来多线程宿主)会互相
+/// 覆盖。需要**本次调用**原始应答的调用方(如 `notify_test`)必须用
+/// [`set_notify_diag`] 返回的快照, 不能事后再读这个全局值。
 static NOTIFY_DIAG: std::sync::Mutex<(i64, String, String)> =
     std::sync::Mutex::new((0, String::new(), String::new()));
 /// 本次进程内是否有新的通知留档待写入 KV。
 static NOTIFY_DIAG_DIRTY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-/// 记录一次通知调用的原始应答(体截断 1KB, 防大响应钉在 static 里)。
-fn set_notify_diag(status: i64, body: &[u8]) {
-    let text = util::trunc_to(body, 1024);
+/// 一次通知调用的局部留档快照(`(status, body_text, at)` 的本次调用副本)。
+///
+/// 与 [`NOTIFY_DIAG`] 分开保存: 全局值可能被并发通知调用覆盖, 快照不会。
+#[derive(Clone, Debug)]
+struct NotifyDiagSnapshot {
+    status: i64,
+    body: String,
+    at: String,
+}
+
+impl NotifyDiagSnapshot {
+    fn to_value(&self) -> Value {
+        json!({"at": &self.at, "status": self.status, "body": &self.body})
+    }
+}
+
+/// 记录一次通知调用的原始应答(体截断 1KB, 防大响应钉在 static 里), 并返回
+/// 本次调用的局部快照。
+fn set_notify_diag(status: i64, body: &[u8]) -> NotifyDiagSnapshot {
+    let snapshot = NotifyDiagSnapshot {
+        status,
+        body: util::trunc_to(body, 1024),
+        at: clock::now_rfc3339(),
+    };
     let mut diag = NOTIFY_DIAG
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    *diag = (status, text, clock::now_rfc3339());
+    *diag = (snapshot.status, snapshot.body.clone(), snapshot.at.clone());
     NOTIFY_DIAG_DIRTY.store(true, std::sync::atomic::Ordering::SeqCst);
+    snapshot
 }
 
 /// 最近一次通知留档的 JSON 形态(写 KV `notifydiag` / 诊断用)。
@@ -1155,6 +1181,10 @@ pub fn notify_failure(task: &Task, error: &str) -> Result<Option<String>, String
 /// 这个动作仍是现场诊断入口: 结果里的 `status` 与 `body` 就是宿主对
 /// `/api/notifications/plugin` 的原始 HTTP 应答(截断); 同时留档到 KV
 /// `notifydiag`(state 的 `notify_diag` 键可见)。
+///
+/// 结果与 KV 都取自**本次调用**的快照: 全局 [`NOTIFY_DIAG`] 是进程级的,
+/// 并行的自动失败通知(或另一条 notify-test)会覆盖它, 事后读取会把别人的
+/// 状态报给 UI/写进 KV(测试并行时表现为偶发 200 vs 400)。
 pub fn notify_test(ids: &mut PutIds) -> Result<Value, String> {
     let stamp = clock::now_unix_nanos() / 1_000_000;
     let body = serde_json::to_vec(&json!({
@@ -1164,26 +1194,24 @@ pub fn notify_test(ids: &mut PutIds) -> Result<Value, String> {
         "dedupe_key": format!("mr-dl-notifytest-{stamp}"),
     }))
     .unwrap_or_default();
-    let outcome = notify_post(&body, &format!("mr-dl-notifytest-{stamp}"));
-    if let Err(err) = store::put_json(ids, "notifydiag", &notify_diag_value()) {
+    let (outcome, diag) = notify_post_with_diag(&body, &format!("mr-dl-notifytest-{stamp}"));
+    if let Err(err) = store::put_json(ids, "notifydiag", &diag.to_value()) {
         // 留档失败不影响测试结论(原始应答仍在返回值里)。
         let _ = err;
     }
-    let diag = notify_diag_value();
-    let raw_body = diag["body"].as_str().unwrap_or("").to_string();
     match outcome {
         Ok(channels) => Ok(json!({
             "sent": true,
-            "status": diag["status"],
+            "status": diag.status,
             "channels": channels,
-            "body": raw_body,
+            "body": diag.body,
             "message": "测试通知已被宿主接受(是否送达看通道)",
         })),
         Err(err) => Ok(json!({
             "sent": false,
-            "status": diag["status"],
+            "status": diag.status,
             "message": err,
-            "body": raw_body,
+            "body": diag.body,
         })),
     }
 }
@@ -1191,20 +1219,31 @@ pub fn notify_test(ids: &mut PutIds) -> Result<Value, String> {
 /// 发一条插件通知: 统一走 [`host_roundtrip`] + 原始应答留档([`set_notify_diag`])。
 /// 200/202 → `Ok(channels)`; 其他 → `Err`(文案含状态与响应体截断)。
 fn notify_post(body: &[u8], idempotency_key: &str) -> Result<Option<String>, String> {
+    notify_post_with_diag(body, idempotency_key).0
+}
+
+/// [`notify_post`] 的完整形态: 除了发送结果, 还返回**本次调用**的原始应答快照。
+/// 需要向用户回显/落 KV 的调用方(notify-test)用它, 避免与并发的通知调用
+/// 争抢全局 [`NOTIFY_DIAG`]。
+fn notify_post_with_diag(
+    body: &[u8],
+    idempotency_key: &str,
+) -> (Result<Option<String>, String>, NotifyDiagSnapshot) {
     let (status, response) =
         match host_roundtrip("POST", NOTIFY_PLUGIN, Some(body), Some(idempotency_key)) {
             Ok(pair) => pair,
             Err(err) => {
-                set_notify_diag(-1, err.as_bytes());
-                return Err(err);
+                let diag = set_notify_diag(-1, err.as_bytes());
+                return (Err(err), diag);
             }
         };
-    set_notify_diag(i64::from(status), &response);
-    if status == 200 || status == 202 {
+    let diag = set_notify_diag(i64::from(status), &response);
+    let outcome = if status == 200 || status == 202 {
         Ok(channel_summary(&response))
     } else {
         Err(http_error("POST", NOTIFY_PLUGIN, status, &response))
-    }
+    };
+    (outcome, diag)
 }
 
 /// 把宿主响应里的通道能力上报拼成一行人话; 没有 channels 字段(老宿主/未配置通道) → None。
@@ -2700,6 +2739,16 @@ mod tests {
     /// 整单入队测试的整单曲目数: 1000 首 = 10 页(每页 100)。
     const PLAYLIST_TEST_TRACKS: usize = 1000;
 
+    /// `NOTIFY_DIAG` 是进程级 static, 而 `cargo test` 并行跑用例; 会触发
+    /// `set_notify_diag` 的用例先拿这把锁, 避免观察/恢复期间被别的线程改写。
+    static NOTIFICATION_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn notification_test_guard() -> std::sync::MutexGuard<'static, ()> {
+        NOTIFICATION_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     /// 宿主会拒绝包含绝对路径字符串的整个 state 响应: settings 视图必须无开头 "/",
     /// 且 settings-update 能把无斜杠输入还原回绝对路径(往返一致)。
     #[test]
@@ -3505,6 +3554,7 @@ mod tests {
 
     #[test]
     fn pump_retries_three_times_then_notifies() {
+        let _notification_guard = notification_test_guard();
         let fake = install_pipeline_host(JobOutcome::Failed("CDN 403".to_string()));
         crate::clock::testhooks::set_now(Some(1_790_676_009_000_000_000));
         let mut ids = PutIds::new();
@@ -3978,6 +4028,7 @@ mod tests {
     /// 否则会被宿主按幂等/去重吞掉(attempts 归零导致键逐字节相同)。
     #[test]
     fn second_failure_notification_keys_differ_after_retry() {
+        let _notification_guard = notification_test_guard();
         let fake = install_pipeline_host(JobOutcome::Failed("CDN 403".to_string()));
         crate::clock::testhooks::set_now(Some(1_790_676_009_000_000_000));
         let mut ids = PutIds::new();
@@ -4515,6 +4566,7 @@ mod tests {
     /// notify_failure 成功时把通道能力摘要带回来, pump 日志/最近动作里可见。
     #[test]
     fn notify_failure_returns_channel_summary() {
+        let _notification_guard = notification_test_guard();
         crate::host::testhost::install(Box::new(|request: &HostCallRequest| {
             if request.method == "POST" && request.path == NOTIFY_PLUGIN {
                 return json_response(
@@ -4543,6 +4595,312 @@ mod tests {
             .expect("有 channels 就有摘要");
         assert!(summary.contains("telegram"), "{summary}");
         assert!(summary.contains("wecom(丢:callback_buttons)"), "{summary}");
+        crate::host::testhost::clear();
+    }
+
+    // ─────────── 通知体 ↔ tools/openapi-v1.yaml 契约 ───────────
+
+    /// vendored OpenAPI 里的 `PluginNotificationRequest` 片段(到下一个同级 schema 为止)。
+    ///
+    /// 测试直接读 `tools/openapi-v1.yaml`(而不是抄一份常量), 这样宿主契约
+    /// 增删字段/改长度上限时, 下面的对齐测试会立刻失败。
+    fn plugin_notification_schema() -> &'static str {
+        const OPENAPI: &str = include_str!("../../../tools/openapi-v1.yaml");
+        let start = OPENAPI
+            .find("\n    PluginNotificationRequest:")
+            .expect("tools/openapi-v1.yaml 缺少 PluginNotificationRequest")
+            + 1;
+        let rest = &OPENAPI[start..];
+        let mut offset = 0;
+        let mut end = rest.len();
+        // 子字段缩进 >= 6 空格; 下一个 4 空格缩进的非空行就是同级 schema 的边界。
+        for line in rest.split_inclusive('\n') {
+            if offset > 0
+                && line.starts_with("    ")
+                && !line.starts_with("     ")
+                && !line.trim().is_empty()
+            {
+                end = offset;
+                break;
+            }
+            offset += line.len();
+        }
+        &rest[..end]
+    }
+
+    /// schema 片段里某个属性的子块(缩进 8 空格; 到下一个同级属性为止)。
+    fn notification_schema_property<'a>(schema: &'a str, name: &str) -> &'a str {
+        let needle = format!("        {name}:");
+        let start = schema
+            .find(&needle)
+            .unwrap_or_else(|| panic!("PluginNotificationRequest 缺少属性 {name}"));
+        let rest = &schema[start..];
+        let mut offset = 0;
+        for line in rest.split_inclusive('\n') {
+            if offset > 0
+                && line.starts_with("        ")
+                && !line.starts_with("         ")
+                && !line.trim().is_empty()
+            {
+                return &rest[..offset];
+            }
+            offset += line.len();
+        }
+        rest
+    }
+
+    /// 断言一条插件通知满足 vendored `PluginNotificationRequest`:
+    /// `additionalProperties:false`、`required:[level,title,body]`、level 枚举、
+    /// title ≤160 / body ≤2000 / dedupe_key ≤200(字符数, JSON Schema 语义),
+    /// 且失败通知不带 `buttons`(宿主 5.0.21 的 callback_data 未经真机验证)。
+    fn assert_plugin_notification_contract(notice: &Value) {
+        let schema = plugin_notification_schema();
+        assert!(
+            schema.contains("additionalProperties: false"),
+            "schema 不再禁止附加字段: {schema}"
+        );
+        assert!(
+            schema.contains("required: [level, title, body]"),
+            "schema 必填字段变了: {schema}"
+        );
+        assert!(
+            notification_schema_property(schema, "level")
+                .contains("enum: [info, success, warning, error]"),
+            "schema level 枚举变了: {schema}"
+        );
+        for (field, limit) in [("title", 160), ("body", 2000), ("dedupe_key", 200)] {
+            let block = notification_schema_property(schema, field);
+            assert!(
+                block.contains(&format!("maxLength: {limit}")),
+                "schema {field} 上限不是 {limit}: {block}"
+            );
+        }
+        assert!(notification_schema_property(schema, "title").contains("minLength: 1"));
+        assert!(notification_schema_property(schema, "body").contains("minLength: 1"));
+
+        let object = notice
+            .as_object()
+            .unwrap_or_else(|| panic!("通知体必须是 JSON 对象: {notice}"));
+        // additionalProperties:false —— 只允许 schema 声明的字段。
+        let allowed = [
+            "level",
+            "title",
+            "body",
+            "image_url",
+            "buttons",
+            "job_ref",
+            "dedupe_key",
+        ];
+        for key in object.keys() {
+            assert!(
+                allowed.contains(&key.as_str()),
+                "additionalProperties:false 不允许字段 {key}: {notice}"
+            );
+        }
+        for required in ["level", "title", "body"] {
+            let text = object
+                .get(required)
+                .and_then(Value::as_str)
+                .unwrap_or_else(|| panic!("缺少必填字段 {required}: {notice}"));
+            assert!(!text.is_empty(), "必填字段 {required} 不能为空: {notice}");
+        }
+        let level = object["level"].as_str().unwrap();
+        assert!(
+            ["info", "success", "warning", "error"].contains(&level),
+            "level 不在 schema 枚举内: {notice}"
+        );
+        let title_len = object["title"].as_str().unwrap().chars().count();
+        assert!(
+            (1..=160).contains(&title_len),
+            "title 长度 {title_len} 越过 schema 的 1..=160: {notice}"
+        );
+        let body_len = object["body"].as_str().unwrap().chars().count();
+        assert!(
+            (1..=2000).contains(&body_len),
+            "body 长度 {body_len} 越过 schema 的 1..=2000: {notice}"
+        );
+        // schema 允许 buttons, 但失败通知明确不发(见 notify_failure 的注释)。
+        assert!(
+            object.get("buttons").is_none(),
+            "失败通知不应带 buttons(5.0.21 callback_data 未经真机验证): {notice}"
+        );
+        let dedupe_key = object
+            .get("dedupe_key")
+            .and_then(Value::as_str)
+            .expect("schema 允许 dedupe_key, 失败通知应带上");
+        assert!(
+            !dedupe_key.is_empty() && dedupe_key.chars().count() <= 200,
+            "dedupe_key 越过 schema 的 1..=200: {dedupe_key}"
+        );
+    }
+
+    /// notify_failure 的请求体与 vendored `PluginNotificationRequest` 对齐:
+    /// 必填字段、字段白名单、level 枚举、长度上限、dedupe_key、无 buttons。
+    #[test]
+    fn notify_failure_payload_matches_openapi_plugin_notification_request() {
+        let _notification_guard = notification_test_guard();
+        let fake = install_pipeline_host(JobOutcome::Succeeded);
+        let task = Task {
+            id: "cap001".to_string(),
+            source: "netease".to_string(),
+            song_id: "123".to_string(),
+            name: "晴天".to_string(),
+            singers: "周杰伦".to_string(),
+            quality: "lossless".to_string(),
+            attempts: 2,
+            retry_round: 1,
+            ..Task::default()
+        };
+        assert!(notify_failure(&task, "CDN 403").unwrap().is_none());
+        let state = fake.borrow();
+        let notice = state.notifications.last().expect("应发出失败通知");
+        assert_plugin_notification_contract(notice);
+        assert_eq!(notice["level"], "error");
+        assert_eq!(notice["title"], "下载失败: 晴天");
+        assert!(notice["body"].as_str().unwrap().contains("CDN 403"));
+        // dedupe_key 含 retry_round/attempts: 重试后再用尽不会被宿主按去重吞掉。
+        assert_eq!(notice["dedupe_key"], "dl-fail-cap001-r1-a2");
+        let idem = state
+            .write_keys
+            .iter()
+            .find(|(what, _)| what == "POST /api/notifications/plugin")
+            .map(|(_, key)| key.as_str())
+            .expect("应带 Idempotency-Key");
+        assert_eq!(idem, "mr-dl-notify-cap001-round1-attempt2");
+        crate::host::testhost::clear();
+    }
+
+    /// 超长歌名/错误也要落在 schema 的长度边界内(title ≤160、body ≤2000),
+    /// 且截断按字符而不是字节(中文不会被切坏)。
+    #[test]
+    fn notify_failure_payload_truncates_to_schema_limits() {
+        let _notification_guard = notification_test_guard();
+        let fake = install_pipeline_host(JobOutcome::Succeeded);
+        let long_name = "长".repeat(300);
+        let long_error = "错".repeat(5000);
+        let task = Task {
+            id: "bound1".to_string(),
+            source: "netease".to_string(),
+            song_id: "456".to_string(),
+            name: long_name.clone(),
+            singers: long_name.clone(),
+            quality: "lossless".to_string(),
+            ..Task::default()
+        };
+        assert!(notify_failure(&task, &long_error).unwrap().is_none());
+        let state = fake.borrow();
+        let notice = state.notifications.last().expect("应发出失败通知");
+        assert_plugin_notification_contract(notice);
+        // 标题 = "下载失败: " + 歌名前 100 字符。
+        assert_eq!(
+            notice["title"].as_str().unwrap(),
+            format!("下载失败: {}", "长".repeat(100))
+        );
+        // 正文整体截到 1800 字符(仍在 schema 的 2000 以内), 不按字节切。
+        let body = notice["body"].as_str().unwrap();
+        assert_eq!(body.chars().count(), 1800);
+        assert!(body.starts_with(&"长".repeat(300)));
+        crate::host::testhost::clear();
+    }
+
+    /// notify_test 的 title/body 是固定文案, 没有用户输入可撑爆上限; 这里直接
+    /// 对共用的契约断言做边界回归, 保证 notify_failure 与 notify_test 任一调用点
+    /// 的字段越过 schema 上限时测试会失败。
+    #[test]
+    #[should_panic(expected = "title 长度")]
+    fn notification_contract_rejects_overlong_title() {
+        assert_plugin_notification_contract(&json!({
+            "level": "info",
+            "title": "长".repeat(161),
+            "body": "正文",
+            "dedupe_key": "mr-dl-notifytest-boundary",
+        }));
+    }
+
+    #[test]
+    #[should_panic(expected = "body 长度")]
+    fn notification_contract_rejects_overlong_body() {
+        assert_plugin_notification_contract(&json!({
+            "level": "info",
+            "title": "标题",
+            "body": "长".repeat(2001),
+            "dedupe_key": "mr-dl-notifytest-boundary",
+        }));
+    }
+
+    #[test]
+    #[should_panic(expected = "dedupe_key 越过")]
+    fn notification_contract_rejects_overlong_dedupe_key() {
+        assert_plugin_notification_contract(&json!({
+            "level": "info",
+            "title": "标题",
+            "body": "正文",
+            "dedupe_key": "d".repeat(201),
+        }));
+    }
+
+    /// 恢复进程级通知留档: `NOTIFY_DIAG` 与 dirty 旗标都是 static, 测试跑完
+    /// (含 panic)必须还原, 否则会影响后续用例/同一进程里的其它测试。
+    struct NotifyDiagRestore {
+        value: (i64, String, String),
+        dirty: bool,
+    }
+
+    impl NotifyDiagRestore {
+        fn capture() -> Self {
+            Self {
+                value: NOTIFY_DIAG
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .clone(),
+                dirty: NOTIFY_DIAG_DIRTY.load(std::sync::atomic::Ordering::SeqCst),
+            }
+        }
+    }
+
+    impl Drop for NotifyDiagRestore {
+        fn drop(&mut self) {
+            *NOTIFY_DIAG
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = self.value.clone();
+            NOTIFY_DIAG_DIRTY.store(self.dirty, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    /// notify-test 只看**本次调用**的快照: 后一条真实的 `notify_post_with_diag`
+    /// 把全局 `NOTIFY_DIAG` 覆盖成 200 后, 第一次调用的快照仍是 400。
+    #[test]
+    fn notify_post_snapshot_is_not_clobbered_by_later_notifications() {
+        let _notification_guard = notification_test_guard();
+        let _restore_diag = NotifyDiagRestore::capture();
+
+        let calls = Rc::new(RefCell::new(0u32));
+        let host_calls = calls.clone();
+        crate::host::testhost::install(Box::new(move |request: &HostCallRequest| {
+            if request.method == "POST" && request.path == NOTIFY_PLUGIN {
+                let mut count = host_calls.borrow_mut();
+                *count += 1;
+                // 第一条 400; 第二条 200, 真正走一遍通知调用覆盖全局留档。
+                return if *count == 1 {
+                    json_response(400, br#"{"error":"invalid notification payload"}"#)
+                } else {
+                    json_response(200, br#"{"data":{"accepted":true}}"#)
+                };
+            }
+            Err(HostError::new(format!(
+                "unexpected host call: {} {}",
+                request.method, request.path
+            )))
+        }));
+        let (first_outcome, snapshot) = notify_post_with_diag(b"{}", "mr-dl-test-snapshot");
+        assert!(first_outcome.is_err(), "400 必须返回错误");
+        let (second_outcome, second) = notify_post_with_diag(b"{}", "mr-dl-test-snapshot-next");
+        assert!(second_outcome.is_ok(), "第二条通知应成功");
+        assert_eq!(second.status, 200);
+        assert_eq!(snapshot.status, 400, "第一次调用的快照不能被覆盖");
+        assert!(snapshot.body.contains("invalid notification payload"));
+        // 全局留档已被第二次调用覆盖; 断言后由 `_restore_diag` 还原。
+        assert_eq!(notify_diag_value()["status"], 200);
         crate::host::testhost::clear();
     }
 
@@ -4669,6 +5027,8 @@ mod tests {
         task_script: Vec<Vec<(u64, u64, u64, u64)>>,
         copy_tasks_calls: usize,
         copy_calls: Vec<(String, String)>,
+        /// 收到的通知请求体(断言 PluginNotificationRequest 契约用)。
+        notifications: Vec<Value>,
         /// 通知应答(0 = 默认 202 接受)。
         notify_status: i32,
         notify_body: Vec<u8>,
@@ -4831,6 +5191,7 @@ mod tests {
                 return json_response(200, br#"{"success":true}"#);
             }
             if path == NOTIFY_PLUGIN {
+                state.notifications.push(body);
                 let status = if state.notify_status == 0 {
                     202
                 } else {
@@ -5209,8 +5570,10 @@ mod tests {
     }
 
     /// notify-test: 宿主 400 时返回原始状态与响应体, 并留档 KV `notifydiag`。
+    /// 请求体同样要满足 `PluginNotificationRequest`（notify_failure 之外的第二个调用点）。
     #[test]
     fn notify_test_reports_raw_status_and_persists_diag() {
+        let _notification_guard = notification_test_guard();
         let state = Rc::new(RefCell::new(Cd2Host::default()));
         {
             let mut fake = state.borrow_mut();
@@ -5232,6 +5595,24 @@ mod tests {
         assert!(
             outcome["message"].as_str().unwrap().contains("400"),
             "{outcome}"
+        );
+        // notify_test 与 notify_failure 共用 PluginNotificationRequest, 请求体也要过契约。
+        let notice = state
+            .borrow()
+            .notifications
+            .last()
+            .expect("应发出测试通知")
+            .clone();
+        assert_plugin_notification_contract(&notice);
+        assert_eq!(notice["level"], "info");
+        let dedupe_key = notice["dedupe_key"].as_str().unwrap();
+        assert!(
+            dedupe_key.starts_with("mr-dl-notifytest-"),
+            "notify-test 去重键前缀变了: {dedupe_key}"
+        );
+        assert!(
+            dedupe_key.chars().count() <= 200,
+            "notify-test 去重键越过 schema 上限: {dedupe_key}"
         );
         // 留档已写 KV(state 的 notify_diag 读它)。
         let diag = notify_diag_doc();

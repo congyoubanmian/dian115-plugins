@@ -77,7 +77,7 @@
       {
         "method": "POST",
         "path": "/api/notifications/plugin",
-        "reason": "下载尝试用尽失败时推送错误通知（标题含歌名，带 retry:<短id> 重试按钮）"
+        "reason": "下载尝试用尽失败时推送错误通知（标题含歌名，重试入口在正文与插件「下载任务」页，不带按钮）"
       },
       {
         "method": "GET",
