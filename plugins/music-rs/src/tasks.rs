@@ -11,6 +11,8 @@
 //!   200 条上限 → 几十 KB, 与整条队列的完整记录(每条含 `job_ref`/`staged_path` 等)
 //!   差两个数量级。0.3.14 起额外带 `source`/`song_id`(入队去重所需的最小字段), 因此
 //!   单条比 0.3.12 略大, 但仍是常数上界, 见 `download::tests::audit_measured_index_and_record_sizes`。
+//!   落盘路径另有保留策略([`INDEX_RETENTION_LIMIT`]): 只留最近 200 条**终态**历史,
+//!   被裁条目的 `task.<id>` 分片一并删除; 进行中条目永不裁。
 //! - `task.<id>`: 完整 [`Task`] 记录, **只在推进那一条时**读进来, 处理完立刻 drop。
 //!
 //! pump 的一次调用因此只同时持有: `idx` + 在途任务条数(稳态 `<= settings.max_active`;
@@ -111,6 +113,23 @@ pub const STATUS_FAILED: &str = "failed";
 
 /// `state` 响应里返回的任务条数上限("最近 200 条")。
 pub const STATE_TASKS_LIMIT: usize = 200;
+
+/// `tasks.idx` 里**终态**条目的保留上限: 最近 200 条。
+///
+/// 索引若随历史任务总数无上界增长(单条约 200~300 字节), 常驻内存会被慢慢吃掉。
+/// 落盘前按 [`sort_index`] 的口径只裁终态(`done`/`failed`)条目, 保留最近 200 条,
+/// 并删除被裁条目的 `task.<id>` 分片。`queued`/`downloading`/`copying` 进行中的
+/// 条目绝不裁, 也**不占**这 200 个名额: 索引大小 = 进行中条数 + 至多 200 条终态,
+/// 进行中任务较多时会大于 200。单次落盘的删除量见 `INDEX_TRIM_BATCH`。
+pub const INDEX_RETENTION_LIMIT: usize = 200;
+
+/// 单次 `save_index` 最多删除的终态分片数。
+///
+/// 升级后的首次落盘可能面对远多于 200 条的旧终态历史。若一次同步删完整批,
+/// 前台 action(enqueue/download 等)会串行发出 N 个宿主 DELETE 请求, 可能撞上
+/// `runtime.timeout_ms` 并留下半删状态。这里限制每次落盘的删除量, 让索引在后续
+/// 落盘中分批收敛; 正常路径(每次只超出一两条)不会触发这个上限。
+const INDEX_TRIM_BATCH: usize = 32;
 
 /// 单次下载的最大尝试次数(失败重试 ≤3)。
 pub const MAX_ATTEMPTS: u32 = 3;
@@ -324,8 +343,75 @@ pub fn load_index() -> Vec<TaskIndexEntry> {
 }
 
 /// 写任务索引(KV `tasks.idx`)。
+///
+/// **落盘前执行保留策略**([`INDEX_RETENTION_LIMIT`]): **终态条目**超过 200 条时
+/// 从最旧的终态条目开始裁, 并删除对应 `task.<id>` 分片; 进行中条目绝不裁, 也不占
+/// 终态名额。删除失败的分片条目会留在索引里(下次落盘再试), 不让一次附带清理把
+/// 入队/推进整体判失败。单次最多删除 `INDEX_TRIM_BATCH` 条, 大历史分批收敛。
 pub fn save_index(ids: &mut PutIds, index: &[TaskIndexEntry]) -> Result<(), String> {
-    store::put_json(ids, TASKS_IDX_KEY, &index).map_err(|err| err.to_string())
+    let kept = retain_index(ids, index);
+    store::put_json(ids, TASKS_IDX_KEY, &kept).map_err(|err| err.to_string())
+}
+
+/// 条目是否处于可被保留策略裁剪的终态。
+///
+/// 本插件的终态只有 `done`/`failed`(没有 canceled 状态); `queued`/`downloading`/
+/// `copying` 都是进行中, 一律不裁。
+fn is_terminal_status(status: &str) -> bool {
+    matches!(status, STATUS_DONE | STATUS_FAILED)
+}
+
+/// 对即将落盘的索引执行保留策略, 返回实际写入的条目。
+///
+/// - **终态条目**不超过 [`INDEX_RETENTION_LIMIT`] 条 → 原样返回(边界整 200 不裁;
+///   进行中条目不计入这个上限, 也永不裁);
+/// - 超过时按 [`sort_index`] 的排序口径(`updated_ms` 倒序)从**最旧**的终态条目
+///   开始裁; 单次最多删 `INDEX_TRIM_BATCH` 条, 剩余超额部分后续落盘再收敛;
+/// - 被裁条目先走 [`delete_task`](`store::delete`) 删分片; 删除失败则**保留该条目**
+///   (分片还在, 条目不能在索引里消失, 否则成永久孤儿 —— 与 [`clear_finished`] 同口径),
+///   下次落盘会再次尝试。
+fn retain_index(ids: &mut PutIds, index: &[TaskIndexEntry]) -> Vec<TaskIndexEntry> {
+    // 上限只数终态条目: 进行中条目不占名额, 否则 active >= 200 时会把最新完结的
+    // 终态条目也删光(重试/对账/state 全部失效)。
+    let terminal = index
+        .iter()
+        .filter(|entry| is_terminal_status(&entry.status))
+        .count();
+    if terminal <= INDEX_RETENTION_LIMIT {
+        return index.to_vec();
+    }
+    // 与 sort_index 相同的排序口径: updated_ms 倒序, 同值按 id 倒序。
+    let mut order: Vec<usize> = (0..index.len()).collect();
+    order.sort_by(|&left, &right| {
+        index[right]
+            .updated_ms
+            .cmp(&index[left].updated_ms)
+            .then_with(|| index[right].id.cmp(&index[left].id))
+    });
+    let mut excess = terminal - INDEX_RETENTION_LIMIT;
+    let mut attempts = 0usize;
+    let mut trimmed = vec![false; index.len()];
+    // order 是新 → 旧; 反过来即从最旧的开始。进行中条目只跳过, 不占终态名额。
+    // 删除尝试数同样受限, 保证一次落盘的宿主调用量有界。
+    for &slot in order.iter().rev() {
+        if excess == 0 || attempts >= INDEX_TRIM_BATCH {
+            break;
+        }
+        if !is_terminal_status(&index[slot].status) {
+            continue;
+        }
+        attempts += 1;
+        if delete_task(ids, &index[slot].id).is_ok() {
+            trimmed[slot] = true;
+            excess -= 1;
+        }
+    }
+    index
+        .iter()
+        .enumerate()
+        .filter(|(slot, _)| !trimmed[*slot])
+        .map(|(_, entry)| entry.clone())
+        .collect()
 }
 
 /// 索引按 `updated_ms` 倒序(同值按 id 倒序, 保证顺序稳定)。
@@ -829,6 +915,13 @@ mod tests {
         /// 0.3.14 审计: 假宿主收到的每一次 storage GET 的键。用例自行清空后
         /// 跑一段操作, 用来断言"去重读次数与队列长度无关"。
         static STORAGE_GETS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+        /// 保留策略审计: 假宿主收到的每一次 storage DELETE 的键(按请求顺序)。
+        static STORAGE_DELETES: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+    }
+
+    /// 自上次 [`install_fake_kv_host`] 以来假宿主收到的 storage DELETE 键。
+    fn deleted_keys() -> Vec<String> {
+        STORAGE_DELETES.with(|keys| keys.borrow().clone())
     }
 
     /// 清空 GET 计数(审计用例在摆好初始队列后、断言前调用)。
@@ -846,6 +939,7 @@ mod tests {
         FAKE_KV.with(|kv| kv.borrow_mut().clear());
         FAIL_DELETE_KEY.with(|f| *f.borrow_mut() = None);
         STORAGE_GETS.with(|gets| gets.borrow_mut().clear());
+        STORAGE_DELETES.with(|keys| keys.borrow_mut().clear());
         crate::host::testhost::install(Box::new(|request: &HostCallRequest| {
             let key = request
                 .path
@@ -913,6 +1007,7 @@ mod tests {
                     })
                 }
                 "DELETE" => {
+                    STORAGE_DELETES.with(|keys| keys.borrow_mut().push(key.clone()));
                     let idem = request
                         .headers
                         .get("idempotency-key")
@@ -1421,6 +1516,235 @@ mod tests {
         assert!(load_task("d2").is_none(), "d2 分片应被删");
         assert!(!index.iter().any(|e| e.id == "d2"), "d2 索引条目应被删");
         FAIL_DELETE_KEY.with(|f| *f.borrow_mut() = None);
+    }
+
+    /// 保留策略: 入队/完结 230 条历史任务后, 索引恰好保留最近 200 条;
+    /// 被裁的 30 条 `task.<id>` 分片都收到了假宿主的 DELETE 且已删除。
+    #[test]
+    fn retention_caps_index_and_deletes_trimmed_shards() {
+        install_fake_kv_host();
+        let mut ids = PutIds::new();
+        const TOTAL: usize = 230;
+        let mut created: Vec<String> = Vec::with_capacity(TOTAL);
+        for index in 0..TOTAL {
+            // 真实入队后立刻完结(模拟历史任务); updated_ms 单调递增, 保证裁剪顺序确定。
+            let outcome = enqueue(
+                &mut ids,
+                &request("netease", &format!("keep-{index}"), "lossless"),
+            )
+            .unwrap();
+            let task_id = outcome.task.id.clone();
+            let mut task = load_task(&task_id).expect("入队必须写分片");
+            task.status = STATUS_DONE.to_string();
+            task.updated_ms = index as u64;
+            put_sharded(&mut ids, &task);
+            created.push(task_id);
+        }
+
+        let index = load_index();
+        assert_eq!(
+            index.len(),
+            INDEX_RETENTION_LIMIT,
+            "索引必须恰好保留 {INDEX_RETENTION_LIMIT} 条"
+        );
+        // 新 → 旧: 最近的 200 条(created[30..230] 的倒序)。
+        let kept: Vec<&str> = index.iter().map(|entry| entry.id.as_str()).collect();
+        let expected: Vec<&str> = created[TOTAL - INDEX_RETENTION_LIMIT..]
+            .iter()
+            .rev()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(kept, expected, "保留的必须是最新 200 条");
+
+        // 被裁的 30 条: 分片收到 DELETE 且已从存储消失。
+        let deletes = deleted_keys();
+        for old in &created[..TOTAL - INDEX_RETENTION_LIMIT] {
+            let key = task_key(old);
+            assert!(deletes.contains(&key), "被裁分片没有收到 DELETE: {key}");
+            assert!(load_task(old).is_none(), "被裁分片仍在存储里: {key}");
+        }
+        // 保留的 200 条: 分片一条都不许删。
+        for kept_id in &created[TOTAL - INDEX_RETENTION_LIMIT..] {
+            let key = task_key(kept_id);
+            assert!(!deletes.contains(&key), "保留条目不应收到 DELETE: {key}");
+            assert!(load_task(kept_id).is_some(), "保留分片被误删: {key}");
+        }
+    }
+
+    /// 边界: 索引正好 200 条时不做任何裁剪, 也不产生 DELETE。
+    #[test]
+    fn retention_keeps_exactly_limit_without_deleting() {
+        install_fake_kv_host();
+        let mut ids = PutIds::new();
+        for index in 0..INDEX_RETENTION_LIMIT {
+            let task = Task {
+                id: format!("e{index:04}"),
+                status: STATUS_DONE.to_string(),
+                updated_ms: index as u64,
+                ..Task::default()
+            };
+            put_sharded(&mut ids, &task);
+        }
+        assert_eq!(load_index().len(), INDEX_RETENTION_LIMIT);
+        assert!(
+            deleted_keys().is_empty(),
+            "整 200 条不得触发 DELETE: {:?}",
+            deleted_keys()
+        );
+        for index in 0..INDEX_RETENTION_LIMIT {
+            assert!(
+                load_task(&format!("e{index:04}")).is_some(),
+                "整 200 条时任何分片都不该被删"
+            );
+        }
+    }
+
+    /// 进行中的旧条目绝不裁: 最老的 downloading 条目在终态超过上限时依然保留,
+    /// 被裁的是它之后最老的终态条目; 上限只数终态, 不数进行中条目。
+    #[test]
+    fn retention_never_trims_active_entry_even_when_oldest() {
+        install_fake_kv_host();
+        let mut ids = PutIds::new();
+        let active = Task {
+            id: "active0".to_string(),
+            status: STATUS_DOWNLOADING.to_string(),
+            job_ref: "job-active".to_string(),
+            updated_ms: 0,
+            ..Task::default()
+        };
+        put_sharded(&mut ids, &active);
+        for index in 1..=INDEX_RETENTION_LIMIT + 1 {
+            let done = Task {
+                id: format!("d{index:04}"),
+                status: STATUS_DONE.to_string(),
+                updated_ms: index as u64,
+                ..Task::default()
+            };
+            put_sharded(&mut ids, &done);
+        }
+
+        let index = load_index();
+        assert_eq!(
+            index.len(),
+            INDEX_RETENTION_LIMIT + 1,
+            "终态裁到 200 条, 进行中条目额外保留"
+        );
+        assert!(
+            index.iter().any(|entry| entry.id == "active0"),
+            "进行中条目即使最老也绝不能被裁: {index:?}"
+        );
+        assert!(load_task("active0").is_some(), "进行中条目的分片不得删除");
+        assert_eq!(
+            deleted_keys(),
+            vec![task_key("d0001")],
+            "只应裁掉最老的终态 d0001"
+        );
+    }
+
+    /// 进行中条目本身超过上限时也不裁: 索引暂时 >200, 但在途任务一条都不能丢。
+    #[test]
+    fn retention_keeps_all_active_entries_when_they_exceed_limit() {
+        install_fake_kv_host();
+        let mut ids = PutIds::new();
+        for index in 0..=INDEX_RETENTION_LIMIT {
+            let task = Task {
+                id: format!("q{index:04}"),
+                status: STATUS_QUEUED.to_string(),
+                updated_ms: index as u64,
+                ..Task::default()
+            };
+            put_sharded(&mut ids, &task);
+        }
+        assert_eq!(
+            load_index().len(),
+            INDEX_RETENTION_LIMIT + 1,
+            "进行中条目超过上限时只能保留, 不能裁"
+        );
+        assert!(deleted_keys().is_empty(), "进行中条目没有可裁的");
+        for index in 0..=INDEX_RETENTION_LIMIT {
+            assert!(load_task(&format!("q{index:04}")).is_some());
+        }
+    }
+
+    /// 回归: 进行中条目本身 >= 上限时, 最新完结的终态条目也**不能**被裁 ——
+    /// 终态上限只数终态条目, 进行中条目不能把终态挤掉。旧实现
+    /// (`excess = index.len() - LIMIT` 且跳过进行中条目)会删掉最新终态,
+    /// 导致 done 不进 state、failed 无法 `retry:<id>`、`task-adopt` 刚挂回就被删。
+    #[test]
+    fn retention_keeps_newest_terminal_when_active_entries_exceed_limit() {
+        install_fake_kv_host();
+        let mut ids = PutIds::new();
+        for index in 0..=INDEX_RETENTION_LIMIT {
+            let queued = Task {
+                id: format!("q{index:04}"),
+                status: STATUS_QUEUED.to_string(),
+                updated_ms: index as u64,
+                ..Task::default()
+            };
+            put_sharded(&mut ids, &queued);
+        }
+        let done = Task {
+            id: "newest-done".to_string(),
+            status: STATUS_DONE.to_string(),
+            updated_ms: 999_999,
+            ..Task::default()
+        };
+        put_sharded(&mut ids, &done);
+
+        let index = load_index();
+        assert_eq!(index.len(), INDEX_RETENTION_LIMIT + 2);
+        assert!(
+            index.iter().any(|entry| entry.id == "newest-done"),
+            "最新终态条目被误裁: {index:?}"
+        );
+        assert!(load_task("newest-done").is_some(), "最新终态分片被误删");
+        assert!(
+            deleted_keys().is_empty(),
+            "终态只有 1 条, 不该产生任何 DELETE: {:?}",
+            deleted_keys()
+        );
+    }
+
+    /// 升级后的大历史分多次落盘收敛: 单次 `save_index` 最多删除
+    /// `INDEX_TRIM_BATCH` 个分片, 不能在一个前台 action 里同步打 N 个 DELETE。
+    #[test]
+    fn retention_bounds_deletes_per_save() {
+        install_fake_kv_host();
+        let mut ids = PutIds::new();
+        let total = INDEX_RETENTION_LIMIT + INDEX_TRIM_BATCH + 5;
+        let mut entries = Vec::with_capacity(total);
+        for index in 0..total {
+            let task = Task {
+                id: format!("h{index:04}"),
+                status: STATUS_DONE.to_string(),
+                updated_ms: index as u64,
+                ..Task::default()
+            };
+            // 只写分片, 不走 persist_task, 避免每次落盘都触发保留策略。
+            save_task(&mut ids, &task).unwrap();
+            entries.push(TaskIndexEntry::of(&task));
+        }
+        sort_index(&mut entries);
+        save_index(&mut ids, &entries).unwrap();
+
+        assert_eq!(
+            deleted_keys().len(),
+            INDEX_TRIM_BATCH,
+            "单次落盘最多删除 {INDEX_TRIM_BATCH} 个分片"
+        );
+        let index = load_index();
+        assert_eq!(index.len(), total - INDEX_TRIM_BATCH);
+        assert!(load_task("h0000").is_none(), "最旧的终态分片应被删除");
+        assert!(
+            load_task(&format!("h{:04}", total - 1)).is_some(),
+            "最新的终态分片不得被删除"
+        );
+
+        // 再落盘一次: 剩余超额条目继续收敛, 不会一次删完。
+        let remaining = total - INDEX_TRIM_BATCH - INDEX_RETENTION_LIMIT;
+        save_index(&mut ids, &index).unwrap();
+        assert_eq!(deleted_keys().len(), INDEX_TRIM_BATCH + remaining);
+        assert_eq!(load_index().len(), INDEX_RETENTION_LIMIT);
     }
 
     #[test]
