@@ -1,0 +1,110 @@
+name: CI
+
+# push 到 main 与所有 pull_request 跑测试/构建/契约检查。
+# 标签发布仍由 release-*.yml 负责，本工作流不监听 tag。
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust-tests:
+    name: rust tests (${{ matrix.plugin }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        plugin: [chase-rs, douban-rs, music-rs]
+    steps:
+      - uses: actions/checkout@v4
+
+      # 与 release 构建一致，在 rust:1-slim 容器内跑测试，避免 runner 上的 Rust 版本漂移。
+      - name: cargo test（${{ matrix.plugin }}）
+        run: docker run --rm -v "$PWD/plugins/${{ matrix.plugin }}:/src" -w /src rust:1-slim cargo test
+
+  lint:
+    name: rust lint (${{ matrix.plugin }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        plugin: [chase-rs, douban-rs, music-rs]
+    # 暂不阻断：三个插件的历史代码有约百余条 rustfmt/clippy 欠账（集中在移植的
+    # 基础模块）。先在 CI 日志里暴露漂移，待专门的 lint 清理提交落地后去掉
+    # continue-on-error 转为门禁。
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: cargo fmt + clippy（${{ matrix.plugin }}）
+        run: |
+          docker run --rm -v "$PWD/plugins/${{ matrix.plugin }}:/src" -w /src rust:1-slim \
+            sh -c 'rustup component add rustfmt clippy && cargo fmt --check && cargo clippy --all-targets -- -D warnings'
+
+  frontend:
+    name: frontend (${{ matrix.plugin }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - plugin: music-rs
+            directory: plugins/music-rs
+            command: node build-ui.mjs --check
+          - plugin: chase-rs
+            directory: plugins/chase-rs/frontend
+            command: npm run build:ui
+          - plugin: douban-center
+            directory: plugins/douban-center
+            command: npm run build:ui
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: |
+            plugins/music-rs/package-lock.json
+            plugins/chase-rs/frontend/package-lock.json
+            plugins/douban-center/package-lock.json
+
+      - name: 安装依赖（${{ matrix.plugin }}）
+        working-directory: ${{ matrix.directory }}
+        run: npm ci
+
+      # music-rs 只做确定性检查；chase-rs 与 douban-center 做完整 UI 构建。
+      - name: 构建/检查 UI（${{ matrix.plugin }}）
+        working-directory: ${{ matrix.directory }}
+        run: ${{ matrix.command }}
+
+  conformance:
+    name: conformance
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        plugin: [chase-rs, douban-rs, music-rs]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: project-check（${{ matrix.plugin }}）
+        working-directory: plugins/${{ matrix.plugin }}
+        run: node ../../tools/conformance/project-check.mjs
+
+      - name: 公共接口面检查
+        run: node tools/conformance/verify-public-surface.mjs
+
+      - name: OpenAPI 契约检查
+        run: node tools/conformance/openapi-check.mjs

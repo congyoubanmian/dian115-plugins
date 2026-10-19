@@ -1929,8 +1929,8 @@ const rootProbeNote = computed(() => {
 
       <p class="hint">
         任务由后台 job `queue-pump`（每 5 分钟，见 manifest）推进；想立刻推一轮点右上角「推进队列」（与 job 同一个入口，
-        单次只新开 1 首）。失败任务最多自动重试 3 次，用尽后可在这一行点重试，
-        或从 Telegram 失败通知的按钮重试。「清空已完成」只删 done/failed，进行中的任务不动。
+        单次只新开 1 首）。失败任务最多自动重试 3 次，用尽后可在这一行点重试；
+        失败通知的正文会提示到本页重试。「清空已完成」只删 done/failed，进行中的任务不动。
         若重启后任务「消失」（分片还在、索引丢了），把它的 id 填进上面输入框点「索引对账」挂回。
       </p>
       <p class="hint task-foot">
@@ -1990,7 +1990,7 @@ const rootProbeNote = computed(() => {
               <span class="track" />
             </span>
           </span>
-          <span class="hint">尝试次数用尽时推送错误通知，通知里带「重试」按钮（callback_data `retry:&lt;短id&gt;`）。</span>
+          <span class="hint">尝试次数用尽时推送错误通知，正文里给出插件「下载任务」页的一键重试入口。</span>
         </label>
       </div>
 
@@ -2161,8 +2161,8 @@ const rootProbeNote = computed(() => {
         </div>
       </div>
       <p v-else class="hint">暂无日志</p>
-      <!-- manifest 声明了 telegram.callback 事件(失败通知带「重试」按钮), 此底注为真才放 -->
-      <p class="hint">另有 Telegram 按钮交互 · 口径与界面一致</p>
+      <!-- manifest 声明了 telegram.callback 事件(retry:<短id> 回调处理), 此底注为真才放 -->
+      <p class="hint">已声明 Telegram 回调事件（retry:&lt;短id&gt;）</p>
     </section>
 
     <footer class="foot">

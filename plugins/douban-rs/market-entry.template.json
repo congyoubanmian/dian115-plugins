@@ -1,12 +1,12 @@
 {
   "id": "douban.rs",
   "name": "豆瓣中心（Rust 版）",
-  "version": "0.2.0",
-  "description": "豆瓣榜单抓取 + 黑名单过滤 + 观察队列 + 聚合订阅；支持 CookieCloud 同步浏览器豆瓣登录态，自动追订「我的想看」。",
+  "version": "0.2.4",
+  "description": "豆瓣榜单抓取 + 黑名单过滤 + 观察队列 + 聚合订阅；支持 CookieCloud 同步浏览器豆瓣登录态，自动追订「我的想看」。界面按统一设计稿重绘：榜单海报卡、观察队列/我的想看双栏、不再订阅名单条与移动端单栏适配。",
   "author": "congyoubanmian",
   "homepage": "https://github.com/congyoubanmian/douban-center-wasm",
-  "package_url": "https://github.com/congyoubanmian/dian115-plugins/releases/download/rs-v0.1.0/douban.rs-0.1.0.d115p",
-  "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "package_url": "https://github.com/congyoubanmian/dian115-plugins/releases/download/rs-v0.2.4/douban.rs-0.2.4.d115p",
+  "sha256": "9e1128bd1676bade41f905ca165fde76b10482946216e9dd86ee67ceb9db6f64",
   "runtime": {
     "kind": "wasm",
     "protocol": "dian115:wasm@1",

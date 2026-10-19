@@ -19,8 +19,10 @@
 //!      复制 —— 宿主 5.x 起该调用被隔离策略 400 拒绝(见 [`crate::cd2`] 模块头);
 //!    两条路径最终都由 CD2 负责刮削/入库;
 //! 5. **通知**: 尝试次数用尽后 `POST /api/notifications/plugin`(level=error,
-//!    标题含歌名, `buttons` 带 `{text:"重试", callback_data:"retry:<短id>"}`);
-//!    `dedupe_key` 与幂等键都带 `retry_round`, 用户重试后再次失败仍会发出新通知。
+//!    标题含歌名, **不带 `buttons`** —— 官方契约只接受 `{text,url}` 且
+//!    `additionalProperties:false`, `callback_data` 未经真机验证, 重试入口在正文
+//!    与插件「下载任务」页); `dedupe_key` 与幂等键都带 `retry_round`, 用户重试后
+//!    再次失败仍会发出新通知。
 //!
 //! 队列语义(并发 `max_active`、按 `created_ms` 升序、失败消息文案)全部在 [`pump`]
 //! 里实现; 队列本体在 [`crate::tasks`]。写操作(目录/下载/改名/复制/通知)都带
@@ -103,7 +105,6 @@ const FILES_ROOTS: &str = "/api/plugin-host/files/roots";
 /// 下载 job 的响应是无字段契约的 GenericHostObject, 真实落盘文件名还可能带
 /// 宿主去重后缀("id (1).part"), 所以用文件列表按任务前缀定位, 不猜 job 字段。
 const WORKSPACE_DIR: &str = "/dian115AI";
-const FILES_ENTRIES: &str = "/api/plugin-host/files/entries";
 
 // ── 诊断留档(0.3.7): files/roots 与 files/entries 都是官方无字段契约的
 // GenericHostObject, 出入只能靠原始响应排查。pump 每轮把两处原始 HTTP 响应
@@ -243,7 +244,6 @@ fn diag_b64(bytes: &[u8]) -> String {
     debug_assert!(out.len() <= DIAG_RAW_MAX_B64);
     out
 }
-const FILES_DIRECTORIES: &str = "/api/plugin-host/files/directories";
 const FILES_DOWNLOADS: &str = "/api/plugin-host/files/downloads";
 const JOBS_PREFIX: &str = "/api/plugin-host/jobs/";
 const LOCAL_COPY: &str = "/api/local-files/copy";
@@ -567,10 +567,32 @@ fn http_error(method: &str, path: &str, status: i32, body: &[u8]) -> String {
     }
 }
 
-/// broker 写操作的幂等键: 同一任务同一尝试重试时保持不变(宿主据此去重),
-/// 新尝试用新键。长度 16~128、全可打印 ASCII。
-fn idem_key(kind: &str, task_id: &str, attempt: u32) -> String {
-    format!("mr-dl-{kind}-{task_id}-attempt{attempt}")
+/// FNV-1a 64 位: 幂等键里的请求体短哈希。
+///
+/// 不需要密码学强度 —— 它只用于区分"同一任务同一重试轮次、同一尝试下重新取链
+/// 拿到的不同签名直链 / 不同定名路径"; 64 位碰撞对单插件的队列可以忽略。
+fn body_hash(body: &[u8]) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in body {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
+}
+
+/// broker 写操作的幂等键: 同一任务、同一重试轮次(`retry_round`)、同一尝试、
+/// 同一请求体时保持不变(宿主据此去重); 任一变化都用新键。长度 16~128、全可打印
+/// ASCII。
+///
+/// **必须带 `retry_round`**: 用户重试时 `attempts` 会被归零, 只用 attempt 会让
+/// 新一轮的 stage/rename/copy 与上一轮同键; 而重新取链拿到的签名直链 body 已经
+/// 变化, 宿主按"同键不同体"返回 409。再并入请求体短哈希, 使同一轮内重新取链
+/// (签名 URL 变化)或路径变化也不会撞上上一轮的键。
+fn idem_key(kind: &str, task_id: &str, attempt: u32, retry_round: u32, body: &[u8]) -> String {
+    format!(
+        "mr-dl-{kind}-{task_id}-r{retry_round}-attempt{attempt}-{:016x}",
+        body_hash(body)
+    )
 }
 
 /// URL 路径段编码(不引入依赖; 保留 RFC3986 unreserved 与 `:`)。
@@ -834,35 +856,6 @@ pub fn state_probe() -> Value {
 
 // ─────────────────────────── 暂存目录与 parent_ref ───────────────────────────
 
-/// `files/entries` 的 parent_ref 结果。
-enum ParentRef {
-    Found(String),
-    Missing,
-}
-
-/// 从 entries 响应里取目录引用: `parent_ref`, 兼容 `self_ref`/`entry_ref`/`ref` 等写法。
-fn find_ref(value: &Value, depth: u8) -> Option<String> {
-    if depth > 3 {
-        return None;
-    }
-    if let Value::Object(map) = value {
-        if let Some(found) = first_str(
-            map,
-            &["parent_ref", "self_ref", "entry_ref", "current_ref", "dir_ref", "ref"],
-        ) {
-            return Some(found);
-        }
-        for container in ["data", "entry", "current", "result"] {
-            if let Some(inner) = map.get(container) {
-                if let Some(found) = find_ref(inner, depth + 1) {
-                    return Some(found);
-                }
-            }
-        }
-    }
-    None
-}
-
 /// 0.3.8: 宿主向插件开放的文件根是"工作区"模型(roots 返回 data.items[], 每项含
 /// root_id / root_entry_ref / alias / backend / capabilities), entries/directories
 /// 都要求 root_id 语义(官方无字段契约)。因此暂存直接放**本地可写工作区根**下,
@@ -945,6 +938,7 @@ pub fn stage_download(
     url: &str,
     file_name: &str,
     attempt: u32,
+    retry_round: u32,
 ) -> Result<Value, String> {
     let body = serde_json::to_vec(&json!({
         "url": url,
@@ -952,7 +946,7 @@ pub fn stage_download(
         "name": file_name,
     }))
     .unwrap_or_default();
-    let key = idem_key("stage", task_id, attempt);
+    let key = idem_key("stage", task_id, attempt, retry_round, &body);
     let (status, response) = host_roundtrip("POST", FILES_DOWNLOADS, Some(&body), Some(&key))?;
     if !(200..300).contains(&status) {
         return Err(http_error("POST", FILES_DOWNLOADS, status, &response));
@@ -975,10 +969,11 @@ pub fn rename_staged(
     old_path: &str,
     new_name: &str,
     attempt: u32,
+    retry_round: u32,
 ) -> Result<Value, String> {
     let body = serde_json::to_vec(&json!({"old_path": old_path, "new_name": new_name}))
         .unwrap_or_default();
-    let key = idem_key("rename", task_id, attempt);
+    let key = idem_key("rename", task_id, attempt, retry_round, &body);
     let (status, response) = host_roundtrip("POST", LOCAL_RENAME, Some(&body), Some(&key))?;
     if !(200..300).contains(&status) {
         return Err(http_error("POST", LOCAL_RENAME, status, &response));
@@ -993,13 +988,14 @@ pub fn copy_to_cd2(
     staged_path: &str,
     target_dir: &str,
     attempt: u32,
+    retry_round: u32,
 ) -> Result<Value, String> {
     let body = serde_json::to_vec(&json!({
         "src_paths": [staged_path],
         "dest_dir": target_dir,
     }))
     .unwrap_or_default();
-    let key = idem_key("copy", task_id, attempt);
+    let key = idem_key("copy", task_id, attempt, retry_round, &body);
     let (status, response) = host_roundtrip("POST", LOCAL_COPY, Some(&body), Some(&key))?;
     if !(200..300).contains(&status) {
         return Err(copy_error_hint(http_error("POST", LOCAL_COPY, status, &response), &response));
@@ -1032,8 +1028,11 @@ fn copy_error_hint(text: String, body: &[u8]) -> String {
 
 /// 最近一次 `/api/notifications/plugin` 调用的原始留档:`(http_status, body_text, at)`。
 ///
-/// 0.3.19: 通知在真机上**从未成功过**(全部 400, 且 1ms 内返回 = 参数校验层拒绝,
-/// 无副作用), 而插件侧的配置/清单都合法 —— 要定位只能看宿主返回的**原始响应体**。
+/// 0.3.11 的旧注释记录过真机 400: 通知 schema 不接受 `callback_data` 按钮
+/// (`tools/openapi-v1.yaml` 的 `PluginNotificationRequest.buttons` 要求每项含
+/// `url` 且 `additionalProperties:false`)。5.0.21 的 `callback_data` 支持未经
+/// 真机验证, 因此失败通知不再带按钮; 原始应答留档仍然保留 —— 通道配置问题
+/// 仍可能拒绝通知。
 /// 每次通知调用(含自动失败通知与 `notify-test`)都刷新这里; pump 末尾落 KV
 /// `notifydiag`, UI 从 state 的 `notify_diag` 键读取。status -1 = 传输层失败。
 static NOTIFY_DIAG: std::sync::Mutex<(i64, String, String)> =
@@ -1061,7 +1060,8 @@ pub fn notify_diag_doc() -> Value {
     store::get_json::<Value>("notifydiag").unwrap_or(Value::Null)
 }
 
-/// 失败通知: `POST /api/notifications/plugin`(§12 回调按钮见 `new-hostcall.md`)。
+/// 失败通知: `POST /api/notifications/plugin`(契约见 `tools/openapi-v1.yaml`
+/// 的 `PluginNotificationRequest`)。
 ///
 /// `dedupe_key` / `Idempotency-Key` 都带上 `retry_round`: `attempts` 在用户重试时
 /// 会被归零, 只用 `attempts` 会让"重试后再次用尽"的第二次通知与上一轮逐字节相同,
@@ -1071,6 +1071,12 @@ pub fn notify_diag_doc() -> Value {
 /// 成功时返回通道能力上报摘要(`NotificationResult.channels`, 如
 /// `telegram · wecom(丢:callback_buttons)`): 企业微信会丢回调按钮、ClawBot 连链接
 /// 按钮都丢, 重试入口必须始终在正文/插件页里; 老宿主没有该字段时返回 `None`。
+///
+/// **不发 `buttons`**: vendored 契约(`tools/openapi-v1.yaml` 的
+/// `PluginNotificationRequest`)要求每个按钮含 `url` 且 `additionalProperties:false`;
+/// 宿主 5.0.21 的 `callback_data` 支持尚未在真机验证。带 `callback_data` 会让整条
+/// 通知被参数校验 400, 连正文里的插件页兜底一起丢失。重试入口由正文与插件
+/// 「下载任务」页承担。
 pub fn notify_failure(task: &Task, error: &str) -> Result<Option<String>, String> {
     let title = format!("下载失败: {}", truncate_chars(&task.name, 100));
     let body_text = format!(
@@ -1081,8 +1087,9 @@ pub fn notify_failure(task: &Task, error: &str) -> Result<Option<String>, String
         "level": "error",
         "title": title,
         "body": truncate_chars(&body_text, 1800),
-        // 0.3.11: 通知 schema(openapi PluginNotificationRequest)只认 {text,url} 按钮,
-        // callback_data 会被 400 拒(真机证实); 重试入口并在正文里, 操作走插件页。
+        // 不发 buttons: 官方契约只接受 {text,url} 且 additionalProperties:false,
+        // 5.0.21 的 callback_data 支持也未经真机验证; 带回调按钮会让整条通知
+        // 被 400 拒掉。重试入口在正文与插件「下载任务」页里。
         "dedupe_key": format!(
             "dl-fail-{}-r{}-a{}",
             task.id, task.retry_round, task.attempts
@@ -1095,9 +1102,10 @@ pub fn notify_failure(task: &Task, error: &str) -> Result<Option<String>, String
 
 /// action `notify-test`: 主动发一条测试通知, 把宿主**原始应答**回给 UI。
 ///
-/// 2026-10 起自动失败通知在真机上全是 400(原因未明), 这个动作是现场诊断入口:
-/// 结果里的 `status` 与 `body` 就是宿主对 `/api/notifications/plugin` 的原始
-/// HTTP 应答(截断); 同时留档到 KV `notifydiag`(state 的 `notify_diag` 键可见)。
+/// 0.3.11 的旧版失败通知在真机上全是 400(当时 schema 拒绝 callback_data 按钮),
+/// 这个动作仍是现场诊断入口: 结果里的 `status` 与 `body` 就是宿主对
+/// `/api/notifications/plugin` 的原始 HTTP 应答(截断); 同时留档到 KV
+/// `notifydiag`(state 的 `notify_diag` 键可见)。
 pub fn notify_test(ids: &mut PutIds) -> Result<Value, String> {
     let stamp = clock::now_unix_nanos() / 1_000_000;
     let body = serde_json::to_vec(&json!({
@@ -1341,7 +1349,7 @@ fn cleanup_staged(prefix: &str) -> Result<usize, String> {
     }
     let count = paths.len();
     let body = serde_json::to_vec(&json!({"paths": paths})).unwrap_or_default();
-    let key = idem_key("clean", prefix, 1);
+    let key = idem_key("clean", prefix, 1, 0, &body);
     let (status, response) = host_roundtrip("DELETE", "/api/local-files", Some(&body), Some(&key))?;
     if !(200..300).contains(&status) {
         return Err(http_error("DELETE", "/api/local-files", status, &response));
@@ -1824,7 +1832,14 @@ fn start_task(
     // 真实扩展名到手后再定名(入队时按 flac 兜底)。
     task.out_name = tasks::out_name(&task.singers, &task.name, &normalize_ext(&song.ext));
     let file_name = format!("{}.part", task.id);
-    match stage_download(&task.id, parent_ref, &song.url, &file_name, task.attempts) {
+    match stage_download(
+        &task.id,
+        parent_ref,
+        &song.url,
+        &file_name,
+        task.attempts,
+        task.retry_round,
+    ) {
         Ok(value) => {
             task.job_ref = value["job_ref"].as_str().unwrap_or("").to_string();
             task.status = tasks::STATUS_DOWNLOADING.to_string();
@@ -1893,9 +1908,13 @@ fn advance_downloading(
             task.staged_path = staged.clone();
             let target_name = task.out_name.clone();
             if file_name_of(&staged) != target_name {
-                if let Err(err) =
-                    rename_staged(&task.id, &staged, &target_name, task.attempts)
-                {
+                if let Err(err) = rename_staged(
+                    &task.id,
+                    &staged,
+                    &target_name,
+                    task.attempts,
+                    task.retry_round,
+                ) {
                     fail_task(settings, task, err, report);
                     return;
                 }
@@ -2115,7 +2134,13 @@ fn advance_copying_direct(settings: &Settings, task: &mut Task, report: &mut Pum
         .map(|(name, _)| name)
         .unwrap_or_else(|| task.out_name.clone());
     let staged = join_dir(&parent_dir(&task.staged_path), &local_name);
-    match copy_to_cd2(&task.id, &staged, &settings.target_dir, task.attempts) {
+    match copy_to_cd2(
+        &task.id,
+        &staged,
+        &settings.target_dir,
+        task.attempts,
+        task.retry_round,
+    ) {
         Ok(_) => finish_copying(task, report),
         Err(err) => copy_failure(settings, task, err, report),
     }
@@ -2528,6 +2553,57 @@ mod tests {
         assert_eq!(clean["n"], 1);
     }
 
+    /// 幂等键(宿主要求 16~128 可打印 ASCII): 同 task/attempt/retry_round/body
+    /// 稳定; retry_round 或 body 变化即换键 —— 用户重试时 attempts 归零但
+    /// retry_round 自增, 且重新取链的签名直链变化, 不能复用上一轮的键(否则 409)。
+    #[test]
+    fn idem_key_covers_retry_round_and_body() {
+        let task_id = "a1b2c3d4";
+        let body_a = br#"{"url":"https://cdn.example.com/a.flac?sig=1"}"#;
+        let body_b = br#"{"url":"https://cdn.example.com/a.flac?sig=2"}"#;
+
+        let base = idem_key("stage", task_id, 1, 0, body_a);
+        assert_eq!(base, idem_key("stage", task_id, 1, 0, body_a), "同输入必须稳定");
+        assert_ne!(base, idem_key("stage", task_id, 2, 0, body_a), "attempt 变化换键");
+        assert_ne!(base, idem_key("stage", task_id, 1, 1, body_a), "retry_round 变化换键");
+        assert_ne!(base, idem_key("stage", task_id, 1, 0, body_b), "body 变化换键");
+        // 用户重试的典型形态: attempts 归零(回到 1)、retry_round 自增、body 变化。
+        assert_ne!(
+            idem_key("stage", task_id, 3, 0, body_a),
+            idem_key("stage", task_id, 1, 1, body_b)
+        );
+
+        for key in [
+            base,
+            idem_key("rename", task_id, 0, 0, b""),
+            idem_key("copy", task_id, u32::MAX, u32::MAX, b"x"),
+        ] {
+            assert!((16..=128).contains(&key.len()), "幂等键长度越界: {key}");
+            assert!(
+                key.bytes().all(|byte| byte.is_ascii_graphic()),
+                "幂等键含非可打印 ASCII: {key}"
+            );
+        }
+    }
+
+    /// 通知幂等键语义不变: 仍按 id + retry_round + attempts 组合。
+    #[test]
+    fn notify_idem_key_keeps_retry_round_semantics() {
+        let task = Task {
+            id: "a1b2c3d4".to_string(),
+            retry_round: 2,
+            attempts: 1,
+            ..Task::default()
+        };
+        assert_eq!(notify_idem_key(&task), "mr-dl-notify-a1b2c3d4-round2-attempt1");
+        let mut next = task.clone();
+        next.retry_round = 3;
+        assert_ne!(notify_idem_key(&task), notify_idem_key(&next));
+        next.retry_round = 2;
+        next.attempts = 2;
+        assert_ne!(notify_idem_key(&task), notify_idem_key(&next));
+    }
+
     /// 假宿主的 job 结局。
     #[derive(Debug, Clone)]
     enum JobOutcome {
@@ -2539,8 +2615,6 @@ mod tests {
     #[derive(Debug, Default)]
     struct FakeHost {
         kv: HashMap<String, (Vec<u8>, u64)>,
-        entries_calls: usize,
-        created_dir: bool,
         staged_name: String,
         job_status: String,
         job_error: String,
@@ -2739,17 +2813,6 @@ mod tests {
                         {"root_id":"root_test_cd2","alias":"cloud","root_entry_ref":"fe_test_cd2","name":"CD2","backend":"cd2","capabilities":["files.cloud.read"]}
                     ]}}"#,
                 );
-            }
-            if path.starts_with(FILES_ENTRIES) {
-                state.entries_calls += 1;
-                if !state.created_dir {
-                    return Ok(HostCallResponse { status: 404, ..HostCallResponse::default() });
-                }
-                return json_response(200, br#"{"parent_ref":"dir-ref-7","entries":[]}"#);
-            }
-            if path == FILES_DIRECTORIES {
-                state.created_dir = true;
-                return json_response(200, br#"{"success":true}"#);
             }
             if path == FILES_DOWNLOADS {
                 state.staged_name = body["name"].as_str().unwrap_or("").to_string();
@@ -3126,8 +3189,6 @@ mod tests {
         assert_eq!(summary["failed"].as_array().unwrap().len(), 0);
 
         let state = fake.borrow();
-        // 0.3.8: 不再走 entries/directories 引用链, 暂存直接放工作区根。
-        assert!(!state.created_dir, "0.3.8 起不再自动建暂存子目录");
         assert_eq!(state.downloads.len(), 1);
         assert_eq!(state.downloads[0]["name"], format!("{task_id}.part"));
         assert_eq!(state.downloads[0]["parent_ref"], "fe_test_ws_root");
@@ -3191,8 +3252,9 @@ mod tests {
         assert_eq!(notice["level"], "error");
         assert!(notice["title"].as_str().unwrap().contains("晴天"));
         assert!(notice["body"].as_str().unwrap().contains("CDN 403"));
-        // 0.3.11 起通知不再带 callback_data 按钮(宿主 schema 会 400), 重试入口在正文里。
-        assert!(notice.get("buttons").is_none(), "0.3.11 起不发 callback_data 按钮");
+        // 官方契约(PluginNotificationRequest)只接受 {text,url} 按钮且
+        // additionalProperties:false; callback_data 未经真机验证, 一律不发。
+        assert!(notice.get("buttons").is_none(), "失败通知不应带 buttons: {notice}");
         assert!(notice["body"].as_str().unwrap().contains("可一键重试"));
     }
 
@@ -4458,7 +4520,7 @@ mod tests {
             }
             Err(HostError::new(format!("unexpected: {}", request.path)))
         }));
-        let err = copy_to_cd2("t1", "/dian115AI/a.flac", DEFAULT_MUSIC_DIR, 1).unwrap_err();
+        let err = copy_to_cd2("t1", "/dian115AI/a.flac", DEFAULT_MUSIC_DIR, 1, 0).unwrap_err();
         assert!(err.contains("CD2 直送"), "{err}");
         crate::host::testhost::clear();
 
@@ -4468,7 +4530,7 @@ mod tests {
             }
             Err(HostError::new(format!("unexpected: {}", request.path)))
         }));
-        let err = copy_to_cd2("t1", "/dian115AI/a.flac", DEFAULT_MUSIC_DIR, 1).unwrap_err();
+        let err = copy_to_cd2("t1", "/dian115AI/a.flac", DEFAULT_MUSIC_DIR, 1, 0).unwrap_err();
         assert!(!err.contains("CD2 直送"), "{err}");
         crate::host::testhost::clear();
     }
