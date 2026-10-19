@@ -86,6 +86,11 @@ mod tests {
         let mut runtime = Runtime::new();
         for request in [
             b"not json".as_slice(),
+            // top-level 数组帧: 不能被当成有效 RPC 消息(尤其是按字段顺序
+            // 还能解出 method 的 ["runtime.initialize"])。
+            br#"[]"#,
+            br#"["runtime.initialize"]"#,
+            br#"[{"method":"runtime.initialize"}]"#,
             br#"{"method":""}"#,
             br#"{}"#,
             br#"{"method":7}"#,

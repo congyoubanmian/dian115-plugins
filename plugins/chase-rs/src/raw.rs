@@ -30,6 +30,24 @@ mod tests {
     }
 
     #[test]
+    fn rpc_message_rejects_top_level_array_frames() {
+        // 宿主帧必须是 JSON 对象。serde 的 derive 允许把结构体按字段声明顺序
+        // 从数组反序列化, 所以 ["runtime.initialize"] 会被解成
+        // method = "runtime.initialize" —— 必须在 parse 层显式拒绝。
+        for frame in [
+            br#"[]"#.as_slice(),
+            br#"["runtime.initialize"]"#.as_slice(),
+            br#"[{"method":"runtime.initialize"}]"#.as_slice(),
+        ] {
+            assert!(
+                RpcMessage::parse(frame).is_err(),
+                "{:?} 不应被解析为合法 RPC 消息",
+                String::from_utf8_lossy(frame)
+            );
+        }
+    }
+
+    #[test]
     fn rpc_message_distinguishes_missing_and_null_params() {
         let msg = RpcMessage::parse(br#"{"method":"runtime.invoke"}"#).unwrap();
         assert!(msg.params.is_none(), "缺失必须是 None");

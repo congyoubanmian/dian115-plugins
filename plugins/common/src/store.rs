@@ -460,23 +460,3 @@ pub fn load_state_with_retry() -> (Option<Vec<u8>>, LoadResult) {
     }
     (None, LoadResult::Unavailable)
 }
-
-/// 旧版分键持久化的键名(Go `pathToKey`: `.data/history.json` → `history`)。
-pub fn legacy_keys() -> [&'static str; 7] {
-    [
-        "settings",
-        "snapshot",
-        "queue",
-        "history",
-        "logs",
-        "stats",
-        "blackstate",
-    ]
-}
-
-/// `.data/<name>.json` → 存储键(Go `pathToKey` 的移植, 供迁移与测试对照)。
-pub fn path_to_key(path: &str) -> String {
-    let path = path.strip_prefix('/').unwrap_or(path);
-    let path = path.strip_prefix(".data/").unwrap_or(path);
-    path.strip_suffix(".json").unwrap_or(path).to_string()
-}

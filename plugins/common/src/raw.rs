@@ -88,6 +88,13 @@ impl RpcMessage {
     /// 等价于 Go `wasm.go:85` 的 `json.Unmarshal(req, &msg) != nil || msg.Method == ""`:
     /// 非 JSON、非对象、method 缺失/null/类型不符、method 为空串 → Err。
     pub fn parse(request: &[u8]) -> Result<Self, TypeMismatch> {
+        // serde 的 derive 允许结构体按字段声明顺序从数组反序列化, serde_json 的
+        // `deserialize_struct` 也确实接受 `[`; 于是 ["runtime.initialize"] 会被
+        // 静默解成 method = "runtime.initialize"。Go 的 json.Unmarshal 对数组帧
+        // 直接报错, 这里先看首个非空白字节, 保持同样的拒绝行为。
+        if !starts_with_object(request) {
+            return Err(TypeMismatch);
+        }
         let msg: RpcMessage = serde_json::from_slice(request).map_err(|_| TypeMismatch)?;
         if msg.method().is_empty() {
             return Err(TypeMismatch);
@@ -98,6 +105,14 @@ impl RpcMessage {
     pub fn method(&self) -> &str {
         self.method.as_deref().unwrap_or("")
     }
+}
+
+/// 首个非空白字节是 `{` 才可能是 RPC 对象帧(serde derive 本身也接受数组)。
+fn starts_with_object(request: &[u8]) -> bool {
+    request
+        .iter()
+        .find(|byte| !byte.is_ascii_whitespace())
+        .is_some_and(|byte| *byte == b'{')
 }
 
 /// `runtime.invoke` 的参数 (Go `wasm.go:20` `invokeParams`)。
