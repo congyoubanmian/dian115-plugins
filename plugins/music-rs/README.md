@@ -32,9 +32,11 @@
        跨边界复制会被隔离策略 400 拒绝（见 `src/cd2.rs` 模块头）。
    - 无论走哪条路径，最终都由 CD2 负责刮削/入库。
 3. **KV 任务队列（分片）**：`tasks.idx` 存紧凑索引（UI state 的唯一数据源，state 响应截取
-   最近 200 条），`task.<id>` 存单条完整记录（来源/音质/直链/`job_ref`/重试次数等）。
-   pump 一次只读在途任务，
-   常驻内存与队列总长无关（0.3.12 起，为 128MB 上限把整条队列从单键拆开）；旧单键 `tasks`
+   最近 200 条），`task.<id>` 存单条完整记录（来源/音质/`job_ref`/暂存路径/重试次数等，
+   不存直链——取链当轮直接交给下载暂存阶段，重试会重新取链）。
+   pump 一次只读在途任务的完整记录，
+   每轮读取的索引随历史任务总数增长（一条约 200~300 字节，上千条仍在几十 KB 量级；
+   0.3.12 起，为 128MB 上限把整条队列从单键拆开）；旧单键 `tasks`
    会在 pump 开头自动迁移。写入已存在的键时带 ETag `If-Match` 乐观锁，且每次写入使用
    唯一的 `Idempotency-Key`。
    `queue-pump` 定时任务（`*/5 * * * *`，`allow_overlap: false`）每 5 分钟推进一次状态机；
@@ -110,8 +112,8 @@ sudo docker run --rm -v "$PWD":/src -w /src dian-rust:wasm32 cargo test
 - **state 响应禁止回显凭据**：宿主递归拒绝键名含 `cookie`/`token` 子串的整个响应；
   网易云 `MUSIC_U`、QQ `qqmusic_key` 等会话只存 KV，绝不进 state 响应。设置视图里
   CookieCloud 只给 `cc_key_ready`、CD2 令牌只给 `cd2_auth_ready` 布尔，不回显值。
-- **前台动作约 10 秒会被强杀**：下载进度轮询全部放在 `queue-pump` 后台任务里，
-  前台 action 只做入队与查询。
+- **前台动作约 60 秒会被强杀**（manifest `timeout_ms = 60000`）：下载进度轮询全部放在
+  `queue-pump` 后台任务里，前台 action 只做入队与查询。
 - **宿主 5.x 的跨边界复制限制**：本地目录 → CD2/AURA 挂载目录的 `/api/local-files/copy`
   会被 400 拒绝；生产环境应配置 CD2 API 令牌走 0.3.19 的直送路径。
 - **`Set-Cookie` 被宿主 broker 剥离**：QQ 扫码拿不到 `qrsig`（因此改为手动粘贴 Cookie）；

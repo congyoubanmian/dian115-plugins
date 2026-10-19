@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // 打包并签名 DIAN115 插件包(.d115p) —— Rust 版追剧管家。
 //
-// 与 plugins/douban-rs/package.mjs 的签名逻辑逐条一致:
+// 签名/完整性/市场披露的公共实现已抽到 tools/plugin-tools/(与 plugins/douban-rs、
+// plugins/music-rs 逐条一致, 签名逻辑不插件化):
 //   * manifest.publisher.key_id 由签名公钥推导(ed25519:<base64url(sha256(rawpub))>);
 //   * integrity.json 覆盖除自身与 signature.json 外的全部 ZIP 成员, 按 UTF-8 路径字节排序;
 //   * 签名消息 = UTF8("DIAN115-PLUGIN-PACKAGE-V1") 0x00 RFC8785-JCS(manifest) 0x00 RFC8785-JCS(integrity)
@@ -9,11 +10,12 @@
 //   * 私钥走环境变量 DIAN115_PLUGIN_SIGNING_KEY(未设置时回退到插件目录下的
 //     developer-ed25519-private.pem; 该文件名在 .gitignore 内)。
 //
-// 与 douban-rs 的差异(有意为之):
+// 与其它插件的差异(有意为之, 留在本文件里以参数传入公共主线):
 //   * 前端产物是插件自带的 frontend/(vite outDir = frontend/build/frontend/dist),
 //     不再跨插件复用 douban-center 的前端;
 //   * WASM 产物同理取 target/wasm32-unknown-unknown/release/plugin.wasm;
-//   * ZIP 用 node:zlib 写, 不依赖 yazl —— 本插件目录没有 node_modules, CI 里也无需 npm install。
+//   * ZIP 用 node:zlib 写, 不依赖 yazl —— 本插件目录没有 node_modules, CI 里也无需 npm install;
+//     ZIP 实现有意不与其它插件合并(固定 DOS 时间戳, 避免产物字节漂移)。
 //
 // 本地干跑(无签名私钥也能跑通):
 //   * 未设 DIAN115_PLUGIN_SIGNING_KEY 且插件目录没有 developer-ed25519-private.pem 时,
@@ -28,24 +30,15 @@
 // 用法:
 //   node package.mjs                # 打包(需要先构建好 wasm 与前端产物)
 //   node package.mjs --generate-key # 显式要求: 先(必要时)生成开发者私钥再打包
-import {
-  createHash,
-  createPrivateKey,
-  createPublicKey,
-  generateKeyPairSync,
-  sign,
-} from 'node:crypto'
-import {
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  readdirSync,
-  statSync,
-  writeFileSync,
-} from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { deflateRawSync } from 'node:zlib'
-import { dirname, join, relative, resolve, sep } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { sha256 } from '../../tools/plugin-tools/digest.mjs'
+import { buildSignedPackage } from '../../tools/plugin-tools/build-signed-package.mjs'
+import { buildMarketEntry } from '../../tools/plugin-tools/market-entry.mjs'
+import { parseJSON } from '../../tools/plugin-tools/package-files.mjs'
+import { readPrivateKey, writeDevelopmentPrivateKey } from '../../tools/plugin-tools/signing.mjs'
 
 // 本插件目录 = plugins/chase-rs
 const root = dirname(fileURLToPath(import.meta.url))
@@ -65,37 +58,8 @@ const generateKey = process.argv.includes('--generate-key')
 const isCI = String(process.env.CI || '').toLowerCase() === 'true'
 const allowDevKeyInCI = process.env.DIAN115_ALLOW_DEV_KEY === '1'
 
-function sha256(value) {
-  return createHash('sha256').update(value).digest()
-}
-
-function base64url(value) {
-  return Buffer.from(value).toString('base64url')
-}
-
-// RFC 8785 (JCS): 键按 UTF-8 码元排序, 数字用 ECMAScript Number::toString, 不允许 NaN/Infinity。
-function canonicalize(value) {
-  if (value === null || typeof value === 'boolean' || typeof value === 'string') return JSON.stringify(value)
-  if (typeof value === 'number') {
-    if (!Number.isFinite(value)) throw new Error('JCS does not allow non-finite numbers')
-    return JSON.stringify(Object.is(value, -0) ? 0 : value)
-  }
-  if (Array.isArray(value)) return `[${value.map(canonicalize).join(',')}]`
-  if (typeof value === 'object') {
-    const keys = Object.keys(value).sort()
-    return `{${keys.map((key) => `${JSON.stringify(key)}:${canonicalize(value[key])}`).join(',')}}`
-  }
-  throw new Error(`JCS does not support ${typeof value}`)
-}
-
-function parseJSON(path) {
-  return JSON.parse(readFileSync(path, 'utf8'))
-}
-
 function generateDevelopmentKey(reason) {
-  const pair = generateKeyPairSync('ed25519')
-  mkdirSync(dirname(keyPath), { recursive: true })
-  writeFileSync(keyPath, pair.privateKey.export({ type: 'pkcs8', format: 'pem' }), { mode: 0o600 })
+  writeDevelopmentPrivateKey(keyPath)
   process.stdout.write(
     `\n!! ${reason}\n` +
     `!! 已生成临时开发私钥: ${keyPath} (0600, 已 gitignore)\n` +
@@ -104,7 +68,7 @@ function generateDevelopmentKey(reason) {
 }
 
 function loadPrivateKey() {
-  if (existsSync(keyPath)) return createPrivateKey(readFileSync(keyPath))
+  if (existsSync(keyPath)) return readPrivateKey(readFileSync(keyPath))
   if (envKeyPath) {
     // 显式给了路径却读不到 —— CI 未注入 Secrets 或路径写错, 必须报错而不是换把新钥匙。
     throw new Error(`DIAN115_PLUGIN_SIGNING_KEY 指向的私钥不存在: ${keyPath}`)
@@ -116,46 +80,13 @@ function loadPrivateKey() {
     )
   }
   generateDevelopmentKey(generateKey ? '本地开发(--generate-key)' : '本地干跑未发现签名私钥, 自动进入开发模式')
-  return createPrivateKey(readFileSync(keyPath))
-}
-
-function rawPublicKey(privateKey) {
-  const spki = createPublicKey(privateKey).export({ type: 'spki', format: 'der' })
-  if (spki.length < 32) throw new Error('Invalid Ed25519 SPKI public key')
-  return spki.subarray(spki.length - 32)
-}
-
-function packagePath(localPath, prefix) {
-  const value = relative(prefix, localPath).split(sep).join('/')
-  if (!value || value.startsWith('../') || value.includes('/../')) throw new Error(`Unsafe package path: ${localPath}`)
-  return value
-}
-
-function walk(directory) {
-  const result = []
-  for (const name of readdirSync(directory).sort()) {
-    const full = join(directory, name)
-    const info = statSync(full)
-    if (info.isDirectory()) result.push(...walk(full))
-    else if (info.isFile()) result.push(full)
-  }
-  return result
-}
-
-// WASM 头的魔数 + 版本, 外加 reactor ABI 导出名 —— 防止把别的东西(或旧的非插件产物)打进包里。
-function assertWasmModule(buffer) {
-  if (buffer.length < 8 || buffer.subarray(0, 4).toString('hex') !== '0061736d') {
-    throw new Error('target/wasm32-unknown-unknown/release/plugin.wasm 不是 WASM 模块')
-  }
-  if (buffer.readUInt32LE(4) !== 1) throw new Error('plugin.wasm 版本不是 1')
-  if (!buffer.includes(Buffer.from('dian115_handle', 'utf8'))) {
-    throw new Error('plugin.wasm 未导出 dian115_handle(dian115:wasm@1 ABI); 请先构建正确的运行时')
-  }
+  return readPrivateKey(readFileSync(keyPath))
 }
 
 // ---------------------------------------------------------------------------
 // 最小 ZIP 写入器(store/deflate 二选一, 这里用 deflate) —— 与 yazl 产物同构:
 // 固定 DOS 时间戳, 因此同样的输入产出同样的字节。
+// (有意不抽到 tools/plugin-tools: 各插件保留自己的 ZIP 实现, 避免产物字节漂移。)
 // ---------------------------------------------------------------------------
 const CRC_TABLE = (() => {
   const table = new Uint32Array(256)
@@ -255,56 +186,14 @@ if (!existsSync(join(uiAssetsRoot, 'remoteEntry.js'))) {
 if (!existsSync(iconPath)) throw new Error(`Missing icon: ${iconPath}`)
 
 const privateKey = loadPrivateKey()
-const publicKey = rawPublicKey(privateKey)
-const keyID = `ed25519:${base64url(sha256(publicKey))}`
 const manifest = parseJSON(manifestTemplatePath)
-manifest.publisher.key_id = keyID
-const manifestBytes = Buffer.from(`${JSON.stringify(manifest, null, 2)}\n`, 'utf8')
-
-const runtimeBytes = readFileSync(wasmPath)
-assertWasmModule(runtimeBytes)
-const files = [
-  { path: 'manifest.json', data: manifestBytes, executable: false },
-  { path: 'frontend/icon.svg', data: readFileSync(iconPath), executable: false },
-  { path: 'runtime/plugin.wasm', data: runtimeBytes, executable: true },
-]
-
-for (const localPath of walk(uiAssetsRoot)) {
-  const path = `frontend/dist/assets/${packagePath(localPath, uiAssetsRoot)}`
-  files.push({ path, data: readFileSync(localPath), executable: false })
-}
-
-files.sort((left, right) => Buffer.compare(Buffer.from(left.path), Buffer.from(right.path)))
-const integrity = {
-  schema_version: 1,
-  algorithm: 'sha256',
-  files: files.map((file) => ({
-    path: file.path,
-    size: file.data.length,
-    sha256: sha256(file.data).toString('hex'),
-  })),
-}
-const integrityBytes = Buffer.from(`${JSON.stringify(integrity, null, 2)}\n`, 'utf8')
-const signedMessage = Buffer.concat([
-  Buffer.from('DIAN115-PLUGIN-PACKAGE-V1\0', 'utf8'),
-  Buffer.from(canonicalize(manifest), 'utf8'),
-  Buffer.from([0]),
-  Buffer.from(canonicalize(integrity), 'utf8'),
-])
-const signature = {
-  schema_version: 1,
-  algorithm: 'Ed25519',
-  canonicalization: 'RFC8785-JCS',
-  domain: 'DIAN115-PLUGIN-PACKAGE-V1',
-  key_id: keyID,
-  public_key: base64url(publicKey),
-  signature: base64url(sign(null, signedMessage, privateKey)),
-}
-const signatureBytes = Buffer.from(`${JSON.stringify(signature, null, 2)}\n`, 'utf8')
-
-files.push({ path: 'integrity.json', data: integrityBytes, executable: false })
-files.push({ path: 'signature.json', data: signatureBytes, executable: false })
-files.sort((left, right) => Buffer.compare(Buffer.from(left.path), Buffer.from(right.path)))
+const { keyId, files } = buildSignedPackage({
+  privateKey,
+  manifest,
+  wasmBytes: readFileSync(wasmPath),
+  iconBytes: readFileSync(iconPath),
+  uiAssetsRoot,
+})
 
 mkdirSync(releasesRoot, { recursive: true })
 const packageName = `${manifest.id}-${manifest.version}.d115p`
@@ -312,34 +201,16 @@ const outputPath = join(releasesRoot, packageName)
 zipPackage(outputPath, files)
 const packageDigest = sha256(readFileSync(outputPath)).toString('hex')
 
-const marketEntry = parseJSON(marketTemplatePath)
-marketEntry.id = manifest.id
-marketEntry.name = manifest.name
-marketEntry.version = manifest.version
-marketEntry.description = manifest.description
-marketEntry.author = manifest.publisher.name
-marketEntry.homepage = manifest.homepage
-marketEntry.sha256 = packageDigest
-// 市场披露必须与签名 Manifest 完全一致: 运行时类型/信任级别按 manifest 推导,
-// 不能写死(wasm 插件写成 process 会与清单不符, 市场校验会拒绝)。
-const runtimeKind = manifest.runtime.kind === 'wasm' ? 'wasm' : 'process'
-marketEntry.runtime = {
-  kind: runtimeKind,
-  protocol: manifest.runtime.protocol,
-  autostart: true,
-  trust_level: runtimeKind === 'wasm' ? 'wasm-sandbox' : 'isolated-process',
-}
-marketEntry.permissions = manifest.permissions
-marketEntry.tags = manifest.tags || []
+const marketEntry = buildMarketEntry(marketTemplatePath, manifest, packageDigest)
 writeFileSync(join(releasesRoot, 'market-entry.generated.json'), `${JSON.stringify(marketEntry, null, 2)}\n`)
 
 // 注意: market-entry.template.json 是 conformance 的输入(官方 project-check.mjs
-// 会读取它并与 manifest 比对), 必须由人工维护; 这里只读取它生成
+// 会读取它并与 manifest 比对), 必须由人工维护; buildMarketEntry 只读取它生成
 // releases/market-entry.generated.json, 绝不回写模板 —— 否则打包会把人工维护的
 // 字段覆盖掉, 并可能把仅市场索引需要的字段(如 runtime.memory_mb)带进模板,
 // 污染 CI 的 conformance。
 
 process.stdout.write(`Package: ${outputPath}\n`)
 process.stdout.write(`SHA-256: ${packageDigest}\n`)
-process.stdout.write(`Publisher key ID: ${keyID}\n`)
+process.stdout.write(`Publisher key ID: ${keyId}\n`)
 process.stdout.write(`Market entry: ${join(releasesRoot, 'market-entry.generated.json')}\n`)

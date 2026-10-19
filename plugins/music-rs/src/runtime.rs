@@ -1,4 +1,4 @@
-//! 运行时骨架(从 douban-rs `src/runtime.rs` 剥离豆瓣业务后的最小接线层)。
+//! 运行时(从 douban-rs `src/runtime.rs` 剥离豆瓣业务后的接线层)。
 //!
 //! 保留的部分:
 //! - **状态文档的加载与落盘**: 三态(loaded/fresh/unavailable)、404 两次确认、
@@ -6,8 +6,8 @@
 //!   ETag 乐观锁 + 幂等键写入;
 //! - **op 入口**: [`Runtime::state`](Go `stateResult`)/[`Runtime::action`]/
 //!   [`Runtime::job`]/[`Runtime::event`] 四个分发入口的形状与 douban-rs 一致;
-//! - **action/job 分发表骨架**: 已挂到 [`crate::netease`]/[`crate::qq`]/
-//!   [`crate::download`]/[`crate::tasks`] 的空桩函数(后续阶段填体);
+//! - **action/job 分发表**: 已挂到 [`crate::netease`]/[`crate::qq`]/
+//!   [`crate::download`]/[`crate::tasks`] 的落地函数;
 //! - **telegram.callback 事件入口**: 交给 [`crate::tasks::on_telegram_callback`]。
 //!
 //! 剥离掉的部分(豆瓣业务): 榜单/海报/TMDB/订阅/黑名单/观察队列/CookieCloud 想看的
@@ -61,7 +61,7 @@ pub struct PersistedState {
     /// 日志尾部(落盘时裁剪到 [`PERSIST_LOG_LIMIT`])。
     #[serde(default)]
     pub logs: Option<Vec<LogEntry>>,
-    /// KV 任务队列(结构由后续阶段定义, 骨架阶段只做透明存取)。
+    /// KV 任务队列(结构见 [`crate::tasks`], 这里只做透明存取)。
     #[serde(default)]
     pub tasks: Option<Vec<Value>>,
     /// 设置(音质偏好/通知开关等, 后续阶段定义)。
@@ -639,7 +639,7 @@ impl Runtime {
         }
     }
 
-    /// job 分发表骨架。
+    /// job 分发表。
     ///
     /// | job id | 落地函数 |
     /// |--------|----------|
@@ -762,7 +762,7 @@ pub fn looks_like_abs_path(s: &str) -> bool {
     s.len() >= 2 && s.starts_with('/') && !s.starts_with("//")
 }
 
-/// 取字符串参数(缺失/非字符串 → 空串, 骨架阶段不做严格类型校验)。
+/// 取字符串参数(缺失/非字符串 → 空串, 不做严格类型校验)。
 fn input_str(input: &Map<String, Value>, key: &str) -> String {
     input
         .get(key)
@@ -780,7 +780,7 @@ fn input_u32(input: &Map<String, Value>, key: &str, fallback: u32) -> u32 {
         .unwrap_or(fallback)
 }
 
-/// 按来源路由搜索(空桩; 未知来源是业务失败, 不是协议错误)。
+/// 按来源路由搜索(未知来源是业务失败, 不是协议错误)。
 fn search(source: &str, query: &str, page: u32) -> Result<Value, String> {
     match source {
         "netease" => netease::search(query, page),
@@ -789,7 +789,7 @@ fn search(source: &str, query: &str, page: u32) -> Result<Value, String> {
     }
 }
 
-/// 按来源路由取链(空桩)。
+/// 按来源路由取链。
 fn song_url(source: &str, song_id: &str, level: &str) -> Result<Value, String> {
     match source {
         "netease" => netease::song_url(song_id, level)
@@ -800,7 +800,7 @@ fn song_url(source: &str, song_id: &str, level: &str) -> Result<Value, String> {
     }
 }
 
-/// 按来源路由扫码创建(空桩)。
+/// 按来源路由扫码创建。
 fn qr_create(source: &str) -> Result<Value, String> {
     match source {
         "netease" => netease::qr_create(),
@@ -809,7 +809,7 @@ fn qr_create(source: &str) -> Result<Value, String> {
     }
 }
 
-/// 按来源路由扫码轮询(空桩)。
+/// 按来源路由扫码轮询。
 fn qr_poll(source: &str, key: &str) -> Result<Value, String> {
     match source {
         "netease" => netease::qr_poll(key),
@@ -818,7 +818,7 @@ fn qr_poll(source: &str, key: &str) -> Result<Value, String> {
     }
 }
 
-/// 按来源路由登录态查询(空桩)。
+/// 按来源路由登录态查询。
 fn login_status(source: &str) -> Result<Value, String> {
     match source {
         "netease" => netease::login_status(),
@@ -843,7 +843,7 @@ fn playlist_songs(source: &str, id: &str, page: u32, page_size: u32) -> Result<V
     }
 }
 
-/// 空桩返回值 → action 的 result 形状: `Ok` → succeeded, `Err` → failed。
+/// 落地函数返回值 → action 的 result 形状: `Ok` → succeeded, `Err` → failed。
 ///
 /// 0.3.15: 队列操作互斥(`download` 入队 / `pump`)在忙时返回带 `skipped` 的 Ok ——
 /// 那是"什么都没做, 稍后再试", 既不是成功也不是失败: 状态给 `skipped`, 让 UI

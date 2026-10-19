@@ -25,9 +25,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # 与 release 构建一致，在 rust:1-slim 容器内跑测试，避免 runner 上的 Rust 版本漂移。
+      # 与 release 构建一致，在 rust:1-slim（按 digest 固定，见下方镜像引用）容器内跑
+      # 测试，避免 runner 上的 Rust 版本漂移。
       - name: cargo test（${{ matrix.plugin }}）
-        run: docker run --rm -v "$PWD/plugins/${{ matrix.plugin }}:/src" -w /src rust:1-slim cargo test
+        run: docker run --rm -v "$PWD/plugins/${{ matrix.plugin }}:/src" -w /src rust@sha256:4df2ae8cfdfebdfc13a65da7f253b73d68983dc0339f2719bc17a279c913b13d cargo test
 
   lint:
     name: rust lint (${{ matrix.plugin }})
@@ -41,7 +42,7 @@ jobs:
 
       - name: cargo fmt + clippy（${{ matrix.plugin }}）
         run: |
-          docker run --rm -v "$PWD/plugins/${{ matrix.plugin }}:/src" -w /src rust:1-slim \
+          docker run --rm -v "$PWD/plugins/${{ matrix.plugin }}:/src" -w /src rust@sha256:4df2ae8cfdfebdfc13a65da7f253b73d68983dc0339f2719bc17a279c913b13d \
             sh -c 'rustup component add rustfmt clippy && cargo fmt --check && cargo clippy --all-targets -- -D warnings'
 
   frontend:

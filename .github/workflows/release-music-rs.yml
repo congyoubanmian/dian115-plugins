@@ -1,7 +1,7 @@
 name: 发布音乐下载 Rust 版插件
 
 # 推一个 music-rs-v<版本> 标签即自动: 本插件 npm ci → build-ui.mjs 构建前端 →
-# rust:1-slim 容器编译 WASM → 打包签名 →
+# rust:1-slim（按 digest 固定）容器编译 WASM → 打包签名 →
 # 生成市场索引(新增 music.rs 条目, 保留 douban.center/douban.rs/chase.rs) →
 # 创建 Release 并上传 .d115p → 把索引回写到 main。
 #
@@ -37,6 +37,9 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
+          # 下方 npm ci 在 plugins/music-rs（defaults.run.working-directory）里执行。
+          cache: npm
+          cache-dependency-path: plugins/music-rs/package-lock.json
 
       - name: 校验标签与清单版本一致
         env:
@@ -66,13 +69,13 @@ jobs:
             exit 1
           }
 
-      - name: 构建 WASM 运行时（rust:1-slim）
+      - name: 构建 WASM 运行时（rust:1-slim 按 digest 固定）
         run: |
           docker run --rm \
             -v "$GITHUB_WORKSPACE/plugins/music-rs:/src" \
             -w /src \
             -e CARGO_TERM_COLOR=always \
-            rust:1-slim \
+            rust@sha256:4df2ae8cfdfebdfc13a65da7f253b73d68983dc0339f2719bc17a279c913b13d \
             sh -c 'set -e; rustup target list --installed | grep -qx wasm32-unknown-unknown || rustup target add wasm32-unknown-unknown; cargo build --release --target wasm32-unknown-unknown'
 
       - name: 校验构建产物

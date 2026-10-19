@@ -92,10 +92,10 @@ use crate::host::{self, HostCallRequest, HostCallResponse};
 use crate::store;
 use crate::util;
 
-/// 空桩统一返回值。
+/// 占位错误文案(早期空桩形态的遗留常量)。
 ///
-/// 本模块已实现, 不再返回它; 常量保留是因为 [`crate::qq`] / [`crate::download`] /
-/// [`crate::tasks`] 的空桩与 `lib.rs` 的接线测试仍以它为准。
+/// 本模块及 [`crate::qq`] / [`crate::download`] / [`crate::tasks`] 均已实现,
+/// 当前全仓无调用方; 常量按 pub API 保留, 不再被任何路径返回。
 pub const NOT_IMPLEMENTED: &str = "not implemented";
 
 // ─────────────────────────── 常量 ───────────────────────────

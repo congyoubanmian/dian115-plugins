@@ -102,7 +102,7 @@ dependencies = [
 
 [[package]]
 name = "douban-plugin"
-version = "0.1.0"
+version = "0.2.4"
 dependencies = [
  "aes",
  "base64",

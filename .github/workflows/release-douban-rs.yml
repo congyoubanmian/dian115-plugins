@@ -1,6 +1,6 @@
 name: 发布豆瓣中心 Rust 版插件
 
-# 推一个 rs-<版本> 标签即自动: rust:1-slim 容器里编译 WASM → 打包签名 →
+# 推一个 rs-<版本> 标签即自动: rust:1-slim（按 digest 固定）容器里编译 WASM → 打包签名 →
 # 生成市场索引(新增 douban.rs 条目, 保留 douban.center) →
 # 创建 Release 并上传 .d115p → 把索引回写到 main。
 #
@@ -42,6 +42,9 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
+          # 下方 npm ci 在 plugins/douban-center 里执行（复用其前端与 lockfile）。
+          cache: npm
+          cache-dependency-path: plugins/douban-center/package-lock.json
 
       - name: 校验标签与清单版本一致
         env:
@@ -70,13 +73,13 @@ jobs:
             exit 1
           }
 
-      - name: 构建 WASM 运行时（rust:1-slim）
+      - name: 构建 WASM 运行时（rust:1-slim 按 digest 固定）
         run: |
           docker run --rm \
             -v "$GITHUB_WORKSPACE/plugins/douban-rs:/src" \
             -w /src \
             -e CARGO_TERM_COLOR=always \
-            rust:1-slim \
+            rust@sha256:4df2ae8cfdfebdfc13a65da7f253b73d68983dc0339f2719bc17a279c913b13d \
             sh -c 'set -e; rustup target list --installed | grep -qx wasm32-unknown-unknown || rustup target add wasm32-unknown-unknown; cargo build --release --target wasm32-unknown-unknown'
 
       - name: 校验构建产物
@@ -90,7 +93,7 @@ jobs:
       # wasm-opt -Oz：本地已验证能把 plugin.wasm 从 1033934 压到 860853 字节
       # （-16.7%），wazero 解释器下 RSS 稳态 55MB → 41MB，guest 回包不变。
       # 版本必须与本地一致：本地用的是 npm 包 @wasm-opt/linux-x64@2.0.0 里的
-      # binaryen 132。不能用 apt 的 binaryen——rust:1-slim 现在是 Debian 13
+      # binaryen 132。不能用 apt 的 binaryen——rust:1-slim（按 digest 固定）现在是 Debian 13
       # (trixie)，`apt-cache policy binaryen` 只有 120-4，压出来的字节与本地不同。
       - name: wasm-opt 压缩（binaryen 132）
         run: |

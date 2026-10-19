@@ -1,4 +1,4 @@
-//! DIAN115 音乐下载插件(Rust 版)运行时 —— `dian115:wasm@1` reactor 骨架。
+//! DIAN115 音乐下载插件(Rust 版)运行时 —— `dian115:wasm@1` reactor。
 //!
 //! 从 `plugins/douban-rs` 拷贝基建模块并剥离豆瓣业务, 只保留:
 //!
@@ -8,7 +8,7 @@
 //! | [`arena`] | 可重置的 bump arena(宿主取请求/读响应的线性内存) |
 //! | [`host`] | `host.call` 一次性往返(信封编解码 + 错误语义) |
 //! | [`protocol`] | JSON-RPC 分发: `runtime.initialize` / `runtime.invoke` |
-//! | [`runtime`] | op 分发骨架(见下) + 状态文档加载/落盘 |
+//! | [`runtime`] | op 分发(见下) + 状态文档加载/落盘 |
 //! | [`store`] | KV 存储: ETag 乐观锁 + 幂等键 + 信封解包 |
 //! | [`util`] | 错误文本截断/序列化兜底/宽松取值 |
 //! | [`clock`] | 经宿主 WASI 取墙钟时间与休眠 |
@@ -19,7 +19,7 @@
 //! | [`download`] | 宿主代下载两段式管线(取链 → 暂存 → 轮询 → 定名 → 复制 → 通知) |
 //! | [`tasks`] | KV 任务队列(KV `tasks`)+ Telegram 回调重试 |
 //!
-//! # op 分发骨架
+//! # op 分发
 //!
 //! `runtime.initialize` → `{"result":{"ready":true,"protocol":"dian115:wasm@1"}}`;
 //! 业务调用 `runtime.invoke` 的 envelope.op 支持四种:

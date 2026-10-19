@@ -12,7 +12,7 @@
 //   DIAN115_PLUGIN_SIGNING_KEY 签名私钥路径(package.mjs 读取; 未设置时回退到插件目录下的 pem)
 //
 // 说明: wasm 一律在容器里构建(本机不装 Rust 工具链); 本脚本只负责"构建 + 打包"两件事,
-// 构建与测试的门禁由外层脚本统一执行。前端由本插件 frontend/ 产出(骨架期尚未构建)。
+// 构建与测试的门禁由外层脚本统一执行。前端由本插件 frontend/ 产出(经 build-ui.mjs 构建)。
 import { existsSync, statSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { dirname, join } from 'node:path'

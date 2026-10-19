@@ -36,7 +36,7 @@ plugins/
 
 ### 豆瓣「我的想看」同步（可选，douban.rs）
 
-1. 部署本机 CookieCloud：`docker run -d --name cookiecloud --restart unless-stopped -m 128m -p 8088:8088 -v /volume1/docker/cookiecloud/data:/data/api/data easychen/cookiecloud`
+1. 部署本机 CookieCloud：`docker run -d --name cookiecloud --restart unless-stopped -m 128m -p 8088:8088 -v "$(pwd)/cookiecloud-data:/data/api/data" easychen/cookiecloud`（`-v` 左侧的数据目录按你的环境替换）
 2. 浏览器装 CookieCloud 扩展，服务器填 `http://<NAS内网IP>:8088`，随机生成 UUID 和密钥，「需要同步的域名」强烈建议只填 `douban.com`
 3. 豆瓣中心设置里填 UUID/密钥并开启同步；也可手填豆瓣 `dbcl2` cookie 兜底
 4. 每轮榜单刷新顺带同步想看列表，新条目自动进聚合订阅

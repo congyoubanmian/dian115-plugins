@@ -1,0 +1,56 @@
+version: 2
+
+updates:
+  # GitHub Actions used by repository workflows
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+
+  # npm: music-rs plugin frontend
+  - package-ecosystem: "npm"
+    directory: "/plugins/music-rs"
+    schedule:
+      interval: "weekly"
+    groups:
+      npm-all:
+        patterns:
+          - "*"
+
+  # npm: chase-rs plugin frontend
+  - package-ecosystem: "npm"
+    directory: "/plugins/chase-rs/frontend"
+    schedule:
+      interval: "weekly"
+    groups:
+      npm-all:
+        patterns:
+          - "*"
+
+  # npm: douban-center plugin
+  - package-ecosystem: "npm"
+    directory: "/plugins/douban-center"
+    schedule:
+      interval: "weekly"
+    groups:
+      npm-all:
+        patterns:
+          - "*"
+
+  # cargo: music-rs plugin
+  - package-ecosystem: "cargo"
+    directory: "/plugins/music-rs"
+    schedule:
+      interval: "weekly"
+
+  # cargo: chase-rs plugin
+  - package-ecosystem: "cargo"
+    directory: "/plugins/chase-rs"
+    schedule:
+      interval: "weekly"
+
+  # cargo: douban-rs plugin
+  - package-ecosystem: "cargo"
+    directory: "/plugins/douban-rs"
+    schedule:
+      interval: "weekly"

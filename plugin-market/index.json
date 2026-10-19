@@ -261,8 +261,7 @@
         "kind": "wasm",
         "protocol": "dian115:wasm@1",
         "autostart": true,
-        "trust_level": "wasm-sandbox",
-        "memory_mb": 128
+        "trust_level": "wasm-sandbox"
       },
       "permissions": {
         "apis": [
