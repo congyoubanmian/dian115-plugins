@@ -20,4 +20,4 @@ ext = []
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["raw_value"] }
-base64 = "0.22"
+base64 = "0.23"
