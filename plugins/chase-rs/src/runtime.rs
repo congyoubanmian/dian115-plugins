@@ -7,7 +7,7 @@
 //! | `action refresh` | 重读 state(只读)+ 1 页 intents + 1 次日历 | 零业务写入, **不落盘** |
 //! | `action align-now` | 限量对齐(≤1 页 intents, ≤5 次 PATCH, ≤3 次 Emby 探测) | 只 PATCH, **不落盘** |
 //! | `action settings-update` | 白名单逐键合并 settings | 落盘(ETag 乐观锁) |
-//! | `action probe-dump` | 两个未知端点的参数/字段矩阵 | 只写 `state.debug`, 落盘 |
+//! | `action probe-dump` | 两个未知端点的参数/字段探测 | 只写 `state.debug`, 落盘 |
 //! | `job align` | 小时级全量对齐 + 追剧日历 + TG 日报 | PATCH + 落盘 |
 //!
 //! # 为什么 align-now 不落盘
@@ -594,8 +594,7 @@ impl Runtime {
                         intent.season,
                         selected.proxy_id,
                         (intent.total_known > 0).then_some(intent.total_known),
-                        &self.state.settings.probe.emby_episodes_shape,
-                        remaining.min(3),
+                        1,
                     ) {
                         Ok((coverage, query, calls)) => {
                             probe_calls = probe_calls.saturating_add(calls);
@@ -940,7 +939,7 @@ impl Runtime {
 
     // ─────────────────────────── probe-dump ───────────────────────────
 
-    /// 两个未知端点的参数/字段矩阵; 结果写 `state.debug`(唯一会写 debug 的前台动作)。
+    /// 两个未知端点的参数/字段探测; 结果写 `state.debug`(唯一会写 debug 的前台动作)。
     fn action_probe_dump(&mut self) -> Value {
         self.run_seq += 1;
         let now = clock::now_rfc3339();
@@ -1004,98 +1003,82 @@ impl Runtime {
 
         let params_tried: Vec<String> = match (selected, sample) {
             (Some(selected), Some((tmdb_id, season, total_known))) => {
-                // 宿主明示 total_episodes 必填; total 未知时才省略(基本必 400, 仅兜底)。
+                // 官方固定参数; total 未知时省略(基本必 400, 仅兜底)。
                 let total = (total_known > 0).then_some(total_known);
-                let mut tried = Vec::new();
-                let mut last_failure: Option<ParseFailure> = None;
-                // 「200 但结构未识别」的现场比后面的 400 更有排障价值(参数已经对了,
-                // 差的是字段名)——留着第一个, 不被矩阵后续变体的 400 覆盖。
-                let mut best_unparsed: Option<ParseFailure> = None;
-                let mut success: Option<(String, i32, String)> = None;
-                for query in emby::candidates(tmdb_id, season, selected.proxy_id, total) {
-                    tried.push(query.params_label());
-                    match query.execute() {
-                        Ok(response) if response.status < 400 => {
-                            match emby::parse_coverage(&response.raw) {
-                                Ok(coverage) => {
-                                    let shape =
-                                        format!("{};{}", query.shape_prefix(), coverage.shape);
-                                    self.state.record_attempt(
-                                        "emby.episodes",
-                                        &query.params_label(),
-                                        response.status,
-                                        &shape,
-                                    );
-                                    success = Some((
-                                        shape,
-                                        response.status,
-                                        raw::sample_text(&response.raw, SAMPLE_MAX),
-                                    ));
-                                    break;
-                                }
-                                Err(message) => {
-                                    self.state.record_attempt(
-                                        "emby.episodes",
-                                        &query.params_label(),
-                                        response.status,
-                                        "unparsed",
-                                    );
-                                    let failure = ParseFailure::http(
-                                        response.status,
-                                        response.raw.clone(),
-                                        message,
-                                    );
-                                    if best_unparsed.is_none() {
-                                        best_unparsed = Some(failure.clone());
-                                    }
-                                    last_failure = Some(failure);
-                                }
+                let query = emby::EpisodeQuery::new(tmdb_id, season, selected.proxy_id, total);
+                let params = vec![query.params_label()];
+                match query.execute() {
+                    Ok(response) if response.status < 400 => {
+                        match emby::parse_coverage(&response.raw) {
+                            Ok(coverage) => {
+                                let shape = format!("{};{}", query.shape_prefix(), coverage.shape);
+                                self.state.record_attempt(
+                                    "emby.episodes",
+                                    &query.params_label(),
+                                    response.status,
+                                    &shape,
+                                );
+                                self.state.settings.probe.emby_episodes_shape = shape.clone();
+                                emby_shape = shape;
+                                emby_status = "ok".to_string();
+                                emby_http = response.status;
+                                emby_sample = raw::sample_text(&response.raw, SAMPLE_MAX);
+                            }
+                            Err(message) => {
+                                self.state.record_attempt(
+                                    "emby.episodes",
+                                    &query.params_label(),
+                                    response.status,
+                                    "unparsed",
+                                );
+                                let failure = ParseFailure::http(
+                                    response.status,
+                                    response.raw.clone(),
+                                    message,
+                                );
+                                emby_status = failure.kind().to_string();
+                                emby_http = failure.http_status;
+                                emby_sample = failure.sample();
+                                self.record_failure(
+                                    "probe.emby.episodes",
+                                    &failure,
+                                    FailSlot::Emby,
+                                );
                             }
                         }
-                        Ok(response) => {
-                            self.state.record_attempt(
-                                "emby.episodes",
-                                &query.params_label(),
-                                response.status,
-                                "http_error",
-                            );
-                            last_failure = Some(ParseFailure::http(
-                                response.status,
-                                response.raw.clone(),
-                                format!("Emby 覆盖 HTTP {}", response.status),
-                            ));
-                        }
-                        Err(err) => {
-                            self.state.record_attempt(
-                                "emby.episodes",
-                                &query.params_label(),
-                                0,
-                                "transport_error",
-                            );
-                            last_failure =
-                                Some(ParseFailure::transport(format!("Emby 覆盖请求失败: {err}")));
-                        }
                     }
-                }
-                match success {
-                    Some((shape, status, sample)) => {
-                        self.state.settings.probe.emby_episodes_shape = shape.clone();
-                        emby_shape = shape;
-                        emby_status = "ok".to_string();
-                        emby_http = status;
-                        emby_sample = sample;
+                    Ok(response) => {
+                        self.state.record_attempt(
+                            "emby.episodes",
+                            &query.params_label(),
+                            response.status,
+                            "http_error",
+                        );
+                        let failure = ParseFailure::http(
+                            response.status,
+                            response.raw.clone(),
+                            format!("Emby 覆盖 HTTP {}", response.status),
+                        );
+                        emby_status = failure.kind().to_string();
+                        emby_http = failure.http_status;
+                        emby_sample = failure.sample();
+                        self.record_failure("probe.emby.episodes", &failure, FailSlot::Emby);
                     }
-                    None => {
-                        let failure = best_unparsed
-                            .or(last_failure)
-                            .unwrap_or_else(|| ParseFailure::transport("没有可用的 Emby 探测参数"));
+                    Err(err) => {
+                        self.state.record_attempt(
+                            "emby.episodes",
+                            &query.params_label(),
+                            0,
+                            "transport_error",
+                        );
+                        let failure = ParseFailure::transport(format!("Emby 覆盖请求失败: {err}"));
                         emby_status = failure.kind().to_string();
                         emby_http = failure.http_status;
                         emby_sample = failure.sample();
                         self.record_failure("probe.emby.episodes", &failure, FailSlot::Emby);
                     }
                 }
-                tried
+                params
             }
             _ => {
                 emby_sample =
@@ -1399,11 +1382,16 @@ impl Runtime {
                 .filter(|intent| intent.media_type == intents::MEDIA_TYPE)
                 .count() as u32;
             let message = format!("订阅池不可解析, 整轮跳过(零写入): {}", failure.message);
+            // state 文档的 status 是给前端健康胶囊看的: 页头只把 failed 判为
+            // "运行异常"(其余一律绿色), 所以这里必须如实写 failed, 不能因为 job
+            // 响应只允许 accepted/skipped 就把文档状态也改成 skipped。
             self.state.status = "failed".to_string();
             self.state.last_message = message.clone();
             self.state.log("error", &message);
             self.persist_quietly();
-            return json!({"status": "failed", "message": message});
+            // job 响应的 status 只允许 accepted/skipped(宿主契约): 失败原因放在
+            // message 里, 不把 failed 当 job 结论上报。
+            return json!({"status": "skipped", "message": message});
         }
         counters.intents_seen = pool
             .iter()
@@ -1454,9 +1442,9 @@ impl Runtime {
         // 目标缓存按 (剧, 季): 一轮里同一季只取一次 TMDB(预算按真实 host.call 扣)。
         let mut target_cache: BTreeMap<(i64, i64), TargetUpper> = BTreeMap::new();
         // 探测记账: Emby 覆盖 + TMDB 目标**共用** settings.emby_probe_budget 次 host.call。
-        // 每条条目的常见成本 = Emby 1 次(形状指纹命中即停) + TMDB 1 次 = 2 次,
-        // 所以默认 120 的预算足够覆盖 50 条(50×2 = 100 ≤ 120); 形状未识别时 Emby
-        // 最多试 3 次, 超出的条目会被预算/墙钟挡下并留给下一轮优先补探。
+        // 每条条目的常见成本 = Emby 1 次(官方固定参数, 命中即停) + TMDB 1 次 = 2 次,
+        // 所以默认 120 的预算足够覆盖 50 条(50×2 = 100 ≤ 120); Emby 探测失败也只发
+        // 1 次, 超出的条目会被预算/墙钟挡下并留给下一轮优先补探。
         let mut probes: u16 = 0;
         // 与 `patch_limit`(u8)同型: 直接比大小, 不做隐式转换。
         let mut patches: u8 = 0;
@@ -1680,8 +1668,7 @@ impl Runtime {
                             intent.season,
                             selected.proxy_id,
                             (intent.total_known > 0).then_some(intent.total_known),
-                            &self.state.settings.probe.emby_episodes_shape,
-                            remaining.min(3) as u8,
+                            1,
                         ) {
                             Ok((coverage, query, calls)) => {
                                 probes = probes.saturating_add(u16::from(calls));
@@ -2074,7 +2061,14 @@ impl Runtime {
             &today,
             hour,
         ) {
-            return json!({"status": "idle", "date": today});
+            // job 响应只允许 accepted/skipped: "没到点"也是跳过, 用 reason 保留
+            // 可区分的原因(idle), 不把 idle 当成 job 结论。
+            return json!({
+                "status": "skipped",
+                "reason": "idle",
+                "date": today,
+                "message": "未到日报发送时间"
+            });
         }
         let patched: Vec<AlignItem> = self
             .state
@@ -2112,9 +2106,36 @@ impl Runtime {
                 notify::apply_outcome(&mut self.state.daily, &today, &outcome, now);
                 self.state
                     .record_attempt("notifications.plugin", "chase-daily", status, "sent");
+                // 宿主的原始结论仍完整保存在 state.daily.last_result 里; job 响应只
+                // 上报 accepted/skipped: 已接收/宿主已有当日记录 ⇒ accepted, 抑制或
+                // 未接收 ⇒ skipped(原因进 message)。
+                let (job_status, message) = if outcome.records_date() {
+                    (
+                        "accepted",
+                        if outcome.deduplicated && !outcome.accepted {
+                            "日报已由宿主去重(当日已发送)".to_string()
+                        } else {
+                            "日报已发送".to_string()
+                        },
+                    )
+                } else if outcome.suppressed {
+                    let reason = if outcome.suppression_reason.is_empty() {
+                        "未提供原因"
+                    } else {
+                        outcome.suppression_reason.as_str()
+                    };
+                    ("skipped", format!("日报被宿主抑制: {reason}"))
+                } else {
+                    (
+                        "skipped",
+                        "宿主未接受日报(响应缺 accepted/deduplicated)".to_string(),
+                    )
+                };
                 let result = self.state.daily.last_result.clone();
                 json!({
-                    "status": result,
+                    "status": job_status,
+                    "message": message,
+                    "result": result,
                     "accepted": outcome.accepted,
                     "deduplicated": outcome.deduplicated,
                     "suppressed": outcome.suppressed
@@ -2125,7 +2146,11 @@ impl Runtime {
                 self.state.daily.last_result = "failed".to_string();
                 self.state.daily.last_error = raw::truncate_bytes(&message, 200).to_string();
                 self.state.record_error("job.notify", &message);
-                json!({"status": "failed", "message": message})
+                json!({
+                    "status": "skipped",
+                    "message": format!("日报发送失败: {message}"),
+                    "result": "failed"
+                })
             }
         }
     }
@@ -2607,6 +2632,31 @@ mod tests {
         serde_json::from_slice(&fake.value_of("state").expect("必须落过盘")).unwrap()
     }
 
+    /// job 响应(含嵌套的日报段)里所有 `status` 只能是 accepted/skipped ——
+    /// 宿主把其他值(尤其 failed/succeeded)当任务失败处理。
+    fn assert_job_statuses(value: &Value) {
+        match value {
+            Value::Object(map) => {
+                for (key, child) in map {
+                    if key == "status" {
+                        let status = child.as_str().unwrap_or_default();
+                        assert!(
+                            status == "accepted" || status == "skipped",
+                            "job 响应 status 只能是 accepted/skipped, 实际 {status}: {value}"
+                        );
+                    }
+                    assert_job_statuses(child);
+                }
+            }
+            Value::Array(items) => {
+                for item in items {
+                    assert_job_statuses(item);
+                }
+            }
+            _ => {}
+        }
+    }
+
     // ── 加载 / 落盘 ──
 
     #[test]
@@ -3031,10 +3081,18 @@ mod tests {
         let mut runtime = Runtime::new();
         runtime.ensure_loaded();
         let result = job(&mut runtime, "align");
-        assert_eq!(result["status"], "failed");
+        assert_eq!(result["status"], "skipped", "{result}");
+        assert!(result["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("订阅池"));
         assert!(fake.patches().is_empty());
         assert!(fake.value_of("state").is_some(), "只写 debug, 不写业务数据");
         let doc = stored(&fake);
+        assert_eq!(
+            doc.status, "failed",
+            "state 文档必须如实记 failed(页头健康胶囊只认 failed 为运行异常)"
+        );
         assert!(
             doc.align.last_error.contains("订阅池"),
             "{:?}",
@@ -3227,7 +3285,8 @@ mod tests {
 
         // 同一自然日再跑一轮: 不再发
         let second = job(&mut runtime, "align");
-        assert_eq!(second["report"]["status"], "idle");
+        assert_eq!(second["report"]["status"], "skipped");
+        assert_eq!(second["report"]["reason"], "idle");
         let posts = fake
             .requests()
             .into_iter()
@@ -3286,7 +3345,16 @@ mod tests {
             "settings-update",
             json!({"report": {"enabled": true, "hour": 0}}),
         );
-        let _ = job(&mut runtime, "align");
+        let result = job(&mut runtime, "align");
+        assert_eq!(result["report"]["status"], "skipped", "{result}");
+        assert_eq!(result["report"]["suppressed"], true, "{result}");
+        assert!(
+            result["report"]["message"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("quiet_hours"),
+            "{result}"
+        );
         let doc = stored(&fake);
         assert_eq!(doc.daily.last_result, "suppressed");
         assert!(
@@ -4045,7 +4113,7 @@ mod tests {
         let mut runtime = Runtime::new();
         runtime.ensure_loaded();
         let result = job(&mut runtime, "align");
-        assert_eq!(result["status"], "failed");
+        assert_eq!(result["status"], "skipped", "{result}");
         assert!(fake.patches().is_empty(), "整轮跳过: 零 PATCH");
 
         let doc = stored(&fake);
@@ -4617,7 +4685,7 @@ mod tests {
             200,
             &instances_body(),
         );
-        // 只有数字, 没有逐集信息 → 三个候选参数全部 unparsed
+        // 只有数字, 没有逐集信息 → 固定参数的响应 unparsed
         fake.route_prefix(
             "GET",
             "GET /api/plugin-host/emby/episodes?",
@@ -4642,7 +4710,7 @@ mod tests {
             .iter()
             .filter(|path| path.contains("/api/plugin-host/emby/episodes"))
             .count();
-        assert_eq!(emby_calls, 3, "矩阵三个候选各一次, 不因第二条再涨");
+        assert_eq!(emby_calls, 1, "固定参数只探一次, 不因第二条再涨");
         let doc = stored(&fake);
         assert!(
             doc.align
@@ -4677,6 +4745,72 @@ mod tests {
     }
 
     #[test]
+    fn job_responses_only_report_accepted_or_skipped() {
+        // 正常一轮: 顶层 accepted, 日报 accepted
+        let (fake, mut runtime) = harness();
+        let guard = fake.install();
+        runtime.ensure_loaded();
+        clock::testhooks::set_now(Some(1_790_000_000_000_000_000));
+        let _ = action(
+            &mut runtime,
+            "settings-update",
+            json!({"report": {"enabled": true, "hour": 0, "tz_offset_minutes": 480}}),
+        );
+        let first = job(&mut runtime, "align");
+        assert_job_statuses(&first);
+        assert_eq!(first["status"], "accepted", "{first}");
+        assert_eq!(first["report"]["status"], "accepted", "{first}");
+
+        // 同一自然日第二轮: 日报"没到点"也必须映射成 skipped(不再是 idle)
+        let second = job(&mut runtime, "align");
+        assert_job_statuses(&second);
+        assert_eq!(second["report"]["status"], "skipped", "{second}");
+        clock::testhooks::set_now(None);
+        drop(guard);
+
+        // 订阅池失败: job 响应 skipped, 但 state 文档仍如实记 failed(见
+        // pool_list_failure_skips_the_whole_round_with_zero_writes)。
+        let fake = FakeHost::new();
+        fake.route_prefix("GET", "GET /api/subscribe/pool/intents?", 500, b"boom");
+        fake.route_prefix(
+            "GET",
+            "GET /api/plugin-host/emby/instances",
+            200,
+            &instances_body(),
+        );
+        let guard = fake.install();
+        let mut runtime = Runtime::new();
+        runtime.ensure_loaded();
+        let failed = job(&mut runtime, "align");
+        assert_job_statuses(&failed);
+        assert_eq!(failed["status"], "skipped", "{failed}");
+        assert!(failed["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("订阅池"));
+        drop(guard);
+
+        // 日报发送失败: 顶层仍是 accepted, 嵌套 report 必须是 skipped
+        let (fake, mut runtime) = harness();
+        fake.route("POST", "/api/notifications/plugin", 500, b"boom");
+        let guard = fake.install();
+        runtime.ensure_loaded();
+        clock::testhooks::set_now(Some(1_790_000_000_000_000_000));
+        let _ = action(
+            &mut runtime,
+            "settings-update",
+            json!({"report": {"enabled": true, "hour": 0, "tz_offset_minutes": 480}}),
+        );
+        let failed = job(&mut runtime, "align");
+        assert_job_statuses(&failed);
+        assert_eq!(failed["status"], "accepted", "{failed}");
+        assert_eq!(failed["report"]["status"], "skipped", "{failed}");
+        assert_eq!(failed["report"]["result"], "failed", "{failed}");
+        clock::testhooks::set_now(None);
+        drop(guard);
+    }
+
+    #[test]
     fn refresh_never_persists_and_keeps_the_revision() {
         let (fake, mut runtime) = harness();
         let guard = fake.install();
@@ -4707,7 +4841,14 @@ mod tests {
         );
 
         let first = job(&mut runtime, "align");
-        assert_eq!(first["report"]["status"], "failed", "{first}");
+        assert_eq!(first["report"]["status"], "skipped", "{first}");
+        assert!(
+            first["report"]["message"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("日报发送失败"),
+            "{first}"
+        );
         let doc = stored(&fake);
         assert_eq!(doc.daily.last_result, "failed");
         assert!(doc.daily.last_sent_date.is_empty(), "发送失败不得记日期");
@@ -4715,8 +4856,12 @@ mod tests {
 
         // 同一个自然日再跑一轮: 因为没记上日期, 必须重试
         let second = job(&mut runtime, "align");
-        assert_ne!(
-            second["report"]["status"], "idle",
+        assert_eq!(second["report"]["status"], "skipped", "{second}");
+        assert!(
+            second["report"]["message"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("日报发送失败"),
             "失败后必须允许重试: {second}"
         );
         let posts = fake
@@ -4748,7 +4893,9 @@ mod tests {
         );
 
         let first = job(&mut runtime, "align");
-        assert_eq!(first["report"]["status"], "deduplicated", "{first}");
+        assert_eq!(first["report"]["status"], "accepted", "{first}");
+        assert_eq!(first["report"]["deduplicated"], true, "{first}");
+        assert_eq!(first["report"]["result"], "deduplicated", "{first}");
         let doc = stored(&fake);
         assert!(
             !doc.daily.last_sent_date.is_empty(),
@@ -4757,10 +4904,8 @@ mod tests {
         assert_eq!(doc.daily.sent_total, 1);
 
         let second = job(&mut runtime, "align");
-        assert_eq!(
-            second["report"]["status"], "idle",
-            "宿主去重也算当天已发: {second}"
-        );
+        assert_eq!(second["report"]["status"], "skipped", "{second}");
+        assert_eq!(second["report"]["reason"], "idle", "{second}");
         let posts = fake
             .requests()
             .iter()
@@ -5340,13 +5485,13 @@ mod tests {
         let t0: u64 = 1_800_000_000_000_000_000;
         clock::testhooks::set_now(Some(t0));
 
-        // 第一轮: 200 但形状全认不出 → 3 次调用全失败, 记入 6 小时负缓存
+        // 第一轮: 200 但形状认不出 → 固定参数只发 1 次, 记入 6 小时负缓存
         let mut runtime = Runtime::new();
         runtime.ensure_loaded();
         let result = job(&mut runtime, "align");
         assert_eq!(result["failed"], 1, "{result}");
         let calls_after_first = emby_calls(&fake);
-        assert_eq!(calls_after_first, 3, "形状组合全试一遍: 3 次 Emby 调用");
+        assert_eq!(calls_after_first, 1, "固定参数只发 1 次 Emby 调用");
         let doc = stored(&fake);
         let key = "3:1396:5";
         let first = doc
@@ -5387,7 +5532,7 @@ mod tests {
             doc.align.items[0].reason
         );
 
-        // 第三轮 = 7 小时后: 失败事实太旧 → 重新排队, 又探 3 次, at 刷新到本轮
+        // 第三轮 = 7 小时后: 失败事实太旧 → 重新排队, 再探 1 次, at 刷新到本轮
         clock::testhooks::set_now(Some(t0 + 7 * 3_600 * 1_000_000_000));
         let mut third_round = Runtime::new();
         third_round.ensure_loaded();
@@ -5395,8 +5540,8 @@ mod tests {
         assert_eq!(result["failed"], 1, "{result}");
         assert_eq!(
             emby_calls(&fake) - calls_after_first,
-            3,
-            "超 6 小时后必须重新探测(对照实验实测 3 次)"
+            1,
+            "超 6 小时后必须重新探测(固定参数 1 次)"
         );
         let doc = stored(&fake);
         let third = doc
@@ -5545,7 +5690,7 @@ mod tests {
 
     // ── 验收 5: 默认预算 120 覆盖 50 条(1 Emby + 1 TMDB / 条) ──
 
-    /// 条目的常见成本 = 1 次 Emby(形状指纹命中即停)+ 1 次 TMDB(按季缓存,
+    /// 条目的常见成本 = 1 次 Emby(官方固定参数, 命中即停)+ 1 次 TMDB(按季缓存,
     /// 同一季只取一次), 所以 50 条 = 50 + 50 = 100 次 ≤ 120。旧代码里 TMDB
     /// 取数**不**计入预算, 所以"预算用尽"的账根本对不上(根因⑩)。
     #[test]

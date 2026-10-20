@@ -333,7 +333,7 @@ const alignEmptyReason = computed(() => {
     return '还没有跑过对齐。点「立即对齐」先看一轮结果, 或等下一个整点的后台任务。'
   }
   if (probeFailed(debug.value.emby_episodes?.status)) {
-    return `Emby 覆盖结构未识别(${text(debug.value.emby_episodes?.status)}), 该轮零写入。点「探测诊断」看参数矩阵与原文样本。`
+    return `Emby 覆盖结构未识别(${text(debug.value.emby_episodes?.status)}), 该轮零写入。点「探测诊断」按官方参数重探一次并看原文样本。`
   }
   if (align.value.last_error) return align.value.last_error
   return '这一轮没有需要判定或补订的条目(订阅池可能为空, 或没有可用的 Emby 实例)。'
@@ -440,7 +440,7 @@ const storageWarning = computed(() => {
 const probeProblem = computed(() => {
   const embyStatus = debug.value.emby_episodes?.status
   if (probeFailed(embyStatus)) {
-    return `Emby 覆盖结构未识别(status=${text(embyStatus)}, http=${num(debug.value.emby_episodes?.http_status, 0)}): 该轮涉及 Emby 覆盖判定的条目零写入。点「探测诊断」重跑参数矩阵, 展开诊断区看原文样本。`
+    return `Emby 覆盖结构未识别(status=${text(embyStatus)}, http=${num(debug.value.emby_episodes?.http_status, 0)}): 该轮涉及 Emby 覆盖判定的条目零写入。点「探测诊断」按官方参数重探一次, 展开诊断区看原文样本。`
   }
   const calendarStatus = debug.value.air_calendar?.status
   if (probeFailed(calendarStatus)) {
@@ -470,7 +470,7 @@ const busyLabel = computed(() => {
     case 'align-now':
       return '对齐中 · ≤1 页订阅池 · ≤5 次 PATCH · ≤3 次 Emby 探测 · 6 秒预算…'
     case 'probe-dump':
-      return '正在探测诊断(emby/instances + 未知端点的参数矩阵)…'
+      return '正在探测诊断(emby/instances + emby/episodes + 日历 + TMDB)…'
     case 'settings-update':
       return '正在保存设置…'
     default:
@@ -948,7 +948,7 @@ async function copyDiagnostics() {
 
           <n-alert v-if="calendarState === 'unrecognized'" type="warning" :show-icon="true" class="chase-alert">
             日历结构未识别, 见诊断 —— air-calendar 的字段指纹不在已知形状里, 日报会缺「今日播出」段; 对齐不受影响。点「探测诊断」
-            看参数矩阵与原文样本。
+            看日历原文样本。
           </n-alert>
           <n-empty v-else-if="calendarState === 'never'" description="还没有抓过追剧日历: 点「刷新」拉一次, 或等下一个整点的对齐任务。">
             <template #extra>
@@ -982,7 +982,7 @@ async function copyDiagnostics() {
         <button class="probe-bar-head" type="button" :aria-expanded="probeOpen" @click="probeOpen = !probeOpen">
           <stethoscope-icon class="probe-bar-icon" />
           <span class="probe-bar-title">探测诊断</span>
-          <span class="probe-bar-sub">端点参数矩阵 · 形状指纹 · HTTP 状态 · 2KB 原文样本 —— 默认折叠, 排障时展开</span>
+          <span class="probe-bar-sub">端点参数 · 形状指纹 · HTTP 状态 · 2KB 原文样本 —— 默认折叠, 排障时展开</span>
           <chevron-down-icon class="probe-bar-chevron" :class="{ open: probeOpen }" />
         </button>
         <div v-show="probeOpen" class="probe-bar-body">
