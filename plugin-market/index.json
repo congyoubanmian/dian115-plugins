@@ -251,12 +251,12 @@
     {
       "id": "music.rs",
       "name": "音乐下载（Rust 版）",
-      "version": "0.3.20",
+      "version": "0.3.21",
       "description": "网易云/QQ 音乐扫码登录、搜索与音质自选取链；无 sidecar：本地暂存后优先由插件直连 CD2（CloudDrive2）gRPC-Web 上传到网盘目录（可回退宿主复制），绕开跨边界隔离限制；任务状态落 KV 队列并支持 Telegram 回调重试。0.3.19 新增 CD2 直送、通知自检与任务索引对账。",
       "author": "congyoubanmian",
       "homepage": "https://github.com/congyoubanmian/dian115-plugins",
-      "package_url": "https://github.com/congyoubanmian/dian115-plugins/releases/download/music-rs-v0.3.20/music.rs-0.3.20.d115p",
-      "sha256": "b28eae0c09eb24e1d7391324b325b1edcc82b164e1560e7d33c646271b5abfa3",
+      "package_url": "https://github.com/congyoubanmian/dian115-plugins/releases/download/music-rs-v0.3.21/music.rs-0.3.21.d115p",
+      "sha256": "e33821695ecd0e5694dd2cd3ce7cc26a2039aece77c9e7a84980a92f4ce4b575",
       "runtime": {
         "kind": "wasm",
         "protocol": "dian115:wasm@1",
@@ -271,19 +271,9 @@
             "reason": "列出宿主可访问的文件根（本地暂存目录与 CD2 音乐目录），供下载落点选择"
           },
           {
-            "method": "GET",
-            "path": "/api/plugin-host/files/entries",
-            "reason": "浏览暂存目录与音乐目录条目，确认下载产物是否已落盘/入库"
-          },
-          {
             "method": "POST",
             "path": "/api/plugin-host/files/downloads",
             "reason": "让宿主代下载：把网易云/QQ 直链下载到本地暂存目录（无 sidecar 的第一段）"
-          },
-          {
-            "method": "POST",
-            "path": "/api/plugin-host/files/directories",
-            "reason": "首次 pump 时在本地可写根下自动创建暂存目录"
           },
           {
             "method": "GET",
