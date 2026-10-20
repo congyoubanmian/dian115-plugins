@@ -366,16 +366,16 @@ pub fn put_body(value: &[u8]) -> Vec<u8> {
     body
 }
 
-fn send_put<P: IdPrefix>(
-    ids: &mut PutIds<P>,
+fn send_put(
     key: &str,
     body: &[u8],
     if_match: &str,
+    idempotency_key: &str,
 ) -> Result<HostCallResponse, StoreError> {
     let mut request = HostCallRequest::new("PUT", storage_path(key))
         .with_header("content-type", "application/json")
         .with_header("accept", "application/json")
-        .with_header("idempotency-key", ids.next_key(key));
+        .with_header("idempotency-key", idempotency_key.to_string());
     if !if_match.is_empty() {
         request
             .headers
@@ -391,16 +391,20 @@ fn send_put<P: IdPrefix>(
 /// 写入键值(Go `wasmStoragePut`)。
 ///
 /// 流程与 Go 一致: 先读一次拿 ETag(键存在时不带 `If-Match` 会被宿主按
-/// 乐观锁拒绝), 带 `If-Match` + 全新幂等键 PUT; 若返回 412(ETag 过期/并发写入)
+/// 乐观锁拒绝), 带 `If-Match` + 幂等键 PUT; 若返回 412(ETag 过期/并发写入)
 /// 则重读 ETag **重试一次**; 仍 >= 400 就报错。
+///
+/// 同一次逻辑写入的两次 PUT 必须复用同一个 `Idempotency-Key`: host-call-v2.md §2.1
+/// 要求可能产生副作用的重试复用原 key, 否则 412 重试会被宿主当成新的业务尝试。
 pub fn put<P: IdPrefix>(ids: &mut PutIds<P>, key: &str, value: &[u8]) -> Result<(), StoreError> {
     let body = put_body(value);
+    let idempotency_key = ids.next_key(key);
     let current = read(key);
-    let mut response = send_put(ids, key, &body, &current.etag)?;
+    let mut response = send_put(key, &body, &current.etag, &idempotency_key)?;
     if response.status == 412 && current.ok {
         let fresh = read(key);
         if fresh.ok {
-            response = send_put(ids, key, &body, &fresh.etag)?;
+            response = send_put(key, &body, &fresh.etag, &idempotency_key)?;
         }
     }
     if response.status >= 400 {

@@ -191,6 +191,12 @@ fn dispatch_inner<R: ProtocolRuntime>(runtime: &mut R, request: &[u8]) -> Vec<u8
         return initialize_result();
     }
 
+    // ②a 宿主卸载模块前会调用顶层 `runtime.shutdown`(wasm-runtime-v1.md §配额和生命周期)。
+    //     它和 initialize 一样不能先加载存储, 否则关停阶段会多出 host.call。
+    if method == "runtime.shutdown" {
+        return stopping();
+    }
+
     // ②b 首次业务调用才加载宿主存储。位置与 Go 版一致: initialize 之后、
     //     解析业务参数之前 —— 参数非法时 runtime 也已经建好, 但握手期间绝不碰 host.call。
     runtime.ensure_loaded();
@@ -207,6 +213,8 @@ fn dispatch_inner<R: ProtocolRuntime>(runtime: &mut R, request: &[u8]) -> Vec<u8
             return rpc_error(CODE_INVALID_PARAMS, invalid_params_message(method, &echoed));
         }
     };
+    // 官方示例要求 op 与 invocation_id 都非空; invocation_id 是宿主投递账本/重放的键。
+    // 本阶段先保持历史 wasm 路径的宽容度(只拒绝空 op), 该对齐项单独记录在审查报告里。
     if input.op.is_empty() {
         let echoed = util::value_text(params);
         return rpc_error(CODE_INVALID_PARAMS, invalid_params_message(method, &echoed));
