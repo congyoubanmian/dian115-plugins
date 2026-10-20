@@ -411,32 +411,28 @@ impl Runtime {
     }
 
     /// Go `main.go:959` `hostIntentExists`: 宿主是否已有同 `(tmdb_id, media_type)` 的聚合
-    /// 订阅。任何失败(host 错误 / HTTP >= 400 / 解析失败)都返回 `(false, 0)`。
-    pub fn host_intent_exists(&self, tmdb_id: i64, media_type: &str) -> (bool, i64) {
+    /// 订阅。查询失败时 **fail closed**: 返回错误, 不把"查不到"当成"不存在"再创建一次。
+    pub fn host_intent_exists(
+        &self,
+        tmdb_id: i64,
+        media_type: &str,
+    ) -> Result<(bool, i64), String> {
         let request = HostCallRequest::new("GET", pool_intents_path())
             .with_header("accept", "application/json");
-        let response = match host::call(&request) {
-            Ok(response) => response,
-            Err(_) => return (false, 0),
-        };
+        let response = host::call(&request).map_err(|err| err.to_string())?;
         if response.status >= 400 {
-            return (false, 0);
+            return Err(format!("查询订阅失败 HTTP {}", response.status));
         }
-        let body = match store::decode_body(&response) {
-            Ok(body) => body,
-            Err(_) => return (false, 0),
-        };
-        let out: PoolIntentListResult = match crate::model::decode(&body) {
-            Some(out) => out,
-            None => return (false, 0),
-        };
+        let body = store::decode_body(&response).map_err(|err| err.0)?;
+        let out: PoolIntentListResult =
+            crate::model::decode(&body).ok_or_else(|| "查询订阅响应解析失败".to_string())?;
         for entry in &out.data {
             if entry.tmdb_id == tmdb_id && (media_type.is_empty() || entry.media_type == media_type)
             {
-                return (true, entry.id);
+                return Ok((true, entry.id));
             }
         }
-        (false, 0)
+        Ok((false, 0))
     }
 
     /// Go `main.go:980` `createSubscription`: 创建聚合订阅, 返回 intent id。
@@ -523,6 +519,10 @@ impl Runtime {
                 "创建订阅返回异常 code={:?}",
                 out.code
             )));
+        }
+        // host-call-v2.md §8: 只有 code=ok 且正数 data.id 才算创建成功。
+        if out.data.id <= 0 {
+            return Err(OpError::new(format!("创建订阅返回无效 id={}", out.data.id)));
         }
         Ok(out.data.id)
     }
@@ -694,8 +694,11 @@ impl Runtime {
         _settings: &Settings,
     ) -> (String, i64, String) {
         let tmdb_ref = format!("tmdb:{}:{}", item.media_type, item.id);
-        // 宿主侧去重
-        let (exists, existing_id) = self.host_intent_exists(item.id, &item.media_type);
+        // 宿主侧去重; 查询失败时不能创建, 否则会把"暂时查不到"变成重复订阅。
+        let (exists, existing_id) = match self.host_intent_exists(item.id, &item.media_type) {
+            Ok(value) => value,
+            Err(err) => return ("failed".to_string(), 0, err),
+        };
         if exists {
             if let Some(items) = self.queue.items.as_mut() {
                 for entry in items.iter_mut() {
@@ -1242,27 +1245,39 @@ mod tests {
     }
 
     #[test]
-    fn host_intent_exists_reads_pool_and_swallows_failures() {
+    fn host_intent_exists_reads_pool_and_fails_closed() {
         let host = TestHost::install(vec![Route::json(
             "GET",
             "/api/subscribe/pool/intents",
             r#"{"code":"ok","data":[{"id":171,"tmdb_id":1077295,"media_type":"movie","title":"奥德赛","state":"active"}]}"#,
         )]);
         let runtime = Runtime::new();
-        assert_eq!(runtime.host_intent_exists(1077295, "movie"), (true, 171));
+        assert_eq!(
+            runtime.host_intent_exists(1077295, "movie").unwrap(),
+            (true, 171)
+        );
         assert_eq!(
             host.last_path("GET", "/api/subscribe/pool/intents")
                 .as_deref(),
             Some("/api/subscribe/pool/intents?limit=200")
         );
         // media_type 不符 / tmdb_id 不符 → 不存在
-        assert_eq!(runtime.host_intent_exists(1077295, "tv"), (false, 0));
-        assert_eq!(runtime.host_intent_exists(999, "movie"), (false, 0));
+        assert_eq!(
+            runtime.host_intent_exists(1077295, "tv").unwrap(),
+            (false, 0)
+        );
+        assert_eq!(
+            runtime.host_intent_exists(999, "movie").unwrap(),
+            (false, 0)
+        );
         // media_type 传空串 → 只要 tmdb_id 命中就算存在(Go 的条件)
-        assert_eq!(runtime.host_intent_exists(1077295, ""), (true, 171));
+        assert_eq!(
+            runtime.host_intent_exists(1077295, "").unwrap(),
+            (true, 171)
+        );
         drop(host);
 
-        // 任何失败都当"不存在"
+        // 查询失败必须 fail closed, 不能当"不存在"继续创建。
         for route in [
             Route::new("GET", "/api/subscribe/pool/intents", 500, b""),
             Route::fail("GET", "/api/subscribe/pool/intents"),
@@ -1270,7 +1285,7 @@ mod tests {
         ] {
             let _host = TestHost::install(vec![route]);
             let runtime = Runtime::new();
-            assert_eq!(runtime.host_intent_exists(1077295, "movie"), (false, 0));
+            assert!(runtime.host_intent_exists(1077295, "movie").is_err());
         }
     }
 

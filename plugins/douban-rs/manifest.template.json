@@ -35,16 +35,6 @@
         "reason": "把豆瓣榜单条目匹配到 TMDB 元数据（tmdb_id/类型/年份/海报）以创建聚合订阅"
       },
       {
-        "method": "GET",
-        "path": "/api/tmdb/movie/:id",
-        "reason": "读取电影详情补充订阅信息"
-      },
-      {
-        "method": "GET",
-        "path": "/api/tmdb/tv/:id",
-        "reason": "读取剧集详情补充订阅信息"
-      },
-      {
         "method": "POST",
         "path": "/api/subscribe/pool/intents",
         "reason": "为通过观察期的豆瓣条目创建聚合订阅（宿主负责检索并投递 115 离线）"
@@ -53,11 +43,6 @@
         "method": "GET",
         "path": "/api/subscribe/pool/intents",
         "reason": "查询已创建聚合订阅，用于去重与状态跟踪"
-      },
-      {
-        "method": "GET",
-        "path": "/api/subscribe/records",
-        "reason": "读取订阅记录，用于订阅历史与统计"
       },
       {
         "method": "POST",

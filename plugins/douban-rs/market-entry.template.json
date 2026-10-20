@@ -6,7 +6,7 @@
   "author": "congyoubanmian",
   "homepage": "https://github.com/congyoubanmian/douban-center-wasm",
   "package_url": "https://github.com/congyoubanmian/dian115-plugins/releases/download/rs-v0.2.5/douban.rs-0.2.5.d115p",
-  "sha256": "9e1128bd1676bade41f905ca165fde76b10482946216e9dd86ee67ceb9db6f64",
+  "sha256": "149c648cb8887ff290777245abfa21b177756997b77773c79c1b67791b945722",
   "runtime": {
     "kind": "wasm",
     "protocol": "dian115:wasm@1",
@@ -21,16 +21,6 @@
         "reason": "把豆瓣榜单条目匹配到 TMDB 元数据（tmdb_id/类型/年份/海报）以创建聚合订阅"
       },
       {
-        "method": "GET",
-        "path": "/api/tmdb/movie/:id",
-        "reason": "读取电影详情补充订阅信息"
-      },
-      {
-        "method": "GET",
-        "path": "/api/tmdb/tv/:id",
-        "reason": "读取剧集详情补充订阅信息"
-      },
-      {
         "method": "POST",
         "path": "/api/subscribe/pool/intents",
         "reason": "为通过观察期的豆瓣条目创建聚合订阅（宿主负责检索并投递 115 离线）"
@@ -39,11 +29,6 @@
         "method": "GET",
         "path": "/api/subscribe/pool/intents",
         "reason": "查询已创建聚合订阅，用于去重与状态跟踪"
-      },
-      {
-        "method": "GET",
-        "path": "/api/subscribe/records",
-        "reason": "读取订阅记录，用于订阅历史与统计"
       },
       {
         "method": "POST",

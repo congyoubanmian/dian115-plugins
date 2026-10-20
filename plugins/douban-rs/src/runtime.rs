@@ -232,6 +232,7 @@ impl Runtime {
     }
 
     fn apply_document(&mut self, document: PersistedState) {
+        self.revision = self.revision.max(document.revision);
         self.settings = document.settings;
         self.snapshot = document.snapshot;
         self.queue = document.queue;
@@ -398,6 +399,7 @@ impl Runtime {
             }
         }
         let document = PersistedState {
+            revision: self.revision,
             settings: self.settings.clone(),
             snapshot: self.snapshot.clone(),
             queue: self.queue.clone(),

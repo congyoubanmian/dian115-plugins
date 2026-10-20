@@ -325,9 +325,9 @@ mod tests {
             puts
         );
         assert_eq!(puts[1].if_match.as_deref(), Some("\"pkv_2\""));
-        assert_ne!(
+        assert_eq!(
             puts[0].idempotency_key, puts[1].idempotency_key,
-            "重试也要换幂等键"
+            "412 重试属于同一次业务写入, 必须复用原幂等键"
         );
         assert_eq!(host.value_of("state").unwrap(), br#"{"v":2}"#);
 

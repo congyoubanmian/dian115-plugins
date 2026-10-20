@@ -401,6 +401,10 @@ impl CookieCache {
     };
 }
 
+fn is_zero_u64(value: &u64) -> bool {
+    *value == 0
+}
+
 /// 宿主存储里的单一状态文档 (Go `main.go:231` `persistedState`)。
 ///
 /// `wish`/`wish_seen` 带 `omitempty`(nil 或空都省略);
@@ -414,6 +418,9 @@ impl CookieCache {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct PersistedState {
+    /// 状态版本。持久化后跨模块空闲重载仍保持单调, 避免重载后 `state-v0` 命中旧缓存。
+    #[serde(skip_serializing_if = "is_zero_u64")]
+    pub revision: u64,
     pub settings: Settings,
     pub snapshot: Snapshot,
     pub queue: Queue,

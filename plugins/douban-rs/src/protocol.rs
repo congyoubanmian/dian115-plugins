@@ -254,13 +254,16 @@ mod tests {
         }
     }
 
-    /// 非 runtime.* 的 method 也走同一条 invoke 路径(Go wasm.go 只有 initialize 特殊)。
+    /// 顶层 `runtime.shutdown` 直接返回 stopping; 其他未知 method 仍走 invoke 路径。
     #[test]
-    fn unknown_method_follows_invoke_path() {
+    fn top_level_shutdown_and_unknown_method() {
+        let shutdown = dispatch_json(r#"{"method":"runtime.shutdown","params":{}}"#);
+        assert_eq!(shutdown, json!({"stopping": true}));
+
         let out = dispatch_json(
             r#"{"method":"runtime.shutdown","params":{"envelope":{"op":"state","payload":{}}}}"#,
         );
-        assert!(out["result"].is_object(), "method 只影响 initialize 分支");
+        assert_eq!(out, json!({"stopping": true}));
 
         let out = dispatch_json(r#"{"method":"runtime.gc"}"#);
         assert_eq!(out["error"]["code"], -32602);
