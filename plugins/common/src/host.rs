@@ -69,6 +69,12 @@ pub fn observed_calls() -> usize {
     }
 }
 
+/// 记一次实际经 `host_call` 发出的调用(native 测试观察窗口; wasm32 编译为空函数)。
+fn record_observed_call() {
+    #[cfg(not(target_arch = "wasm32"))]
+    OBSERVED_HOST_CALLS.with(|count| count.set(count.get() + 1));
+}
+
 /// 计数器读写的串行闸门(历史遗留: 计数改成线程本地后不再必需, 但保留给需要
 /// 串行化"读计数 + 断言"序列的用例)。
 ///
@@ -254,8 +260,7 @@ pub fn encode_request(request: &HostCallRequest) -> Result<Vec<u8>, HostError> {
 
 /// 发起一次 host.call。
 pub fn call(request: &HostCallRequest) -> Result<HostCallResponse, HostError> {
-    #[cfg(not(target_arch = "wasm32"))]
-    OBSERVED_HOST_CALLS.with(|count| count.set(count.get() + 1));
+    record_observed_call();
 
     #[cfg(not(target_arch = "wasm32"))]
     {
@@ -265,7 +270,15 @@ pub fn call(request: &HostCallRequest) -> Result<HostCallResponse, HostError> {
     }
 
     let payload = encode_request(request)?;
+    let body = roundtrip(&payload)?;
+    parse_host_envelope(&body)
+}
 
+/// 把一段已编码的 `host.*` 帧交给宿主, 返回原始响应字节。
+///
+/// 与 [`call`] 走完全相同的传输和长度校验; 抽出来是为了让 `host.capabilities`
+/// 复用同一条通道, 而不经过 host.call 的 `params` 信封。
+fn roundtrip(payload: &[u8]) -> Result<Vec<u8>, HostError> {
     // 请求缓冲放堆上(不用 arena): 它必须活到 host_read 完成之后。
     let n = unsafe { host_call(payload.as_ptr() as u32, payload.len() as u32) };
     if n == 0 || n > MAX_HOST_RESPONSE {
@@ -282,7 +295,124 @@ pub fn call(request: &HostCallRequest) -> Result<HostCallResponse, HostError> {
             "host_read 返回长度 {got} 超过缓冲 {n}"
         )));
     }
-    parse_host_envelope(&buf[..got as usize])
+    buf.truncate(got as usize);
+    Ok(buf)
+}
+
+// ─────────────────── host.capabilities(host-call-v2.md §10) ───────────────────
+//
+// §10 只给出两种明确形状:
+//   请求 `{"method":"host.capabilities"}`(host.* 运行时方法, 没有 params);
+//   返回 `host_version` / `plugin_api` / `host_access` / `apis` /
+//   `granted_apis` / `unavailable_apis`。§10 的示例是裸结果对象, §1 又定义了
+//   JSON-RPC `result`/`error` 封套; 两种都接受。这里不臆造 `category` 之外的
+//   字段, 也不按版本号推断能力。
+
+/// `host.capabilities` 的出站请求体。
+///
+/// 文档 §10 明确给出 `{"method":"host.capabilities"}`, 不带 `params`, 因此不能复用
+/// [`HostCallEnvelope`] 的 host.call 信封。serde 按字段序输出, 与文档逐字节一致。
+#[derive(Debug, Serialize)]
+struct HostCapabilitiesRequest<'a> {
+    method: &'a str,
+}
+
+/// 编码 `host.capabilities` 请求。
+pub fn encode_capabilities_request() -> Result<Vec<u8>, HostError> {
+    serde_json::to_vec(&HostCapabilitiesRequest {
+        method: "host.capabilities",
+    })
+    .map_err(|e| HostError::new(format!("host.capabilities 请求编码失败: {e}")))
+}
+
+/// Host API 目录中的一条接口。
+///
+/// §10 的 `apis` 条目带 `category`; 同一节的 `granted_apis` / `unavailable_apis`
+/// 条目示例只有 `method`/`path`。用同一个结构承载, 缺少 `category` 时为空串。
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+pub struct HostApiEntry {
+    pub method: String,
+    pub path: String,
+    #[serde(default, deserialize_with = "null_to_default")]
+    pub category: String,
+}
+
+/// `host.capabilities` 返回的运行时自省结果(host-call-v2.md §10)。
+///
+/// 六个字段都是文档承诺的返回内容, 因此全部必填: 缺字段时宁可报错, 也不能用
+/// serde 默认值伪造一份“宿主没有任何能力”的成功结果。
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+pub struct HostCapabilities {
+    pub host_version: String,
+    pub plugin_api: String,
+    pub host_access: String,
+    /// 宿主当前提供的完整 Host API 目录。
+    pub apis: Vec<HostApiEntry>,
+    /// 本安装实例已批准的接口。
+    pub granted_apis: Vec<HostApiEntry>,
+    /// Manifest 中声明为 optional、但当前宿主不提供的接口。
+    pub unavailable_apis: Vec<HostApiEntry>,
+}
+
+/// 解析 `host.capabilities` 响应。
+///
+/// §10 的示例是裸结果对象; §1 又定义了 JSON-RPC `result`/`error` 封套。两种形状
+/// 都接受, 但 `result` 内的字段必须齐全: capabilities 的字段全是自省数据, 缺失时
+/// 返回空目录等于谎报“宿主没有任何能力”。任何失败都是可恢复的 `Err`, 由调用方
+/// 决定回退策略。
+pub fn parse_capabilities(body: &[u8]) -> Result<HostCapabilities, HostError> {
+    let value: serde_json::Value = serde_json::from_slice(body)
+        .map_err(|e| HostError::new(format!("host.capabilities 响应解析失败: {e}")))?;
+
+    if let Some(error) = value.get("error").filter(|error| !error.is_null()) {
+        let error: HostRpcError = serde_json::from_value(error.clone())
+            .map_err(|e| HostError::new(format!("host.capabilities 错误响应解析失败: {e}")))?;
+        return Err(HostError::new(format!(
+            "host RPC {}: {}",
+            error.code, error.message
+        )));
+    }
+
+    let result = match value.get("result") {
+        Some(result) if !result.is_null() => result.clone(),
+        Some(_) => return Err(HostError::new("host.capabilities 响应缺少 result")),
+        // §10 的裸结果对象没有 result 外壳; 只把带 capabilities 字段的对象当作裸结果,
+        // 这样 `{}` 或无关 JSON 仍会得到明确的“缺少 result”。
+        None if CAPABILITIES_FIELDS
+            .iter()
+            .any(|field| value.get(field).is_some()) =>
+        {
+            value
+        }
+        None => return Err(HostError::new("host.capabilities 响应缺少 result")),
+    };
+
+    serde_json::from_value(result)
+        .map_err(|e| HostError::new(format!("host.capabilities 响应解析失败: {e}")))
+}
+
+/// `HostCapabilities` 的字段名, 用于识别 §10 的裸结果对象。
+const CAPABILITIES_FIELDS: [&str; 6] = [
+    "host_version",
+    "plugin_api",
+    "host_access",
+    "apis",
+    "granted_apis",
+    "unavailable_apis",
+];
+
+/// 发起一次 `host.capabilities` 自省调用。
+///
+/// 旧宿主不认识该方法时返回 JSON-RPC error, 这里统一转成 [`HostError`]; 不会
+/// panic, 也不改变 [`call`] 的请求编码、响应解析或错误文案。
+///
+/// 和所有 host 调用一样, **不能**在 `runtime.initialize` 握手期间调用(宿主禁止
+/// 那时的 host.call 重入); 本模块也不会把它接进初始化路径。
+pub fn capabilities() -> Result<HostCapabilities, HostError> {
+    record_observed_call();
+    let payload = encode_capabilities_request()?;
+    let body = roundtrip(&payload)?;
+    parse_capabilities(&body)
 }
 
 // ─────────────────── 业务 HTTP 便捷层(chase-rs, ext) ───────────────────
@@ -374,4 +504,211 @@ pub fn get_json(path: &str) -> Result<(i32, serde_json::Value), HostError> {
     let value = serde_json::from_slice(&response.raw)
         .map_err(|err| HostError::new(format!("响应不是合法 JSON: {err}")))?;
     Ok((response.status, value))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn capabilities_request_matches_documented_shape() {
+        let text = String::from_utf8(encode_capabilities_request().unwrap()).unwrap();
+        // host-call-v2.md §10 原样给出, 没有 params / jsonrpc / id。
+        assert_eq!(text, r#"{"method":"host.capabilities"}"#);
+    }
+
+    #[test]
+    fn capabilities_parse_documented_example() {
+        // §10 的字段, 套进 §1 描述的 JSON-RPC result 封套。
+        let body = br#"{"jsonrpc":"2.0","id":"p:call:1","result":{
+            "host_version":"3.9.0",
+            "plugin_api":"2.0.0",
+            "host_access":"standard",
+            "apis":[{"method":"GET","path":"/api/tmdb/search","category":"tmdb"}],
+            "granted_apis":[{"method":"GET","path":"/api/tmdb/search"}],
+            "unavailable_apis":[]
+        }}"#;
+        let caps = parse_capabilities(body).unwrap();
+        assert_eq!(caps.host_version, "3.9.0");
+        assert_eq!(caps.plugin_api, "2.0.0");
+        assert_eq!(caps.host_access, "standard");
+        assert_eq!(
+            caps.apis,
+            vec![HostApiEntry {
+                method: "GET".into(),
+                path: "/api/tmdb/search".into(),
+                category: "tmdb".into(),
+            }]
+        );
+        // granted/unavailable 的条目在示例里省略 category。
+        assert_eq!(
+            caps.granted_apis,
+            vec![HostApiEntry {
+                method: "GET".into(),
+                path: "/api/tmdb/search".into(),
+                category: String::new(),
+            }]
+        );
+        assert!(caps.unavailable_apis.is_empty());
+    }
+
+    #[test]
+    fn capabilities_parse_unavailable_entries() {
+        let body = br#"{"result":{
+            "host_version":"3.8.0","plugin_api":"2.0.0","host_access":"extended",
+            "apis":[],
+            "granted_apis":[],
+            "unavailable_apis":[{"method":"GET","path":"/api/plugin-host/emby/episodes"}]
+        }}"#;
+        let caps = parse_capabilities(body).unwrap();
+        assert_eq!(caps.host_access, "extended");
+        assert_eq!(
+            caps.unavailable_apis,
+            vec![HostApiEntry {
+                method: "GET".into(),
+                path: "/api/plugin-host/emby/episodes".into(),
+                category: String::new(),
+            }]
+        );
+    }
+
+    #[test]
+    fn capabilities_parse_bare_result_object() {
+        // §10 的返回块本身没有 result 外壳。
+        let body = br#"{
+            "host_version":"3.9.0","plugin_api":"2.0.0","host_access":"standard",
+            "apis":[],"granted_apis":[],"unavailable_apis":[]
+        }"#;
+        let caps = parse_capabilities(body).unwrap();
+        assert_eq!(caps.host_version, "3.9.0");
+        assert!(caps.apis.is_empty());
+    }
+
+    #[test]
+    fn capabilities_missing_required_fields_fail_closed() {
+        let full = serde_json::json!({
+            "host_version":"3.9.0",
+            "plugin_api":"2.0.0",
+            "host_access":"standard",
+            "apis":[],
+            "granted_apis":[],
+            "unavailable_apis":[]
+        });
+        for field in CAPABILITIES_FIELDS {
+            let mut value = full.clone();
+            value.as_object_mut().unwrap().remove(field);
+            let body = serde_json::to_vec(&value).unwrap();
+            let err = parse_capabilities(&body).unwrap_err();
+            assert!(
+                err.to_string()
+                    .contains(&format!("missing field `{field}`")),
+                "缺 {field} 时应 fail closed, 实际: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn capabilities_result_missing_fields_fail_closed() {
+        // 复核 probe 的两种输入: result 为空 / 只有版本字段。不能返回 Ok 空目录。
+        let err = parse_capabilities(br#"{"result":{}}"#).unwrap_err();
+        assert!(
+            err.to_string().contains("missing field `host_version`"),
+            "实际: {err}"
+        );
+        let err = parse_capabilities(
+            br#"{"result":{"host_version":"3.9.0","plugin_api":"2.0.0","host_access":"standard"}}"#,
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("missing field `apis`"),
+            "实际: {err}"
+        );
+    }
+
+    #[test]
+    fn capabilities_null_required_fields_fail_closed() {
+        let full = serde_json::json!({
+            "host_version":"3.9.0",
+            "plugin_api":"2.0.0",
+            "host_access":"standard",
+            "apis":[],
+            "granted_apis":[],
+            "unavailable_apis":[]
+        });
+        for field in CAPABILITIES_FIELDS {
+            let mut value = full.clone();
+            value[field] = serde_json::Value::Null;
+            let body = serde_json::to_vec(&value).unwrap();
+            assert!(
+                parse_capabilities(&body).is_err(),
+                "字段 {field} 为 null 时应 fail closed"
+            );
+        }
+    }
+
+    #[test]
+    fn capabilities_incomplete_api_entry_fails_closed() {
+        let body = br#"{"result":{
+            "host_version":"3.9.0","plugin_api":"2.0.0","host_access":"standard",
+            "apis":[],
+            "granted_apis":[{"path":"/api/tmdb/search"}],
+            "unavailable_apis":[]
+        }}"#;
+        let err = parse_capabilities(body).unwrap_err();
+        assert!(
+            err.to_string().contains("missing field `method`"),
+            "实际: {err}"
+        );
+    }
+
+    #[test]
+    fn capabilities_error_envelope_is_reported() {
+        let err = parse_capabilities(br#"{"error":{"code":-32601,"message":"method not found"}}"#)
+            .unwrap_err();
+        assert_eq!(err.to_string(), "host RPC -32601: method not found");
+    }
+
+    #[test]
+    fn capabilities_missing_result_is_an_error() {
+        // 不能把“没有 result”伪装成一份空能力目录。
+        let err = parse_capabilities(br#"{"jsonrpc":"2.0","id":"p:call:1"}"#).unwrap_err();
+        assert_eq!(err.to_string(), "host.capabilities 响应缺少 result");
+    }
+
+    #[test]
+    fn capabilities_parse_failure_is_reported() {
+        let err = parse_capabilities(b"<html>502</html>").unwrap_err();
+        assert!(
+            err.to_string()
+                .starts_with("host.capabilities 响应解析失败: "),
+            "实际: {err}"
+        );
+    }
+
+    /// 本机(无宿主)调用必须返回可恢复的 Err, 与 host.call 的 abi_stub 行为一致。
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn capabilities_native_stub_is_recoverable() {
+        let _guard = HOST_COUNTER_LOCK.lock().unwrap();
+        let before = observed_calls();
+        let err = capabilities().unwrap_err();
+        assert_eq!(err.to_string(), "host_call 返回长度 0");
+        assert_eq!(observed_calls(), before + 1);
+    }
+
+    /// 现有 host.call 编码/解析不受 capabilities 影响。
+    #[test]
+    fn host_call_request_shape_is_unchanged() {
+        let req = HostCallRequest::new("GET", "/api/tmdb/search")
+            .with_header("accept", "application/json");
+        let text = String::from_utf8(encode_request(&req).unwrap()).unwrap();
+        assert_eq!(
+            text,
+            r#"{"method":"host.call","params":{"method":"GET","path":"/api/tmdb/search","headers":{"accept":"application/json"}}}"#
+        );
+        let resp =
+            parse_host_envelope(br#"{"result":{"status":200,"headers":null,"body_base64":""}}"#)
+                .unwrap();
+        assert_eq!(resp.status, 200);
+    }
 }
