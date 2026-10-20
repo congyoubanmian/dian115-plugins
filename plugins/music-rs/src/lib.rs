@@ -70,8 +70,9 @@ pub const TELEGRAM_CALLBACK_TOPIC: &str = "telegram.callback";
 ///
 /// 宿主把 TG 侧的按钮/回复回调作为 `event` op 投递进来(见 [`Runtime::event`]),
 /// 这里解析回调、按 `retry:<短id>` 把失败任务重新排队(见
-/// [`tasks::on_telegram_callback`])。返回 `Err` 时由 runtime 映射成 `accepted:false`,
-/// 宿主可再投递。
+/// [`tasks::on_telegram_callback`])。返回 `Err` 时由 runtime 映射成
+/// `{handled:false, answer:"", alert:false}`(event 应答规范里没有 accepted:false
+/// 的重投语义), 不承诺宿主会重投。
 pub fn handle_telegram_callback(
     ids: &mut store::PutIds,
     data: &serde_json::Value,
@@ -92,7 +93,7 @@ mod tests {
     #[test]
     fn telegram_callback_entry_is_wired_to_tasks() {
         let mut ids = store::PutIds::new();
-        // 缺 callback.data → 失败(宿主可重投)。
+        // 缺 callback.data → Err(runtime 映射成 handled:false)。
         let err =
             handle_telegram_callback(&mut ids, &serde_json::json!({"message": {}})).unwrap_err();
         assert!(err.contains("缺少 callback.data"), "实际: {err}");

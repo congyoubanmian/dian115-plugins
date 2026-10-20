@@ -861,7 +861,8 @@ pub fn extract_callback_data(data: &Value) -> Option<String> {
 ///
 /// - `retry:<id>` → 失败任务重新排队, 返回 `{handled, answer, alert}`;
 /// - 其他前缀 → `{handled:false}`(不是本插件的按钮);
-/// - 缺少回调值 / 存储不可读 → `Err`, 由 runtime 映射成 `accepted:false` 让宿主重投。
+/// - 缺少回调值 / 存储不可读 → `Err`, 由 runtime 映射成
+///   `{handled:false, answer:"", alert:false}`(不承诺重投)。
 pub fn on_telegram_callback(ids: &mut PutIds, data: &Value) -> Result<Value, String> {
     let raw = extract_callback_data(data)
         .ok_or_else(|| "telegram.callback 缺少 callback.data".to_string())?;
@@ -1784,7 +1785,7 @@ mod tests {
             on_telegram_callback(&mut ids, &json!({"callback": {"data": "other:x"}})).unwrap();
         assert_eq!(value["handled"], false);
 
-        // 缺 data: 失败(宿主可重投)。
+        // 缺 data → Err(runtime 映射成 handled:false)。
         assert!(on_telegram_callback(&mut ids, &json!({"message": {}})).is_err());
         // 未知任务 id: 静默确认, 不触发无限重投。
         let value =

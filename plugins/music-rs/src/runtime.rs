@@ -37,6 +37,8 @@ pub const PERSIST_LOG_LIMIT: usize = 40;
 pub const LOG_MESSAGE_LIMIT: usize = 400;
 /// 状态响应里日志的裁剪上限。
 pub const STATE_LOGS_LIMIT: usize = 50;
+/// `telegram.callback` 应答里 `answer` 的字符上限(宿主 host-call-v2.md §12)。
+const CALLBACK_ANSWER_LIMIT: usize = 200;
 
 /// 一条运行日志。
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -671,7 +673,13 @@ impl Runtime {
         }
     }
 
-    /// 事件入口: 只认有 topic 的事件; `telegram.callback` 交给 [`crate::tasks`]。
+    /// 事件入口: 只认有 topic 的事件。
+    ///
+    /// `telegram.callback` 在宿主 5.0.27 的投递形态是
+    /// `{"callback":{"data":"retry:<id>"},"message":{...}}`; 这里把**整份 payload**
+    /// 原样交给 [`tasks::on_telegram_callback`](它自己从 `callback.data` 取回调值,
+    /// 同时兼容旧的顶层 `data` 形状), 应答按宿主规范的
+    /// `{handled, answer, alert, reply}` 返回(`reply` 可选, 本插件不产生后续回复)。
     pub fn event(&mut self, payload: RawPayload<'_>) -> Result<Value, OpError> {
         let obj = payload.as_object().map_err(|_| invalid_event())?;
         let topic = raw::string_field(obj, "topic").map_err(|_| invalid_event())?;
@@ -679,19 +687,20 @@ impl Runtime {
             return Err(invalid_event());
         }
         if topic == crate::TELEGRAM_CALLBACK_TOPIC {
-            let data = obj
-                .and_then(|map| map.get("data"))
-                .cloned()
-                .unwrap_or(Value::Null);
+            let data = match obj {
+                Some(map) => Value::Object(map.clone()),
+                None => Value::Null,
+            };
             return match tasks::on_telegram_callback(&mut self.put_ids, &data) {
                 Ok(value) => {
                     // 状态里的任务列表每次 state 都重读, 但 revision 要推进,
                     // 否则带 if_none_match 的 UI 会一直拿到 not_modified。
                     self.bump("succeeded", "Telegram 回调已处理");
-                    Ok(json!({"accepted": true, "result": value}))
+                    Ok(callback_reply(value))
                 }
-                // 失败 → accepted:false, 宿主按重试策略再投递
-                Err(err) => Ok(json!({"accepted": false, "message": err})),
+                // 失败: 返回规范允许的 handled:false(不再用 accepted:false 让宿主重投)。
+                // revision 与旧实现保持一致: 失败路径不推进。
+                Err(_) => Ok(callback_failure()),
             };
         }
         Ok(json!({"accepted": true}))
@@ -884,10 +893,230 @@ fn invalid_event() -> OpError {
     OpError::new("invalid event payload")
 }
 
+/// 规范化 `telegram.callback` 的成功应答。
+///
+/// 宿主 5.0.27 只认 `{handled, answer, alert, reply}`(`reply` 可选)。这里只保留
+/// 这四个字段(tasks 内部的 `task_id` 不发给宿主), 补齐缺省值并把 `answer` 裁到
+/// 规范上限, 不再包一层 `{accepted, result}`。
+fn callback_reply(value: Value) -> Value {
+    let mut out = Map::new();
+    out.insert(
+        "handled".to_string(),
+        value.get("handled").cloned().unwrap_or(Value::Bool(false)),
+    );
+    let answer = match value.get("answer") {
+        Some(Value::String(text)) => text.chars().take(CALLBACK_ANSWER_LIMIT).collect(),
+        _ => String::new(),
+    };
+    out.insert("answer".to_string(), Value::String(answer));
+    out.insert(
+        "alert".to_string(),
+        value.get("alert").cloned().unwrap_or(Value::Bool(false)),
+    );
+    if let Some(reply) = value.get("reply") {
+        if !reply.is_null() {
+            out.insert("reply".to_string(), reply.clone());
+        }
+    }
+    Value::Object(out)
+}
+
+/// 回调无法处理时的应答: 宿主规范允许的 `{handled:false,...}`。
+fn callback_failure() -> Value {
+    json!({"handled": false, "answer": "", "alert": false})
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::host::{HostCallRequest, HostCallResponse, HostError};
     use crate::raw::RawPayload;
+    use crate::store::PutIds;
+    use base64::Engine as _;
+    use std::cell::RefCell;
+    use std::collections::{BTreeMap, HashMap};
+
+    thread_local! {
+        /// 测试用 KV: 键 → (原始值, revision)。
+        static FAKE_KV: RefCell<HashMap<String, (Vec<u8>, u64)>> = RefCell::new(HashMap::new());
+    }
+
+    fn etag_headers(revision: u64) -> BTreeMap<String, Vec<String>> {
+        let mut headers = BTreeMap::new();
+        headers.insert("ETag".to_string(), vec![format!("\"pkv_{revision}\"")]);
+        headers
+    }
+
+    /// 只处理 `/api/plugin-runtime/storage/:key` 的宿主替身(与 tasks 测试同一套语义)。
+    fn install_fake_storage() {
+        FAKE_KV.with(|kv| kv.borrow_mut().clear());
+        crate::host::testhost::install(Box::new(|request: &HostCallRequest| {
+            let key = request
+                .path
+                .strip_prefix("/api/plugin-runtime/storage/")
+                .unwrap_or("")
+                .to_string();
+            match request.method.as_str() {
+                "GET" => {
+                    let found = FAKE_KV.with(|kv| kv.borrow().get(&key).cloned());
+                    match found {
+                        Some((value, revision)) => Ok(HostCallResponse {
+                            status: 200,
+                            headers: etag_headers(revision),
+                            body_base64: base64::engine::general_purpose::STANDARD_NO_PAD
+                                .encode(&value),
+                        }),
+                        None => Ok(HostCallResponse {
+                            status: 404,
+                            ..HostCallResponse::default()
+                        }),
+                    }
+                }
+                "PUT" => {
+                    let raw = base64::engine::general_purpose::STANDARD_NO_PAD
+                        .decode(&request.body_base64)
+                        .unwrap_or_default();
+                    let parsed: Value = serde_json::from_slice(&raw).unwrap_or(Value::Null);
+                    let value = serde_json::to_vec(&parsed["value"]).unwrap_or_default();
+                    let revision = FAKE_KV.with(|kv| {
+                        let mut kv = kv.borrow_mut();
+                        let revision = kv.get(&key).map(|(_, revision)| *revision).unwrap_or(0) + 1;
+                        kv.insert(key.clone(), (value, revision));
+                        revision
+                    });
+                    Ok(HostCallResponse {
+                        status: 200,
+                        headers: etag_headers(revision),
+                        ..HostCallResponse::default()
+                    })
+                }
+                "DELETE" => {
+                    let existed = FAKE_KV.with(|kv| kv.borrow_mut().remove(&key).is_some());
+                    Ok(HostCallResponse {
+                        status: if existed { 200 } else { 404 },
+                        ..HostCallResponse::default()
+                    })
+                }
+                other => Err(HostError::new(format!("unexpected method: {other}"))),
+            }
+        }));
+    }
+
+    /// 5.0.27 的投递形状 `{"callback":{"data":...},"message":{...}}` 必须能取到
+    /// `retry:<id>`: 整份 payload 交给 tasks, 成功应答是 `{handled,answer,alert}`,
+    /// 且 retry 语义(status/attempts/retry_round)与 revision 推进保持不变。
+    #[test]
+    fn telegram_callback_new_payload_requeues_and_returns_handled_shape() {
+        install_fake_storage();
+        let mut ids = PutIds::new();
+        let task = tasks::Task {
+            id: "abc12345".to_string(),
+            source: "netease".to_string(),
+            song_id: "9".to_string(),
+            name: "晴天".to_string(),
+            singers: "周杰伦".to_string(),
+            quality: "flac".to_string(),
+            out_name: "周杰伦 - 晴天.flac".to_string(),
+            status: tasks::STATUS_FAILED.to_string(),
+            attempts: tasks::MAX_ATTEMPTS,
+            retry_round: 2,
+            error: "boom".to_string(),
+            updated_ms: 1,
+            ..tasks::Task::default()
+        };
+        tasks::save_task(&mut ids, &task).unwrap();
+
+        let mut runtime = Runtime::new();
+        let before = runtime.revision();
+        let payload = json!({
+            "topic": crate::TELEGRAM_CALLBACK_TOPIC,
+            "callback": {"data": "retry:abc12345"},
+            "message": {
+                "message_id": 123,
+                "chat_id": 456,
+                "chat_type": "private",
+                "user_id": 789,
+                "date": 1759000000
+            }
+        });
+        let value = runtime.event(RawPayload::Value(&payload)).unwrap();
+
+        assert_eq!(value["handled"], true, "{value}");
+        assert_eq!(value["alert"], false, "{value}");
+        assert!(
+            value["answer"].as_str().unwrap().contains("已重新排队"),
+            "{value}"
+        );
+        assert!(
+            value.get("accepted").is_none(),
+            "不得再返回 accepted: {value}"
+        );
+        assert!(value.get("result").is_none(), "不得再返回 result: {value}");
+        assert!(
+            value.get("task_id").is_none(),
+            "内部字段 task_id 不发给宿主: {value}"
+        );
+        assert_eq!(runtime.revision(), before + 1, "成功回调应推进 revision");
+
+        let requeued = tasks::load_task("abc12345").unwrap();
+        assert_eq!(requeued.status, tasks::STATUS_QUEUED);
+        assert_eq!(requeued.attempts, 0);
+        assert_eq!(requeued.retry_round, 3, "每次重试都要推进轮次");
+        assert!(requeued.error.is_empty());
+    }
+
+    /// 不认识的 `callback.data` 不是本插件的按钮: `handled:false`, 但仍按原行为
+    /// 推进 revision, 且不再出现 accepted/result 外壳。
+    #[test]
+    fn telegram_callback_for_other_plugin_is_not_handled() {
+        install_fake_storage();
+        let mut runtime = Runtime::new();
+        let before = runtime.revision();
+        let payload = json!({
+            "topic": crate::TELEGRAM_CALLBACK_TOPIC,
+            "callback": {"data": "other:x"},
+            "message": {"message_id": 1}
+        });
+        let value = runtime.event(RawPayload::Value(&payload)).unwrap();
+
+        assert_eq!(value["handled"], false, "{value}");
+        assert_eq!(value["answer"], "", "{value}");
+        assert_eq!(value["alert"], false, "{value}");
+        assert!(value.get("accepted").is_none(), "{value}");
+        assert!(value.get("result").is_none(), "{value}");
+        assert_eq!(runtime.revision(), before + 1);
+    }
+
+    /// 缺少 callback.data 的 payload 是错误路径: 返回规范允许的 `handled:false`
+    /// 形态(而不是 accepted:false), 且与旧实现一样不推进 revision。
+    #[test]
+    fn telegram_callback_error_returns_handled_false() {
+        install_fake_storage();
+        let mut runtime = Runtime::new();
+        let before = runtime.revision();
+        let payload = json!({
+            "topic": crate::TELEGRAM_CALLBACK_TOPIC,
+            "message": {"message_id": 1}
+        });
+        let value = runtime.event(RawPayload::Value(&payload)).unwrap();
+
+        assert_eq!(
+            value,
+            json!({"handled": false, "answer": "", "alert": false})
+        );
+        assert_eq!(runtime.revision(), before, "失败路径不推进 revision");
+    }
+
+    /// 宿主规定 `answer` ≤200 字符; 任务名很长时不能把超长 toast 发给宿主。
+    #[test]
+    fn callback_answer_is_capped_at_host_limit() {
+        let long = "x".repeat(CALLBACK_ANSWER_LIMIT + 10);
+        let value = callback_reply(json!({"handled": true, "answer": long, "alert": false}));
+        assert_eq!(
+            value["answer"].as_str().unwrap().chars().count(),
+            CALLBACK_ANSWER_LIMIT
+        );
+    }
 
     /// `playlist-queue-all` 已挂在分发表上: 非网易云来源是**业务 failed**(不是
     /// `unknown_action`), 且不触碰存储(校验在取页之前返回)。
