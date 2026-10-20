@@ -194,16 +194,18 @@ export function formatAt(value: unknown): string {
   return `${y}-${mo}-${d} ${h}:${mi}`
 }
 
-/** `S5` / 0 或缺失时给「整剧」。 */
+/** `S5` / S00 特别篇 / 缺失时给「整剧」。 */
 export function seasonLabel(season: unknown): string {
-  const value = num(season, 0)
+  const value = num(season, -1)
+  if (value === 0) return 'S00 特别篇'
   return value > 0 ? `S${value}` : '整剧'
 }
 
-/** 日历里的一条: `S5E4`, 季未知时只留 `E4`。 */
+/** 日历里的一条: `S5E4`; 第 0 季是特别篇; 季未知时只留 `E4`。 */
 export function episodeLabel(season: unknown, episode: unknown): string {
-  const value = num(season, 0)
+  const value = num(season, -1)
   const ep = num(episode, 0)
+  if (value === 0) return `S00E${ep}`
   return value > 0 ? `S${value}E${ep}` : `E${ep}`
 }
 

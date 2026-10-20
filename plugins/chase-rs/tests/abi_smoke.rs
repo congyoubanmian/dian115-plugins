@@ -215,7 +215,7 @@ fn business_paths_survive_an_unreachable_host_store() {
         "实际: {out}"
     );
 
-    // 状态文档里留下了失败现场(内存态; 刷新不动 revision, 因为它是只读动作)
+    // 状态文档里留下了失败现场(内存态; refresh 改变 state 内容后推进 revision)
     let state = guest.call_json(
         br#"{"method":"runtime.invoke","params":{"envelope":{"op":"state","invocation_id":"inv_2","payload":{}}}}"#,
     );
@@ -227,15 +227,15 @@ fn business_paths_survive_an_unreachable_host_store() {
         "实际: {state}"
     );
     assert_eq!(
-        state["result"]["state_version"], "state-v0",
-        "刷新只读, 不动 revision"
+        state["result"]["state_version"], "state-v1",
+        "refresh 改变 state 内容后必须推进 revision"
     );
 
-    // align-now: 拿不到订阅池 → 正常 result 里的 failed, 且没有 PATCH
+    // align-now: 存储不可用 ⇒ 不拿默认配置去写宿主, 返回 skipped
     let out = guest.call_json(
         br#"{"method":"runtime.invoke","params":{"envelope":{"op":"action","invocation_id":"inv_3","payload":{"id":"align-now","input":{}}}}}"#,
     );
-    assert_eq!(out["result"]["status"], "failed", "实际: {out}");
+    assert_eq!(out["result"]["status"], "skipped", "实际: {out}");
 
     // job: 宿主存储不可读 ⇒ 整轮跳过, 且明确不落盘
     let out = guest.call_json(

@@ -6,7 +6,7 @@
   "author": "congyoubanmian",
   "homepage": "https://github.com/congyoubanmian/dian115-plugins",
   "package_url": "https://github.com/congyoubanmian/dian115-plugins/releases/download/chase-v0.1.10/chase.rs-0.1.10.d115p",
-  "sha256": "5d46d79942aef4e82aae90d74bbfdd3fbee60f2ff6de1906a8f8437555bf40e5",
+  "sha256": "502fde3be69f0b9da21180d439021c012d60a33a08ca4798233017e0a461c039",
   "runtime": {
     "kind": "wasm",
     "protocol": "dian115:wasm@1",

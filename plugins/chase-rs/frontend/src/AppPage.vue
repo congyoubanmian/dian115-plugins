@@ -274,7 +274,8 @@ function badgeClass(kind: ReasonBadge['kind']): string {
 
 /** 剧集副行: 季(零填充) + Emby 覆盖到的最大集号(真实字段 emby_have_max; -1 = 未探测)。 */
 function seasonPad(season: unknown): string {
-  const value = num(season, 0)
+  const value = num(season, -1)
+  if (value === 0) return 'S00 特别篇'
   return value > 0 ? `S${String(value).padStart(2, '0')}` : '整剧'
 }
 
@@ -488,7 +489,10 @@ async function runAction(action: string, input: Record<string, unknown> = {}): P
   let result: NonNullable<RuntimeCallback['result']> = {}
   try {
     const response = await props.api.invokeAction(action, input)
-    result = response?.result || {}
+    if (!response || response.result == null) {
+      throw new Error('宿主未返回动作结果')
+    }
+    result = response.result
     try {
       await props.api.refresh()
     } catch (refreshError: unknown) {
@@ -498,6 +502,10 @@ async function runAction(action: string, input: Record<string, unknown> = {}): P
       const failureText = String(result.message || '操作失败')
       if (action === 'align-now') alignResult.value = { ok: false, text: failureText }
       message.error(failureText)
+    } else if (result.status === 'skipped') {
+      const skippedText = String(result.message || '操作已跳过')
+      if (action === 'align-now') alignResult.value = { ok: false, text: skippedText }
+      message.warning(skippedText)
     } else if (action === 'align-now') {
       const note = result.budget_hit ? ' · 达时间预算提前结束' : ''
       const absent = num(result.absent, 0)
@@ -505,10 +513,16 @@ async function runAction(action: string, input: Record<string, unknown> = {}): P
       const reused = num(result.reused, 0)
       const reusedNote = reused > 0 ? ` · 复用缓存 ${reused} 条` : ''
       const doneText = `完成: 补订 ${num(result.patched, 0)} 条 · 跳过 ${num(result.skipped, 0)} 条 · 失败 ${num(result.failed, 0)} 条${absentNote}${reusedNote}${note}`
-      alignResult.value = { ok: true, text: doneText }
-      message.success(`立即对齐${doneText}`)
-    } else {
+      const ok = result.status === 'succeeded'
+      alignResult.value = { ok, text: doneText }
+      if (ok) message.success(`立即对齐${doneText}`)
+      else message.info(`立即对齐${doneText}`)
+    } else if (result.status === 'accepted') {
+      message.info(String(result.message || '操作已受理'))
+    } else if (result.status === 'succeeded') {
       message.success(String(result.message || '操作完成'))
+    } else {
+      message.warning(`未知动作状态: ${String(result.status || '(空)')}`)
     }
   } catch (error: unknown) {
     result = { status: 'failed', message: String((error as { message?: string })?.message || '操作失败') }

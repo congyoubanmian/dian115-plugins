@@ -90,6 +90,8 @@ pub const DECLARED_ACTIONS: &[&str] = &[
 
 /// `alignHourly` 的 job id(与 manifest 的 `jobs[0].handler` 对应)。
 pub const JOB_ALIGN: &str = "align";
+/// 宿主若按 manifest 的 `handler` 投递 job, 用同一个入口处理。
+pub const JOB_ALIGN_HANDLER: &str = "alignHourly";
 
 /// 解析失败要落进哪个 debug 快照槽。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -389,9 +391,10 @@ impl Runtime {
             Ok(id) => id,
             Err(_) => return Ok(json!({"status": "skipped", "message": "任务参数无效"})),
         };
-        match id.as_str() {
-            JOB_ALIGN => Ok(self.job_align(invocation_id)),
-            _ => Ok(json!({"status": "skipped", "message": "未声明的任务"})),
+        if id == JOB_ALIGN || id == JOB_ALIGN_HANDLER {
+            Ok(self.job_align(invocation_id))
+        } else {
+            Ok(json!({"status": "skipped", "message": "未声明的任务"}))
         }
     }
 
@@ -469,8 +472,9 @@ impl Runtime {
 
         let matched = self.state.align.items.len() as u32;
         self.state.stats.matched = matched;
-        // 只读动作**不动 revision**: 版本号代表"已落盘的内容", 内存里的诊断刷新不该
-        // 让界面的 ETag 缓存失效(下一次真正落盘时版本自然会变)。
+        // 任何会进入 state 响应的内容变化都必须推进 revision, 否则强 ETag 会对应
+        // 两份不同的内容; refresh 仍然不落盘, 重载后回到持久化时的版本/内容。
+        self.state.bump_revision();
         let elapsed_ms = (clock::now_unix_secs() - started).max(0) * 1000;
         if message.is_empty() {
             message = format!("界面计数已刷新({elapsed_ms}ms)");
@@ -492,6 +496,9 @@ impl Runtime {
     ///
     /// host.call 预算 = 1(intents) + PATCH 数 + 探测数 ≤ 1 + 5 + 3; 因此**不落盘**。
     fn action_align_now(&mut self, _invocation_id: &str) -> Value {
+        if !self.storage_ok {
+            return json!({"status": "skipped", "message": "宿主存储不可用: 本轮只读, 不落盘"});
+        }
         self.run_seq += 1;
         let run_seq = self.run_seq;
         let started = clock::now_unix_secs();
@@ -833,6 +840,9 @@ impl Runtime {
 
     /// 白名单逐键合并(绝不整块替换: 前端在 state 未加载时保存不能把配置清空)。
     fn action_settings_update(&mut self, input: &Map<String, Value>) -> Value {
+        if !self.storage_ok {
+            return json!({"status": "skipped", "message": "宿主存储不可用: 设置未保存"});
+        }
         let mut changed: Vec<String> = Vec::new();
         {
             let settings = &mut self.state.settings;
@@ -927,7 +937,17 @@ impl Runtime {
         self.state.last_message = message.clone();
         self.state.last_run = clock::now_rfc3339();
         self.state.log("info", &message);
-        self.persist_quietly();
+        if let Err(err) = self.persist_state() {
+            let failure = format!("设置落盘失败: {err}");
+            self.state.last_message = failure.clone();
+            self.state.log("warning", &failure);
+            return json!({
+                "status": "failed",
+                "message": failure,
+                "changed": changed,
+                "settings": self.state.settings.clone()
+            });
+        }
         let settings = self.state.settings.clone();
         json!({
             "status": "succeeded",
@@ -4811,7 +4831,7 @@ mod tests {
     }
 
     #[test]
-    fn refresh_never_persists_and_keeps_the_revision() {
+    fn refresh_never_persists_but_advances_revision() {
         let (fake, mut runtime) = harness();
         let guard = fake.install();
         runtime.ensure_loaded();
@@ -4820,8 +4840,16 @@ mod tests {
         let puts = fake.puts().len();
         let patches = fake.patches().len();
         let _ = action(&mut runtime, "refresh", json!({}));
+        let after_first = runtime.revision();
+        assert!(
+            after_first > revision,
+            "refresh 改变 state 内容必须推进 revision"
+        );
         let _ = action(&mut runtime, "refresh", json!({}));
-        assert_eq!(runtime.revision(), revision, "只读动作不动 revision");
+        assert!(
+            runtime.revision() > after_first,
+            "每次 refresh 都要推进 revision"
+        );
         assert_eq!(fake.puts().len(), puts, "refresh 零写入");
         assert_eq!(fake.patches().len(), patches, "refresh 不发 PATCH");
         drop(guard);

@@ -6,7 +6,7 @@
 //! `PluginNotificationRequest{level,title,body,image_url?,buttons?,job_ref?,dedupe_key?}`
 //! (schema 6927-6966)。三条硬约束:
 //!
-//! 1. `title` ≤160 字符、`body` ≤2000 字符(都按 UTF-8 边界截断);
+//! 1. `title` ≤160 字符、`body` ≤2000 字符(按 Unicode 字符截断, 不按 UTF-8 字节);
 //! 2. **不带 buttons** —— `buttons[].url` 必填且 `^https://`, 带按钮只会在宿主那里 400;
 //! 3. 带 `dedupe_key = "chase-daily-<d>"`, 同一自然日只成功记一次账
 //!    (`daily.last_sent_date`)。
@@ -25,9 +25,9 @@ use crate::raw;
 
 /// 通知端点路径。
 pub const PATH: &str = "/api/notifications/plugin";
-/// 标题字节上限(宿主 schema `maxLength: 160`)。
+/// 标题字符上限(宿主 schema `maxLength: 160`, JSON Schema 按 Unicode 字符计数)。
 pub const TITLE_MAX: usize = 160;
-/// 正文字节上限(宿主 schema `maxLength: 2000`)。
+/// 正文字符上限(宿主 schema `maxLength: 2000`, JSON Schema 按 Unicode 字符计数)。
 pub const BODY_MAX: usize = 2000;
 /// 日报去重键前缀。
 pub const DEDUPE_PREFIX: &str = "chase-daily-";
@@ -63,14 +63,23 @@ struct NotifyBody<'a> {
     dedupe_key: &'a str,
 }
 
+/// 按 Unicode 字符截断(JSON Schema `maxLength` 的计数单位)。
+fn truncate_chars(value: &str, max: usize) -> String {
+    if value.chars().count() <= max {
+        value.to_string()
+    } else {
+        value.chars().take(max).collect()
+    }
+}
+
 /// 组装请求体。
 pub fn request_body(level: &str, title: &str, body: &str, dedupe_key: &str) -> Vec<u8> {
-    let title = raw::truncate_bytes(title, TITLE_MAX);
-    let body = raw::truncate_bytes(body, BODY_MAX);
+    let title = truncate_chars(title, TITLE_MAX);
+    let body = truncate_chars(body, BODY_MAX);
     serde_json::to_vec(&NotifyBody {
         level,
-        title,
-        body,
+        title: title.as_str(),
+        body: body.as_str(),
         dedupe_key,
     })
     .unwrap_or_default()
@@ -174,8 +183,8 @@ pub fn compose(
     }
 
     (
-        raw::truncate_bytes(&title, TITLE_MAX).to_string(),
-        raw::truncate_bytes(&body, BODY_MAX).to_string(),
+        truncate_chars(&title, TITLE_MAX),
+        truncate_chars(&body, BODY_MAX),
     )
 }
 
@@ -331,7 +340,7 @@ mod tests {
         let (title, body) = compose("2026-10-01", &today, &patched, 4, 1, "Emby 覆盖解析失败");
 
         assert!(title.starts_with("追剧管家 2026-10-01"), "{title}");
-        assert!(title.len() <= TITLE_MAX);
+        assert!(title.chars().count() <= TITLE_MAX);
         assert!(body.contains("① 今日播出(1)"), "{body}");
         assert!(body.contains("20:00 权力的游戏 S1E3"), "{body}");
         assert!(body.contains("② 本次补订(1)"), "{body}");
@@ -339,7 +348,7 @@ mod tests {
         assert!(body.contains("③ 跳过 4 条, 失败 1 条"), "{body}");
         assert!(body.contains("Emby 覆盖解析失败"), "{body}");
         assert!(!body.contains("某剧"), "skipped 不该出现在补订段");
-        assert!(body.len() <= BODY_MAX);
+        assert!(body.chars().count() <= BODY_MAX);
     }
 
     #[test]
@@ -372,8 +381,12 @@ mod tests {
             })
             .collect();
         let (title, body) = compose("2026-10-01", &today, &patched, 99, 88, &"原因".repeat(200));
-        assert!(title.len() <= TITLE_MAX);
-        assert!(body.len() <= BODY_MAX, "实际 {} 字节", body.len());
+        assert!(title.chars().count() <= TITLE_MAX);
+        assert!(
+            body.chars().count() <= BODY_MAX,
+            "实际 {} 字符",
+            body.chars().count()
+        );
         assert!(std::str::from_utf8(body.as_bytes()).is_ok());
         assert!(body.contains("…另有"), "超出上限要有省略提示");
     }
@@ -621,8 +634,16 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_slice(&payload).unwrap();
         let title = parsed["title"].as_str().unwrap();
         let body = parsed["body"].as_str().unwrap();
-        assert!(title.len() <= TITLE_MAX, "标题 {} 字节", title.len());
-        assert!(body.len() <= BODY_MAX, "正文 {} 字节", body.len());
+        assert!(
+            title.chars().count() <= TITLE_MAX,
+            "标题 {} 字符",
+            title.chars().count()
+        );
+        assert!(
+            body.chars().count() <= BODY_MAX,
+            "正文 {} 字符",
+            body.chars().count()
+        );
         // 截断必须落在 UTF-8 边界: 再解析一次仍然成功, 且没有替换字符
         assert!(!title.contains('\u{FFFD}') && !body.contains('\u{FFFD}'));
         assert!(

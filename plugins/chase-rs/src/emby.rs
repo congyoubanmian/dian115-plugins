@@ -204,7 +204,8 @@ pub fn parse_instances(raw: &[u8]) -> Result<Vec<Instance>, String> {
 ///
 /// - `proxy_id >= 1`: 必须找到该 id, 且已配置密钥; 找不到/没密钥 → `Err`(整段 Emby 跳过);
 /// - `proxy_id == 0`: 旧版单实例, 选 id 为 0 的那条;
-/// - `proxy_id == -1`: 优先 `is_default`, 再退第一个已配置密钥的实例。
+/// - `proxy_id == -1`: 优先 `is_default`; 只有一个可用实例时选它; 多实例且无默认时
+///   返回错误让用户显式选择, 不静默换库(host-call-v2.md §2.3/§8)。
 pub fn select(instances: &[Instance], proxy_id: i64) -> Result<Selection, String> {
     if instances.is_empty() {
         return Err("宿主没有返回可用的 Emby 实例".to_string());
@@ -219,12 +220,20 @@ pub fn select(instances: &[Instance], proxy_id: i64) -> Result<Selection, String
         }
         return Ok(selection_of(found));
     }
-    let chosen = instances
+    let usable: Vec<&Instance> = instances
         .iter()
-        .find(|instance| instance.is_default && instance.key_ready)
-        .or_else(|| instances.iter().find(|instance| instance.key_ready))
-        .ok_or_else(|| "所有 Emby 实例都没有配置密钥".to_string())?;
-    Ok(selection_of(chosen))
+        .filter(|instance| instance.key_ready)
+        .collect();
+    if usable.is_empty() {
+        return Err("所有 Emby 实例都没有配置密钥".to_string());
+    }
+    if let Some(default) = usable.iter().find(|instance| instance.is_default) {
+        return Ok(selection_of(default));
+    }
+    if usable.len() == 1 {
+        return Ok(selection_of(usable[0]));
+    }
+    Err("有多个 Emby 实例但未设置默认实例; 请在设置中选择具体实例".to_string())
 }
 
 fn selection_of(instance: &Instance) -> Selection {
@@ -798,8 +807,20 @@ mod tests {
         assert_eq!(
             select(&instances, -1).unwrap().id,
             10,
-            "默认实例没密钥时退到可用实例"
+            "默认实例没密钥时退到唯一可用实例"
         );
+    }
+
+    #[test]
+    fn instance_selection_refuses_ambiguous_multi_instance_without_default() {
+        let instances = parse_instances(
+            r#"[{"id":1,"name":"A","api_key_configured":true},
+                 {"id":2,"name":"B","api_key_configured":true}]"#
+                .as_bytes(),
+        )
+        .unwrap();
+        let err = select(&instances, -1).unwrap_err();
+        assert!(err.contains("多个") && err.contains("默认"), "{err}");
     }
 
     // ── episodes ──

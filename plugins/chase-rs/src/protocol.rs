@@ -155,6 +155,20 @@ mod tests {
     }
 
     #[test]
+    fn top_level_runtime_shutdown_returns_stopping_without_storage() {
+        let fake = FakeHost::new();
+        let guard = fake.install();
+        let mut runtime = Runtime::new();
+        let response = dispatch(
+            &mut runtime,
+            br#"{"method":"runtime.shutdown","params":{}}"#,
+        );
+        assert_eq!(String::from_utf8(response).unwrap(), r#"{"stopping":true}"#);
+        assert!(fake.puts().is_empty(), "runtime.shutdown 不落盘");
+        drop(guard);
+    }
+
+    #[test]
     fn opaque_payloads_map_to_invalid_params() {
         let fake = FakeHost::new();
         let guard = fake.install();

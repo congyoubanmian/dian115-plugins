@@ -332,9 +332,15 @@ mod tests {
 
         let puts = fake.borrow().puts.clone();
         assert_eq!(puts.len(), 2, "412 后必须重试一次, 实际 {}", puts.len());
-        assert_ne!(puts[0].0, puts[1].0, "重试必须用重读后的新 ETag: {puts:?}");
-        assert_eq!(puts[1].0, "\"pkv_2\"");
-        assert_ne!(puts[0].1, puts[1].1, "重试也要换幂等键");
+        assert_eq!(puts[0].0, "\"pkv_1\"", "第一次 PUT 带旧 ETag: {puts:?}");
+        assert_eq!(
+            puts[1].0, "\"pkv_2\"",
+            "重试必须用重读后的新 ETag: {puts:?}"
+        );
+        assert_eq!(
+            puts[0].1, puts[1].1,
+            "412 重试属于同一次业务写入, 必须复用原幂等键"
+        );
         assert_eq!(
             fake.borrow().value.as_deref(),
             Some(&br#"{"revision":2}"#[..])
