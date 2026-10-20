@@ -8,7 +8,7 @@
 //   5. 追加 integrity.json / signature.json 后再整体按路径排序。
 //
 // 插件差异(路径/图标/资产根/ZIP 写法/私钥加载策略)留在各插件 package.mjs 里。
-import { buildBaseFiles, buildIntegrity, assertWasmModule, renderJSONBytes, sortFilesByPath } from './package-files.mjs'
+import { buildBaseFiles, buildIntegrity, assertPackageFileLimits, assertWasmModule, renderJSONBytes, sortFilesByPath } from './package-files.mjs'
 import { buildSignature, buildSignedMessage, deriveKeyId, rawPublicKey } from './signing.mjs'
 
 /**
@@ -43,5 +43,7 @@ export function buildSignedPackage({ privateKey, manifest, wasmBytes, iconBytes,
   files.push({ path: 'integrity.json', data: integrityBytes, executable: false })
   files.push({ path: 'signature.json', data: renderJSONBytes(signature), executable: false })
   sortFilesByPath(files)
+  // 写盘前校验 package-format-v1.md 的成员数/单成员/总量/清单/integrity 条目上限。
+  assertPackageFileLimits(files)
   return { manifest, publicKey, keyId, files, integrity, signature }
 }

@@ -144,3 +144,18 @@ jobs:
       # ../manifest.schema.json 并 import ./runtime-check.mjs。
       - name: runtime-check 回归测试
         run: node --test tools/conformance/runtime-check.test.mjs
+
+  plugin-tools:
+    name: plugin tools
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # 打包上限是三个插件共用的纯逻辑，与 conformance 的插件 matrix 无关；
+      # 单独一个 job，确保回归测试只跑一次。
+      - name: 打包上限回归测试
+        run: node --test tools/plugin-tools/package-limits.test.mjs

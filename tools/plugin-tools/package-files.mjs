@@ -1,6 +1,8 @@
 // 包内文件清单与 integrity.json —— 三个插件 package.mjs 共用的纯逻辑:
 //   * integrity.json 覆盖除自身与 signature.json 外的全部 ZIP 成员, 按 UTF-8 路径字节排序;
-//   * manifest/integrity/signature 落盘统一为 2 空格缩进 + 结尾换行。
+//   * manifest/integrity/signature 落盘统一为 2 空格缩进 + 结尾换行;
+//   * package-format-v1.md 的写盘前上限(见 PACKAGE_LIMITS)。WASM 的 2 MiB 上限仍由
+//     tools/conformance/project-check.mjs 负责, 这里不重复实现。
 import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { join, relative, sep } from 'node:path'
 import { sha256 } from './digest.mjs'
@@ -112,4 +114,70 @@ export function buildIntegrity(files) {
     })),
   }
   return { value, bytes: renderJSONBytes(value) }
+}
+
+// package-format-v1.md 的硬上限(MiB = 1024 * 1024)。integrity 条目只统计被 integrity.json
+// 覆盖的成员, 因此 integrity.json 与 signature.json 本身不占条目名额。
+export const PACKAGE_LIMITS = Object.freeze({
+  zipBytes: 32 * 1024 * 1024,
+  totalBytes: 128 * 1024 * 1024,
+  memberBytes: 32 * 1024 * 1024,
+  members: 1024,
+  integrityEntries: 1022,
+  metadataBytes: 256 * 1024,
+})
+
+const INTEGRITY_METADATA_PATHS = new Set(['integrity.json', 'signature.json'])
+const METADATA_PATHS = new Set(['manifest.json', 'integrity.json', 'signature.json'])
+
+/**
+ * 写盘前校验最终 ZIP 成员清单(含 integrity.json / signature.json 时同样适用)。
+ * 纯函数: 只读取 path 与 data.length, 不触碰文件系统; 超限即抛错, 合法时返回 undefined。
+ * @param {{path: string, data: Uint8Array}[]} files
+ */
+export function assertPackageFileLimits(files) {
+  if (!Array.isArray(files)) throw new TypeError('package files must be an array')
+  if (files.length > PACKAGE_LIMITS.members) {
+    throw new Error(`包内成员数 ${files.length} 超过上限 ${PACKAGE_LIMITS.members}`)
+  }
+
+  let totalBytes = 0
+  for (const file of files) {
+    const size = file.data.length
+    if (size > PACKAGE_LIMITS.memberBytes) {
+      throw new Error(`包内成员 ${file.path} 大小 ${size} 字节超过单成员上限 ${PACKAGE_LIMITS.memberBytes} 字节`)
+    }
+    totalBytes += size
+  }
+  if (totalBytes > PACKAGE_LIMITS.totalBytes) {
+    throw new Error(`包内解压总量 ${totalBytes} 字节超过上限 ${PACKAGE_LIMITS.totalBytes} 字节`)
+  }
+
+  for (const file of files) {
+    if (!METADATA_PATHS.has(file.path)) continue
+    if (file.data.length > PACKAGE_LIMITS.metadataBytes) {
+      throw new Error(`${file.path} 大小 ${file.data.length} 字节超过上限 ${PACKAGE_LIMITS.metadataBytes} 字节`)
+    }
+  }
+
+  const integrityEntries = files.reduce(
+    (count, file) => (INTEGRITY_METADATA_PATHS.has(file.path) ? count : count + 1),
+    0,
+  )
+  if (integrityEntries > PACKAGE_LIMITS.integrityEntries) {
+    throw new Error(`integrity 条目数 ${integrityEntries} 超过上限 ${PACKAGE_LIMITS.integrityEntries}`)
+  }
+}
+
+/**
+ * 写盘前校验最终 ZIP 字节数。
+ * @param {Uint8Array} bytes
+ */
+export function assertZipSize(bytes) {
+  if (!bytes || typeof bytes.length !== 'number') {
+    throw new TypeError('ZIP bytes must be a Buffer or Uint8Array')
+  }
+  if (bytes.length > PACKAGE_LIMITS.zipBytes) {
+    throw new Error(`ZIP 大小 ${bytes.length} 字节超过上限 ${PACKAGE_LIMITS.zipBytes} 字节`)
+  }
 }

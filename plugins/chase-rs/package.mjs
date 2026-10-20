@@ -37,7 +37,7 @@ import { fileURLToPath } from 'node:url'
 import { sha256 } from '../../tools/plugin-tools/digest.mjs'
 import { buildSignedPackage } from '../../tools/plugin-tools/build-signed-package.mjs'
 import { buildMarketEntry } from '../../tools/plugin-tools/market-entry.mjs'
-import { parseJSON } from '../../tools/plugin-tools/package-files.mjs'
+import { assertZipSize, parseJSON } from '../../tools/plugin-tools/package-files.mjs'
 import { readPrivateKey, writeDevelopmentPrivateKey } from '../../tools/plugin-tools/signing.mjs'
 
 // 本插件目录 = plugins/chase-rs
@@ -169,7 +169,10 @@ function zipPackage(outputPath, files) {
   end.writeUInt32LE(centralDirectory.length, 12)
   end.writeUInt32LE(offset, 16)
   end.writeUInt16LE(0, 20) // comment length
-  writeFileSync(outputPath, Buffer.concat([...localParts, centralDirectory, end]), { mode: 0o644 })
+  // 写盘前校验 ZIP 最终大小上限(package-format-v1.md), 合法时字节与原先完全一致。
+  const bundle = Buffer.concat([...localParts, centralDirectory, end])
+  assertZipSize(bundle)
+  writeFileSync(outputPath, bundle, { mode: 0o644 })
 }
 
 // ---------------------------------------------------------------------------
