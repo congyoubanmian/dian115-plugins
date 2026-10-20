@@ -61,6 +61,16 @@ jobs:
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
           echo "PACKAGE=chase.rs-$VERSION.d115p" >> "$GITHUB_ENV"
 
+      - name: 发布前契约预检
+        working-directory: .
+        run: |
+          set -euo pipefail
+          node --test tools/plugin-tools/package-limits.test.mjs
+          node --test tools/conformance/runtime-check.test.mjs
+          node tools/conformance/verify-public-surface.mjs
+          node tools/conformance/openapi-check.mjs
+          node tools/check-market-templates.mjs
+
       - name: 构建前端产物（本插件自带 frontend/）
         working-directory: plugins/chase-rs/frontend
         run: |

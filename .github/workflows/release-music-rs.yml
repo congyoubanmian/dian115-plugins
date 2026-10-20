@@ -55,6 +55,16 @@ jobs:
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
           echo "PACKAGE=music.rs-$VERSION.d115p" >> "$GITHUB_ENV"
 
+      - name: 发布前契约预检
+        working-directory: .
+        run: |
+          set -euo pipefail
+          node --test tools/plugin-tools/package-limits.test.mjs
+          node --test tools/conformance/runtime-check.test.mjs
+          node tools/conformance/verify-public-surface.mjs
+          node tools/conformance/openapi-check.mjs
+          node tools/check-market-templates.mjs
+
       # 前端依赖由本插件自己的 package.json / package-lock.json 提供。
       - name: 安装 UI 依赖（music-rs）
         run: npm ci

@@ -2,7 +2,7 @@
 
 `tools/conformance/` 下的脚本与 `tools/` 下的 `manifest.schema.json` / `market-index.schema.json` / `openapi-v1.yaml`
 均原样取自官方仓库 madbrolab/dian115 的 `docs/plugin-platform/`
-(main @ 3d237581, 2026-10-12), 不做任何修改; 官方更新时可整目录重新 vendor。
+(main @ 3d237581, 2026-10-13), 不做任何修改; 官方更新时可整目录重新 vendor。
 
 ## 在本仓库的用法
 
@@ -16,10 +16,12 @@ node tools/conformance/project-check.mjs \
 ```
 
 - `--market` 用临时文件: 模板 `market-entry.template.json` 的 version 字段不随发版维护,
-  CI 按 `package.mjs` 的同款规则用 manifest 版本覆盖后再校验;
+  release workflow 按 `package.mjs` 的同款规则用 manifest 版本覆盖后再校验;
 - `--build-root` 临时拼出包内布局(`runtime/plugin.wasm` + `frontend/dist/assets/remoteEntry.js`)。
+- release workflow 还会在构建前跑仓库级预检(`package-limits`、`runtime-check`、
+  `verify-public-surface`、`openapi-check`、`check-market-templates`), 避免 tag 指向未过 CI 的提交。
 
-本地已验证(2026-10-14): chase.rs@0.1.8 / douban.rs@0.2.4 / music.rs@0.3.17 全部 PASS,
+本地已验证(2026-10-20): chase.rs@0.1.10 / douban.rs@0.2.5 / music.rs@0.3.20 全部 PASS,
 Rust 产物不会触发脚本里的 Go 标准编译器检查(它只认 `go:buildid` + `runtime.gc` 双标记)。
 
 ## runtime 契约回归测试
