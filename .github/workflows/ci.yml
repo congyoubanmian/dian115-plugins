@@ -128,3 +128,19 @@ jobs:
 
       - name: OpenAPI 契约检查
         run: node tools/conformance/openapi-check.mjs
+
+  runtime-contract:
+    name: runtime contract
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # 与插件无关的 runtime/schedule 契约回归，单独跑一次即可，
+      # 不放进 conformance 的 3 插件 matrix。测试按相对路径读取
+      # ../manifest.schema.json 并 import ./runtime-check.mjs。
+      - name: runtime-check 回归测试
+        run: node --test tools/conformance/runtime-check.test.mjs
