@@ -35,19 +35,9 @@
         "reason": "列出宿主可访问的文件根（本地暂存目录与 CD2 音乐目录），供下载落点选择"
       },
       {
-        "method": "GET",
-        "path": "/api/plugin-host/files/entries",
-        "reason": "浏览暂存目录与音乐目录条目，确认下载产物是否已落盘/入库"
-      },
-      {
         "method": "POST",
         "path": "/api/plugin-host/files/downloads",
         "reason": "让宿主代下载：把网易云/QQ 直链下载到本地暂存目录（无 sidecar 的第一段）"
-      },
-      {
-        "method": "POST",
-        "path": "/api/plugin-host/files/directories",
-        "reason": "首次 pump 时在本地可写根下自动创建暂存目录"
       },
       {
         "method": "GET",

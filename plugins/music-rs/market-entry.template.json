@@ -6,7 +6,7 @@
   "author": "congyoubanmian",
   "homepage": "https://github.com/congyoubanmian/dian115-plugins",
   "package_url": "https://github.com/congyoubanmian/dian115-plugins/releases/download/music-rs-v0.3.20/music.rs-0.3.20.d115p",
-  "sha256": "8d2349aeae6c07a2fffe6f69e3d14c6996f7cf85cc3fdb1c2d6ca77ba410d39f",
+  "sha256": "b28eae0c09eb24e1d7391324b325b1edcc82b164e1560e7d33c646271b5abfa3",
   "runtime": {
     "kind": "wasm",
     "protocol": "dian115:wasm@1",
@@ -21,19 +21,9 @@
         "reason": "列出宿主可访问的文件根（本地暂存目录与 CD2 音乐目录），供下载落点选择"
       },
       {
-        "method": "GET",
-        "path": "/api/plugin-host/files/entries",
-        "reason": "浏览暂存目录与音乐目录条目，确认下载产物是否已落盘/入库"
-      },
-      {
         "method": "POST",
         "path": "/api/plugin-host/files/downloads",
         "reason": "让宿主代下载：把网易云/QQ 直链下载到本地暂存目录（无 sidecar 的第一段）"
-      },
-      {
-        "method": "POST",
-        "path": "/api/plugin-host/files/directories",
-        "reason": "首次 pump 时在本地可写根下自动创建暂存目录"
       },
       {
         "method": "GET",

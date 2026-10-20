@@ -838,15 +838,24 @@ pub fn effective_staging(settings: &Settings, probe: &RootsProbe) -> (Option<Str
         // (目标非法会在任务 error 里给出明确原因), 不再因 files/roots 视图
         // (官方无字段契约的 GenericHostObject) 对不上而无限期搁置整个队列。
         if best_root(probe, &configured).is_none() {
-            warnings.push(format!(
-                "staging_dir {configured} 未命中宿主文件根视图, 按配置直试(以 downloads broker 校验为准)"
-            ));
+            warnings.push(
+                "staging_dir 未命中宿主文件根视图, 按配置直试(以 downloads broker 校验为准)"
+                    .to_string(),
+            );
         }
         return (Some(configured), warnings);
     }
     if let Some(root) = probe.roots.iter().find(|root| root.local && root.writable) {
         let fallback = join_dir(&root.path, "音乐下载");
-        warnings.push(format!("staging_dir 未配置, 回退到本地可写根下 {fallback}"));
+        // 不把宿主绝对路径写进 state: warnings 会原样进 UI/日志, 路径留空别名即可。
+        let root_name = if root.name.is_empty() {
+            "未命名根"
+        } else {
+            root.name.as_str()
+        };
+        warnings.push(format!(
+            "staging_dir 未配置, 回退到本地可写根「{root_name}」下的 音乐下载/"
+        ));
         return (Some(fallback), warnings);
     }
     warnings.push("staging_dir 未配置且宿主未返回可识别的本地可写根".to_string());

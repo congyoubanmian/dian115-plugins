@@ -8,7 +8,7 @@
 旧 Go 版（已从仓库移除）的 Rust 重写版本。基建（reactor ABI、协议层、KV 存储层）从
 `plugins/douban-rs` 移植并剥离豆瓣业务。
 
-- 当前清单版本：`0.3.19`
+- 当前清单版本：`0.3.20`
 - 运行时：WASM（`dian115:wasm@1`），Rust `wasm32-unknown-unknown` + 手写 ABI（`src/abi.rs`）
 - 目标内存：`memory_mb = 128`（Go 版 256MB → Rust 版 128MB，降内存是本次目标）
 
@@ -44,8 +44,8 @@
    cron 与手动 `pump`/入队撞车时，后来者直接返回 `skipped`，不排队等待。
 4. **TG 回调重试**：Telegram 侧的下载回调由宿主投递成 `event` op（topic = `telegram.callback`），
    插件按 `retry:<短id>` 把失败任务重新排队（其他前缀返回 `handled:false`）；处理失败返回
-   `accepted:false`，由宿主按重试策略再投递。0.3.19 另加 `task-adopt`，把宿主被杀后只留下
-   `task.<id>` 分片、索引里缺失的孤儿任务重新挂回索引。
+   `{handled:false, answer:"", alert:false}`，宿主按回调 ID 做幂等，不承诺重投。0.3.19 另加
+   `task-adopt`，把宿主被杀后只留下 `task.<id>` 分片、索引里缺失的孤儿任务重新挂回索引。
 
 ## 模块地图
 

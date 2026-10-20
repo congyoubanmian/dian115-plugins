@@ -60,6 +60,9 @@ pub struct PersistedState {
     /// 文档 schema 版本; 缺失按 0 处理(→ 不可识别)。
     #[serde(default)]
     pub schema: u32,
+    /// 状态版本。持久化后跨模块空闲重载仍保持单调, 避免重载后 `state-v0` 命中旧缓存。
+    #[serde(default)]
+    pub revision: u64,
     /// 日志尾部(落盘时裁剪到 [`PERSIST_LOG_LIMIT`])。
     #[serde(default)]
     pub logs: Option<Vec<LogEntry>>,
@@ -75,6 +78,7 @@ impl PersistedState {
     /// 静态构造: 供 [`Runtime::new`] 的 const 上下文使用。
     pub const EMPTY: PersistedState = PersistedState {
         schema: STATE_SCHEMA,
+        revision: 0,
         logs: None,
         tasks: None,
         settings: None,
@@ -162,6 +166,7 @@ impl Runtime {
             if let Some(document) = PersistedState::parse(&raw) {
                 if document.is_recognizable() {
                     restored = true;
+                    self.revision = self.revision.max(document.revision);
                     self.state = document;
                 }
             }
@@ -232,6 +237,7 @@ impl Runtime {
         }
         document.logs = Some(log_tail);
         document.schema = STATE_SCHEMA;
+        document.revision = self.revision;
 
         let data = match serde_json::to_vec(&document) {
             Ok(data) => data,
@@ -512,6 +518,7 @@ impl Runtime {
                     .and_then(Value::as_str)
                     .map(str::to_string);
                 let mut value = self.settings_update(&input);
+                let mut cookie_failures: Vec<String> = Vec::new();
                 if let Some(raw) = pasted_qq {
                     value["qq_login"] = match qq::save_cookie_string(&raw) {
                         Ok(info) => {
@@ -520,6 +527,7 @@ impl Runtime {
                         }
                         Err(err) => {
                             self.bump("failed", &format!("QQ cookie 保存失败: {err}"));
+                            cookie_failures.push(format!("QQ cookie 保存失败: {err}"));
                             json!({"status": "failed", "message": err})
                         }
                     };
@@ -532,9 +540,16 @@ impl Runtime {
                         }
                         Err(err) => {
                             self.bump("failed", &format!("网易云 cookie 保存失败: {err}"));
+                            cookie_failures.push(format!("网易云 cookie 保存失败: {err}"));
                             json!({"status": "failed", "message": err})
                         }
                     };
+                }
+                if !cookie_failures.is_empty() {
+                    // 顶层状态必须反映子步骤失败; 只改嵌套 qq_login/netease_login 会让
+                    // 只看顶层 status 的宿主/UI 误报“设置已保存”。
+                    value["status"] = json!("failed");
+                    value["message"] = json!(cookie_failures.join("; "));
                 }
                 Ok(value)
             }
@@ -660,6 +675,9 @@ impl Runtime {
         match id.as_str() {
             "queue-pump" => match tasks::queue_pump(&mut self.put_ids) {
                 Ok(value) => {
+                    // job 会实时读取任务队列; 推进后必须推进 revision, 并随 persist_all
+                    // 落盘, 否则宿主的强 ETag 轮询会一直收到 not_modified。
+                    self.bump("succeeded", "任务队列已推进");
                     self.persist_all();
                     // 4.0.82 起宿主对 job 应答也做绝对路径过滤(与 state 同规), 摘要里的
                     // staging_dir 等以 "/" 开头的值会让整个 job 判 runtime_protocol_error。
@@ -703,7 +721,8 @@ impl Runtime {
                 Err(_) => Ok(callback_failure()),
             };
         }
-        Ok(json!({"accepted": true}))
+        // 未声明的 topic 不是 action 的 accepted 语义; 按事件应答形状返回 handled:false。
+        Ok(callback_failure())
     }
 
     /// 设置合并(action `settings-update`): 写 KV `settings`(ETag 乐观锁 + 幂等键)。
@@ -711,6 +730,9 @@ impl Runtime {
         match download::settings_update(&mut self.put_ids, patch) {
             Ok(settings) => {
                 self.bump("succeeded", "设置已保存");
+                // settings 存在独立 KV 键; state 里的 revision 必须同步落盘, 否则模块
+                // 重载后同一个 `state-v0` 会对应两份不同的 settings。
+                self.persist_all();
                 json!({"status": "succeeded", "message": "设置已保存", "settings": settings})
             }
             Err(err) => {
