@@ -691,7 +691,7 @@ impl Runtime {
         invocation_id: &str,
         q: &QueueItem,
         item: &TmdbItem,
-        _settings: &Settings,
+        settings: &Settings,
     ) -> (String, i64, String) {
         let tmdb_ref = format!("tmdb:{}:{}", item.media_type, item.id);
         // 宿主侧去重; 查询失败时不能创建, 否则会把"暂时查不到"变成重复订阅。
@@ -762,7 +762,30 @@ impl Runtime {
                 }
             }
         }
-        // 通知功能已停用（宿主 /api/notifications/plugin 拒绝所有插件通知 payload）
+        if settings.notify_on_subscribe {
+            let title = "豆瓣中心订阅成功";
+            let body = format!(
+                "《{}》已创建聚合订阅 #{}（{}）",
+                q.title, intent_id, item.media_type
+            );
+            let dedupe = format!("douban-sub-{intent_id}");
+            let idem = format!("dc-notify-{}-{intent_id}", safe_key(invocation_id));
+            match crate::notify::send("success", title, &body, &dedupe, &idem) {
+                Ok(outcome) => self.log(
+                    "info",
+                    &format!(
+                        "订阅通知已受理（channels={}）",
+                        if outcome.channels.is_empty() {
+                            "未上报".to_string()
+                        } else {
+                            outcome.channels.join(",")
+                        }
+                    ),
+                ),
+                // 通知失败不能把已成功的订阅回滚; 只记 warning, 管理端可在日志里看到。
+                Err(err) => self.log("warning", &format!("订阅成功但通知发送失败: {err}")),
+            }
+        }
         ("succeeded".to_string(), intent_id, String::new())
     }
 

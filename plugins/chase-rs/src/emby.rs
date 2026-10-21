@@ -645,34 +645,46 @@ fn missing_field_name(value: &Value) -> Option<String> {
 /// 「Emby 里没有这部剧/这一季」的独立分类(只读判定, 绝不改解析路径)。
 ///
 /// 宿主对该端点的业务结构没有契约(openapi-v1.yaml:4332-4352 响应是
-/// `GenericHostObject`), "没有该剧"既可能回 404/400、也可能回 200 + 空覆盖:
+/// `GenericHostObject`), "没有该剧"既可能回 404、也可能回 200 + 空覆盖:
 /// - 200 + 空覆盖由 [`Coverage::is_absent`] 判定;
-/// - HTTP 失败只有**正文明确**说"不存在/未收录/not found"时才归到这一类 ——
-///   400 参数错误、500 服务端错误等维持 `failed`(不能把宿主故障说成"没有该剧")。
-///
-/// **空正文的 404 不算证据**: 宿主路由/权限变更让整个端点 404 时同样回空 404,
-/// 若一律判"未收录", 整池都会被误报成未收录 —— 而且 absent 条目在 probe_book 里
-/// 按"没探过"重新排队(不进 6 小时负缓存), 每小时对每条重复烧探测预算,
-/// `last_error` 里也看不到失败。没有正文证据就按失败处理(进负缓存)。
+/// - HTTP 失败优先看 Problem `code`/`retryable`; 400 只认明确的中文业务文案,
+///   不再因为正文里出现泛化的 "not found" 就把参数错误/无效实例当成未收录。
+/// - 空正文、泛化 `{"message":"Not Found"}`、`proxy_not_found` 一律维持 `failed`,
+///   避免宿主路由/权限变更时整池误报。
 pub fn failure_is_absent(failure: &ParseFailure) -> bool {
-    if failure.http_status != 404 && failure.http_status < 400 {
+    if failure.http_status != 400 && failure.http_status != 404 {
         return false;
     }
     if failure.raw.is_empty() {
         return false;
     }
+    if let Ok(value) = serde_json::from_slice::<Value>(&failure.raw) {
+        if value.get("retryable").and_then(Value::as_bool) == Some(true) {
+            return false;
+        }
+        if let Some(code) = value.get("code").and_then(Value::as_str) {
+            return matches!(
+                code.to_ascii_lowercase().as_str(),
+                "not_found"
+                    | "show_not_found"
+                    | "season_not_found"
+                    | "media_not_found"
+                    | "episode_not_found"
+            );
+        }
+    }
     let text = String::from_utf8_lossy(&failure.raw).to_ascii_lowercase();
-    const MARKERS: [&str; 8] = [
+    // 只认点名剧/季的文案(中英文); 泛化的 "not found"/"未找到" 可能是路由或参数错误。
+    const SHOW_MARKERS: [&str; 7] = [
         "没有该剧",
         "该剧不存在",
-        "不存在",
         "未收录",
-        "未找到",
-        "not found",
-        "no such",
-        "not exist",
+        "no such show",
+        "show not found",
+        "no such season",
+        "season not found",
     ];
-    MARKERS.iter().any(|marker| text.contains(marker))
+    SHOW_MARKERS.iter().any(|marker| text.contains(marker))
 }
 
 /// 拉取一次覆盖。
@@ -1378,21 +1390,45 @@ mod tests {
             Vec::new(),
             "Emby 覆盖 HTTP 404"
         )));
-        // 404 正文明确"不存在" → 才是未收录
+        // 404 正文点名 "no such show" → 未收录
         assert!(failure_is_absent(&ParseFailure::http(
             404,
             br#"{"error":"no such show"}"#.to_vec(),
             "Emby 覆盖 HTTP 404"
         )));
-        // 400 正文明确"没有该剧" → 归未收录
+        // 400 正文明确中文业务文案 → 归未收录
         assert!(failure_is_absent(&ParseFailure::http(
             400,
             r#"{"error":"没有该剧"}"#.as_bytes().to_vec(),
             "Emby 覆盖 HTTP 400"
         )));
+        // 结构化 code 是首选依据
         assert!(failure_is_absent(&ParseFailure::http(
             404,
+            br#"{"code":"season_not_found"}"#.to_vec(),
+            "Emby 覆盖 HTTP 404"
+        )));
+        // 泛化的 "Not Found" 是路由级 404, 不是某部剧的证据
+        assert!(!failure_is_absent(&ParseFailure::http(
+            404,
             br#"{"message":"Not Found"}"#.to_vec(),
+            "Emby 覆盖 HTTP 404"
+        )));
+        // 无效实例/参数错误即使正文含 not found 也不能算未收录
+        assert!(!failure_is_absent(&ParseFailure::http(
+            404,
+            br#"{"code":"proxy_not_found","detail":"proxy 7 not found"}"#.to_vec(),
+            "Emby 覆盖 HTTP 404"
+        )));
+        assert!(!failure_is_absent(&ParseFailure::http(
+            400,
+            br#"{"code":"invalid_request","detail":"proxy 7 not found"}"#.to_vec(),
+            "Emby 覆盖 HTTP 400"
+        )));
+        // retryable 的失败不是终态未收录
+        assert!(!failure_is_absent(&ParseFailure::http(
+            404,
+            br#"{"error":"no such show","retryable":true}"#.to_vec(),
             "Emby 覆盖 HTTP 404"
         )));
         // 400 空正文 / 500 / 400 其它原因 → 维持 failed(不许把宿主故障说成没有该剧)

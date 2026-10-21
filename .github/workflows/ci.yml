@@ -159,3 +159,62 @@ jobs:
       # 单独一个 job，确保回归测试只跑一次。
       - name: 打包上限回归测试
         run: node --test tools/plugin-tools/package-limits.test.mjs
+
+  build-conformance:
+    name: build conformance (${{ matrix.plugin }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - plugin: music-rs
+            package_dir: plugins/music-rs
+            ui_dir: plugins/music-rs
+            ui_command: node build-ui.mjs
+            ui_dist: plugins/music-rs/frontend/dist
+          - plugin: chase-rs
+            package_dir: plugins/chase-rs
+            ui_dir: plugins/chase-rs/frontend
+            ui_command: npm run build:ui
+            ui_dist: plugins/chase-rs/frontend/build/frontend/dist
+          - plugin: douban-rs
+            package_dir: plugins/douban-rs
+            ui_dir: plugins/douban-center
+            ui_command: npm run build:ui
+            ui_dist: plugins/douban-center/build/frontend/dist
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: |
+            plugins/music-rs/package-lock.json
+            plugins/chase-rs/frontend/package-lock.json
+            plugins/douban-center/package-lock.json
+
+      # project-check 的 --require-build 需要真实 UI 产物(WASM magic/2MiB/
+      # encoding/json 与 Federation entry 都只在 build root 存在时才检查)。
+      - name: 构建 UI（${{ matrix.plugin }}）
+        working-directory: ${{ matrix.ui_dir }}
+        run: |
+          npm ci
+          ${{ matrix.ui_command }}
+
+      - name: 构建 WASM（${{ matrix.plugin }}）
+        run: |
+          docker run --rm -v "$PWD:/src" -w "/src/${{ matrix.package_dir }}" \
+            rust@sha256:4df2ae8cfdfebdfc13a65da7f253b73d68983dc0339f2719bc17a279c913b13d \
+            sh -c 'rustup target list --installed | grep -qx wasm32-unknown-unknown || rustup target add wasm32-unknown-unknown; cargo build --release --target wasm32-unknown-unknown'
+
+      - name: project-check --require-build（${{ matrix.plugin }}）
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/conf-build && mkdir -p /tmp/conf-build/runtime /tmp/conf-build/frontend/dist
+          cp "${{ matrix.package_dir }}/target/wasm32-unknown-unknown/release/plugin.wasm" /tmp/conf-build/runtime/
+          cp -a "${{ matrix.ui_dist }}/." /tmp/conf-build/frontend/dist/
+          node tools/conformance/project-check.mjs \
+            --manifest "${{ matrix.package_dir }}/manifest.template.json" \
+            --market "${{ matrix.package_dir }}/market-entry.template.json" \
+            --build-root /tmp/conf-build --require-build

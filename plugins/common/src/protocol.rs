@@ -213,9 +213,10 @@ fn dispatch_inner<R: ProtocolRuntime>(runtime: &mut R, request: &[u8]) -> Vec<u8
             return rpc_error(CODE_INVALID_PARAMS, invalid_params_message(method, &echoed));
         }
     };
-    // 官方示例要求 op 与 invocation_id 都非空; invocation_id 是宿主投递账本/重放的键。
-    // 本阶段先保持历史 wasm 路径的宽容度(只拒绝空 op), 该对齐项单独记录在审查报告里。
-    if input.op.is_empty() {
+    // 官方示例要求 op 与 invocation_id 都非空; action/job 直接决定幂等与宿主
+    // 投递账本, 缺失时无法安全重放, 必须拒绝。state/event 保持历史宽容度。
+    let needs_invocation_id = matches!(input.op.as_str(), "action" | "job");
+    if input.op.is_empty() || (needs_invocation_id && input.invocation_id.is_empty()) {
         let echoed = util::value_text(params);
         return rpc_error(CODE_INVALID_PARAMS, invalid_params_message(method, &echoed));
     }

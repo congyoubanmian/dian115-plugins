@@ -247,15 +247,16 @@ pub fn parse_result(status: i32, raw_bytes: &[u8]) -> Result<NotifyOutcome, Stri
 
 /// 发送一次日报。
 ///
-/// 幂等键 = `chase-notify-<date>-<run_seq>`(同一次发送重试复用同值)。
+/// 幂等键 = `chase-notify-<date>-<attempt>`; attempt 来自宿主 invocation_id,
+/// 同一次投递的重试复用同值。
 pub fn send(
     level: &str,
     title: &str,
     body: &str,
     date: &str,
-    run_seq: u64,
+    attempt: &str,
 ) -> Result<(NotifyOutcome, i32), String> {
-    let key = format!("chase-notify-{date}-{run_seq}");
+    let key = format!("chase-notify-{date}-{attempt}");
     let payload = request_body(level, title, body, &dedupe_key(date));
     let response = host::send(
         "POST",
@@ -414,7 +415,7 @@ mod tests {
             br#"{"data":{"event":"plugin_notification","accepted":true},"meta":{}}"#,
         );
         let guard = fake.install();
-        let (outcome, status) = send("info", "标题", "正文", "2026-10-01", 3).unwrap();
+        let (outcome, status) = send("info", "标题", "正文", "2026-10-01", "inv_c").unwrap();
         assert_eq!(status, 200);
         assert!(outcome.accepted);
         assert!(outcome.records_date());
@@ -427,7 +428,7 @@ mod tests {
             .get("idempotency-key")
             .cloned()
             .unwrap_or_default();
-        assert_eq!(key, "chase-notify-2026-10-01-3");
+        assert_eq!(key, "chase-notify-2026-10-01-inv_c");
         assert!((16..=128).contains(&key.len()));
         assert!(key.bytes().all(|b| b.is_ascii_graphic()));
         // body 里必须带 dedupe_key(宿主按它做当日去重)
@@ -699,8 +700,8 @@ mod tests {
         let fake = FakeHost::new();
         fake.route("POST", PATH, 200, br#"{"data":{"accepted":true}}"#);
         let guard = fake.install();
-        let _ = send("info", "t", "b", "2026-10-01", 1).unwrap();
-        let _ = send("info", "t", "b", "2026-10-01", 2).unwrap();
+        let _ = send("info", "t", "b", "2026-10-01", "inv_a").unwrap();
+        let _ = send("info", "t", "b", "2026-10-01", "inv_b").unwrap();
         let keys: Vec<String> = fake
             .requests()
             .iter()
@@ -714,7 +715,10 @@ mod tests {
             .collect();
         assert_eq!(
             keys,
-            vec!["chase-notify-2026-10-01-1", "chase-notify-2026-10-01-2"]
+            vec![
+                "chase-notify-2026-10-01-inv_a",
+                "chase-notify-2026-10-01-inv_b"
+            ]
         );
         let bodies: Vec<String> = fake
             .requests()

@@ -161,7 +161,7 @@ fn state_op_returns_a_versioned_document() {
 fn unknown_action_is_a_normal_result() {
     let mut guest = Guest::new();
     let unknown = guest.call_json(
-        br#"{"method":"runtime.invoke","params":{"envelope":{"op":"action","payload":{"id":"teleport","input":{}}}}}"#,
+        br#"{"method":"runtime.invoke","params":{"envelope":{"op":"action","invocation_id":"inv_x","payload":{"id":"teleport","input":{}}}}}"#,
     );
     assert_eq!(unknown["result"]["status"], "failed", "实际: {unknown}");
     assert_eq!(unknown["result"]["code"], "unknown_action");
@@ -169,7 +169,7 @@ fn unknown_action_is_a_normal_result() {
 
     // 未声明的 job 同样是正常 result 里的 skipped
     let unknown = guest.call_json(
-        br#"{"method":"runtime.invoke","params":{"envelope":{"op":"job","payload":{"id":"nope"}}}}"#,
+        br#"{"method":"runtime.invoke","params":{"envelope":{"op":"job","invocation_id":"inv_y","payload":{"id":"nope"}}}}"#,
     );
     assert_eq!(unknown["result"]["status"], "skipped");
     assert!(unknown.get("error").is_none());

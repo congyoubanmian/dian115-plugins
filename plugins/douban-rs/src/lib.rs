@@ -66,6 +66,7 @@ pub mod cookiecloud;
 pub mod filter;
 pub mod host;
 pub mod model;
+pub mod notify;
 pub mod poster;
 pub mod protocol;
 pub mod raw;

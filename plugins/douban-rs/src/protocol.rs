@@ -136,7 +136,7 @@ mod tests {
         // subscribe / subscribe-now 的 douban_ref 前置校验(runtime.rs 接线层)
         for op_action in ["subscribe", "subscribe-now"] {
             let request = format!(
-                r#"{{"method":"runtime.invoke","params":{{"envelope":{{"op":"action","payload":{{"id":"{op_action}","input":{{}}}}}}}}}}"#
+                r#"{{"method":"runtime.invoke","params":{{"envelope":{{"op":"action","invocation_id":"inv_1","payload":{{"id":"{op_action}","input":{{}}}}}}}}}}"#
             );
             let out = dispatch_json(&request);
             assert_eq!(
@@ -146,7 +146,7 @@ mod tests {
             );
             // 类型不符的 douban_ref 在 Go 里同样断言失败 → 空串
             let request = format!(
-                r#"{{"method":"runtime.invoke","params":{{"envelope":{{"op":"action","payload":{{"id":"{op_action}","input":{{"douban_ref":7}}}}}}}}}}"#
+                r#"{{"method":"runtime.invoke","params":{{"envelope":{{"op":"action","invocation_id":"inv_1","payload":{{"id":"{op_action}","input":{{"douban_ref":7}}}}}}}}}}"#
             );
             let out = dispatch_json(&request);
             assert_eq!(
@@ -282,7 +282,7 @@ mod tests {
                 "invalid state payload",
             ),
             (
-                r#"{"method":"runtime.invoke","params":{"envelope":{"op":"action","payload":{}}}}"#,
+                r#"{"method":"runtime.invoke","params":{"envelope":{"op":"action","invocation_id":"inv_1","payload":{}}}}"#,
                 "invalid action payload",
             ),
             (

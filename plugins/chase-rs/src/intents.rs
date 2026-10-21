@@ -188,17 +188,18 @@ pub fn patch_path(id: i64) -> String {
     format!("/api/subscribe/pool/intents/{id}/episodes")
 }
 
-/// 幂等键: `chase-patch-<intent_id>-<from>-<to>-<run_seq>`(同一业务重试复用同值)。
+/// 幂等键: `chase-patch-<intent_id>-<from>-<to>-<attempt>`。
 ///
-/// 键里带 from→to: 即使跨 worker 会话撞上 24 小时内的旧记录, 也是同一条业务写
-/// (宿主按幂等键返回上次结果), 不会把两次不同的抬升混在一起。
+/// `attempt` 来自宿主的 `invocation_id`(同一次投递的重试复用同值); 旧的
+/// wasm 调用没有 invocation_id 时才回落到本轮序号。键里带 from→to, 即使跨
+/// worker 会话撞上 24 小时内的旧记录, 也是同一条业务写。
 pub fn patch_idempotency_key(
     intent_id: i64,
     from_total: i64,
     to_total: i64,
-    run_seq: u64,
+    attempt: &str,
 ) -> String {
-    format!("chase-patch-{intent_id}-{from_total}-{to_total}-{run_seq}")
+    format!("chase-patch-{intent_id}-{from_total}-{to_total}-{attempt}")
 }
 
 /// PATCH 请求体。
@@ -478,16 +479,17 @@ mod tests {
 
     #[test]
     fn idempotency_key_shape_is_printable_and_long_enough() {
-        let key = patch_idempotency_key(41, 10, 13, 7);
-        assert_eq!(key, "chase-patch-41-10-13-7");
+        let key = patch_idempotency_key(41, 10, 13, "inv_abc");
+        assert_eq!(key, "chase-patch-41-10-13-inv_abc");
         assert!((16..=128).contains(&key.len()), "长度 {}: {key}", key.len());
         assert!(key.bytes().all(|b| b.is_ascii_graphic()));
         assert_eq!(
             key,
-            patch_idempotency_key(41, 10, 13, 7),
-            "同业务重试必须复用同值"
+            patch_idempotency_key(41, 10, 13, "inv_abc"),
+            "同一 invocation 的重试必须复用同值"
         );
-        assert_ne!(key, patch_idempotency_key(41, 10, 12, 7));
+        assert_ne!(key, patch_idempotency_key(41, 10, 12, "inv_abc"));
+        assert_ne!(key, patch_idempotency_key(41, 10, 13, "inv_other"));
     }
 
     #[test]

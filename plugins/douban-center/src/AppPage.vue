@@ -961,7 +961,10 @@ const fullListOpen = computed({
           </div>
           <div class="dc-settings-row">
             <span>订阅成功后发送 Telegram 通知</span>
-            <NSwitch v-model:value="settingsForm.notify_on_subscribe" size="small" />
+            <div style="display: flex; gap: 8px; align-items: center">
+              <NSwitch v-model:value="settingsForm.notify_on_subscribe" size="small" />
+              <NButton size="small" @click="runAction('send-test')">发送测试</NButton>
+            </div>
           </div>
           <!-- 功能 2: 订阅过滤器三项(文案与 Rust 侧 UI_COPY_* 常量逐字一致) -->
           <div class="dc-settings-row">

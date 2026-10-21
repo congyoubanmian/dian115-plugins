@@ -495,12 +495,13 @@ impl Runtime {
     /// 限量对齐: 只用 1 页 intents + 缓存/最多 3 次 Emby 实测, PATCH ≤5。
     ///
     /// host.call 预算 = 1(intents) + PATCH 数 + 探测数 ≤ 1 + 5 + 3; 因此**不落盘**。
-    fn action_align_now(&mut self, _invocation_id: &str) -> Value {
+    fn action_align_now(&mut self, invocation_id: &str) -> Value {
         if !self.storage_ok {
             return json!({"status": "skipped", "message": "宿主存储不可用: 本轮只读, 不落盘"});
         }
         self.run_seq += 1;
         let run_seq = self.run_seq;
+        let attempt = idempotency_attempt(invocation_id, run_seq);
         let started = clock::now_unix_secs();
         let deadline = started + ALIGN_NOW_BUDGET_SECS;
         let settings = self.state.settings.clone();
@@ -724,7 +725,7 @@ impl Runtime {
                     }
                     patches += 1;
                     planned += 1;
-                    let outcome = self.send_patch(intent, &decision, &settings, run_seq);
+                    let outcome = self.send_patch(intent, &decision, &settings, &attempt);
                     if outcome.action == align::ACTION_PATCHED {
                         counters.patched = counters.patched.saturating_add(1);
                         counters.aligned = counters.aligned.saturating_add(1);
@@ -1287,9 +1288,10 @@ impl Runtime {
 
     /// `alignHourly`: ① 加载 → ② 实例 → ③ 订阅池 → ④ 日历 → ⑤⑥⑦⑧ 逐条对齐 →
     /// ⑨⑩ 日报 → ⑪ 落盘。
-    fn job_align(&mut self, _invocation_id: &str) -> Value {
+    fn job_align(&mut self, invocation_id: &str) -> Value {
         self.run_seq += 1;
         let run_seq = self.run_seq;
+        let attempt = idempotency_attempt(invocation_id, run_seq);
         let started = clock::now_unix_secs();
         let deadline = started + RUN_BUDGET_SECS;
         let mut settings = self.state.settings.clone();
@@ -1895,7 +1897,7 @@ impl Runtime {
                             );
                         } else {
                             patches += 1;
-                            let outcome = self.send_patch(intent, &decision, &settings, run_seq);
+                            let outcome = self.send_patch(intent, &decision, &settings, &attempt);
                             if outcome.action == align::ACTION_PATCHED {
                                 counters.patched = counters.patched.saturating_add(1);
                                 counters.aligned = counters.aligned.saturating_add(1);
@@ -2015,7 +2017,7 @@ impl Runtime {
         self.state.stats.unknown_shape = counters.unknown_shape;
 
         // ⑨⑩ 日报
-        let report = self.maybe_send_daily(&settings, &calendar_today, &now, run_seq);
+        let report = self.maybe_send_daily(&settings, &calendar_today, &now, &attempt);
 
         // ⑪ 落盘
         let message = format!(
@@ -2071,7 +2073,7 @@ impl Runtime {
         settings: &Settings,
         calendar_today: &[CalendarItem],
         now: &str,
-        run_seq: u64,
+        attempt: &str,
     ) -> Value {
         let today = clock::local_date(settings.report.tz_offset_minutes);
         let hour = clock::local_hour(settings.report.tz_offset_minutes);
@@ -2121,7 +2123,7 @@ impl Runtime {
             u32::from(self.state.align.failed),
             &first_reason,
         );
-        match notify::send("info", &title, &body, &today, run_seq) {
+        match notify::send("info", &title, &body, &today, attempt) {
             Ok((outcome, status)) => {
                 notify::apply_outcome(&mut self.state.daily, &today, &outcome, now);
                 self.state
@@ -2332,7 +2334,7 @@ impl Runtime {
         intent: &Intent,
         decision: &Decision,
         settings: &Settings,
-        run_seq: u64,
+        attempt: &str,
     ) -> Decision {
         // 双保险: 只增 + 幅度上限, 任何情况下都不发缩小或越界的请求
         if decision.to_total <= intent.total_known
@@ -2359,7 +2361,7 @@ impl Runtime {
             intent.id,
             decision.from_total,
             decision.to_total,
-            run_seq,
+            attempt,
         );
         let path = intents::patch_path(intent.id);
         let response = host::send(
@@ -2519,6 +2521,23 @@ fn is_fresh(at: &str, secs: i64) -> bool {
     }
 }
 
+/// 幂等键的尝试标识: 同一次宿主投递(相同 invocation_id)复用同一个 key。
+///
+/// invocation_id 是宿主投递账本的键; 只在旧调用缺失时才回落到本轮序号。
+/// 截断到 32 个可打印 ASCII 字符, 保证加上业务前缀后仍不超过宿主的 128 字节上限。
+fn idempotency_attempt(invocation_id: &str, run_seq: u64) -> String {
+    let seed: String = invocation_id
+        .chars()
+        .filter(|ch| ch.is_ascii_graphic())
+        .take(32)
+        .collect();
+    if seed.is_empty() {
+        run_seq.to_string()
+    } else {
+        seed
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2638,11 +2657,31 @@ mod tests {
             .clone()
     }
 
+    fn action_with_id(runtime: &mut Runtime, id: &str, input: Value, invocation_id: &str) -> Value {
+        call(
+            runtime,
+            &format!(
+                r#"{{"method":"runtime.invoke","params":{{"envelope":{{"op":"action","invocation_id":"{invocation_id}","payload":{{"id":"{id}","input":{input}}}}}}}}}"#
+            ),
+        )["result"]
+            .clone()
+    }
+
     fn job(runtime: &mut Runtime, id: &str) -> Value {
         call(
             runtime,
             &format!(
                 r#"{{"method":"runtime.invoke","params":{{"envelope":{{"op":"job","invocation_id":"inv","payload":{{"id":"{id}"}}}}}}}}"#
+            ),
+        )["result"]
+            .clone()
+    }
+
+    fn job_with_id(runtime: &mut Runtime, id: &str, invocation_id: &str) -> Value {
+        call(
+            runtime,
+            &format!(
+                r#"{{"method":"runtime.invoke","params":{{"envelope":{{"op":"job","invocation_id":"{invocation_id}","payload":{{"id":"{id}"}}}}}}}}"#
             ),
         )["result"]
             .clone()
@@ -2894,7 +2933,7 @@ mod tests {
             .get("idempotency-key")
             .cloned()
             .unwrap_or_default();
-        assert_eq!(key, "chase-patch-41-10-16-1");
+        assert_eq!(key, "chase-patch-41-10-16-inv");
 
         // 第二条 (tmdb 1399 第 1 季): TMDB 夹具只有第 5 季 → 该季目标取不到, target=0,
         // 只按 Emby 缺口判定: 已有到第 12 集, 订阅 5 集 → 抬到 12。
@@ -2912,7 +2951,7 @@ mod tests {
             .get("idempotency-key")
             .cloned()
             .unwrap_or_default();
-        assert_eq!(key, "chase-patch-42-5-12-1");
+        assert_eq!(key, "chase-patch-42-5-12-inv");
 
         let doc = stored(&fake);
         assert_eq!(doc.align.patched, 2);
@@ -3925,14 +3964,14 @@ mod tests {
         assert_eq!(fake.patches().len(), 2);
         let first = fake.patches()[0].headers["idempotency-key"].clone();
         assert!(first.starts_with("chase-patch-41-10-16-"), "{first}");
-        // 重置状态文档(模拟下一轮同一条目再次需要补订), 但 run_seq 递增
+        // 重置状态文档(模拟下一轮同一条目再次需要补订), 并换一个新的宿主投递 ID
         fake.set(
             "state",
             br#"{"schema_version":1,"revision":9,"align":{"items":[]}}"#,
         );
         let mut next = Runtime::new();
         next.ensure_loaded();
-        let _ = job(&mut next, "align");
+        let _ = job_with_id(&mut next, "align", "inv_next");
         let keys: Vec<String> = fake
             .patches()
             .iter()
@@ -3961,7 +4000,7 @@ mod tests {
         // 所有端点都失败: job 也只返回正常 result
         let value = call(
             &mut runtime,
-            r#"{"method":"runtime.invoke","params":{"envelope":{"op":"job","payload":{"id":"align"}}}}"#,
+            r#"{"method":"runtime.invoke","params":{"envelope":{"op":"job","invocation_id":"inv_job","payload":{"id":"align"}}}}"#,
         );
         assert!(value.get("error").is_none(), "{value}");
         assert!(value["result"]["status"].is_string());
@@ -4457,8 +4496,8 @@ mod tests {
         );
         let guard = fake.install();
         runtime.ensure_loaded();
-        let _ = action(&mut runtime, "align-now", json!({}));
-        let _ = action(&mut runtime, "align-now", json!({}));
+        let _ = action_with_id(&mut runtime, "align-now", json!({}), "inv_a");
+        let _ = action_with_id(&mut runtime, "align-now", json!({}), "inv_b");
         let keys: Vec<String> = fake
             .patches()
             .iter()

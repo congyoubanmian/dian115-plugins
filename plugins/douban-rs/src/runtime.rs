@@ -818,11 +818,29 @@ impl Runtime {
                 Ok(json!({"status": "succeeded", "message": "豆瓣来源已生成", "url": url}))
             }
             "send-test" => {
-                // Go `main.go:1701`: 宿主 /api/notifications/plugin 拒绝所有插件通知 payload
-                Ok(json!({
-                    "status": "skipped",
-                    "message": "通知功能已停用（宿主通知通道不可用），不会发送 Telegram 消息"
-                }))
+                let idem = format!(
+                    "dc-notify-test-{}",
+                    crate::subscribe::safe_key(invocation_id)
+                );
+                match crate::notify::send(
+                    "info",
+                    "豆瓣中心测试通知",
+                    "这是一条来自豆瓣中心插件的测试通知。",
+                    "douban-notify-test",
+                    &idem,
+                ) {
+                    Ok(outcome) => Ok(json!({
+                        "status": "succeeded",
+                        "message": "测试通知已受理",
+                        "accepted": outcome.accepted,
+                        "deduplicated": outcome.deduplicated,
+                        "channels": outcome.channels
+                    })),
+                    Err(err) => Ok(json!({
+                        "status": "failed",
+                        "message": format!("测试通知发送失败: {err}")
+                    })),
+                }
             }
             "get-poster" => self.get_poster(&input),
             "cookiecloud-test" => self.action_cookie_cloud_test(),
@@ -2099,17 +2117,17 @@ mod tests {
             json!({"status": "failed", "message": "未找到对应豆瓣条目"})
         );
 
-        // send-test: 通知通道被宿主禁用, 只回提示
+        // send-test: 本机没有宿主, 通知调用失败要返回可诊断的 failed(而不是静默 skipped)
         let payload = json!({"id": "send-test"});
         let result = runtime
             .action("inv_1", RawPayload::Value(&payload))
             .unwrap();
-        assert_eq!(result["status"], "skipped");
+        assert_eq!(result["status"], "failed");
         assert!(
             result["message"]
                 .as_str()
                 .unwrap()
-                .contains("通知功能已停用"),
+                .contains("测试通知发送失败"),
             "{result}"
         );
 
