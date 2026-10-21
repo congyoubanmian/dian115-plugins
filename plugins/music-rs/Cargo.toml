@@ -19,7 +19,7 @@ serde = { version = "1", features = ["derive"] }
 # 不为大状态文档建 serde_json::Value 树(见 store.rs 的 `unwrap_value`)。
 serde_json = { version = "1", features = ["raw_value"] }
 # 存储层: host.call 的 body_base64 编解码(Go `encoding/base64` 的 RawStd/Std 两种 padding)。
-base64 = "0.22"
+base64 = "0.23"
 # 网易云 eapi 参数加密(Go `netease.go:18` aesECBEncrypt: AES-ECB + PKCS#7)与
 # 宿主 host.call 的凭据加解密: `aes` 提供分组密码, `ecb` 提供 ECB 模式, `cbc` 供后续
 # Cookie/凭据类 CBC 场景; `aes::cipher` 就是 cipher 0.4。
