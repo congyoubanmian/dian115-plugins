@@ -3,7 +3,7 @@
   "schema_version": 1,
   "id": "music.rs",
   "name": "音乐下载（Rust 版）",
-  "version": "0.3.21",
+  "version": "0.3.22",
   "description": "网易云/QQ 音乐扫码登录、搜索与音质自选取链；无 sidecar：本地暂存后优先由插件直连 CD2（CloudDrive2）gRPC-Web 上传到网盘目录（可回退宿主复制），绕开跨边界隔离限制；任务状态落 KV 队列并支持 Telegram 回调重试。0.3.19 新增 CD2 直送、通知自检与任务索引对账。",
   "default_locale": "zh-CN",
   "publisher": {

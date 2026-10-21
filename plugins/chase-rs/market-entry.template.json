@@ -1,11 +1,11 @@
 {
   "id": "chase.rs",
   "name": "追剧管家（Rust 版）",
-  "version": "0.1.11",
+  "version": "0.1.12",
   "description": "小时级对齐「订阅池里的剧集订阅」与「Emby 已有集数」：只对可解析的条目做只增 PATCH total_episodes，并产出追剧日历与当天一次的 Telegram 日报；减方向只给建议，从不写。已核实无缺口的条目在 5 小时窗口内复用缓存，不重复探测 Emby（把每小时的 Emby 查询压下一个数量级）。界面按统一设计稿重绘：指标瓦片、徽标胶囊、双栏看板与移动端单栏适配。",
   "author": "congyoubanmian",
   "homepage": "https://github.com/congyoubanmian/dian115-plugins",
-  "package_url": "https://github.com/congyoubanmian/dian115-plugins/releases/download/chase-v0.1.11/chase.rs-0.1.11.d115p",
+  "package_url": "https://github.com/congyoubanmian/dian115-plugins/releases/download/chase-v0.1.12/chase.rs-0.1.12.d115p",
   "sha256": "502fde3be69f0b9da21180d439021c012d60a33a08ca4798233017e0a461c039",
   "runtime": {
     "kind": "wasm",

@@ -8,7 +8,7 @@
 旧 Go 版（已从仓库移除）的 Rust 重写版本。基建（reactor ABI、协议层、KV 存储层）从
 `plugins/douban-rs` 移植并剥离豆瓣业务。
 
-- 当前清单版本：`0.3.21`
+- 当前清单版本：`0.3.22`
 - 运行时：WASM（`dian115:wasm@1`），Rust `wasm32-unknown-unknown` + 手写 ABI（`src/abi.rs`）
 - 目标内存：`memory_mb = 128`（Go 版 256MB → Rust 版 128MB，降内存是本次目标）
 
