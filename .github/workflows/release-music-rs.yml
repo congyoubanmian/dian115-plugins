@@ -34,7 +34,7 @@ jobs:
           ref: ${{ github.event.inputs.tag || github.ref }}
           fetch-depth: 0
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: '20'
           # 下方 npm ci 在 plugins/music-rs（defaults.run.working-directory）里执行。
