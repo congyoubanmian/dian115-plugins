@@ -27,7 +27,7 @@ aes = "0.8"
 ecb = "0.1"
 cbc = "0.1"
 # eapi 摘要(Go `crypto/md5`)。
-md-5 = "0.10"
+md-5 = "0.11"
 # Go `encoding/hex`: eapi 明文/密文的十六进制编码。
 hex = "0.4"
 
