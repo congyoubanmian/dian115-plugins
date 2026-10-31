@@ -19,7 +19,7 @@ serde = { version = "1", features = ["derive"] }
 # 不为 4MiB 的状态文档建 serde_json::Value 树(见 store.rs 的 `unwrap_value`)。
 serde_json = { version = "1", features = ["raw_value"] }
 # 存储层: host.call 的 body_base64 编解码(Go `encoding/base64` 的 RawStd/Std 两种 padding)。
-base64 = "0.22"
+base64 = "0.23"
 # CookieCloud 解密(cookiecloud.go): AES-256-CBC / AES-128-CBC + EVP_BytesToKey(md5)。
 # `aes` 的 `Aes128`/`Aes256` 覆盖两种模式, `cbc` 提供 CBC 模式; `aes::cipher` 就是 cipher 0.4。
 aes = "0.8"
