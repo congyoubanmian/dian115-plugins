@@ -27,7 +27,7 @@ jobs:
       run:
         working-directory: plugins/music-rs
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # 必须构建标签指向的提交: tag 先于 main 到达时 main 上还是旧 manifest,
           # 版本校验会失败。dispatch 时用输入的 tag。
