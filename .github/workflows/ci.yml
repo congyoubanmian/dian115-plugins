@@ -23,7 +23,7 @@ jobs:
       matrix:
         plugin: [chase-rs, douban-rs, music-rs]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # 与 release 构建一致，在 rust:1-slim（按 digest 固定，见下方镜像引用）容器内跑
       # 测试，避免 runner 上的 Rust 版本漂移。
@@ -35,7 +35,7 @@ jobs:
     name: rust common
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # common 是 path 依赖，cargo clippy 默认只 lint 当前包；这里单独跑
       # --all-features 覆盖 chase-rs 用的 ext 面。
@@ -52,7 +52,7 @@ jobs:
       matrix:
         plugin: [chase-rs, douban-rs, music-rs]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: cargo fmt + clippy（${{ matrix.plugin }}）
         run: |
@@ -76,7 +76,7 @@ jobs:
             directory: plugins/douban-center
             command: npm run build:ui
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-node@v7
         with:
@@ -104,7 +104,7 @@ jobs:
       matrix:
         plugin: [chase-rs, douban-rs, music-rs]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-node@v7
         with:
@@ -133,7 +133,7 @@ jobs:
     name: runtime contract
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-node@v7
         with:
@@ -149,7 +149,7 @@ jobs:
     name: plugin tools
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-node@v7
         with:
@@ -183,7 +183,7 @@ jobs:
             ui_command: npm run build:ui
             ui_dist: plugins/douban-center/build/frontend/dist
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-node@v7
         with:
