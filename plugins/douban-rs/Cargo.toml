@@ -23,7 +23,7 @@ base64 = "0.22"
 # CookieCloud 解密(cookiecloud.go): AES-256-CBC / AES-128-CBC + EVP_BytesToKey(md5)。
 # `aes` 的 `Aes128`/`Aes256` 覆盖两种模式, `cbc` 提供 CBC 模式; `aes::cipher` 就是 cipher 0.4。
 aes = "0.8"
-cbc = "0.1"
+cbc = "0.2"
 # EVP_BytesToKey 与 ccKeyMaterial 都基于 md5(Go `crypto/md5`)。
 md-5 = "0.11"
 # Go `encoding/hex`: ccKeyMaterial 的 hex.EncodeToString 前半段。
