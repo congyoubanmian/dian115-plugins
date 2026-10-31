@@ -1,0 +1,6 @@
+{
+  "name": "douban-rs-dian115-v3",
+  "private": true,
+  "type": "module",
+  "description": "让本目录的 .js 按 ESM 解析：宿主 v3 直接 import ESM；本地 node --check / node --test 也依赖它。"
+}

@@ -1,0 +1,68 @@
+{
+  "$schema": "https://raw.githubusercontent.com/madbrolab/dian115/main/docs/manifest.schema.json",
+  "schema_version": 3,
+  "id": "music.rs",
+  "name": "音乐下载",
+  "version": "1.0.0",
+  "description": "网易云 / QQ 音乐搜索、扫码与手动粘贴登录、按音质逐级取链；单曲与整张歌单入队后由后台任务自动推进：取链接 → 下载到插件暂存目录 → 定名 → 移交宿主复制进目标目录（CD2 挂载由宿主自动分流）→ 失败通知带「重试」按钮。旧 schema 1 WASM 插件（plugins/music-rs 0.3.19）的 v3 迁移版。",
+  "author": "congyoubanmian",
+  "homepage": "https://github.com/congyoubanmian/dian115-plugins",
+  "requires": {
+    "api": "3.5"
+  },
+  "icon": "icon.svg",
+  "ui": {
+    "entry": "ui/page.js"
+  },
+  "menu": {
+    "title": "音乐下载",
+    "order": 41
+  },
+  "jobs": [
+    {
+      "id": "queue-pump",
+      "entry": "jobs/queue-pump.js",
+      "handler": "run",
+      "recover": "recover",
+      "title": "推进下载队列",
+      "default_schedule": "*/5 * * * *",
+      "timeout_seconds": 1800
+    },
+    {
+      "id": "tg-callback",
+      "entry": "jobs/tg-callback.js",
+      "handler": "run",
+      "title": "Telegram 重试回调",
+      "queue": false,
+      "allow_overlap": true,
+      "timeout_seconds": 60
+    }
+  ],
+  "events": [
+    {
+      "event": "callback",
+      "job": "tg-callback"
+    }
+  ],
+  "declared_usage": {
+    "apis": [
+      "GET/PUT/DELETE /api/extensions/v3/{id}/storage*",
+      "GET /api/extensions/v3/{id}/settings",
+      "PUT /api/extensions/v3/{id}/settings",
+      "POST /api/extensions/v3/{id}/notify",
+      "POST /api/extensions/v3/{id}/http",
+      "POST /api/extensions/v3/{id}/files",
+      "POST /api/extensions/v3/{id}/cookiecloud/read",
+      "POST /api/extensions/v3/{id}/jobs/{job}"
+    ],
+    "sites": [
+      "music.163.com / interface.music.163.com / interface3.music.163.com（网易云搜索、扫码、eapi 取链）",
+      "c.y.qq.com / u.y.qq.com（QQ 音乐搜索与取链）"
+    ],
+    "files": [
+      "downloads/*（插件自有暂存目录：直链下载、定名，再由宿主 move 到用户配置的目标目录）"
+    ],
+    "notifications": true,
+    "risk": "把网易云/QQ 音乐直链下载到插件暂存目录并复制进用户配置的宿主目录（可能经 CD2 上传网盘）；失败时发送带重试按钮的通知；从宿主 CookieCloud 读取网易云/QQ 域登录 Cookie。"
+  }
+}

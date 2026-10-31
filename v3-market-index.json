@@ -1,0 +1,103 @@
+{
+  "schema_version": 3,
+  "repository": {
+    "id": "douban-center-wasm",
+    "name": "DIAN115 插件 v3 迁移（chase.rs / music.rs / douban.rs）",
+    "homepage": "https://github.com/congyoubanmian/douban-center-wasm"
+  },
+  "plugins": [
+    {
+      "id": "chase.rs",
+      "name": "追剧管家（Rust 版）",
+      "version": "0.1.9",
+      "description": "小时级对齐「订阅池里的剧集订阅」与「Emby 已有集数」：只对可解析的条目做只增 PATCH total_episodes，并产出追剧日历与当天一次的日报；减方向只给建议，从不写。已核实无缺口的条目在 5 小时窗口内复用缓存，不重复探测 Emby。界面按统一设计稿重绘：指标瓦片、徽标胶囊、双栏看板与移动端单栏适配。",
+      "author": "congyoubanmian",
+      "source_url": "dist/chase-rs-0.1.9.dian115p",
+      "source_url_note": "dist 相对路径占位：本仓库不托管对外下载；发布时替换为可访问的 https:// 绝对地址（官方 v3 索引 schema 的 source_url pattern 为 ^https?://）。",
+      "sha256": "e3c4988d82b6c044d790b8e2dc89bdb7c3730e98133d49ee9ab6eff5218fb567",
+      "delivery": "source",
+      "declared_usage": {
+        "apis": [
+          "GET /api/subscribe/pool/intents",
+          "PATCH /api/subscribe/pool/intents/{id}/episodes",
+          "GET /api/plugin-host/emby/instances",
+          "GET /api/plugin-host/emby/episodes",
+          "GET /api/subscribe/air-calendar",
+          "GET /api/tmdb/tv/{id}",
+          "GET/PUT/DELETE /api/extensions/v3/{id}/storage*"
+        ],
+        "notifications": true,
+        "risk": "每小时读取订阅池与 Emby 覆盖，并按只增原则 PATCH 订阅集数（从不缩小）；发送每日追剧报告通知；读写插件自有存储。不触碰宿主文件与外部站点。"
+      },
+      "homepage": "https://github.com/congyoubanmian/dian115-plugins",
+      "changelog": "v3 迁移首个发布：plugins/chase-rs 0.1.9（Rust WASM）逐函数移植为宿主内 ESM；整点对齐、立即对齐、刷新计数、探测诊断 4 个任务与每日报告保留，12 项设置迁至清单 settings，状态文档经插件 KV 的 expected_revision CAS 落盘。"
+    },
+    {
+      "id": "music.rs",
+      "name": "音乐下载",
+      "version": "1.0.0",
+      "description": "网易云 / QQ 音乐搜索、扫码与手动粘贴登录、按音质逐级取链；单曲与整张歌单入队后由后台任务自动推进：取链接 → 下载到插件暂存目录 → 定名 → 移交宿主复制进目标目录（CD2 挂载由宿主自动分流）→ 失败通知带「重试」按钮。旧 schema 1 WASM 插件（plugins/music-rs 0.3.19）的 v3 迁移版。",
+      "author": "congyoubanmian",
+      "source_url": "dist/music-rs.dian115p",
+      "source_url_note": "dist 相对路径占位：本仓库不托管对外下载；发布时替换为可访问的 https:// 绝对地址（官方 v3 索引 schema 的 source_url pattern 为 ^https?://）。",
+      "sha256": "8d40b543f4b228c518deaf28474c46a074476156295f447c4b80d183fe660594",
+      "delivery": "source",
+      "declared_usage": {
+        "apis": [
+          "GET/PUT/DELETE /api/extensions/v3/{id}/storage*",
+          "GET /api/extensions/v3/{id}/settings",
+          "PUT /api/extensions/v3/{id}/settings",
+          "POST /api/extensions/v3/{id}/notify",
+          "POST /api/extensions/v3/{id}/http",
+          "POST /api/extensions/v3/{id}/files",
+          "POST /api/extensions/v3/{id}/cookiecloud/read",
+          "POST /api/extensions/v3/{id}/jobs/{job}"
+        ],
+        "sites": [
+          "music.163.com / interface.music.163.com / interface3.music.163.com（网易云搜索、扫码、eapi 取链）",
+          "c.y.qq.com / u.y.qq.com（QQ 音乐搜索与取链）"
+        ],
+        "files": [
+          "downloads/*（插件自有暂存目录：直链下载、定名，再由宿主 move 到用户配置的目标目录）"
+        ],
+        "notifications": true,
+        "risk": "把网易云/QQ 音乐直链下载到插件暂存目录并复制进用户配置的宿主目录（可能经 CD2 上传网盘）；失败时发送带重试按钮的通知；从宿主 CookieCloud 读取网易云/QQ 域登录 Cookie。"
+      },
+      "homepage": "https://github.com/congyoubanmian/dian115-plugins",
+      "changelog": "v3 迁移首个发布：plugins/music-rs 0.3.19（Rust WASM）迁移为宿主内 ESM；搜索/登录/取链/歌单入队/下载队列保留，暂存改插件自有 downloads/，入库交给宿主 move（移除 CD2 直送），CookieCloud 走宿主内置服务，Telegram 重试改为清单 events 回调任务。"
+    },
+    {
+      "id": "douban.rs",
+      "name": "豆瓣中心（Rust 版）",
+      "version": "1.0.0",
+      "description": "豆瓣榜单抓取 + 黑名单过滤 + 观察队列 + 聚合订阅；从宿主 CookieCloud（或自建 CookieCloud / 手动粘贴 cookie）取豆瓣登录态，自动追订「我的想看」；TMDB 匹配失败时用豆瓣详情（原名/又名）回退重搜；支持最低评分/年份/地区订阅过滤与「已删除不重订」墓碑集。旧 schema 1 WASM 插件（plugins/douban-rs 0.2.4）的 v3 迁移版；页面提供榜单海报墙、观察队列/我的想看、历史日志与设置。",
+      "author": "congyoubanmian",
+      "source_url": "dist/douban-rs.dian115p",
+      "source_url_note": "dist 相对路径占位：本仓库不托管对外下载；发布时替换为可访问的 https:// 绝对地址（官方 v3 索引 schema 的 source_url pattern 为 ^https?://）。",
+      "sha256": "6873ad42e4cb07031cb74fb34271b444bd7c95f5df5e0669c01e4228154b008a",
+      "delivery": "source",
+      "declared_usage": {
+        "apis": [
+          "GET/PUT/DELETE /api/extensions/v3/{id}/storage*",
+          "GET /api/extensions/v3/{id}/settings",
+          "POST /api/extensions/v3/{id}/notify",
+          "POST /api/extensions/v3/{id}/cookiecloud/read",
+          "POST /api/extensions/v3/{id}/http",
+          "POST /api/extensions/v3/{id}/jobs/{job}",
+          "GET /api/tmdb/search",
+          "GET/POST /api/subscribe/pool/intents",
+          "GET /api/subscribe/records"
+        ],
+        "sites": [
+          "movie.douban.com（榜单抓取：j/search_subjects、/chart、/cinema/later/、j/subject_suggest）",
+          "m.douban.com（想看列表与条目详情：rexxar api v2）",
+          "*.doubanio.com（豆瓣海报 CDN，需带豆瓣 Referer 防盗链）"
+        ],
+        "notifications": true,
+        "risk": "定期抓取豆瓣榜单与想看列表，按黑名单/过滤器入观察队列；到期条目经 TMDB 匹配（失配时回查豆瓣详情重搜）后创建宿主聚合订阅（宿主负责检索并投递 115 离线）；从宿主 CookieCloud 或用户自建 CookieCloud / 手动粘贴的 cookie 读取豆瓣登录态；订阅结果发送通知。不写宿主文件，不触碰 115 账号。"
+      },
+      "homepage": "https://github.com/congyoubanmian/douban-center-wasm",
+      "changelog": "v3 迁移首个发布：plugins/douban-rs 0.2.4（Rust WASM）迁移为宿主内 ESM；榜单抓取、黑名单/过滤、观察队列、想看同步、TMDB 匹配回退与订阅链保留，16 个任务不变，页面用原生 JS 重写；CookieCloud 主路径改为宿主内置服务（自建服务链保留）。"
+    }
+  ]
+}

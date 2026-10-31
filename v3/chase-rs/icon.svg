@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="追剧管家">
+  <rect width="64" height="64" rx="16" fill="#00A344"/>
+  <!-- 挂环 -->
+  <rect x="18" y="9" width="4" height="10" rx="2" fill="#fff"/>
+  <rect x="42" y="9" width="4" height="10" rx="2" fill="#fff"/>
+  <!-- 日历主体 -->
+  <rect x="10" y="14" width="44" height="40" rx="6" fill="#fff"/>
+  <!-- 页眉 -->
+  <path fill="#EAF7EE" d="M10 20a6 6 0 0 1 6-6h32a6 6 0 0 1 6 6v6H10z"/>
+  <!-- 播放: 追剧 -->
+  <path fill="#00A344" d="M27 29.5l13 8-13 8z"/>
+</svg>
