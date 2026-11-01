@@ -9,11 +9,11 @@
     {
       "id": "chase.rs",
       "name": "追剧管家（Rust 版）",
-      "version": "0.1.10",
+      "version": "0.1.11",
       "description": "小时级对齐「订阅池里的剧集订阅」与「Emby 已有集数」：只对可解析的条目做只增 PATCH total_episodes，并产出追剧日历与当天一次的日报；减方向只给建议，从不写。已核实无缺口的条目在 5 小时窗口内复用缓存，不重复探测 Emby。界面按统一设计稿重绘：指标瓦片、徽标胶囊、双栏看板与移动端单栏适配。",
       "author": "congyoubanmian",
-      "source_url": "https://github.com/congyoubanmian/dian115-plugins/releases/download/v3-2026.11.01-3/chase-rs-0.1.10.dian115p",
-      "sha256": "e4ab1477daf00ece41e30d48ca17ea48ab3a9eb0beef75ded9446f1116c2aeb0",
+      "source_url": "https://github.com/congyoubanmian/dian115-plugins/releases/download/v3-2026.11.01-4/chase-rs-0.1.11.dian115p",
+      "sha256": "df3c2bab52831a0e7fcc69250dae956654ee97bc065f5c98b171d8bfd0398410",
       "delivery": "source",
       "declared_usage": {
         "apis": [
@@ -29,16 +29,16 @@
         "risk": "每小时读取订阅池与 Emby 覆盖，并按只增原则 PATCH 订阅集数（从不缩小）；发送每日追剧报告通知；读写插件自有存储。不触碰宿主文件与外部站点。"
       },
       "homepage": "https://github.com/congyoubanmian/dian115-plugins",
-      "changelog": "v3 迁移首个发布：plugins/chase-rs 0.1.9（Rust WASM）逐函数移植为宿主内 ESM；整点对齐、立即对齐、刷新计数、探测诊断 4 个任务与每日报告保留，12 项设置迁至清单 settings，状态文档经插件 KV 的 expected_revision CAS 落盘。0.1.10：页面改写为 Vue 3（自打包 vue/naive-ui/lucide，数据与动作全走 ctx，主题跟随宿主），入口仍为 ui/page.js 的 mount(el, ctx)。"
+      "changelog": "v3 迁移首个发布：plugins/chase-rs 0.1.9（Rust WASM）逐函数移植为宿主内 ESM；整点对齐、立即对齐、刷新计数、探测诊断 4 个任务与每日报告保留，12 项设置迁至清单 settings，状态文档经插件 KV 的 expected_revision CAS 落盘。0.1.10：页面改写为 Vue 3（自打包 vue/naive-ui/lucide，数据与动作全走 ctx，主题跟随宿主），入口仍为 ui/page.js 的 mount(el, ctx)。0.1.11：修复后台任务用 ctx.id 拼存储路径（后台只有 ctx.plugin.id）导致状态永远写不进去、页面一直显示「状态不可用」的问题。"
     },
     {
       "id": "music.rs",
       "name": "音乐下载",
-      "version": "1.0.1",
-      "description": "网易云 / QQ 音乐搜索、扫码与手动粘贴登录、按音质逐级取链；单曲与整张歌单入队后由后台任务自动推进：取链接 → 下载到插件暂存目录 → 定名 → 移交宿主复制进目标目录（CD2 挂载由宿主自动分流）→ 失败通知带「重试」按钮。旧 schema 1 WASM 插件（plugins/music-rs 0.3.19）的 v3 迁移版。",
+      "version": "1.0.2",
+      "description": "网易云 / QQ 音乐搜索、扫码登录（网易云 unikey 二维码；QQ 官方二维码 + graph.qq.com OAuth 授权换音乐凭据）与手动粘贴 Cookie 回退、按音质逐级取链；单曲与整张歌单入队后由后台任务自动推进：取链接 → 下载到插件暂存目录 → 定名 → 移交宿主复制进目标目录（CD2 挂载由宿主自动分流）→ 失败通知带「重试」按钮。旧 schema 1 WASM 插件（plugins/music-rs 0.3.19）的 v3 迁移版。",
       "author": "congyoubanmian",
-      "source_url": "https://github.com/congyoubanmian/dian115-plugins/releases/download/v3-2026.11.01-3/music-rs.dian115p",
-      "sha256": "dc99c82f6646070387249b82c6ebb672f1a703f405b0359e46bf67ef0db441c8",
+      "source_url": "https://github.com/congyoubanmian/dian115-plugins/releases/download/v3-2026.11.01-4/music-rs.dian115p",
+      "sha256": "9b2aec475e9657a1a54782ea8afa22ff900df6a10f97dea789a6b27c2a00f4bd",
       "delivery": "source",
       "declared_usage": {
         "apis": [
@@ -53,16 +53,17 @@
         ],
         "sites": [
           "music.163.com / interface.music.163.com / interface3.music.163.com（网易云搜索、扫码、eapi 取链）",
-          "c.y.qq.com / u.y.qq.com（QQ 音乐搜索与取链）"
+          "c.y.qq.com / u.y.qq.com（QQ 音乐搜索与取链）",
+          "xui.ptlogin2.qq.com / ssl.ptlogin2.graph.qq.com / graph.qq.com（QQ 扫码登录：取二维码、轮询、OAuth 授权换凭据）"
         ],
         "files": [
           "downloads/*（插件自有暂存目录：直链下载、定名，再由宿主 move 到用户配置的目标目录）"
         ],
         "notifications": true,
-        "risk": "把网易云/QQ 音乐直链下载到插件暂存目录并复制进用户配置的宿主目录（可能经 CD2 上传网盘）；失败时发送带重试按钮的通知；从宿主 CookieCloud 读取网易云/QQ 域登录 Cookie。"
+        "risk": "把网易云/QQ 音乐直链下载到插件暂存目录并复制进用户配置的宿主目录（可能经 CD2 上传网盘）；失败时发送带重试按钮的通知；从宿主 CookieCloud 读取网易云/QQ 域登录 Cookie；扫码登录在本插件 KV 里保存网易云/QQ 音乐登录凭据（QQ 扫码登录期间会访问 graph.qq.com 的 OAuth 授权端点换凭据）。"
       },
       "homepage": "https://github.com/congyoubanmian/dian115-plugins",
-      "changelog": "v3 迁移首个发布：plugins/music-rs 0.3.19（Rust WASM）迁移为宿主内 ESM；搜索/登录/取链/歌单入队/下载队列保留，暂存改插件自有 downloads/，入库交给宿主 move（移除 CD2 直送），CookieCloud 走宿主内置服务，Telegram 重试改为清单 events 回调任务。1.0.1：页面改写为 Vue 3；QQ 取链对齐参考客户端 Lilt：先取 media_mid，登录态按 F000/M800/M500 逐档请求 vkey，相对 purl 用 sip 域名拼接，匿名仅请求 M500。"
+      "changelog": "v3 迁移首个发布：plugins/music-rs 0.3.19（Rust WASM）迁移为宿主内 ESM；搜索/登录/取链/歌单入队/下载队列保留，暂存改插件自有 downloads/，入库交给宿主 move（移除 CD2 直送），CookieCloud 走宿主内置服务，Telegram 重试改为清单 events 回调任务。1.0.1：页面改写为 Vue 3；QQ 取链对齐参考客户端 Lilt：先取 media_mid，登录态按 F000/M800/M500 逐档请求 vkey，相对 purl 用 sip 域名拼接，匿名仅请求 M500。1.0.2：网易云与 QQ 音乐扫码登录都在单插件内实现；QQ 走官方二维码 + graph.qq.com OAuth 授权换 musicid/musickey，登录 Cookie 只写插件 KV，保留手动粘贴回退。"
     },
     {
       "id": "douban.rs",
@@ -70,8 +71,8 @@
       "version": "1.1.1",
       "description": "豆瓣榜单抓取 + 黑名单过滤 + 观察队列 + 聚合订阅；从宿主 CookieCloud（或自建 CookieCloud / 手动粘贴 cookie）取豆瓣登录态，自动追订「我的想看」；TMDB 匹配失败时用豆瓣详情（原名/又名）回退重搜；支持最低评分/年份/地区订阅过滤与「已删除不重订」墓碑集。旧 schema 1 WASM 插件（plugins/douban-rs 0.2.4）的 v3 迁移版；页面提供榜单海报墙、观察队列/我的想看、历史日志与设置。",
       "author": "congyoubanmian",
-      "source_url": "https://github.com/congyoubanmian/dian115-plugins/releases/download/v3-2026.11.01-3/douban-rs.dian115p",
-      "sha256": "cafb7662f9f34cfffde66406c2bd01d7f40f8aa7d4612b829696be213047079b",
+      "source_url": "https://github.com/congyoubanmian/dian115-plugins/releases/download/v3-2026.11.01-4/douban-rs.dian115p",
+      "sha256": "e3f7274b533a77c72a349fe1c61f33edd98a75ed53b57e1c929dbdb91e39e9f5",
       "delivery": "source",
       "declared_usage": {
         "apis": [

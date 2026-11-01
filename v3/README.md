@@ -4,8 +4,8 @@
 
 | 插件 | v3 源码目录 | 版本 | 任务数 | 旧实现 |
 | --- | --- | --- | --- | --- |
-| 追剧管家 `chase.rs` | `v3/chase-rs/` | 0.1.10 | 4 | `plugins/chase-rs`（0.1.9） |
-| 音乐下载 `music.rs` | `v3/music-rs/` | 1.0.1 | 2 + 1 event | `plugins/music-rs`（0.3.19） |
+| 追剧管家 `chase.rs` | `v3/chase-rs/` | 0.1.11 | 4 | `plugins/chase-rs`（0.1.9） |
+| 音乐下载 `music.rs` | `v3/music-rs/` | 1.0.2 | 2 + 1 event | `plugins/music-rs`（0.3.19） |
 | 豆瓣中心 `douban.rs` | `v3/douban-rs/` | 1.1.1 | 16 | `plugins/douban-rs`（0.2.4） |
 
 约定：宿主插件 API 为 **3.5**（三个 `plugin.json` 的 `requires.api` 均为 `"3.5"`）；后台是宿主内 ESM
@@ -61,7 +61,7 @@ dist/                   构建产物 .dian115p（本地生成，不提交；现�
 
 ## 各插件 covered / gaps
 
-### 追剧管家（`v3/chase-rs`，chase.rs 0.1.10）
+### 追剧管家（`v3/chase-rs`，chase.rs 0.1.11）
 
 **Covered（离线可验证）**
 
@@ -297,7 +297,7 @@ bash scripts/v3-build.sh      # 再 project-check → pack → 打印 sha256
 相同的包；已有包会被覆盖。产物：
 
 ```
-dist/chase-rs-0.1.10.dian115p
+dist/chase-rs-0.1.11.dian115p
 dist/music-rs.dian115p
 dist/douban-rs.dian115p
 ```
@@ -316,14 +316,14 @@ node v3-kit/conformance/project-check.mjs v3/music-rs
 node v3-kit/conformance/project-check.mjs v3/douban-rs
 
 # 3) 打包（输出必须在源码目录之外；后缀必须是 .dian115p）
-node v3-kit/conformance/pack.mjs v3/chase-rs dist/chase-rs-0.1.10.dian115p
+node v3-kit/conformance/pack.mjs v3/chase-rs dist/chase-rs-0.1.11.dian115p
 node v3-kit/conformance/pack.mjs v3/music-rs dist/music-rs.dian115p
 node v3-kit/conformance/pack.mjs v3/douban-rs dist/douban-rs.dian115p
-node scripts/v3-pack-check.mjs dist/chase-rs-0.1.10.dian115p v3/chase-rs   # 查包
+node scripts/v3-pack-check.mjs dist/chase-rs-0.1.11.dian115p v3/chase-rs   # 查包
 
 # 4) 纯逻辑单测（Node 24 下要传文件 glob，不能只传目录）
-(cd v3/chase-rs  && node --test tests/*.test.mjs)   # 117 pass
-(cd v3/music-rs  && node --test tests/*.test.js)    # 100 用例
+(cd v3/chase-rs  && node --test tests/*.test.mjs)   # 119 pass
+(cd v3/music-rs  && node --test tests/*.test.js)    # 131 用例
 (cd v3/douban-rs && node --test tests/*.test.mjs)   # 113 pass
 
 # 5) 语法检查
@@ -367,13 +367,13 @@ bash scripts/v3-verify-ui-artifacts.sh
 
 | id | version | delivery | source_url | sha256 |
 | --- | --- | --- | --- | --- |
-| `chase.rs` | 0.1.10 | source | `…/releases/download/v3-2026.11.01-3/chase-rs-0.1.10.dian115p` | `e4ab1477…16c2aeb0` |
-| `music.rs` | 1.0.1 | source | `…/releases/download/v3-2026.11.01-3/music-rs.dian115p` | `dc99c82f…0db441c8` |
-| `douban.rs` | 1.1.1 | source | `…/releases/download/v3-2026.11.01-3/douban-rs.dian115p` | `cafb7662…3047079b` |
+| `chase.rs` | 0.1.11 | source | `…/releases/download/v3-2026.11.01-4/chase-rs-0.1.11.dian115p` | `df3c2bab…d0398410` |
+| `music.rs` | 1.0.2 | source | `…/releases/download/v3-2026.11.01-4/music-rs.dian115p` | `9b2aec47…2a00f4bd` |
+| `douban.rs` | 1.1.1 | source | `…/releases/download/v3-2026.11.01-4/douban-rs.dian115p` | `e3f7274b…1e39e9f5` |
 
 （表中的 sha256 为节选，完整 64 位值以 `v3-market-index.json` 为准；Release 资产与
 `SHA256SUMS.txt` 是发布环境的实算值。本地构建的包逐文件内容一致，但 zip 压缩字节会随
-Node/zlib 版本略有差异——本地 193000 / 232339 / 263162 字节——跨机器比对请以 Release 的
+Node/zlib 版本略有差异——本地 193844 / 258318 / 263162 字节——跨机器比对请以 Release 的
 `SHA256SUMS.txt` 为准。）
 
 `declared_usage` 逐字取自各插件 `plugin.json`（接口、站点、文件、通知与风险说明），没有另行美化。
@@ -394,10 +394,10 @@ v3 索引 schema。仓库内旧 `plugin-market/index.json` 是 v1 格式，v3 �
 
 | 检查 | 命令 | 结果 |
 | --- | --- | --- |
-| 三个插件结构检查 | `node v3-kit/conformance/project-check.mjs v3/<plugin>` | 3/3 通过：`chase.rs 0.1.10`、`music.rs 1.0.1`、`douban.rs 1.1.1` |
+| 三个插件结构检查 | `node v3-kit/conformance/project-check.mjs v3/<plugin>` | 3/3 通过：`chase.rs 0.1.11`、`music.rs 1.0.2`、`douban.rs 1.1.1` |
 | 全部 JS 语法 | `find v3/... -name '*.js' -exec node --check {} +` | 通过：chase 16 / music 30 / douban 38 个文件 |
-| 纯逻辑单测 | `(cd v3/<plugin> && node --test tests/*.test.*)` | chase 117 pass / music 100 pass / douban 113 pass，0 fail |
-| 打包 | `bash scripts/v3-build.sh`（连跑两次） | 两次 sha256 完全一致；产物 193000 / 232339 / 263162 字节（界面换成 Vue 3 自打包后比原生 JS 版大；sha256 见表下） |
+| 纯逻辑单测 | `(cd v3/<plugin> && node --test tests/*.test.*)` | chase 119 pass / music 131 pass / douban 113 pass，0 fail |
+| 打包 | `bash scripts/v3-build.sh`（连跑两次） | 两次 sha256 完全一致；产物 193844 / 258318 / 263162 字节（界面换成 Vue 3 自打包后比原生 JS 版大；sha256 见表下） |
 | 索引 JSON | `node -e 'JSON.parse(...)'` | 通过 |
 | 索引字段与摘要 | 本地校验脚本（必填/id/sha256/delivery/homepage，sha256 对 dist 实算） | 通过；仅 `source_url` 相对路径为已知偏差 |
 | 构建脚本语法 | `bash -n scripts/v3-build.sh` | 通过 |
@@ -412,10 +412,10 @@ v3 索引 schema。仓库内旧 `plugin-market/index.json` 是 v1 格式，v3 �
 | 检查 | 命令 | 结果 |
 | --- | --- | --- |
 | 脚本语法 | `bash -n scripts/v3-build.sh scripts/v3-build-ui.sh` | 通过（另加 `bash -n scripts/v3-verify-ui-artifacts.sh`） |
-| 三个插件结构检查 | `node v3-kit/conformance/project-check.mjs v3/<plugin>` | 3/3 通过：`chase.rs 0.1.10`、`music.rs 1.0.1`、`douban.rs 1.1.1` |
-| 界面构建可重复 | `bash scripts/v3-build-ui.sh` 连跑两次，比对 sha256 | 两次产物字节相同（chase `897e1d4c…5937c8ad`、douban `fc90a3dd…1e967675`、music `b9b34eb0…39cd97cf`） |
+| 三个插件结构检查 | `node v3-kit/conformance/project-check.mjs v3/<plugin>` | 3/3 通过：`chase.rs 0.1.11`、`music.rs 1.0.2`、`douban.rs 1.1.1` |
+| 界面构建可重复 | `bash scripts/v3-build-ui.sh` 连跑两次，比对 sha256 | 两次产物字节相同（chase `897e1d4c…5937c8ad`、douban `fc90a3dd…1e967675`、music `1d3f3f53…5a4fc1ba`） |
 | 锁文件可复现 | 干净副本里 `rm -rf node_modules && npm ci` 后重建 | 与入库产物逐字节相同；本地多次打包 sha256 一致（跨环境的 zip 压缩字节会略差十余字节，以 Release 的 `SHA256SUMS.txt` 为准） |
-| 一键构建幂等 | `bash scripts/v3-build.sh` 连跑两次 | 两次 sha256 完全一致（本地值；Release 实算值见市场索引）；产物 193000 / 232339 / 263162 字节 |
+| 一键构建幂等 | `bash scripts/v3-build.sh` 连跑两次 | 两次 sha256 完全一致（本地值；Release 实算值见市场索引）；产物 193844 / 258318 / 263162 字节 |
 | 包内容检查 | `node scripts/v3-pack-check.mjs <包> <插件目录>` | 3/3 通过：30 / 34 / 62 个条目，无 node_modules，清单入口齐全；反向用例（塞 node_modules / 缺 ui.entry）都能报错 |
 | 产物入库一致性 | `bash scripts/v3-verify-ui-artifacts.sh` | 通过（`v3-ui/` 源码与 `v3/<plugin>/ui/` 产物已同批入库，CI 发布前再校验一次） |
 | 工作流 YAML | `python3 -c "import yaml; yaml.safe_load(...)"` | 解析通过，步骤顺序：安装依赖 → 构建 UI → 打包 → 产物可复现 → 查包 |
