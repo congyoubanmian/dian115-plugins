@@ -367,8 +367,8 @@ bash scripts/v3-verify-ui-artifacts.sh
 
 | id | version | delivery | source_url | sha256 |
 | --- | --- | --- | --- | --- |
-| `chase.rs` | 0.1.11 | source | `…/releases/download/v3-2026.11.01-4/chase-rs-0.1.11.dian115p` | `df3c2bab…d0398410` |
-| `music.rs` | 1.0.2 | source | `…/releases/download/v3-2026.11.01-4/music-rs.dian115p` | `9b2aec47…2a00f4bd` |
+| `chase.rs` | 0.1.11 | source | `…/releases/download/v3-2026.11.01-4/chase-rs-0.1.11.dian115p` | `23aa8b7c…e6c7c3d3` |
+| `music.rs` | 1.0.2 | source | `…/releases/download/v3-2026.11.01-4/music-rs.dian115p` | `22db4fe7…56f40a7c` |
 | `douban.rs` | 1.1.1 | source | `…/releases/download/v3-2026.11.01-4/douban-rs.dian115p` | `e3f7274b…1e39e9f5` |
 
 （表中的 sha256 为节选，完整 64 位值以 `v3-market-index.json` 为准；Release 资产与
