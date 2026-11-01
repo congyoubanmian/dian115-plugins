@@ -1,0 +1,96 @@
+name: Release v3 plugins
+
+# dian115 插件平台 v3 的打包与发布流水线（与旧插件 release-*.yml 互不影响）。
+#
+# - 推 `v3-*` 标签：拉官方 v3 套件 → project-check → 打包三个 .dian115p →
+#   创建/更新 Release（附包 + SHA256SUMS.txt + 更新后的市场索引）→
+#   把 v3-market-index.json 的 source_url/sha256 回写 main（[skip ci]）。
+# - 手动触发（workflow_dispatch）：只跑检查 + 打包 + 上传 artifact，不建 Release。
+#
+# 可选输入：ref（默认 workflow 触发时的 ref；手动触发时可指定分支/标签）。
+
+on:
+  push:
+    tags:
+      - 'v3-*'
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: '要构建的 ref（默认当前分支）'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-v3-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ github.ref_name }}
+      REPO: ${{ github.repository }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Fetch dian115 v3 kit
+        run: bash scripts/fetch-v3-kit.sh
+
+      - name: Build packages (project-check + pack + sha256)
+        run: bash scripts/v3-build.sh
+
+      - name: Prepare release files
+        run: |
+          mkdir -p release
+          cp dist/*.dian115p release/
+          (cd release && sha256sum *.dian115p | tee SHA256SUMS.txt)
+
+      - name: Update market index for this tag
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          node scripts/update-v3-index.mjs
+          cp v3-market-index.release.json release/v3-market-index.json
+
+      - name: Upload packages as workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: v3-plugins-${{ github.sha }}
+          path: release/*
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Create or update GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" release/* --clobber
+          else
+            gh release create "$TAG" release/* \
+              --title "v3 插件 $TAG" \
+              --notes-file release/SHA256SUMS.txt
+          fi
+
+      - name: Commit updated market index to main
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin main
+          git checkout -B main origin/main
+          cp v3-market-index.release.json v3-market-index.json
+          git add v3-market-index.json
+          git commit -m "chore: 更新 v3 市场索引 $TAG [skip ci]" || echo "索引无变化，跳过提交"
+          git push origin main

@@ -36,3 +36,6 @@ plugins/music-rs/frontend/dist/
 
 # v3 官方开发套件本地镜像（上游仓库无 license，不随本仓库分发；按 v3/README.md 的说明重新拉取）
 v3-kit/
+
+# 发布流水线生成的索引副本（不入库）
+v3-market-index.release.json
