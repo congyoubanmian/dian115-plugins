@@ -270,3 +270,10 @@ sha256 更新索引；索引不会自动跟着源码变。
 | 真机安装/运行 | — | **未执行**（本机无可用 DIAN115 宿主，授权被锁） |
 
 工具版本：Node v24.18.0、npm 11.16.0；未使用 Rust/WASM 工具链。
+
+## GitHub Actions 发布
+
+- 工作流：`.github/workflows/release-v3.yml`（手动触发见下，`v3-*` tag 触发已配置）
+- 一键发布：`bash scripts/release-v3.sh v3-YYYY.MM.DD`（打标注 tag → 推送 → 对 tag ref 分发工作流）
+- 说明：实测本仓库 deploy key 推送的 tag 未自动触发 `push.tags` 工作流（分支推送正常），因此脚本会显式 `gh workflow run --ref <tag>`；发布路径相同：构建 → 创建 Release（三包 + SHA256SUMS.txt + 更新后的市场索引）→ 回写 `v3-market-index.json` 到 main
+- 仅验证打包（不发布）：`gh workflow run release-v3.yml --ref main`，产物在 run 的 artifact 里
