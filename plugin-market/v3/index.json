@@ -71,7 +71,7 @@
       "description": "豆瓣榜单抓取 + 黑名单过滤 + 观察队列 + 聚合订阅；从宿主 CookieCloud（或自建 CookieCloud / 手动粘贴 cookie）取豆瓣登录态，自动追订「我的想看」；TMDB 匹配失败时用豆瓣详情（原名/又名）回退重搜；支持最低评分/年份/地区订阅过滤与「已删除不重订」墓碑集。旧 schema 1 WASM 插件（plugins/douban-rs 0.2.4）的 v3 迁移版；页面提供榜单海报墙、观察队列/我的想看、历史日志与设置。",
       "author": "congyoubanmian",
       "source_url": "https://github.com/congyoubanmian/dian115-plugins/releases/download/v3-2026.11.01-3/douban-rs.dian115p",
-      "sha256": "e3f7274b533a77c72a349fe1c61f33edd98a75ed53b57e1c929dbdb91e39e9f5",
+      "sha256": "cafb7662f9f34cfffde66406c2bd01d7f40f8aa7d4612b829696be213047079b",
       "delivery": "source",
       "declared_usage": {
         "apis": [
