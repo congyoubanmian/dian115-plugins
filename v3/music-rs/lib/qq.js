@@ -1,11 +1,17 @@
-// QQ 音乐纯逻辑 —— 从 plugins/music-rs/src/qq.rs 逐函数移植。
-// 网络请求由调用方（lib/music-api.js）发；本文件只做参数构造与响应解析。
+// QQ 音乐纯逻辑 —— 参数构造与响应解析；网络请求由 lib/music-api.js 发。
+// 取链流程对齐参考项目 Lilt（github.com/Amamiya23/mygo-qyin，internal/qqmusic）：
+// 先读歌曲详情拿 media_mid，再按档位逐次请求 vkey；purl 可能是相对路径，需要拼 sip 域名。
+// 登录/扫码部分仍沿用旧版（plugins/music-rs/src/qq.rs）的纯逻辑移植。
 
 import { queryEncode, queryEscape, parseQuery, hash33 } from './encoding.js'
 
 /** Go main.go:15 的 chromeUA。 */
 export const CHROME_UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36'
+
+/** musicu 取链/详情接口用的 UA —— 参考 Lilt internal/qqmusic/client.go 的 QQMusic UA。
+ *  QQ 的 vkey 接口对 UA 敏感，浏览器 UA 容易拿到空 purl。 */
+export const QQ_API_UA = 'QQMusic 14090008(android 10)'
 
 export const QQ_QR_SHOW = 'https://ssl.ptlogin2.qq.com/ptqrshow'
 export const QQ_QR_CHECK = 'https://ssl.ptlogin2.qq.com/ptqrlogin'
@@ -30,33 +36,30 @@ export const QR_UNAVAILABLE = 'QQ 扫码登录受宿主 broker 限制暂不可�
 /** 所有音质都取不到链接时的报错（Go qqSongURL 原文，含绿钻提示）。 */
 export const NO_LINK_ERROR = '所有音质均未获取到链接（需要绿钻且歌曲有对应音源）'
 
-/** 音质阶梯（sidecar fetch-worker.mjs:106 的 QQ_LADDER，比 Go 多一档 O801/ogg）：
- *  母带 → … → 128k 的命中顺序，文件名 = 前缀 + mid + mid + "." + 扩展名。 */
+/** 取链音质阶梯：SQ 无损 → 320k → 128k。
+ *  参考 Lilt playback.go：只请求这三档。母带/全景声（AI00/Q001/Q000）普通账号基本
+ *  返回空 purl，放进来只会多打几次空请求。文件名 = 前缀 + songmid + media_mid + 扩展名。 */
 export const QUALITY_LADDER = [
-  ['AI00', 'flac'],
-  ['Q001', 'flac'],
-  ['Q000', 'flac'],
   ['F000', 'flac'],
-  ['O801', 'ogg'],
   ['M800', 'mp3'],
   ['M500', 'mp3'],
 ]
 
-/** 用户档位 → QUALITY_LADDER 的起点（sidecar fetch-worker.mjs:109）；未知档位返回 null（用全档）。 */
+/** 用户档位 → QUALITY_LADDER 的起点；未知档位返回 null（用全档）。 */
 export function qualityStart(level) {
   switch (String(level ?? '').trim()) {
-    case 'master': return 0
-    case 'flac': return 3
-    case '320': return 5
-    case '128': return 6
+    case 'master':
+    case 'flac': return 0
+    case '320': return 1
+    case '128': return 2
     default: return null
   }
 }
 
-/** 按用户档位裁剪后的取链阶梯（未知/空档位 → 完整阶梯）。
- *  Rust 返回切片（&QUALITY_LADDER[start..]，start=0 即整条），这里同样在 start<=0
- *  时返回原数组本身，保持引用语义（测试对拍）。 */
-export function qualityLadder(level) {
+/** 按用户档位裁剪后的取链阶梯；未登录只能拿 128k（匿名 vkey 只放行 M500）。
+ *  未知/空档位 → 完整阶梯；start=0 时返回原数组（保持引用语义）。 */
+export function qualityLadder(level, loggedIn = true) {
+  if (!loggedIn) return [QUALITY_LADDER[2]]
   const start = qualityStart(level)
   return !start ? QUALITY_LADDER : QUALITY_LADDER.slice(start)
 }
@@ -155,25 +158,88 @@ function sortedStringify(value) {
   return JSON.stringify(value)
 }
 
-/** qqSongURL 的 POST body（键排序形态）。`ladder` 由调用方按用户档位裁剪。 */
-export function songUrlRequestBody(mid, uin, guid, ladder) {
-  const filenames = ladder.map(([code, ext]) => `${code}${mid}${mid}.${ext}`)
-  return sortedStringify({
-    comm: { uin, format: 'json', ct: 20, cv: 0 },
-    req_1: {
-      module: 'music.vkey.GetVkey',
-      method: 'UrlGetVkey',
-      param: {
-        guid,
-        songmid: [mid],
-        songtype: [0],
-        uin,
-        loginflag: 1,
-        platform: '20',
-        filename: filenames,
+/** 取链文件名：前缀 + songmid + media_mid + 扩展名。
+ *  media_mid 与 songmid 不一定相同（翻唱/多版本），用 songmid 顶替会被服务端判成
+ *  无音源、返回空 purl —— 参考 Lilt playback.go 的 filename 拼接。 */
+export function qualityFilename(code, ext, mid, mediaMid) {
+  return `${code}${mid}${mediaMid || mid}.${ext}`
+}
+
+/** 单档取链的 POST body（键排序形态）。
+ *  - 登录态：music.vkey.GetVkey / UrlGetVkey，comm 带 qq/authst/tmeLoginType；
+ *  - 匿名：vkey.GetVkeyServer / CgiGetVkey，uin=0、loginflag=1、platform=20。
+ *  参考 Lilt internal/qqmusic/playback.go 与 auth_device.go:authenticatedComm。 */
+export function songUrlRequestBody(options) {
+  const { mid, mediaMid, guid, code, ext, uin, musicKey, loginType } = options
+  const filename = qualityFilename(code, ext, mid, mediaMid)
+  const loggedIn = typeof musicKey === 'string' && musicKey !== ''
+  if (loggedIn) {
+    return sortedStringify({
+      comm: {
+        ct: 11,
+        cv: 14090008,
+        v: 14090008,
+        chid: '10003505',
+        tmeAppID: 'qqmusic',
+        qq: uin,
+        authst: musicKey,
+        tmeLoginType: Number(loginType) || 1,
       },
+      req_0: {
+        module: 'music.vkey.GetVkey',
+        method: 'UrlGetVkey',
+        param: { ctx: 0, filename: [filename], guid, songmid: [mid], songtype: [0], uin },
+      },
+    })
+  }
+  return sortedStringify({
+    comm: { ct: 24, cv: 0 },
+    req_0: {
+      module: 'vkey.GetVkeyServer',
+      method: 'CgiGetVkey',
+      param: { filename: [filename], guid, loginflag: 1, platform: '20', songmid: [mid], songtype: [0], uin: '0' },
     },
   })
+}
+
+/** 歌曲详情 POST body：拿 media_mid 与各档文件大小（决定 filename 与返回的 size）。
+ *  参考 Lilt catalog.go:SongDetails（music.pf_song_detail_svr / get_song_detail_yqq）。
+ *  只传 song_mid：实测 song_id 传 "0" 会返回 code 404，省略后按 mid 能查到。 */
+export function songDetailRequestBody(mid) {
+  return sortedStringify({
+    comm: { ct: 24, cv: 0 },
+    req_0: {
+      module: 'music.pf_song_detail_svr',
+      method: 'get_song_detail_yqq',
+      param: { song_mid: mid, song_type: 0 },
+    },
+  })
+}
+
+/** 歌曲详情 → {media_mid, size128, size320, size_flac}；解析失败返回 {error}。 */
+export function parseQqSongDetail(body) {
+  let parsed
+  try {
+    parsed = JSON.parse(String(body ?? ''))
+  } catch {
+    return { error: 'QQ 歌曲详情解析失败' }
+  }
+  const data = parsed?.req_0?.data ?? parsed?.data
+  const track = data?.track_info
+  if (!track || typeof track !== 'object') return { error: 'QQ 歌曲详情解析失败' }
+  const file = track.file && typeof track.file === 'object' ? track.file : {}
+  const num = (value) => (Number.isFinite(Number(value)) ? Number(value) : 0)
+  const mediaMid = typeof file.media_mid === 'string' && file.media_mid !== ''
+    ? file.media_mid
+    : typeof track.strMediaMid === 'string' ? track.strMediaMid : ''
+  return {
+    value: {
+      media_mid: mediaMid,
+      size128: num(file.size_128mp3 ?? track.size128),
+      size320: num(file.size_320mp3 ?? track.size320),
+      size_flac: num(file.size_flac ?? track.sizeflac),
+    },
+  }
 }
 
 /** qqPollWXQR 用 wx_code 换 cookie 的 POST body（tmeLoginType 取 Go 版的 "1"）。 */
@@ -342,30 +408,55 @@ export function loginKindOf(key) {
   return parseQuery(key).get('type') === 'wx' ? 'wx' : 'qq'
 }
 
+/** QQ 直链域名的兜底（参考 Lilt playback.go 的 `dl.stream.qqmusic.qq.com`）。 */
+export const QQ_STREAM_FALLBACK_DOMAIN = 'http://dl.stream.qqmusic.qq.com/'
+
+/** 只接受 QQ 音乐自己的流媒体域名，避免被响应里的任意 URL 带跑。 */
+function validStreamDomain(raw) {
+  try {
+    const url = new URL(String(raw))
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return false
+    return url.hostname === 'qqmusic.qq.com'
+      || url.hostname.endsWith('.qqmusic.qq.com')
+      || url.hostname.endsWith('.qq.com')
+  } catch {
+    return false
+  }
+}
+
+/** purl 可能是相对路径（`M800midmedia.mp3?vkey=...`），按 sip 里的域名拼成完整 URL。
+ *  选域名顺序对齐 Lilt：优先非 `http://ws…` 的合法域名，其次任意合法域名，最后兜底域名。 */
+export function resolveStreamUrl(sip, purl) {
+  const raw = String(purl ?? '')
+  if (/^https?:\/\//i.test(raw)) return raw
+  const domains = Array.isArray(sip) ? sip : []
+  const preferred = domains.find((domain) => validStreamDomain(domain) && !String(domain).startsWith('http://ws'))
+  const domain = preferred || domains.find((candidate) => validStreamDomain(candidate)) || QQ_STREAM_FALLBACK_DOMAIN
+  try {
+    return new URL(raw, domain).toString()
+  } catch {
+    return `${String(domain).replace(/\/?$/, '/')}${raw.replace(/^\//, '')}`
+  }
+}
+
 /**
- * qqSongURL 的响应体 → `{url, ext, level}`；没有任何 http 开头的 purl 时报
- * NO_LINK_ERROR，JSON 解析失败报「QQ 取链解析失败」。ladder 必须与请求体同一条。
+ * 单档取链的响应体 → `{url, ext, level}`。
+ * 取第一条非空 purl（不再按下标和 ladder 对位）；相对 purl 用响应里的 sip 拼域名。
+ * JSON 解析失败报「QQ 取链解析失败」，没有任何 purl 时报 NO_LINK_ERROR。
  */
-export function parseVkeyResponse(body, ladder) {
+export function parseVkeyResponse(body, code, ext) {
   let parsed
   try {
     parsed = JSON.parse(String(body ?? ''))
   } catch {
     return { error: 'QQ 取链解析失败' }
   }
-  const midurlinfo = parsed?.req_1?.data?.midurlinfo
+  const data = parsed?.req_0?.data ?? parsed?.req_1?.data
+  const midurlinfo = data?.midurlinfo
   if (!Array.isArray(midurlinfo)) return { error: 'QQ 取链解析失败' }
-  for (let index = 0; index < midurlinfo.length; index++) {
-    const purl = typeof midurlinfo[index]?.purl === 'string' ? midurlinfo[index].purl : ''
-    if (purl.startsWith('http')) {
-      // Go 这里是 ladder[i]，越界会 panic；这里跳过越界条目。
-      if (index < ladder.length) {
-        const [code, ext] = ladder[index]
-        return { url: purl, ext, level: code }
-      }
-    }
-  }
-  return { error: NO_LINK_ERROR }
+  const hit = midurlinfo.find((entry) => typeof entry?.purl === 'string' && entry.purl !== '')
+  if (!hit) return { error: NO_LINK_ERROR }
+  return { url: resolveStreamUrl(data?.sip, hit.purl), ext, level: code }
 }
 
 /** qqSearch 的响应体 → {songs, page}（Go 匿名结构体 + 逐条映射）。 */

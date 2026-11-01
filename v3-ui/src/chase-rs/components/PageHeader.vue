@@ -1,0 +1,73 @@
+<script setup lang="ts">
+// 页头：品牌 + 状态/日报/dry-run 胶囊 + 动作组（刷新 / 探测诊断 / 立即对齐 / 设置）。
+//
+// 动作全部走 ctx.tasks.run（见 use-chase.ts 的 runAction），页面不直接 fetch 宿主接口。
+
+import { computed } from 'vue'
+import { NButton, NTag } from 'naive-ui'
+import { Radar, RefreshCw, Settings, Tv } from '@lucide/vue'
+import { useChaseStore } from '../use-chase'
+
+const store = useChaseStore()
+const busy = computed(() => store.busy !== '')
+</script>
+
+<template>
+  <header class="c-header">
+    <div class="c-brand">
+      <span class="c-brand-icon"><Tv :size="22" aria-hidden="true" /></span>
+      <div class="c-brand-text">
+        <h2>追剧管家</h2>
+        <p>每小时对齐订阅池 · Emby 覆盖 / TMDB 目标 · 只增不减</p>
+      </div>
+    </div>
+    <div class="c-actions">
+      <NTag
+        class="c-capsule"
+        size="small"
+        round
+        :bordered="false"
+        :type="store.healthCapsule.type"
+        :title="store.healthCapsule.title"
+      >
+        {{ store.healthCapsule.label }}
+      </NTag>
+      <NTag
+        class="c-capsule"
+        size="small"
+        round
+        :bordered="false"
+        :type="store.dailyCapsule.type"
+        :title="store.dailyCapsule.title"
+      >
+        {{ store.dailyCapsule.label }}
+      </NTag>
+      <NTag v-if="store.dryRun" class="c-capsule" size="small" round :bordered="false" type="warning">
+        dry-run · 只判定不写入
+      </NTag>
+      <NButton size="small" :disabled="busy" @click="store.runAction('refresh')">
+        <template #icon><RefreshCw :size="14" aria-hidden="true" /></template>
+        刷新
+      </NButton>
+      <NButton size="small" :disabled="busy" @click="store.openProbe()">
+        <template #icon><Radar :size="14" aria-hidden="true" /></template>
+        探测诊断
+      </NButton>
+      <NButton size="small" type="primary" :disabled="busy" @click="store.runAction('align-now')">
+        立即对齐
+      </NButton>
+      <NButton
+        class="c-icon-btn"
+        size="small"
+        quaternary
+        circle
+        :disabled="busy"
+        aria-label="设置"
+        title="设置"
+        @click="store.openSettings()"
+      >
+        <template #icon><Settings :size="16" aria-hidden="true" /></template>
+      </NButton>
+    </div>
+  </header>
+</template>

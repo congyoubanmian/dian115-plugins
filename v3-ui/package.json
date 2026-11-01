@@ -1,0 +1,24 @@
+{
+  "name": "dian115-v3-ui",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "三个 v3 插件页面的 Vue 3 源码与共享构建底座：源码在 src/<plugin>/，产物写到 ../v3/<plugin>/ui/page.js（宿主 v3 直接 import ESM 并挂载）。",
+  "scripts": {
+    "build": "npm run build:chase && npm run build:music && npm run build:douban",
+    "build:chase": "vite build --config vite.chase.config.mjs",
+    "build:music": "vite build --config vite.music.config.mjs",
+    "build:douban": "vite build --config vite.douban.config.mjs",
+    "typecheck": "vue-tsc --noEmit -p tsconfig.json",
+    "smoke": "node scripts/smoke-mount.mjs"
+  },
+  "devDependencies": {
+    "@lucide/vue": "^1.61.0",
+    "@vitejs/plugin-vue": "^6.0.10",
+    "naive-ui": "^2.38.0",
+    "typescript": "npm:@typescript/typescript6@^6.0.2",
+    "vite": "^8.3.5",
+    "vue": "3.5.44",
+    "vue-tsc": "^3.3.14"
+  }
+}

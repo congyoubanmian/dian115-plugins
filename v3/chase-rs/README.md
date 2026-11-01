@@ -14,7 +14,7 @@ find v3/chase-rs -name '*.js' -not -path '*/node_modules/*' -exec node --check {
 
 # 官方黑盒检查 + 打包（包必须在源码目录外）
 node v3-kit/conformance/project-check.mjs v3/chase-rs
-node v3-kit/conformance/pack.mjs v3/chase-rs dist/chase-rs-0.1.9.dian115p
+node v3-kit/conformance/pack.mjs v3/chase-rs dist/chase-rs-0.1.10.dian115p
 ```
 
 `package.json` 只声明 `{"type":"module"}`：宿主 v3 直接 import ESM，本地

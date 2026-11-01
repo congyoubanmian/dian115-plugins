@@ -2,7 +2,8 @@ name: Release v3 plugins
 
 # dian115 插件平台 v3 的打包与发布流水线（与旧插件 release-*.yml 互不影响）。
 #
-# - 推 `v3-*` 标签：拉官方 v3 套件 → project-check → 打包三个 .dian115p →
+# - 推 `v3-*` 标签：拉官方 v3 套件 → 构建 UI（npm ci + npm run build，产物 v3/<plugin>/ui/）
+#   → project-check → 打包三个 .dian115p → 校验 UI 产物可复现 + 包内无 node_modules →
 #   创建/更新 Release（附包 + SHA256SUMS.txt + 更新后的市场索引）→
 #   把 v3-market-index.json 的 source_url/sha256 回写 main（[skip ci]）。
 # - 手动触发（workflow_dispatch）：只跑检查 + 打包 + 上传 artifact，不建 Release。
@@ -43,12 +44,41 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '24'
+          # npm 缓存：缓存键由 v3-ui/package-lock.json 决定，锁文件不变就命中缓存。
+          cache: npm
+          cache-dependency-path: v3-ui/package-lock.json
 
       - name: Fetch dian115 v3 kit
         run: bash scripts/fetch-v3-kit.sh
 
+      # ── 构建 UI（Vue 3）─────────────────────────────────────────────────
+      # npm ci 严格按入库的 v3-ui/package-lock.json 安装（锁文件生效：不解析新版本，
+      # 不改动锁文件）；npm run build 把 v3-ui/src/<plugin>/ 打成 v3/<plugin>/ui/page.js，
+      # 也就是清单 ui.entry 指向、宿主直接 import 的那个文件。
+      - name: 安装 UI 依赖（npm ci）
+        working-directory: v3-ui
+        run: npm ci
+
+      - name: 构建 UI（npm run build → v3/<plugin>/ui/）
+        working-directory: v3-ui
+        run: npm run build
+
+      # v3-build.sh 内部会再跑一次 scripts/v3-build-ui.sh（幂等，同样字节），
+      # 然后才 project-check → pack：界面产物必须先于打包存在。
       - name: Build packages (project-check + pack + sha256)
         run: bash scripts/v3-build.sh
+
+      # 产物是入库的，CI 必须能复现本地那份：重建结果与 git 里的版本不一致就报错
+      # （源码改了没重建、或构建不可重复）。
+      - name: 校验 UI 产物可复现（重建结果 == 入库版本）
+        run: bash scripts/v3-verify-ui-artifacts.sh
+
+      # 包里不能有 node_modules（依赖只装在构建机），清单入口必须齐全。
+      - name: 检查包内容（不含 node_modules）
+        run: |
+          for pkg in dist/*.dian115p; do
+            node scripts/v3-pack-check.mjs "$pkg"
+          done
 
       - name: Prepare release files
         run: |

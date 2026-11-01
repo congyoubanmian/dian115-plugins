@@ -8,7 +8,7 @@ import {
   neteaseSongUrl, qqSearch, qqSongUrl, resolveSongUrl, loadCookies, saveCookies,
 } from '../lib/music-api.js'
 import { SEARCH_URL, SONG_URL_API, QR_UNIKEY_URL, QR_LOGIN_URL, PLAYLIST_DETAIL_URL, SONG_DETAIL_URL, CHROME_UA } from '../lib/eapi.js'
-import { QQ_SEARCH_API, QQ_MUSICU, CHROME_UA as QQ_UA } from '../lib/qq.js'
+import { QQ_SEARCH_API, QQ_MUSICU, CHROME_UA as QQ_UA, QQ_API_UA, QQ_STREAM_FALLBACK_DOMAIN } from '../lib/qq.js'
 import { cryptoAdapter } from '../jobs/runtime.js'
 import { createKv } from '../lib/kv.js'
 import { neteaseCookieHeader, qqCookieHeader } from '../lib/cookies.js'
@@ -219,32 +219,58 @@ test('qqSearch sends the exact query and parses songs', async () => {
   assert.equal(request.headers.cookie, '', '空 jar → 空 cookie 头')
 })
 
-test('qqSongUrl posts the ladder body and picks the first http purl', async () => {
+test('qqSongUrl reads media_mid then requests the vkey ladder quality by quality', async () => {
   const http = fakeHttp([
-    (options) => (options.url === QQ_MUSICU ? { body: '{"req_1":{"data":{"midurlinfo":[{"purl":""},{"purl":"https://dl/M500.flac"}]}}}' } : null),
+    (options) => (options.url === QQ_MUSICU && String(options.body).includes('music.pf_song_detail_svr')
+      ? { body: '{"req_0":{"data":{"track_info":{"mid":"MID","file":{"media_mid":"MEDIA","size_flac":11,"size_320mp3":22,"size_128mp3":33}}}}}' }
+      : null),
+    (options) => (options.url === QQ_MUSICU
+      ? { body: '{"req_0":{"data":{"sip":["http://isure.stream.qqmusic.qq.com/"],"midurlinfo":[{"songmid":"MID","purl":"M800MIDMEDIA.mp3?vkey=9"}]}}}' }
+      : null),
   ])
   const deps = host(http)
   await saveCookies(deps.kv, 'qq', { uin: 'o0012345678', qqmusic_key: '@K' })
   const song = await qqSongUrl(deps, 'MID', '320')
-  // 裁剪后 ladder = [M800, M500]；M800 的 purl 为空 → 命中第二条 M500。
-  assert.equal(song.url, 'https://dl/M500.flac')
-  assert.equal(song.level, 'M500')
+  assert.equal(song.url, 'http://isure.stream.qqmusic.qq.com/M800MIDMEDIA.mp3?vkey=9', '相对 purl 拼 sip 域名')
+  assert.equal(song.level, 'M800')
   assert.equal(song.ext, 'mp3')
-  const request = http.calls[0]
-  assert.equal(request.method, 'POST')
-  const body = JSON.parse(request.body)
-  assert.deepEqual(body.req_1.param.filename, [
-    'M800MIDMID.mp3',
-    'M500MIDMID.mp3',
-  ], '320 档位只请求 M800/M500 两档')
-  assert.equal(body.comm.uin, '012345678', 'uin 去 o/0 前缀（o0012345678 → 012345678）')
-  assert.equal(request.headers.cookie, qqCookieHeader({ uin: 'o0012345678', qqmusic_key: '@K' }))
+  assert.equal(song.size, 22, 'size 取详情中对应档位')
+
+  assert.equal(http.calls.length, 2, '一次详情 + 一次 vkey（M800 命中即停）')
+  const [detailRequest, vkeyRequest] = http.calls
+  assert.match(detailRequest.body, /"module":"music\.pf_song_detail_svr"/)
+  assert.equal(detailRequest.headers['user-agent'], QQ_API_UA)
+  const body = JSON.parse(vkeyRequest.body)
+  assert.deepEqual(body.req_0.param.filename, ['M800MIDMEDIA.mp3'], '文件名用 media_mid，一次只请求一档')
+  assert.equal(body.comm.authst, '@K')
+  assert.equal(body.comm.qq, '012345678', 'uin 去 o/0 前缀（o0012345678 → 012345678）')
+  assert.equal(vkeyRequest.headers.cookie, qqCookieHeader({ uin: 'o0012345678', qqmusic_key: '@K' }))
+})
+
+test('qqSongUrl requests only 128k anonymously and sends no cookie', async () => {
+  const http = fakeHttp([
+    (options) => (options.url === QQ_MUSICU && String(options.body).includes('music.pf_song_detail_svr')
+      ? { body: '{"req_0":{"data":{}}}' }
+      : null),
+    (options) => (options.url === QQ_MUSICU
+      ? { body: '{"req_0":{"data":{"midurlinfo":[{"songmid":"MID","purl":"M500MIDMID.mp3"}]}}}' }
+      : null),
+  ])
+  const deps = host(http)
+  const song = await qqSongUrl(deps, 'MID', 'master')
+  assert.equal(song.url, `${QQ_STREAM_FALLBACK_DOMAIN}M500MIDMID.mp3`)
+  assert.equal(song.level, 'M500')
+  const body = JSON.parse(http.calls[1].body)
+  assert.equal(body.req_0.module, 'vkey.GetVkeyServer')
+  assert.equal(body.req_0.method, 'CgiGetVkey')
+  assert.equal(body.req_0.param.uin, '0')
+  assert.equal(http.calls[1].headers.cookie, undefined, '匿名请求不带 cookie')
 })
 
 test('resolveSongUrl dispatches by source', async () => {
   const http = fakeHttp([
     (options) => (options.url === SONG_URL_API ? { body: '{"data":[{"url":"https://n.flac","type":"flac","level":"lossless"}]}' } : null),
-    (options) => (options.url === QQ_MUSICU ? { body: '{"req_1":{"data":{"midurlinfo":[{"purl":"https://q.mp3"}]}}}' } : null),
+    (options) => (options.url === QQ_MUSICU ? { body: '{"req_0":{"data":{"midurlinfo":[{"purl":"https://q.mp3"}]}}}' } : null),
   ])
   const deps = host(http)
   const netease = await resolveSongUrl(deps, 'netease', '1', 'lossless')

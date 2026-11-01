@@ -1,0 +1,691 @@
+/* 追剧管家 —— 页面样式。
+ *
+ * 所有选择器都挂在 .chase3（页面根节点）下面：v3 页面是直接挂进宿主 DOM 的，
+ * 不能写 body/html 之类全局选择器，也不能覆盖宿主自己的样式。
+ * 颜色与间距优先用宿主 CSS 变量（--app-bg / --app-surface / --app-text /
+ * --app-text-secondary / --app-border / --app-accent），语义色用 --c-* 兜底。
+ *
+ * 这份样式逐条对应原生 JS 版页面（v3-ui/legacy/chase-rs/page.native.js 的 CSS_TEXT），
+ * 改写时按同名的类名迁移，视觉与信息密度保持一致。
+ */
+
+.chase3 {
+  display: grid;
+  gap: 16px;
+  padding: 4px;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  /* 页面占满内容区并在插件区域内滚动；sticky 相对插件区域生效。 */
+  height: 100%;
+  overflow: auto;
+  box-sizing: border-box;
+  color: var(--app-text, inherit);
+  font-size: 14px;
+}
+
+.chase3 h2 {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 600;
+}
+.chase3 h3 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+}
+.chase3 h4 {
+  margin: 14px 0 6px;
+  font-size: 13px;
+  color: var(--app-text-secondary, inherit);
+}
+.chase3 h5 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+/* ── 页头 ─────────────────────────────────────────────── */
+
+.chase3 .c-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px 16px;
+  flex-wrap: wrap;
+}
+.chase3 .c-brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+.chase3 .c-brand-icon {
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  display: grid;
+  place-items: center;
+  flex: none;
+  color: var(--app-accent, #2080f0);
+  background: color-mix(in srgb, var(--app-accent, #2080f0) 12%, transparent);
+}
+.chase3 .c-brand-text p {
+  margin: 2px 0 0;
+  color: var(--app-text-secondary, inherit);
+  font-size: 13px;
+}
+.chase3 .c-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.chase3 .c-capsule .n-tag__content {
+  font-size: 12px;
+  font-weight: 500;
+}
+.chase3 .c-icon-btn.n-button {
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border-radius: 50%;
+}
+
+/* ── 进度 / 结果行 ───────────────────────────────────── */
+
+.chase3 .c-progress {
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--app-accent, #2080f0);
+  font-size: 13px;
+}
+.chase3 .c-spinner {
+  width: 14px;
+  height: 14px;
+  flex: none;
+  border-radius: 50%;
+  border: 2px solid color-mix(in srgb, var(--app-accent, #2080f0) 25%, transparent);
+  border-top-color: var(--app-accent, #2080f0);
+  animation: chase3-spin 0.8s linear infinite;
+}
+@keyframes chase3-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.chase3 .c-result {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border-radius: 12px;
+  padding: 10px 14px;
+  font-size: 13px;
+}
+.chase3 .c-result-ok {
+  color: var(--c-success, #18a058);
+  background: color-mix(in srgb, var(--c-success, #18a058) 12%, transparent);
+}
+.chase3 .c-result-err {
+  color: var(--c-error, #d03050);
+  background: color-mix(in srgb, var(--c-error, #d03050) 12%, transparent);
+}
+
+/* ── 卡片 ─────────────────────────────────────────────── */
+
+.chase3 .card {
+  background: var(--app-surface, transparent);
+  border: 1px solid var(--app-border, currentColor);
+  border-radius: 12px;
+  padding: 16px;
+  display: grid;
+  gap: 10px;
+}
+.chase3 .card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.chase3 .card-sub {
+  margin: 2px 0 0;
+  color: var(--app-text-secondary, inherit);
+  font-size: 12px;
+}
+.chase3 .card-foot {
+  margin: 0;
+  color: var(--app-text-secondary, inherit);
+  font-size: 12px;
+}
+.chase3 .card-head-meta {
+  color: var(--app-text-secondary, inherit);
+  font-size: 12px;
+}
+
+/* ── 指标瓦片 ─────────────────────────────────────────── */
+
+.chase3 .c-tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+  gap: 10px;
+}
+.chase3 .tile {
+  background: var(--app-surface, transparent);
+  border: 1px solid var(--app-border, currentColor);
+  border-radius: 12px;
+  padding: 12px;
+}
+.chase3 .tile-value {
+  font-size: 22px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.chase3 .tile-label {
+  margin-top: 2px;
+  color: var(--app-text-secondary, inherit);
+  font-size: 12px;
+}
+.chase3 .tile-primary .tile-value {
+  color: var(--app-accent, #2080f0);
+}
+.chase3 .tile-success .tile-value {
+  color: var(--c-success, #18a058);
+}
+.chase3 .tile-warning .tile-value {
+  color: var(--c-warning, #f0a020);
+}
+.chase3 .tile-error .tile-value {
+  color: var(--c-error, #d03050);
+}
+
+/* ── 告警条 ───────────────────────────────────────────── */
+
+.chase3 .alert {
+  border-radius: 10px;
+  padding: 10px 14px;
+  font-size: 13px;
+  line-height: 1.6;
+}
+.chase3 .alert-warning {
+  color: var(--c-warning, #f0a020);
+  background: color-mix(in srgb, var(--c-warning, #f0a020) 12%, transparent);
+}
+.chase3 .alert-error {
+  color: var(--c-error, #d03050);
+  background: color-mix(in srgb, var(--c-error, #d03050) 12%, transparent);
+}
+.chase3 .alert-info {
+  color: var(--app-accent, #2080f0);
+  background: color-mix(in srgb, var(--app-accent, #2080f0) 10%, transparent);
+}
+
+/* ── 对齐结果卡 ───────────────────────────────────────── */
+
+.chase3 .c-pills {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.chase3 .pill {
+  font: inherit;
+  font-size: 12px;
+  color: inherit;
+  background: transparent;
+  border: 1px solid var(--app-border, currentColor);
+  border-radius: 999px;
+  padding: 4px 12px;
+  cursor: pointer;
+}
+.chase3 .pill:hover {
+  border-color: var(--app-accent, currentColor);
+  color: var(--app-accent, inherit);
+}
+.chase3 .pill.active {
+  color: var(--app-bg, #fff);
+  background: var(--app-accent, #2080f0);
+  border-color: var(--app-accent, #2080f0);
+}
+.chase3 .c-table-wrap {
+  overflow-x: auto;
+}
+.chase3 .c-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.chase3 .c-table th,
+.chase3 .c-table td {
+  text-align: left;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--app-border, currentColor);
+  vertical-align: top;
+}
+.chase3 .c-table th.num,
+.chase3 .c-table td.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.chase3 .show-title {
+  font-weight: 500;
+}
+.chase3 .show-sub {
+  margin-top: 2px;
+  color: var(--app-text-secondary, inherit);
+  font-size: 12px;
+}
+.chase3 .gap-num {
+  color: var(--app-accent, #2080f0);
+  font-weight: 600;
+}
+.chase3 .gap-probe {
+  color: var(--app-accent, #2080f0);
+}
+.chase3 .muted {
+  color: var(--app-text-secondary, inherit);
+}
+.chase3 .muted-line {
+  margin: 0;
+  color: var(--app-text-secondary, inherit);
+  font-size: 13px;
+}
+.chase3 .action-link {
+  color: var(--app-accent, #2080f0);
+}
+.chase3 .action-dry {
+  color: var(--c-warning, #f0a020);
+}
+.chase3 .c-badges {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.chase3 .badge {
+  display: inline-flex;
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.chase3 .badge-patched {
+  color: var(--c-success, #18a058);
+  background: color-mix(in srgb, var(--c-success, #18a058) 14%, transparent);
+}
+.chase3 .badge-failed {
+  color: var(--c-error, #d03050);
+  background: color-mix(in srgb, var(--c-error, #d03050) 14%, transparent);
+}
+.chase3 .badge-absent,
+.chase3 .badge-empty-season,
+.chase3 .badge-unknown-coverage {
+  color: var(--c-warning, #f0a020);
+  background: color-mix(in srgb, var(--c-warning, #f0a020) 14%, transparent);
+}
+.chase3 .badge-target-unknown {
+  color: var(--app-accent, #2080f0);
+  background: color-mix(in srgb, var(--app-accent, #2080f0) 12%, transparent);
+}
+.chase3 .badge-no-gap,
+.chase3 .badge-neutral,
+.chase3 .badge-other {
+  color: var(--app-text-secondary, inherit);
+  background: color-mix(in srgb, var(--app-text-secondary, #8a919c) 14%, transparent);
+}
+.chase3 .badge-info {
+  color: var(--app-accent, #2080f0);
+  background: color-mix(in srgb, var(--app-accent, #2080f0) 12%, transparent);
+}
+.chase3 .badge-third {
+  color: #7c5cfc;
+  background: color-mix(in srgb, #7c5cfc 14%, transparent);
+}
+.chase3 .reason-text {
+  margin-top: 4px;
+  color: var(--app-text-secondary, inherit);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.chase3 .c-empty {
+  display: grid;
+  justify-items: start;
+  gap: 10px;
+  color: var(--app-text-secondary, inherit);
+  font-size: 13px;
+}
+
+/* ── 双栏 ─────────────────────────────────────────────── */
+
+.chase3 .c-duo {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  align-items: start;
+}
+@media (max-width: 1000px) {
+  .chase3 .c-duo {
+    grid-template-columns: 1fr;
+  }
+}
+.chase3 .c-trim-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 12px;
+}
+.chase3 .c-trim-list li {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  border-bottom: 1px dashed var(--app-border, currentColor);
+  padding-bottom: 12px;
+}
+.chase3 .trim-delta {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  color: var(--c-warning, #f0a020);
+  font-weight: 500;
+}
+.chase3 .trim-ids {
+  margin-top: 2px;
+  color: var(--app-text-secondary, inherit);
+  font-size: 11px;
+}
+
+/* ── 追剧日历 ─────────────────────────────────────────── */
+
+.chase3 .c-day-chips {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.chase3 .day-chip {
+  display: grid;
+  justify-items: center;
+  gap: 2px;
+  border: 1px solid var(--app-border, currentColor);
+  border-radius: 10px;
+  padding: 6px 10px;
+  font-size: 12px;
+}
+.chase3 .day-chip.today {
+  color: var(--app-accent, #2080f0);
+  border-color: var(--app-accent, #2080f0);
+}
+.chase3 .day-chip-label {
+  color: var(--app-text-secondary, inherit);
+  font-size: 11px;
+}
+.chase3 .day-chip.today .day-chip-label {
+  color: inherit;
+}
+.chase3 .c-air-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+.chase3 .c-air-list li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.chase3 .air-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--app-text-secondary, currentColor);
+  flex: none;
+}
+.chase3 .air-dot.today {
+  background: var(--app-accent, #2080f0);
+}
+.chase3 .air-title {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.chase3 .air-time {
+  color: var(--app-text-secondary, inherit);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── 探测诊断 ─────────────────────────────────────────── */
+
+.chase3 .c-probe-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  background: transparent;
+  border: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  padding: 0;
+  text-align: left;
+}
+.chase3 .c-probe-title {
+  font-weight: 600;
+}
+.chase3 .c-probe-sub {
+  flex: 1;
+  color: var(--app-text-secondary, inherit);
+  font-size: 12px;
+}
+.chase3 .c-chevron {
+  transition: transform 0.15s ease;
+}
+.chase3 .c-chevron.open {
+  transform: rotate(180deg);
+}
+.chase3 .c-probe-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 12px;
+}
+.chase3 .c-probe-panel {
+  border: 1px solid var(--app-border, currentColor);
+  border-radius: 10px;
+  padding: 10px;
+  display: grid;
+  gap: 6px;
+}
+.chase3 .c-probe-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.chase3 .c-probe-shape {
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.chase3 .c-probe-hint {
+  color: var(--app-text-secondary, inherit);
+  font-size: 11px;
+}
+.chase3 .c-probe-sample {
+  margin: 0;
+  max-height: 140px;
+  overflow: auto;
+  font-size: 11px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  background: var(--app-bg, transparent);
+  border: 1px solid var(--app-border, currentColor);
+  border-radius: 8px;
+  padding: 8px;
+}
+.chase3 .c-diag-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 4px;
+  font-size: 12px;
+}
+.chase3 .c-diag-list li {
+  overflow-wrap: anywhere;
+}
+.chase3 .mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+}
+.chase3 .c-diag-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.chase3 .c-diag-text {
+  width: 100%;
+  box-sizing: border-box;
+  font: 12px ui-monospace, SFMono-Regular, Menlo, monospace;
+  background: var(--app-bg, transparent);
+  color: inherit;
+  border: 1px solid var(--app-border, currentColor);
+  border-radius: 8px;
+  padding: 8px;
+  resize: vertical;
+}
+
+/* ── 最近动作 ─────────────────────────────────────────── */
+
+.chase3 .c-log-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 6px;
+  font-size: 13px;
+}
+.chase3 .log-time {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--app-text-secondary, inherit);
+  margin-right: 8px;
+}
+.chase3 .c-foot {
+  color: var(--app-text-secondary, inherit);
+  font-size: 12px;
+}
+.chase3 .next-line {
+  color: var(--app-text-secondary, inherit);
+  font-size: 13px;
+}
+.chase3 .c-inline-actions {
+  display: flex;
+  gap: 8px;
+}
+
+/* ── 设置抽屉 ─────────────────────────────────────────── */
+
+.chase3 .c-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.4);
+  display: grid;
+  justify-items: end;
+  z-index: 60;
+}
+.chase3 .c-drawer {
+  width: min(420px, 92vw);
+  height: 100%;
+  background: var(--app-surface, #fff);
+  color: var(--app-text, inherit);
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  box-shadow: -8px 0 24px rgba(0, 0, 0, 0.15);
+}
+.chase3 .c-drawer-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px;
+  border-bottom: 1px solid var(--app-border, currentColor);
+}
+.chase3 .c-drawer-body {
+  padding: 16px;
+  overflow-y: auto;
+  display: grid;
+  gap: 14px;
+  align-content: start;
+}
+.chase3 .c-form-row {
+  display: grid;
+  gap: 4px;
+}
+.chase3 .c-form-label {
+  font-size: 13px;
+  font-weight: 500;
+}
+.chase3 .c-form-row input[type='number'],
+.chase3 .c-form-row select {
+  font: inherit;
+  color: inherit;
+  background: var(--app-bg, transparent);
+  border: 1px solid var(--app-border, currentColor);
+  border-radius: 8px;
+  padding: 8px;
+  min-height: 38px;
+}
+.chase3 .c-form-row input[type='checkbox'] {
+  width: 18px;
+  height: 18px;
+}
+.chase3 .c-form-help {
+  color: var(--app-text-secondary, inherit);
+  font-size: 11px;
+}
+.chase3 .c-drawer-foot {
+  padding: 16px;
+  border-top: 1px solid var(--app-border, currentColor);
+  display: grid;
+  gap: 10px;
+}
+.chase3 .c-changed {
+  font-size: 12px;
+}
+.chase3 .c-drawer-buttons {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+/* ── 提示条 ───────────────────────────────────────────── */
+
+.chase3 .c-toasts {
+  position: fixed;
+  top: 16px;
+  right: 16px;
+  display: grid;
+  gap: 8px;
+  z-index: 70;
+  max-width: min(420px, 80vw);
+}
+.chase3 .toast {
+  border-radius: 10px;
+  padding: 10px 14px;
+  font-size: 13px;
+  color: var(--app-bg, #fff);
+  background: var(--app-text, #333);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+}
+.chase3 .toast-success {
+  background: var(--c-success, #18a058);
+}
+.chase3 .toast-error {
+  background: var(--c-error, #d03050);
+}
+.chase3 .toast-warning {
+  background: var(--c-warning, #f0a020);
+}
+.chase3 .toast-info {
+  background: var(--app-accent, #2080f0);
+}

@@ -39,3 +39,13 @@ v3-kit/
 
 # 发布流水线生成的索引副本（不入库）
 v3-market-index.release.json
+
+# v3-ui（三个 v3 插件的 Vue 3 界面源码与共享构建底座）
+# - node_modules 不入库（上面的 **/node_modules/ 已覆盖，这里写明意图）
+# - v3-ui/package-lock.json **要**入库：它是可重复安装（npm ci）的保证
+# - 构建产物 v3/<plugin>/ui/page.js 与 chunks/ **要**入库：宿主按 ui.entry 加载它，
+#   CI 再用 scripts/v3-build-ui.sh 重建并比对，保证产物与源码一致
+v3-ui/node_modules/
+v3-ui/dist/
+v3-ui/.vite/
+*.tsbuildinfo

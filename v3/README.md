@@ -4,13 +4,15 @@
 
 | 插件 | v3 源码目录 | 版本 | 任务数 | 旧实现 |
 | --- | --- | --- | --- | --- |
-| 追剧管家 `chase.rs` | `v3/chase-rs/` | 0.1.9 | 4 | `plugins/chase-rs`（0.1.9） |
-| 音乐下载 `music.rs` | `v3/music-rs/` | 1.0.0 | 2 + 1 event | `plugins/music-rs`（0.3.19） |
-| 豆瓣中心 `douban.rs` | `v3/douban-rs/` | 1.0.0 | 16 | `plugins/douban-rs`（0.2.4） |
+| 追剧管家 `chase.rs` | `v3/chase-rs/` | 0.1.10 | 4 | `plugins/chase-rs`（0.1.9） |
+| 音乐下载 `music.rs` | `v3/music-rs/` | 1.0.1 | 2 + 1 event | `plugins/music-rs`（0.3.19） |
+| 豆瓣中心 `douban.rs` | `v3/douban-rs/` | 1.1.0 | 16 | `plugins/douban-rs`（0.2.4） |
 
 约定：宿主插件 API 为 **3.5**（三个 `plugin.json` 的 `requires.api` 均为 `"3.5"`）；后台是宿主内 ESM
 JavaScript（无 `require`、无 Node 内置模块、无子进程），页面是 `ui/page.js` 导出的
-`mount(el, ctx)`，UI 只用原生 JS + DOM，无 npm 依赖。旧的 `plugins/` 源码保持原样，未修改。
+`mount(el, ctx)`。页面已迁到 **Vue 3**（vue / naive-ui / lucide 全部自打包进 `ui/page.js`，
+不依赖宿主共享单例）；界面源码与依赖在仓库根的 `v3-ui/`，见[「界面（Vue 3）」](#界面vue-3)。
+旧的 `plugins/` 源码保持原样，未修改。
 
 > **验证边界**：本机没有可用的 DIAN115 宿主（授权被锁）。已完成的是离线检查：`project-check`、
 > `node --check`、`node --test`、`pack.mjs`、索引 JSON 校验。**安装、inspect/确认、定时任务、
@@ -22,12 +24,15 @@ JavaScript（无 `require`、无 Node 内置模块、无子进程），页面是
 v3/chase-rs/            v3 插件源码（plugin.json + jobs/ + lib/ + ui/ + tests/）
 v3/music-rs/
 v3/douban-rs/
+v3-ui/                  三个插件的 Vue 3 界面源码 + 共享构建底座（依赖在 v3-ui/node_modules，不入库）
 v3-market-index.json    v3 市场索引（schema_version 3，三个插件，delivery=source）
-scripts/v3-build.sh     一键 project-check → pack → sha256（幂等）
+scripts/v3-build-ui.sh  一键构建 Vue 界面 → v3/<plugin>/ui/（幂等）
+scripts/v3-build.sh     一键 构建界面 → project-check → pack → sha256（幂等）
 dist/                   构建产物 .dian115p（本地生成，不提交；现有 .gitignore 的 *.d115p 不匹配该后缀）
 ```
 
-各插件目录的 `package.json` 只声明 `{"type":"module"}`，让该目录 `.js` 按 ESM 解析；没有任何依赖。
+各插件目录的 `package.json` 只声明 `{"type":"module"}`，让该目录 `.js` 按 ESM 解析；插件目录里
+没有 npm 依赖——界面依赖都打在 `ui/page.js` 里（见「界面（Vue 3）」）。
 
 ## 旧 → 新映射
 
@@ -56,7 +61,7 @@ dist/                   构建产物 .dian115p（本地生成，不提交；现�
 
 ## 各插件 covered / gaps
 
-### 追剧管家（`v3/chase-rs`，chase.rs 0.1.9）
+### 追剧管家（`v3/chase-rs`，chase.rs 0.1.10）
 
 **Covered（离线可验证）**
 
@@ -67,7 +72,9 @@ dist/                   构建产物 .dian115p（本地生成，不提交；现�
 - 订阅池读取（`media_type=tv`，≤4 页 × 500）、追剧日历、每日日报（`ctx.notify` + `dedupe_key`）。
 - 状态文档：默认值/上限裁剪/256KB 逐级降级，`expected_revision` CAS；404 两次确认视为全新安装，
   其他读取失败不落盘。
-- 清单 `settings[]` 覆盖旧页面 12 个用户配置项；页面用原生 JS 重写，保留指标瓦片、看板与移动端单栏。
+- 清单 `settings[]` 覆盖旧页面 12 个用户配置项；页面用 Vue 3 重写（源码 `v3-ui/src/chase-rs/`），
+  保留指标瓦片（`StatTile.vue`）、看板（`AlignCard.vue`）与移动端单栏（`styles.css` 里
+  `@media (max-width: 1000px)` 收成单列）。
 - 117 个 `node --test` 用例通过。
 
 **Gaps**
@@ -78,7 +85,7 @@ dist/                   构建产物 .dian115p（本地生成，不提交；现�
 - 旧版没有事件订阅，v3 也不声明 `events[]`；没有新增消息/回调能力。
 - 每日报告的实际渠道取决于宿主通知配置；旧版经宿主通知端点投递，本次未在真机核对渠道与按钮渲染。
 
-### 音乐下载（`v3/music-rs`，music.rs 1.0.0）
+### 音乐下载（`v3/music-rs`，music.rs 1.0.1）
 
 **Covered（离线可验证）**
 
@@ -113,7 +120,7 @@ dist/                   构建产物 .dian115p（本地生成，不提交；现�
   实现，交给 music-rs 负责人决定是改成索引首条还是注入固定时钟。
 - 真机上的扫码、eapi 取链、下载落盘、CD2 move 与通知按钮回调均未验证。
 
-### 豆瓣中心（`v3/douban-rs`，douban.rs 1.0.0）
+### 豆瓣中心（`v3/douban-rs`，douban.rs 1.1.0）
 
 **Covered（离线可验证）**
 
@@ -128,13 +135,15 @@ dist/                   构建产物 .dian115p（本地生成，不提交；现�
   `get-poster` 任务与 64 张内存缓存。
 - CookieCloud：宿主内置服务为主，自建服务（地址/UUID/口令 + 旧解密链）与手动 Cookie 回退；45 分钟缓存。
 - 16 个任务（定时刷新、想看同步、刷新、同步、订阅、海报、CookieCloud/通知自检、维护动作），
-  均带 `recover`；页面用原生 JS 重写榜单/海报墙、观察队列/想看、历史日志、设置表单。
+  均带 `recover`；页面用 Vue 3 重写（源码 `v3-ui/src/douban-rs/`）：榜单/海报墙、观察队列/想看、
+  历史日志、设置表单四个面板。
 - 112 个 `node --test` 用例通过（fixtures 复用旧仓库脱敏样本）。
 
 **Gaps**
 
-- 旧 Vue 前端已删除，页面是原生 JS 重写：没有逐组件像素级对照；旧版的动画/过渡、拖拽排序、
-  海报点击放大、历史/日志分页不在页面里（历史按 `max_history` 落盘裁剪，日志只留最近 40 条）。
+- 页面已从旧 Vue 源码移植成 Vue 3（`v3-ui/src/douban-rs/`），**没有在浏览器里做过逐组件像素级对照**
+  （只有最小 DOM 冒烟，见「界面（Vue 3）」）；旧版的拖拽排序、历史/日志分页仍不在页面里
+  （历史按 `max_history` 落盘裁剪，日志只留最近 40 条）。海报点击放大已补上（`PosterLightbox.vue`）。
 - 没有「一键处理全部到期订阅」：后端没有独立 process-due 任务，页面只提供逐条 `subscribe-now`，
   批量到期由定时 `wish-sync` 处理。
 - 通知按钮回调（旧版本就没有可用回调）未在页面阶段补上；`send-test` 只做通知自检。
@@ -149,9 +158,116 @@ dist/                   构建产物 .dian115p（本地生成，不提交；现�
   CD2、站点登录都只在代码与离线测试层面成立。
 - `project-check.mjs` 只检查清单、入口与源码结构；它自己会打印「不证明安全或站点业务成功」，权限与业务
   仍由宿主在安装/运行时检查。
-- 页面没有 DOM/浏览器测试：`mount(el, ctx)` 的渲染、事件绑定与清理只在代码层审查，未在宿主或
-  jsdom 中跑过。
-- 市场索引的 `source_url` 目前是 dist 相对路径占位（见下节），不满足官方 schema 的绝对 `http(s)` 要求。
+- 页面没有浏览器级测试：只有最小 DOM 垫片的冒烟挂载（`v3-ui/scripts/smoke-mount.mjs`，验证
+  `mount`、主题切换、清理函数），`mount(el, ctx)` 的完整渲染与事件绑定未在真浏览器或宿主里跑过。
+- 市场索引的 `source_url` 指向本次 Release（`v3-2026.11.01-2`）的下载地址；`sha256` 是本地
+  `v3-build.sh` 按 `dist/` 实算的值，发布流水线会用同一份源码重算并回写。
+
+## 界面（Vue 3）
+
+三个插件的页面已迁到 Vue 3：源码在 `v3-ui/src/<plugin>/`，构建产物直接落在
+`v3/<plugin>/ui/page.js`——也就是清单 `ui.entry` 指向的那个文件。宿主照旧
+`import` 这个 ESM 并调用它导出的 `mount(el, ctx)`，契约没有变（见
+`v3-kit/docs/ui-theme.md`）。
+
+### 目录结构
+
+```
+v3-ui/                       共享依赖 + 三个插件的 Vue 源码
+  src/shared/                ctx 注入、主题桥（三个插件共用）
+  src/chase-rs/              追剧管家页面（main.ts + AppPage.vue）
+  src/music-rs/              音乐下载页面
+  src/douban-rs/             豆瓣中心页面
+  legacy/                    改写前的原生 JS 版页面（行为基准，只读）
+  plugins/                   构建期约束（scoped 样式守卫、CSS 内联）
+  package-lock.json          入库；npm ci 按它装，保证可重复
+v3/<plugin>/ui/page.js       构建产物（入库）
+scripts/v3-build-ui.sh       构建界面（chase → music → douban，幂等）
+scripts/v3-build.sh          构建界面 → project-check → pack → sha256
+scripts/v3-verify-ui-artifacts.sh  比对入库产物与当前重建结果
+scripts/v3-pack-check.mjs    查包：不能有 node_modules，清单入口要齐全
+```
+
+### 构建命令
+
+```sh
+cd v3-ui && npm ci           # 按入库的 package-lock.json 安装，可重复
+bash scripts/v3-build-ui.sh  # 仓库根一键：chase → music → douban，幂等
+(cd v3-ui && npm run typecheck)   # vue-tsc 类型检查
+node v3-ui/scripts/smoke-mount.mjs chase-rs   # 最小 DOM 冒烟挂载
+```
+
+### 与旧 Federation 的差异
+
+| 维度 | 旧 schema 1（Federation） | 现在（Vue 3 自打包 ESM） |
+| --- | --- | --- |
+| 加载方式 | 宿主加载 `remoteEntry.js`，再取远程模块 | 宿主直接 `import ui/page.js` |
+| 依赖 | `hostSharedDependencies` 声明 vue/naive-ui/lucide 为宿主单例 | 全部打进 `page.js`，不依赖宿主共享单例 |
+| 产物 | `frontend/dist/assets/remoteEntry.js` + `assets/` | `v3/<plugin>/ui/page.js`（+ `chunks/`） |
+| 样式 | 由宿主的样式系统提供 | SFC 的 `<style scoped>`，构建时内联进 `page.js` |
+| 数据通道 | `props.api` / `props.runtimeState` 桥接 | `ctx.api` / `ctx.storage` / `ctx.settings` / `ctx.tasks` / `ctx.http` 等 |
+
+### mount(ctx) 契约
+
+入口 `src/<plugin>/main.ts` 导出 `mount(el, ctx)`：把 `ctx` 注入组件树、交给
+naive-ui 的 `n-config-provider`、挂载到宿主给的容器，并返回一个清理函数（退订主题 +
+卸载 app）。宿主关闭页面时调用它。页面所有数据与能力只走 `ctx`，不直接 fetch 宿主接口。
+
+### 主题与 CSS 变量
+
+`ctx.theme.mode`（light/dark）经 `ctx.theme.subscribe(fn)` 桥接成响应式状态，驱动
+naive-ui 的 `n-config-provider`；订阅在卸载时退订。颜色与排版用宿主 CSS 变量
+（`--app-bg` / `--app-surface` / `--app-text` / `--app-text-secondary` / `--app-border` /
+`--app-accent`）。所有 `<style>` 必须 `scoped`——构建期的守卫插件会直接报错挡住非 scoped
+的样式，防止页面样式漏进宿主页面。
+
+### 设置双入口
+
+清单 `plugin.json` 的 `settings[]` 保留（宿主在「管理」页渲染表单）；页面里用
+`ctx.settings.get()` / `ctx.settings.set()` 读写**同一份**设置，两边看到的内容一致。
+
+### 产物是否入库
+
+`v3/<plugin>/ui/page.js` **入库**（若构建产生了 `chunks/` 也一并入库；当前三个插件都只有
+`page.js`，外加 music-rs 的 `qr.js` 源码），`v3-ui/node_modules/` **不入库**。
+
+原因（两条，都指向「必须入库」）：
+
+1. 宿主按 `ui.entry` 加载该文件，`pack.mjs` 打包时直接把插件目录打成 `.dian115p`——
+   产物必须在目录里，打包才不必先跑 Node 构建。
+2. 产物入库，CI 才能做「重建结果 == 入库版本」的比对（见下节），否则无法验证
+   宿主跑的和源码是一回事。
+
+`node_modules/` 不入库：它是构建期依赖，只装在构建机上；`pack.mjs` 也会跳过 `node_modules`
+目录，`scripts/v3-pack-check.mjs` 再查一遍包内容，双保险。`.gitignore` 里
+`v3-ui/node_modules/`、`v3-ui/dist/`、`v3-ui/.vite/`、`*.tsbuildinfo` 都已排除；
+`v3-ui/package-lock.json` 则**必须入库**——它是 `npm ci` 可重复安装的保证。
+
+细节见 `v3-ui/README.md`。
+
+### CI 校验方式
+
+发布流水线 `.github/workflows/release-v3.yml` 的顺序是固定的：
+
+| 步骤 | 命令 | 挡住的问题 |
+| --- | --- | --- |
+| 安装 UI 依赖 | `npm ci`（`v3-ui/`，按入库的 `package-lock.json`） | 依赖不锁死：CI 装的和本地装的不是一套，构建结果不可复现 |
+| 构建 UI | `npm run build`（→ `v3/<plugin>/ui/`） | 产物缺失或与源码不同步 |
+| 打包 | `bash scripts/v3-build.sh`（内部再跑一次界面构建，然后 project-check → pack） | 清单/入口不对、包结构不对 |
+| 产物可复现 | `bash scripts/v3-verify-ui-artifacts.sh` | 重建结果与入库版本不一致（源码改了没重建，或构建不可重复） |
+| 包内容 | `node scripts/v3-pack-check.mjs <包>` | 包里混进 `node_modules`、清单声明的入口缺失 |
+
+其中「产物可复现」这一条比对的是**工作区与 git HEAD**：任何已暂存/未暂存/未跟踪/已删除的
+界面产物差异都会让脚本报错退出。所以「改了 `v3-ui/src/` 却忘了重新构建并提交产物」在 CI 里
+是过不去的。本地可以用同一条命令自查：
+
+```sh
+bash scripts/v3-build-ui.sh              # 重建
+bash scripts/v3-verify-ui-artifacts.sh   # 与入库版本比对（不一致就报错）
+```
+
+界面构建本身是可重复的：同一份源码 + 同一份锁文件 → 同样的字节（实测见文末[验证状态](#验证状态)）。
+`scripts/v3-build-ui.sh` 缺 `node_modules` 时会自己按锁文件跑一次 `npm ci`。
 
 ## 构建与自测
 
@@ -160,14 +276,22 @@ dist/                   构建产物 .dian115p（本地生成，不提交；现�
 ### 一键构建（幂等）
 
 ```sh
-bash scripts/v3-build.sh
+bash scripts/v3-build-ui.sh   # 先构建 Vue 界面（chase → music → douban）
+bash scripts/v3-build.sh      # 再 project-check → pack → 打印 sha256
 ```
 
-脚本对三个插件依次执行 `project-check` → `pack` → 打印 sha256。`pack.mjs` 固定文件顺序且不写时间戳，
-同一份源码重复执行得到字节相同的包；已有包会被覆盖。产物：
+`v3-build-ui.sh` 幂等（同一份源码重复构建得到同样的产物），构建后自动跑三项自检：
+入口存在、`node --check` 语法检查、最小 DOM 冒烟挂载（验证 `mount`、主题切换、清理函数）。
+缺 `v3-ui/node_modules` 时它会按入库的 `package-lock.json` 自己跑一次 `npm ci`。
+
+`v3-build.sh` 的顺序是固定的：**先 `v3-build-ui.sh`（界面），再 project-check → pack**。
+界面必须先于打包——`pack.mjs` 打的是插件目录，`ui/page.js` 就是宿主加载的入口，产物不在包里
+装上去页面就起不来。打包后还会跑 `scripts/v3-pack-check.mjs` 查包（不能有 `node_modules`、
+清单声明的入口必须齐全）。`pack.mjs` 固定文件顺序且不写时间戳，同一份源码重复执行得到字节
+相同的包；已有包会被覆盖。产物：
 
 ```
-dist/chase-rs-0.1.9.dian115p
+dist/chase-rs-0.1.10.dian115p
 dist/music-rs.dian115p
 dist/douban-rs.dian115p
 ```
@@ -175,27 +299,36 @@ dist/douban-rs.dian115p
 ### 分步命令
 
 ```sh
-# 1) 清单/入口/源码结构
+# 1) 构建 Vue 界面（产物直接落在 v3/<plugin>/ui/page.js）
+bash scripts/v3-build-ui.sh
+(cd v3-ui && npm run typecheck)                    # vue-tsc 类型检查
+node v3-ui/scripts/smoke-mount.mjs chase-rs       # 最小 DOM 冒烟挂载
+
+# 2) 清单/入口/源码结构
 node v3-kit/conformance/project-check.mjs v3/chase-rs
 node v3-kit/conformance/project-check.mjs v3/music-rs
 node v3-kit/conformance/project-check.mjs v3/douban-rs
 
-# 2) 打包（输出必须在源码目录之外；后缀必须是 .dian115p）
-node v3-kit/conformance/pack.mjs v3/chase-rs dist/chase-rs-0.1.9.dian115p
+# 3) 打包（输出必须在源码目录之外；后缀必须是 .dian115p）
+node v3-kit/conformance/pack.mjs v3/chase-rs dist/chase-rs-0.1.10.dian115p
 node v3-kit/conformance/pack.mjs v3/music-rs dist/music-rs.dian115p
 node v3-kit/conformance/pack.mjs v3/douban-rs dist/douban-rs.dian115p
+node scripts/v3-pack-check.mjs dist/chase-rs-0.1.10.dian115p v3/chase-rs   # 查包
 
-# 3) 纯逻辑单测（Node 24 下要传文件 glob，不能只传目录）
+# 4) 纯逻辑单测（Node 24 下要传文件 glob，不能只传目录）
 (cd v3/chase-rs  && node --test tests/*.test.mjs)   # 117 pass
-(cd v3/music-rs  && node --test tests/*.test.js)    # 98 用例（偶发 1 fail，见 Gaps）
+(cd v3/music-rs  && node --test tests/*.test.js)    # 100 用例
 (cd v3/douban-rs && node --test tests/*.test.mjs)   # 112 pass
 
-# 4) 语法检查
+# 5) 语法检查
 find v3/chase-rs v3/music-rs v3/douban-rs -name '*.js' -exec node --check {} +
 
-# 5) 索引与脚本
+# 6) 索引与脚本
 node -e 'JSON.parse(require("fs").readFileSync("v3-market-index.json","utf8")); console.log("ok")'
-bash -n scripts/v3-build.sh
+bash -n scripts/v3-build.sh scripts/v3-build-ui.sh
+
+# 7) 界面产物与入库版本是否一致（CI 跑的就是这条）
+bash scripts/v3-verify-ui-artifacts.sh
 ```
 
 注意：`node --test tests/`（只给目录）在 Node 24.18 会报 `Cannot find module .../tests`，不要用；
@@ -228,11 +361,12 @@ bash -n scripts/v3-build.sh
 
 | id | version | delivery | source_url | sha256 |
 | --- | --- | --- | --- | --- |
-| `chase.rs` | 0.1.9 | source | `dist/chase-rs-0.1.9.dian115p` | `42e7edcb…26504123` |
-| `music.rs` | 1.0.0 | source | `dist/music-rs.dian115p` | `a5e197d0…78ff6c6d` |
-| `douban.rs` | 1.0.0 | source | `dist/douban-rs.dian115p` | `70d85207…099b6861` |
+| `chase.rs` | 0.1.10 | source | `…/releases/download/v3-2026.11.01-2/chase-rs-0.1.10.dian115p` | `0f15d2b9…34a4bec8` |
+| `music.rs` | 1.0.1 | source | `…/releases/download/v3-2026.11.01-2/music-rs.dian115p` | `e8633301…d4442a1a` |
+| `douban.rs` | 1.1.0 | source | `…/releases/download/v3-2026.11.01-2/douban-rs.dian115p` | `ea45411e…397f3e92` |
 
-（表中的 sha256 为节选，完整 64 位值以 `v3-market-index.json` 为准。）
+（表中的 sha256 为节选，完整 64 位值以 `v3-market-index.json` 为准；它们是本地
+`bash scripts/v3-build.sh` 对三个包实算的结果，发布流水线用同一份源码重算，结果应一致。）
 
 `declared_usage` 逐字取自各插件 `plugin.json`（接口、站点、文件、通知与风险说明），没有另行美化。
 三个 v3 清单都没有 `permissions` 段，因此索引也省略可选的 `permissions` 字段；`source_url_note` 是
@@ -252,10 +386,10 @@ v3 索引 schema。仓库内旧 `plugin-market/index.json` 是 v1 格式，v3 �
 
 | 检查 | 命令 | 结果 |
 | --- | --- | --- |
-| 三个插件结构检查 | `node v3-kit/conformance/project-check.mjs v3/<plugin>` | 3/3 通过：`chase.rs 0.1.9`、`music.rs 1.0.0`、`douban.rs 1.0.0` |
+| 三个插件结构检查 | `node v3-kit/conformance/project-check.mjs v3/<plugin>` | 3/3 通过：`chase.rs 0.1.10`、`music.rs 1.0.1`、`douban.rs 1.1.0` |
 | 全部 JS 语法 | `find v3/... -name '*.js' -exec node --check {} +` | 通过：chase 16 / music 30 / douban 38 个文件 |
-| 纯逻辑单测 | `(cd v3/<plugin> && node --test tests/*.test.*)` | chase 117 pass / douban 112 pass，0 fail；music 98 用例，10 次运行 9 次全过、1 次 1 fail（`tests/pump.test.js:287` 的队首假设，见 Gaps） |
-| 打包 | `bash scripts/v3-build.sh`（连跑两次） | 两次 sha256 完全一致；产物 99152 / 109956 / 166058 字节 |
+| 纯逻辑单测 | `(cd v3/<plugin> && node --test tests/*.test.*)` | chase 117 pass / music 100 pass / douban 112 pass，0 fail |
+| 打包 | `bash scripts/v3-build.sh`（连跑两次） | 两次 sha256 完全一致；产物 193000 / 232339 / 262543 字节（界面换成 Vue 3 自打包后比原生 JS 版大；sha256 见表下） |
 | 索引 JSON | `node -e 'JSON.parse(...)'` | 通过 |
 | 索引字段与摘要 | 本地校验脚本（必填/id/sha256/delivery/homepage，sha256 对 dist 实算） | 通过；仅 `source_url` 相对路径为已知偏差 |
 | 构建脚本语法 | `bash -n scripts/v3-build.sh` | 通过 |
@@ -263,12 +397,34 @@ v3 索引 schema。仓库内旧 `plugin-market/index.json` 是 v1 格式，v3 �
 
 工具版本：Node v24.18.0、npm 11.16.0；未使用 Rust/WASM 工具链。
 
+### 界面（Vue 3）这一轮补做的检查
+
+界面迁到 Vue 3 之后、发布流水线接上之后，本轮实际跑过的检查：
+
+| 检查 | 命令 | 结果 |
+| --- | --- | --- |
+| 脚本语法 | `bash -n scripts/v3-build.sh scripts/v3-build-ui.sh` | 通过（另加 `bash -n scripts/v3-verify-ui-artifacts.sh`） |
+| 三个插件结构检查 | `node v3-kit/conformance/project-check.mjs v3/<plugin>` | 3/3 通过：`chase.rs 0.1.10`、`music.rs 1.0.1`、`douban.rs 1.1.0` |
+| 界面构建可重复 | `bash scripts/v3-build-ui.sh` 连跑两次，比对 sha256 | 两次产物字节相同（chase `897e1d4c…5937c8ad`、douban `2baa4931…c818eb14`、music `b9b34eb0…39cd97cf`） |
+| 锁文件可复现 | 干净副本里 `rm -rf node_modules && npm ci` 后重建 | 与入库产物逐字节相同；三个包的 sha256 与本机一致（`0f15d2b9…` / `e8633301…` / `ea45411e…`） |
+| 一键构建幂等 | `bash scripts/v3-build.sh` 连跑两次 | 两次 sha256 完全一致（`0f15d2b9…` / `e8633301…` / `ea45411e…`）；产物 193000 / 232339 / 262543 字节 |
+| 包内容检查 | `node scripts/v3-pack-check.mjs <包> <插件目录>` | 3/3 通过：30 / 34 / 62 个条目，无 node_modules，清单入口齐全；反向用例（塞 node_modules / 缺 ui.entry）都能报错 |
+| 产物入库一致性 | `bash scripts/v3-verify-ui-artifacts.sh` | 当前工作区**报不一致**——Vue 版产物尚未提交入库；把 `v3-ui/` 源码与 `v3/<plugin>/ui/` 产物一起提交后即通过（已在干净副本上验证） |
+| 工作流 YAML | `python3 -c "import yaml; yaml.safe_load(...)"` | 解析通过，步骤顺序：安装依赖 → 构建 UI → 打包 → 产物可复现 → 查包 |
+
+**没做的**：没有在浏览器里跑过这三个页面（只做了最小 DOM 冒烟 `v3-ui/scripts/smoke-mount.mjs`），
+没有在真机宿主里装过；CI 工作流本身也没有在 GitHub 上实跑过（本机无 GitHub Actions 运行时），
+上面这些命令都是本地等价执行的。
+
 ## GitHub Actions 发布
 
 - 工作流：`.github/workflows/release-v3.yml`（手动触发见下，`v3-*` tag 触发已配置）
 - 一键发布：`bash scripts/release-v3.sh v3-YYYY.MM.DD`（打标注 tag → 推送 → 对 tag ref 分发工作流）
 - 说明：实测本仓库 deploy key 推送的 tag 未自动触发 `push.tags` 工作流（分支推送正常），因此脚本会显式 `gh workflow run --ref <tag>`；发布路径相同：构建 → 创建 Release（三包 + SHA256SUMS.txt + 更新后的市场索引）→ 回写 `v3-market-index.json` 到 main
 - 仅验证打包（不发布）：`gh workflow run release-v3.yml --ref main`，产物在 run 的 artifact 里
+- 工作流里的步骤（顺序固定）：`npm ci`（带 npm 缓存）→ `npm run build` 构建 UI →
+  `bash scripts/v3-build.sh`（内部再构建界面 + project-check + pack）→
+  `bash scripts/v3-verify-ui-artifacts.sh` 校验产物可复现 → `scripts/v3-pack-check.mjs` 查包。
 
 ## 作为自定义市场源使用
 

@@ -1,32 +1,34 @@
-// QQ 纯逻辑向量测试 —— 向量来自 plugins/music-rs/tests/qq.rs（Go 版逐字对拍）。
+// QQ 纯逻辑向量测试 —— 取链部分对齐参考项目 Lilt（mygo-qyin/internal/qqmusic）。
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
-  QUALITY_LADDER, qualityStart, qualityLadder, qrShowT, qrShowParams, qrLoginParams,
+  QUALITY_LADDER, qualityStart, qualityLadder, qualityFilename, qrShowT, qrShowParams, qrLoginParams,
   wxLoginParams, wxCheckParams, searchParams, guidFromNanos, songUrlRequestBody,
+  songDetailRequestBody, parseQqSongDetail, resolveStreamUrl,
   wxLoginPayload, parseJsArgs, qqStatusOf, wxStatusOf, parseWxErrcode, parseWxCode,
   extractWxUuid, loginKindOf, parseVkeyResponse, parseSearch, NO_LINK_ERROR, QR_UNAVAILABLE,
+  QQ_STREAM_FALLBACK_DOMAIN,
 } from '../lib/qq.js'
 
-test('quality ladder matches sidecar QQ_LADDER', () => {
+test('quality ladder matches the reference client (F000/M800/M500)', () => {
   assert.deepEqual(QUALITY_LADDER, [
-    ['AI00', 'flac'], ['Q001', 'flac'], ['Q000', 'flac'], ['F000', 'flac'],
-    ['O801', 'ogg'], ['M800', 'mp3'], ['M500', 'mp3'],
+    ['F000', 'flac'], ['M800', 'mp3'], ['M500', 'mp3'],
   ])
 })
 
-test('quality ladder slices by user level', () => {
+test('quality ladder slices by user level; anonymous only gets 128k', () => {
   assert.equal(qualityStart('master'), 0)
-  assert.equal(qualityStart('flac'), 3)
-  assert.equal(qualityStart('320'), 5)
-  assert.equal(qualityStart('128'), 6)
+  assert.equal(qualityStart('flac'), 0)
+  assert.equal(qualityStart('320'), 1)
+  assert.equal(qualityStart('128'), 2)
   assert.equal(qualityStart('bogus'), null)
   assert.equal(qualityLadder('master'), QUALITY_LADDER)
   assert.equal(qualityLadder('bogus'), QUALITY_LADDER)
   assert.equal(qualityLadder(''), QUALITY_LADDER)
-  assert.deepEqual(qualityLadder('flac'), QUALITY_LADDER.slice(3))
-  assert.deepEqual(qualityLadder('320'), QUALITY_LADDER.slice(5))
+  assert.deepEqual(qualityLadder('flac'), QUALITY_LADDER)
+  assert.deepEqual(qualityLadder('320'), QUALITY_LADDER.slice(1))
   assert.deepEqual(qualityLadder('128'), [['M500', 'mp3']])
+  assert.deepEqual(qualityLadder('master', false), [['M500', 'mp3']], '匿名只请求 M500')
 })
 
 test('qrShowT matches Go %.17f', () => {
@@ -64,13 +66,35 @@ test('search params encode Chinese with + for space', () => {
   assert.equal(searchParams('', 1), 'format=json&n=20&p=1&w=')
 })
 
-test('songUrlRequestBody matches Go json.Marshal sorted shape', () => {
+test('songUrlRequestBody builds logged-in and anonymous bodies', () => {
   assert.equal(guidFromNanos(1_759_291_234_567_890_123n), '4567890123')
-  const body = songUrlRequestBody('001Qu4I30eVFYb', '1234567890', '4567890123', QUALITY_LADDER)
+  assert.equal(qualityFilename('F000', 'flac', '001Qu4I30eVFYb', 'MEDIA'), 'F000001Qu4I30eVFYbMEDIA.flac')
+  const auth = songUrlRequestBody({
+    mid: '001Qu4I30eVFYb', mediaMid: 'MEDIA', guid: '4567890123',
+    code: 'F000', ext: 'flac', uin: '012345678', musicKey: '@K', loginType: 1,
+  })
   assert.equal(
-    body,
-    '{"comm":{"ct":20,"cv":0,"format":"json","uin":"1234567890"},"req_1":{"method":"UrlGetVkey","module":"music.vkey.GetVkey","param":{"filename":["AI00001Qu4I30eVFYb001Qu4I30eVFYb.flac","Q001001Qu4I30eVFYb001Qu4I30eVFYb.flac","Q000001Qu4I30eVFYb001Qu4I30eVFYb.flac","F000001Qu4I30eVFYb001Qu4I30eVFYb.flac","O801001Qu4I30eVFYb001Qu4I30eVFYb.ogg","M800001Qu4I30eVFYb001Qu4I30eVFYb.mp3","M500001Qu4I30eVFYb001Qu4I30eVFYb.mp3"],"guid":"4567890123","loginflag":1,"platform":"20","songmid":["001Qu4I30eVFYb"],"songtype":[0],"uin":"1234567890"}}}',
+    auth,
+    '{"comm":{"authst":"@K","chid":"10003505","ct":11,"cv":14090008,"qq":"012345678","tmeAppID":"qqmusic","tmeLoginType":1,"v":14090008},"req_0":{"method":"UrlGetVkey","module":"music.vkey.GetVkey","param":{"ctx":0,"filename":["F000001Qu4I30eVFYbMEDIA.flac"],"guid":"4567890123","songmid":["001Qu4I30eVFYb"],"songtype":[0],"uin":"012345678"}}}',
   )
+  const anon = songUrlRequestBody({
+    mid: '001Qu4I30eVFYb', mediaMid: '', guid: '4567890123',
+    code: 'M500', ext: 'mp3', uin: '', musicKey: '', loginType: 1,
+  })
+  assert.equal(
+    anon,
+    '{"comm":{"ct":24,"cv":0},"req_0":{"method":"CgiGetVkey","module":"vkey.GetVkeyServer","param":{"filename":["M500001Qu4I30eVFYb001Qu4I30eVFYb.mp3"],"guid":"4567890123","loginflag":1,"platform":"20","songmid":["001Qu4I30eVFYb"],"songtype":[0],"uin":"0"}}}',
+  )
+})
+
+test('song detail body and parser expose media_mid and sizes', () => {
+  const body = songDetailRequestBody('MID')
+  assert.match(body, /"module":"music\.pf_song_detail_svr"/)
+  assert.match(body, /"method":"get_song_detail_yqq"/)
+  const parsed = parseQqSongDetail('{"req_0":{"data":{"track_info":{"mid":"MID","file":{"media_mid":"MM","size_flac":11,"size_320mp3":22,"size_128mp3":33}}}}}')
+  assert.deepEqual(parsed.value, { media_mid: 'MM', size128: 33, size320: 22, size_flac: 11 })
+  assert.equal(parseQqSongDetail('{"req_0":{"data":{}}}').error, 'QQ 歌曲详情解析失败')
+  assert.equal(parseQqSongDetail('oops').error, 'QQ 歌曲详情解析失败')
 })
 
 test('wxLoginPayload matches Go shape with tmeLoginType "1"', () => {
@@ -131,16 +155,28 @@ test('loginKindOf reads type=wx', () => {
   assert.equal(loginKindOf(''), 'qq')
 })
 
-test('parseVkeyResponse picks first http purl and honors ladder index', () => {
-  const body = '{"req_1":{"data":{"midurlinfo":[{"purl":""},{"purl":""},{"purl":""},{"purl":"https://dl.stream.qqmusic.qq.com/F000003aAYrm3GE0Xg003aAYrm3GE0Xg.flac?vkey=1"}]}}}'
-  const parsed = parseVkeyResponse(body, QUALITY_LADDER)
-  assert.equal(parsed.url, 'https://dl.stream.qqmusic.qq.com/F000003aAYrm3GE0Xg003aAYrm3GE0Xg.flac?vkey=1')
-  assert.equal(parsed.ext, 'flac')
-  assert.equal(parsed.level, 'F000')
-  // 所有 purl 为空 → 绿钻文案；索引越界跳过。
-  const empty = '{"req_1":{"data":{"midurlinfo":[{"purl":""},{"purl":""},{"purl":""},{"purl":""},{"purl":""},{"purl":""}]}}}'
-  assert.equal(parseVkeyResponse(empty, QUALITY_LADDER).error, NO_LINK_ERROR)
-  assert.equal(parseVkeyResponse('<html>502</html>', QUALITY_LADDER).error, 'QQ 取链解析失败')
+test('parseVkeyResponse joins relative purl with sip and falls back to dl.stream', () => {
+  const body = '{"req_0":{"data":{"sip":["http://isure.stream.qqmusic.qq.com/"],"midurlinfo":[{"songmid":"M","purl":"M800MIDMEDIA.mp3?vkey=1"}]}}}'
+  const parsed = parseVkeyResponse(body, 'M800', 'mp3')
+  assert.equal(parsed.url, 'http://isure.stream.qqmusic.qq.com/M800MIDMEDIA.mp3?vkey=1')
+  assert.equal(parsed.ext, 'mp3')
+  assert.equal(parsed.level, 'M800')
+  // 绝对 purl 原样返回。
+  const absolute = '{"req_0":{"data":{"midurlinfo":[{"purl":"https://dl.stream.qqmusic.qq.com/F000.flac?vkey=2"}]}}}'
+  assert.equal(parseVkeyResponse(absolute, 'F000', 'flac').url, 'https://dl.stream.qqmusic.qq.com/F000.flac?vkey=2')
+  // sip 缺失/非法 → 兜底域名。
+  assert.equal(
+    parseVkeyResponse('{"req_0":{"data":{"sip":["http://evil.example/"],"midurlinfo":[{"purl":"M500.mp3"}]}}}', 'M500', 'mp3').url,
+    `${QQ_STREAM_FALLBACK_DOMAIN}M500.mp3`,
+  )
+  // 首选非 ws 域名。
+  assert.equal(
+    resolveStreamUrl(['http://ws.stream.qqmusic.qq.com/', 'http://isure.stream.qqmusic.qq.com/'], 'a.mp3'),
+    'http://isure.stream.qqmusic.qq.com/a.mp3',
+  )
+  const empty = '{"req_0":{"data":{"midurlinfo":[{"purl":""}]}}}'
+  assert.equal(parseVkeyResponse(empty, 'M500', 'mp3').error, NO_LINK_ERROR)
+  assert.equal(parseVkeyResponse('<html>502</html>', 'M500', 'mp3').error, 'QQ 取链解析失败')
   assert.equal(NO_LINK_ERROR, '所有音质均未获取到链接（需要绿钻且歌曲有对应音源）')
   assert.equal(QR_UNAVAILABLE, 'QQ 扫码登录受宿主 broker 限制暂不可用，请使用手动粘贴 Cookie')
 })

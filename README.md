@@ -29,8 +29,14 @@ plugins/
 ├── douban-rs/                  豆瓣中心 Rust 运行时（复用 douban-center 的前端产物）
 ├── douban-center/              豆瓣中心前端（Vue，独立构建）
 └── music-rs/                   音乐下载 Rust 版：运行时 + frontend/（自带 npm 依赖，独立构建）
-.github/workflows/              三个 release 流水线（按 tag 触发）
+v3/                             v3（schema 3）插件源码：plugin.json + jobs/ + lib/ + ui/
+v3-ui/                          三个 v3 插件的 Vue 3 界面源码与构建底座
+.github/workflows/              三个 release 流水线（按 tag 触发）+ release-v3.yml（v3 插件）
 ```
+
+> v3（DIAN115 插件平台 schema 3）与上面这套 schema 1（Rust → WASM）是两条线，互不影响：
+> 迁移说明、构建命令与验证状态见 [v3/README.md](v3/README.md)，界面（Vue 3）见
+> [v3/README.md 的「界面（Vue 3）」](v3/README.md#界面vue-3)。
 
 ## 使用要点
 
@@ -76,9 +82,17 @@ plugins/
 
 平台 Cookie 等同于登录凭据：怀疑泄漏时，去对应平台退出该设备并重新登录。
 
+**例外：v3 的界面产物入库。** `v3/<plugin>/ui/page.js`（Vue 3 自打包的 ESM）**要提交**——
+宿主按清单 `ui.entry` 直接加载它，`pack.mjs` 打的是插件目录，产物不在目录里打包出来的包
+装上去页面就起不来；入库后 CI 才能重建一次并与入库版本比对，保证宿主跑的和源码是一回事。
+不入库的是 `v3-ui/node_modules/`（构建期依赖，只装在构建机上）和 vite 缓存；
+`v3-ui/package-lock.json` 则**必须入库**，它是 `npm ci` 可重复安装的保证。
+详见 [v3/README.md](v3/README.md#界面vue-3)。
+
 ## 文档
 
 - 追剧管家（chase-rs）：暂无独立 README，源码头部注释即设计说明
 - [豆瓣中心 Rust 运行时](plugins/douban-rs/README.md) / [豆瓣中心前端](plugins/douban-center/README.md)
 - [音乐下载 Rust 版](plugins/music-rs/README.md)
+- [v3 迁移说明与界面（Vue 3）](v3/README.md)
 - [DIAN115 官方插件平台文档](https://github.com/madbrolab/dian115/tree/main/docs/plugin-platform)

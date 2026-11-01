@@ -8,7 +8,7 @@
 
 - **搜索**：网易云（`/api/cloudsearch/pc`，每页 30 条）/ QQ（`search_for_qq_cp`，每页 20 条），页面直连。
 - **登录**：网易云扫码（unikey + 前端本地 QR 编码渲染，每 2 秒轮询）；QQ 扫码因宿主代理剥离外部响应 `Set-Cookie` 不可用（与旧版一致），替代路径为手动粘贴 Cookie（白名单清洗 + 合并写入）；CookieCloud 一键同步（v3 用宿主内置服务）。
-- **取链**：网易云 eapi（AES-128-ECB + MD5，宿主 `ctx.crypto`）按 8 档音质阶梯逐级回退；QQ 按 `master/flac/320/128` 裁剪 7 档阶梯。
+- **取链**：网易云 eapi（AES-128-ECB + MD5，宿主 `ctx.crypto`）按 8 档音质阶梯逐级回退；QQ 按参考客户端 Lilt 的流程：先读歌曲详情拿 `media_mid`，登录态请求 `F000(flac) → M800(320k) → M500(128k)`，匿名只请求 `M500`；每档单独请求 vkey，相对 purl 用响应里的 `sip` 域名拼接（详见 `lib/qq.js` 注释）。
 - **歌单**：我的歌单列表 + 分页浏览（1×v6 全量索引 + 每页 1×v3 详情切片）；整单分批入队（每批 5 页 × 100 首，`next_page` 续批游标，页面级失败不回滚已入队）。
 - **下载队列**：KV 分片（`tasks.idx` + `task.<id>`），去重按 `source+song_id+quality`；定时任务（每 5 分钟）与页面手动「推进队列」走同一入口；`queued → downloading → copying → done/failed`，失败重试 ≤3 次后发通知（Telegram 按钮 `callback_data: retry:<短id>`，点击触发回调任务重新排队）。
 - **任务运维**：重试、清空已完成、索引对账（孤儿分片挂回）。
@@ -35,7 +35,7 @@
 
 ```sh
 node --check lib/*.js jobs/*.js ui/*.js   # 语法
-node --test tests/*.test.js               # 98 项单测（eapi/cookie/qq/queue/pump/QR 向量）
+node --test tests/*.test.js               # 100 项单测（eapi/cookie/qq/queue/pump/QR 向量）
 node v3-kit/conformance/project-check.mjs v3/music-rs
 node v3-kit/conformance/pack.mjs v3/music-rs dist/music-rs.dian115p
 ```
@@ -64,5 +64,5 @@ jobs/tg-callback.js  Telegram 重试回调（event=callback）
 jobs/runtime.js      ctx → deps 装配（crypto 适配、状态文档组装）
 ui/page.js           插件页面（原生 JS + DOM，四分页 + 登录卡 + 最近动作）
 ui/qr.js             QR Model 2 编码器（Nayuki MIT 移植，供网易云扫码）
-tests/               node:test 单测 ×98（向量来自旧 Rust 测试）
+tests/               node:test 单测 ×100（向量来自旧 Rust 测试）
 ```

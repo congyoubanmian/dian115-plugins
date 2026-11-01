@@ -22,8 +22,9 @@ import {
   songDetailForm, parseSongDetail, playlistPage,
 } from './netease.js'
 import {
-  CHROME_UA as QQ_UA, QQ_MUSICU, QQ_SEARCH_API, qualityLadder, guidFromNanos,
-  songUrlRequestBody, parseVkeyResponse, parseSearch,
+  CHROME_UA as QQ_UA, QQ_API_UA, QQ_MUSICU, QQ_SEARCH_API, qualityLadder, guidFromNanos,
+  songUrlRequestBody, songDetailRequestBody, parseQqSongDetail, parseVkeyResponse, parseSearch,
+  NO_LINK_ERROR,
 } from './qq.js'
 
 /** 单曲取链结果（Go neteaseSongURL 的返回元组；SongUrl 契约字段 url/ext/level/size）。 */
@@ -79,6 +80,56 @@ export function parseJson(text, message) {
   } catch (error) {
     throw new Error(`${message}: ${error.message}`)
   }
+}
+
+/** 从响应头里取某个头（大小写不敏感；宿主把值给成字符串数组）。 */
+function responseHeader(headers, name) {
+  if (!headers || typeof headers !== 'object') return ''
+  for (const [key, value] of Object.entries(headers)) {
+    if (key.toLowerCase() !== name) continue
+    return Array.isArray(value) ? String(value[0] ?? '') : String(value ?? '')
+  }
+  return ''
+}
+
+/**
+ * 图片经宿主 HTTP 取回并转成 data URL（歌单封面用）。
+ *
+ * 页面不把第三方图片地址直接绑到 <img>：离线/CSP/代理环境下浏览器会绕过宿主直连
+ * 网易云 CDN。response_type:'base64' 让宿主带回二进制，再由页面拼 data URL。
+ */
+export async function imageDataUrl(deps, url) {
+  const target = typeof url === 'string' ? url.trim() : ''
+  if (!/^https?:\/\//i.test(target)) throw new Error('图片地址无效')
+  const response = await deps.http.request({
+    url: target,
+    method: 'GET',
+    headers: {
+      referer: MUSIC_REFERER,
+      'user-agent': CHROME_UA,
+      accept: 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
+    },
+    response_type: 'base64',
+    timeout_seconds: 30,
+    cache_seconds: 86400,
+  })
+  const status = Number(response?.status ?? 0)
+  if (!Number.isFinite(status) || status < 200 || status >= 300) {
+    throw new Error(`图片获取失败: HTTP ${status || '?'}`)
+  }
+  const raw = response?.body_base64
+  let body = ''
+  if (typeof raw === 'string') {
+    body = raw
+  } else if (raw instanceof Uint8Array) {
+    let binary = ''
+    for (const byte of raw) binary += String.fromCharCode(byte)
+    body = btoa(binary)
+  }
+  if (body === '') throw new Error('图片响应为空')
+  const contentType = responseHeader(response?.headers, 'content-type') || 'image/jpeg'
+  const mime = contentType.split(';')[0].trim().toLowerCase()
+  return `data:${mime.startsWith('image/') ? mime : 'image/jpeg'};base64,${body}`
 }
 
 // ─────────────────────────── 网易云 ───────────────────────────
@@ -310,27 +361,63 @@ export async function qqSearch(deps, query, page) {
   return parsed.value
 }
 
-/** 按音质阶梯取链（Go qqSongURL 流程 + sidecar 档位裁剪）。 */
+/** 取链返回的 size：按命中档位对应详情里的文件大小（详情失败时为 0）。 */
+function qqQualitySize(code, detail) {
+  if (code === 'F000') return detail.size_flac
+  if (code === 'M800') return detail.size320
+  if (code === 'M500') return detail.size128
+  return 0
+}
+
+/** 按音质阶梯取链（对齐参考项目 Lilt internal/qqmusic/playback.go）：
+ *
+ *  1. 先请求歌曲详情拿 media_mid（文件名需要它；翻唱/多版本与 songmid 不同）；
+ *  2. 登录态按用户档位请求 F000/M800/M500，匿名只请求 M500；
+ *  3. 逐档请求 vkey，空 purl 继续下一档；purl 是相对路径时用响应 sip 拼域名。
+ *
+ *  旧实现把整条阶梯塞进一次请求、只认绝对 purl、用 songmid 顶替 media_mid，
+ *  遇到 QQ 返回相对 purl 或 media_mid 不同的歌就误报“所有音质都没链接”。
+ */
 export async function qqSongUrl(deps, mid, level) {
   const cookies = await loadCookies(deps.kv, 'qq')
+  const musicKey = typeof cookies.qqmusic_key === 'string' ? cookies.qqmusic_key : ''
+  const loggedIn = musicKey !== ''
   const uin = uinFromCookies(cookies)
+  const loginType = Number(cookies.tmeLoginType) || 1
   const guid = guidFromNanos(nowNanos())
-  const ladder = qualityLadder(level)
-  const body = songUrlRequestBody(mid, uin, guid, ladder)
-  const response = await httpRequest(deps, {
-    method: 'POST',
-    url: QQ_MUSICU,
-    headers: {
-      'content-type': 'application/json',
-      'user-agent': QQ_UA,
-      referer: 'https://y.qq.com/',
-      cookie: qqCookieHeader(cookies),
-    },
-    body,
-  })
-  const parsed = parseVkeyResponse(response.text, ladder)
-  if (parsed.error) throw new Error(parsed.error)
-  return { url: parsed.url, ext: parsed.ext, level: parsed.level, size: 0 }
+  const headers = {
+    'content-type': 'application/json',
+    'user-agent': QQ_API_UA,
+    referer: 'https://y.qq.com/',
+  }
+  // 与参考项目一致：只有登录态才带 cookie（匿名请求带会话 cookie 反而可能被拒）。
+  if (loggedIn) headers.cookie = qqCookieHeader(cookies)
+
+  let detail = { media_mid: mid, size128: 0, size320: 0, size_flac: 0 }
+  try {
+    const detailResponse = await httpRequest(deps, {
+      method: 'POST',
+      url: QQ_MUSICU,
+      headers,
+      body: songDetailRequestBody(mid),
+    })
+    const parsedDetail = parseQqSongDetail(detailResponse.text)
+    if (!parsedDetail.error) detail = parsedDetail.value
+  } catch {
+    // 详情拿不到就按 songmid 兜底：多数歌的 media_mid 等于 songmid，取链接口仍可能返回。
+  }
+
+  let lastError = NO_LINK_ERROR
+  for (const [code, ext] of qualityLadder(level, loggedIn)) {
+    const body = songUrlRequestBody({ mid, mediaMid: detail.media_mid, guid, code, ext, uin, musicKey, loginType })
+    const response = await httpRequest(deps, { method: 'POST', url: QQ_MUSICU, headers, body })
+    const parsed = parseVkeyResponse(response.text, code, ext)
+    if (!parsed.error) {
+      return { url: parsed.url, ext: parsed.ext, level: parsed.level, size: qqQualitySize(code, detail) }
+    }
+    lastError = parsed.error
+  }
+  throw new Error(lastError)
 }
 
 /** 按来源取直链（download.rs resolve_song_url）。 */
