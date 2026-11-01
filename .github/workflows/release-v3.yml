@@ -91,6 +91,8 @@ jobs:
           git fetch origin main
           git checkout -B main origin/main
           cp v3-market-index.release.json v3-market-index.json
-          git add v3-market-index.json
+          mkdir -p plugin-market/v3
+          cp v3-market-index.release.json plugin-market/v3/index.json
+          git add v3-market-index.json plugin-market/v3/index.json
           git commit -m "chore: 更新 v3 市场索引 $TAG [skip ci]" || echo "索引无变化，跳过提交"
           git push origin main

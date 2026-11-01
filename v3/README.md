@@ -277,3 +277,14 @@ sha256 更新索引；索引不会自动跟着源码变。
 - 一键发布：`bash scripts/release-v3.sh v3-YYYY.MM.DD`（打标注 tag → 推送 → 对 tag ref 分发工作流）
 - 说明：实测本仓库 deploy key 推送的 tag 未自动触发 `push.tags` 工作流（分支推送正常），因此脚本会显式 `gh workflow run --ref <tag>`；发布路径相同：构建 → 创建 Release（三包 + SHA256SUMS.txt + 更新后的市场索引）→ 回写 `v3-market-index.json` 到 main
 - 仅验证打包（不发布）：`gh workflow run release-v3.yml --ref main`，产物在 run 的 artifact 里
+
+## 作为自定义市场源使用
+
+dian115 的「市场与仓库 → 管理仓库」填 **raw JSON 地址**（不是 GitHub 网页地址）：
+
+```
+https://raw.githubusercontent.com/congyoubanmian/dian115-plugins/main/plugin-market/v3/index.json
+```
+
+- v3 索引由发布流水线随 Release 自动更新（sha256 与 Release 资产一致）；
+- 旧的 `plugin-market/index.json` 是 v1（旧 WASM 插件）格式，v3 宿主不要用它。
