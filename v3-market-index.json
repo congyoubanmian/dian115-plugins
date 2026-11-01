@@ -12,9 +12,8 @@
       "version": "0.1.9",
       "description": "小时级对齐「订阅池里的剧集订阅」与「Emby 已有集数」：只对可解析的条目做只增 PATCH total_episodes，并产出追剧日历与当天一次的日报；减方向只给建议，从不写。已核实无缺口的条目在 5 小时窗口内复用缓存，不重复探测 Emby。界面按统一设计稿重绘：指标瓦片、徽标胶囊、双栏看板与移动端单栏适配。",
       "author": "congyoubanmian",
-      "source_url": "dist/chase-rs-0.1.9.dian115p",
-      "source_url_note": "dist 相对路径占位：本仓库不托管对外下载；发布时替换为可访问的 https:// 绝对地址（官方 v3 索引 schema 的 source_url pattern 为 ^https?://）。",
-      "sha256": "e3c4988d82b6c044d790b8e2dc89bdb7c3730e98133d49ee9ab6eff5218fb567",
+      "source_url": "https://github.com/congyoubanmian/dian115-plugins/releases/download/v3-2026.11.01/chase-rs-0.1.9.dian115p",
+      "sha256": "42e7edcbe6a9cdc9811f83968bbe6cdb7c90b83ce677adbc0f263e5f26504123",
       "delivery": "source",
       "declared_usage": {
         "apis": [
@@ -38,9 +37,8 @@
       "version": "1.0.0",
       "description": "网易云 / QQ 音乐搜索、扫码与手动粘贴登录、按音质逐级取链；单曲与整张歌单入队后由后台任务自动推进：取链接 → 下载到插件暂存目录 → 定名 → 移交宿主复制进目标目录（CD2 挂载由宿主自动分流）→ 失败通知带「重试」按钮。旧 schema 1 WASM 插件（plugins/music-rs 0.3.19）的 v3 迁移版。",
       "author": "congyoubanmian",
-      "source_url": "dist/music-rs.dian115p",
-      "source_url_note": "dist 相对路径占位：本仓库不托管对外下载；发布时替换为可访问的 https:// 绝对地址（官方 v3 索引 schema 的 source_url pattern 为 ^https?://）。",
-      "sha256": "8d40b543f4b228c518deaf28474c46a074476156295f447c4b80d183fe660594",
+      "source_url": "https://github.com/congyoubanmian/dian115-plugins/releases/download/v3-2026.11.01/music-rs.dian115p",
+      "sha256": "a5e197d0d672759e2e993116465dd13b2d76ed4556826efc04bb432c78ff6c6d",
       "delivery": "source",
       "declared_usage": {
         "apis": [
@@ -72,9 +70,8 @@
       "version": "1.0.0",
       "description": "豆瓣榜单抓取 + 黑名单过滤 + 观察队列 + 聚合订阅；从宿主 CookieCloud（或自建 CookieCloud / 手动粘贴 cookie）取豆瓣登录态，自动追订「我的想看」；TMDB 匹配失败时用豆瓣详情（原名/又名）回退重搜；支持最低评分/年份/地区订阅过滤与「已删除不重订」墓碑集。旧 schema 1 WASM 插件（plugins/douban-rs 0.2.4）的 v3 迁移版；页面提供榜单海报墙、观察队列/我的想看、历史日志与设置。",
       "author": "congyoubanmian",
-      "source_url": "dist/douban-rs.dian115p",
-      "source_url_note": "dist 相对路径占位：本仓库不托管对外下载；发布时替换为可访问的 https:// 绝对地址（官方 v3 索引 schema 的 source_url pattern 为 ^https?://）。",
-      "sha256": "6873ad42e4cb07031cb74fb34271b444bd7c95f5df5e0669c01e4228154b008a",
+      "source_url": "https://github.com/congyoubanmian/dian115-plugins/releases/download/v3-2026.11.01/douban-rs.dian115p",
+      "sha256": "70d85207d2745658eb4701bbba4317a38c32b52a488c4a1fc669ac56099b6861",
       "delivery": "source",
       "declared_usage": {
         "apis": [
