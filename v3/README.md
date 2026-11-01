@@ -228,9 +228,9 @@ bash -n scripts/v3-build.sh
 
 | id | version | delivery | source_url | sha256 |
 | --- | --- | --- | --- | --- |
-| `chase.rs` | 0.1.9 | source | `dist/chase-rs-0.1.9.dian115p` | `e3c4988d…8fb567` |
-| `music.rs` | 1.0.0 | source | `dist/music-rs.dian115p` | `8d40b543…660594` |
-| `douban.rs` | 1.0.0 | source | `dist/douban-rs.dian115p` | `6873ad42…4b008a` |
+| `chase.rs` | 0.1.9 | source | `dist/chase-rs-0.1.9.dian115p` | `42e7edcb…26504123` |
+| `music.rs` | 1.0.0 | source | `dist/music-rs.dian115p` | `a5e197d0…78ff6c6d` |
+| `douban.rs` | 1.0.0 | source | `dist/douban-rs.dian115p` | `70d85207…099b6861` |
 
 （表中的 sha256 为节选，完整 64 位值以 `v3-market-index.json` 为准。）
 
@@ -238,21 +238,13 @@ bash -n scripts/v3-build.sh
 三个 v3 清单都没有 `permissions` 段，因此索引也省略可选的 `permissions` 字段；`source_url_note` 是
 附加说明字段，官方 schema 未禁止附加属性。
 
-**两个必须知道的偏差 / 限制**
+**发布后的索引**
 
-1. **`source_url` 是 dist 相对路径占位。** 官方 v3 schema 的 `source_url` 要求 `format: uri` 且
-   pattern `^https?://`；本仓库不托管对外下载，所以这里按任务要求写相对路径，并在每个条目附
-   `source_url_note`。真正发布到市场前，必须把三处替换为可访问的 HTTPS 地址（例如 Release 附件），
-   否则严格的 schema 校验会拒绝该索引。这是当前索引唯一不满足官方 schema 的地方。
-2. **本仓库的 `tools/market-index.schema.json` 不是 v3 schema。** 它是旧的 v1「插件市场索引」：
-   要求 `package_url`、`runtime.kind: "wasm"` / `protocol: "dian115:wasm@1"` 等字段，不能拿来校验本文件。
-   `v3-kit/docs/` 也没有收录 v3 版 schema；本次按官方仓库的 `docs/plugin-platform/market-index.schema.json`
-   核对字段（见[验证状态](#验证状态)）。
-
-源码包由作者托管，不提交生成包到公共仓库（`v3-kit/docs/market.md`）。`dist/` 是本机构建产物，
-当前整个目录尚未加入版本控制；注意现有 `.gitignore` 只写了 `*.d115p`，并不匹配 `.dian115p`，
-提交前不要误把 `dist/` 里的包加进仓库。改源码后重新运行 `bash scripts/v3-build.sh`，用输出的
-sha256 更新索引；索引不会自动跟着源码变。
+`v3-market-index.json` 与 `plugin-market/v3/index.json` 由发布流水线在打 `v3-*` 标签时自动更新：
+`source_url` 指向该 Release 的绝对下载地址，`sha256` 为 CI 实算值（与 Release 资产一致），满足官方
+v3 索引 schema。仓库内旧 `plugin-market/index.json` 是 v1 格式，v3 宿主不要使用。
+`dist/` 与 `*.dian115p` 按仓库约定不入库（插件包只作为 Release 附件分发）；`v3-kit/` 是官方工具
+本地镜像（上游无 license），用 `bash scripts/fetch-v3-kit.sh` 重建。
 
 ## 验证状态
 
