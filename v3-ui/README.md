@@ -22,7 +22,7 @@ v3-ui/
   src/
     shared/              三个插件共用的装配代码（ctx 注入、主题桥）
     chase-rs/            追剧管家页面（main.ts + AppPage.vue）
-    music-rs/            音乐下载页面
+    music-rs/            音乐下载页面（登录卡支持网易云 / QQ 音乐两种扫码来源）
     douban-rs/           豆瓣中心页面
   legacy/                改写前的原生 JS 版页面（行为基准，只读）
 ```

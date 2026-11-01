@@ -19,7 +19,6 @@ export {
   DEFAULT_TARGET_DIR,
 } from '../../../v3/music-rs/lib/settings.js'
 export { LEVELS, LEVELS_ASCENDING, qualitiesForLevel } from '../../../v3/music-rs/lib/eapi.js'
-export { QR_UNAVAILABLE } from '../../../v3/music-rs/lib/qq.js'
 export {
   neteaseSearch,
   neteaseQrCreate,
@@ -29,6 +28,8 @@ export {
   neteasePlaylistIndex,
   neteasePlaylistSongsFromIndex,
   qqSearch,
+  qqQrCreate,
+  qqQrPoll,
   loadCookies,
   saveCookies,
   imageDataUrl,

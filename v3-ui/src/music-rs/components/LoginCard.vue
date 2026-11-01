@@ -1,11 +1,14 @@
 <script setup lang="ts">
 // 登录卡：左 QR 白底卡 | 右 四步 stepper + 其他登录方式 + 音质档位。
 //
-// 扫码登录走网易云：后端只给 unikey 与登录页 URL，二维码在前端编码（v3/music-rs/ui/qr.js，
-// 纯前端逻辑，与原生版同一份实现）；拿到 key 后每 2 秒轮询一次登录状态。
-// QQ 扫码受宿主 broker 限制不可用（lib/qq.js QR_UNAVAILABLE），页面照旧提示改用手动 Cookie。
+// 扫码登录两个来源的二维码形态不一样：
+// - 网易云：后端只给 unikey 与登录页 URL，页面用插件自带的纯前端编码器画成 SVG
+//   （v3/music-rs/ui/qr.js，与原生版同一份实现）；
+// - QQ 音乐：后端给的是官方 PNG 二维码（data URL），页面直接 <img> 渲染。
+// 两个来源都是拿到二维码后每 2 秒轮询一次登录状态，页面文案只反映后端回的状态：
+// 等待扫码 / 已扫码待确认 / 已过期 / 登录成功；手动粘贴 Cookie 始终保留为回退。
 
-import { computed } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { NButton, NInput, NTag } from 'naive-ui'
 import { Cloud as CloudIcon, ClipboardPaste as ClipboardIcon, QrCode as QrCodeIcon } from '@lucide/vue'
 import { ALL_QUALITIES, SOURCES, useMusicStore } from '../store'
@@ -15,8 +18,12 @@ const store = useMusicStore()
 const { login, loginSource, qr, qrStatus, qrBusy, qrMessage, qrTitle, qrSub, settings, busy, cookieText, cookiePanelOpen } =
   store
 
-/** 二维码 SVG（内容为空或编码失败时给占位）。 */
+/** QQ 的官方二维码图片（data URL）；网易云没有这个字段。 */
+const qrImage = computed<string>(() => qr.value?.image ?? '')
+
+/** 二维码 SVG（只有网易云用：内容为空或编码失败时给占位）。 */
 const qrSvg = computed<{ path: string; viewBox: string; error: string }>(() => {
+  if (qrImage.value) return { path: '', viewBox: '', error: '' }
   const content = qr.value?.content
   if (!content) return { path: '', viewBox: '', error: '' }
   try {
@@ -27,20 +34,45 @@ const qrSvg = computed<{ path: string; viewBox: string; error: string }>(() => {
   }
 })
 
-/** 四步 stepper 的状态（跟原生版 renderQrSteps 同规则）。 */
+/** 剩余有效期（秒）——二维码区下面显示倒计时。
+ *  now 每秒跳一次，只当「重算节拍」用；剩余时间按当下时刻算，
+ *  免得节拍滞后 1 秒就把倒计时多显示一秒。 */
+const now = ref(Date.now())
+let ticker: ReturnType<typeof setInterval> | null = null
+const qrRemaining = computed<number>(() => {
+  const tick = now.value
+  const expiresAt = qr.value?.expiresAt
+  if (!expiresAt) return 0
+  return Math.max(0, Math.ceil((expiresAt - Math.max(tick, Date.now())) / 1000))
+})
+
+onMounted(() => {
+  ticker = setInterval(() => {
+    now.value = Date.now()
+  }, 1000)
+})
+
+onBeforeUnmount(() => {
+  if (ticker !== null) {
+    clearInterval(ticker)
+    ticker = null
+  }
+})
+
+/** 四步 stepper 的状态（按真实扫码状态机点亮）。 */
 const steps = computed(() => {
   const status = qrStatus.value
   const states = [
     status === '' ? (qrBusy.value ? 'active' : 'pending') : 'done',
     status === 'waiting'
       ? 'active'
-      : ['scanned', 'success'].includes(status)
+      : ['scanned', 'success', 'no-login'].includes(status)
         ? 'done'
         : ['expired', 'failed'].includes(status)
           ? 'error'
           : 'pending',
-    status === 'scanned' ? 'active' : status === 'success' ? 'done' : 'pending',
-    status === 'success' ? 'done' : 'pending',
+    status === 'scanned' ? 'active' : ['success', 'no-login'].includes(status) ? 'done' : 'pending',
+    status === 'success' ? 'done' : status === 'no-login' ? 'error' : 'pending',
   ]
   return ['生成二维码', '等待扫码', '手机确认', '登录成功'].map((label, index) => ({
     label,
@@ -63,11 +95,12 @@ const cookiePlaceholder = computed(
 
 <template>
   <div class="login-grid">
-    <!-- 左：二维码 -->
+    <!-- 左：二维码（QQ 官方 PNG 图 / 网易云本地编码 SVG） -->
     <div class="qr-pane">
       <div class="qr-box">
+        <img v-if="qrImage" class="qr-img" :src="qrImage" alt="扫码登录二维码" />
         <svg
-          v-if="qrSvg.path"
+          v-else-if="qrSvg.path"
           class="qr-svg"
           :viewBox="qrSvg.viewBox"
           shape-rendering="crispEdges"
@@ -89,7 +122,7 @@ const cookiePlaceholder = computed(
       <div class="qr-sub">{{ qrSub }}</div>
       <p v-if="qrMessage" class="hint">{{ qrMessage }}</p>
       <p v-if="qr" class="hint qr-meta">
-        {{ store.sourceName(qr.source) }} · key {{ qr.key }} · 每 2 秒轮询一次
+        {{ store.sourceName(qr.source) }} · 剩余 {{ qrRemaining }} 秒 · 每 2 秒轮询一次
       </p>
     </div>
 
@@ -161,7 +194,7 @@ const cookiePlaceholder = computed(
           <NButton size="small" type="primary" :loading="busy === 'paste'" @click="store.pasteCookie()">
             保存 {{ store.sourceName(loginSource) }} Cookie
           </NButton>
-          <span class="hint-inline">宿主代理会剥离扫码返回的登录 Cookie，扫码成功也存不下登录态时用这个</span>
+          <span class="hint-inline">扫码没取到登录态时的回退：浏览器登录后复制整行 Cookie 粘贴</span>
         </div>
       </div>
 
@@ -214,6 +247,14 @@ const cookiePlaceholder = computed(
 .qr-svg {
   width: 100%;
   height: 100%;
+}
+
+.qr-img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  /* QQ 官方二维码原图很小（72px），放大时保持方块边缘不糊。 */
+  image-rendering: pixelated;
 }
 
 .qr-fallback {

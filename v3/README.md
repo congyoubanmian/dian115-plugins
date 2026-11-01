@@ -85,13 +85,16 @@ dist/                   构建产物 .dian115p（本地生成，不提交；现�
 - 旧版没有事件订阅，v3 也不声明 `events[]`；没有新增消息/回调能力。
 - 每日报告的实际渠道取决于宿主通知配置；旧版经宿主通知端点投递，本次未在真机核对渠道与按钮渲染。
 
-### 音乐下载（`v3/music-rs`，music.rs 1.0.1）
+### 音乐下载（`v3/music-rs`，music.rs 1.0.2）
 
 **Covered（离线可验证）**
 
 - 搜索：网易云 `/api/cloudsearch/pc`、QQ `search_for_qq_cp`，页面直连。
-- 登录：网易云扫码（unikey + 页面本地 QR 编码 + 轮询）、手动粘贴 Cookie（白名单清洗 + 合并）、
-  CookieCloud 一键同步（宿主内置服务）。
+- 登录：两个来源的扫码都在插件内实现 —— 网易云（unikey + 页面本地 QR 编码 + 轮询）、QQ 音乐
+  （`xui.ptlogin2.qq.com` 官方 PNG 二维码 → `ptqrlogin` 轮询 → `check_sig` / `login_jump` / `authorize` →
+  musicu `QQLogin` 换 `musicid`/`musickey`，重定向目标按 host+path 白名单校验）；登录链路的临时 Cookie
+  只留在宿主 session（`network.md:15`），凭据只落插件 KV；另有手动粘贴 Cookie（白名单清洗 + 合并）与
+  CookieCloud 一键同步（宿主内置服务）作回退。
 - 取链：网易云 eapi（AES-128-ECB + MD5，走 `ctx.crypto`）8 档音质阶梯；QQ `master/flac/320/128`
   7 档阶梯。
 - 歌单：全量索引 + 分页详情，整单分批入队（每批 5 页 × 100 首，`next_page` 续批）。
@@ -102,12 +105,15 @@ dist/                   构建产物 .dian115p（本地生成，不提交；现�
   复制进目标目录（CD2 挂载由宿主分流）。
 - Telegram 失败通知带 `callback_data: retry:<短id>` 按钮；点击触发 `tg-callback` 事件任务重新排队。
 - 页面四个分页 + 登录卡 + 最近动作；`ui/qr.js` 为旧 `frontend/src/qr.ts` 的移植。
-- 98 个 `node --test` 用例；正常全过，但 `tests/pump.test.js:287` 的队首断言偶发失败（约 10%，见 Gaps）。
+- 131 个 `node --test` 用例；正常全过，但 `tests/pump.test.js:287` 的队首断言偶发失败（约 10%，见 Gaps；
+  本轮连跑 10 次未复现，断言前提未变）。
 
 **Gaps**
 
-- QQ 扫码登录不可用：宿主代理会剥离外部响应 `Set-Cookie`（旧版同样不可用），替代路径是手动粘贴 Cookie。
-  微信/QQ 扫码链路的纯逻辑有测试，但没有可用的端到端登录。
+- QQ 扫码登录**已可用**（1.0.2）：旧版「宿主代理剥离外部响应 `Set-Cookie` → 返回 `QR_UNAVAILABLE`」的限制在 v3 不成立
+  —— 登录链路走宿主 session（宿主按 session 记 `Set-Cookie`，`network.md:15`），插件自己按 host+path 校验重定向白名单。
+  剩下的 gap 是**真机端到端未验证**（本机没有可用的 dian115 宿主）：手机确认、OAuth 跳转、凭据落盘只有离线单测覆盖；
+  扫码失败时的兜底仍是手动粘贴 Cookie。
 - 旧版 CD2 直送（`cd2.rs` gRPC-Web）整套移除，改为宿主 `move` 自动分流；`cd2_url` / `token` /
   `dest_dir` / `local_folder` / `register_host` 五项设置不再存在。宿主若没有配对 CD2，入库按宿主本地目录处理。
 - `staging_dir` 设置移除，暂存固定为插件自有 `downloads/`。

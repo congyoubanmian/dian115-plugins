@@ -1,7 +1,10 @@
 // QQ 音乐纯逻辑 —— 参数构造与响应解析；网络请求由 lib/music-api.js 发。
 // 取链流程对齐参考项目 Lilt（github.com/Amamiya23/mygo-qyin，internal/qqmusic）：
 // 先读歌曲详情拿 media_mid，再按档位逐次请求 vkey；purl 可能是相对路径，需要拼 sip 域名。
-// 登录/扫码部分仍沿用旧版（plugins/music-rs/src/qq.rs）的纯逻辑移植。
+// 扫码登录（取码 → ptuiCB 状态 → check_sig → OAuth → 换 QQ 音乐凭据）同样对齐
+// 参考项目 internal/qqmusic/auth.go + auth_response.go：参数、严格状态解析、重定向白名单
+// 与凭据字段校验都在本文件，网络与宿主 session 记账在 lib/music-api.js。
+// 旧版（plugins/music-rs/src/qq.rs）的纯逻辑移植仍保留，供微信扫码等旧链路使用。
 
 import { queryEncode, queryEscape, parseQuery, hash33 } from './encoding.js'
 
@@ -31,7 +34,9 @@ export const QQ_QR_TTL_SECS = 120
 export const QQ_WX_QR_TTL_SECS = 300
 
 /** QQ 扫码登录不可用（宿主剥离外部响应 Set-Cookie；v3 同一宿主行为，替代路径是手动粘贴）。
- *  qq.rs QR_UNAVAILABLE 原文。 */
+ *  qq.rs QR_UNAVAILABLE 原文。
+ *  ⚠️ 已废弃：v3 宿主按 session 记 Cookie，QQ 扫码已由 lib/music-api.js 的
+ *  qqQrCreate / qqQrPoll 实现；这个常量只保留给还没接线的旧页面调用点（手动粘贴仍是回退）。 */
 export const QR_UNAVAILABLE = 'QQ 扫码登录受宿主 broker 限制暂不可用，请使用手动粘贴 Cookie'
 /** 所有音质都取不到链接时的报错（Go qqSongURL 原文，含绿钻提示）。 */
 export const NO_LINK_ERROR = '所有音质均未获取到链接（需要绿钻且歌曲有对应音源）'
@@ -263,9 +268,11 @@ export function wxLoginPayload(code) {
 
 // ─────────────────────────── 响应解析 ───────────────────────────
 
-/** qqPollQR 的 `'([^']*)'`（ptuiCB 参数列表）：依次取出单引号内的内容，空串也算一个。 */
-export function parseJsArgs(body) {
-  const text = String(body ?? '')
+/** 扫描文本里的单引号字符串参数（parseJsArgs 与严格版 ptuiCB 解析共用同一套扫描）。
+ *  - loose=true：旧语义（未闭合的引号就到此为止），供 parseJsArgs 用；
+ *  - strict=true：转义感知（\' 不结束字符串）+ 严格串格式校验，非法即整体失败。
+ *  返回 [{value, start, end}]（start 是开引号位置，end 是闭引号之后的位置）；strict 失败返回 null。 */
+function scanQuotedArgs(text, strict) {
   const args = []
   let index = 0
   while (index < text.length) {
@@ -273,13 +280,33 @@ export function parseJsArgs(body) {
       index += 1
       continue
     }
-    const start = index + 1
-    const end = text.indexOf("'", start)
-    if (end === -1) break
-    args.push(text.slice(start, end))
+    const start = index
+    const contentStart = index + 1
+    let end = -1
+    if (strict) {
+      let cursor = contentStart
+      while (cursor < text.length) {
+        const ch = text[cursor]
+        if (ch === '\\') { cursor += 2; continue }
+        if (ch === "'") { end = cursor; break }
+        cursor += 1
+      }
+      if (end === -1) return null
+    } else {
+      end = text.indexOf("'", contentStart)
+      if (end === -1) break
+    }
+    const raw = text.slice(contentStart, end)
+    if (strict && !PTUI_ARG_RE.test(raw)) return null
+    args.push({ value: strict ? decodePtuiEscapes(raw) : raw, start, end: end + 1 })
     index = end + 1
   }
   return args
+}
+
+/** qqPollQR 的 `'([^']*)'`（ptuiCB 参数列表）：依次取出单引号内的内容，空串也算一个。 */
+export function parseJsArgs(body) {
+  return scanQuotedArgs(String(body ?? ''), false).map((item) => item.value)
 }
 
 /** ptuiCB 状态码 → 状态名（Go statusMap）。 */
@@ -485,4 +512,395 @@ export function parseSearch(body, page) {
     }
   })
   return { value: { songs, page } }
+}
+
+// ─────────────────────── QQ 扫码登录（xui.ptlogin2.qq.com）───────────────────────
+//
+// 纯逻辑部分：端点常量、参数构造、严格 ptuiCB 解析、重定向白名单、OAuth 授权表单与
+// QQLogin 响应解析。对齐参考项目 internal/qqmusic/auth.go 与 auth_response.go。
+// 网络请求（以及宿主 session 里的 Cookie 记账）在 lib/music-api.js。
+
+/** QQ 扫码取码端点（参考实现 auth.go 的 QRKey）。 */
+export const QQ_QR_SHOW_ENDPOINT = 'https://xui.ptlogin2.qq.com/ssl/ptqrshow'
+/** QQ 扫码轮询端点（参考实现 auth.go 的 QRCheck）。 */
+export const QQ_QR_LOGIN_ENDPOINT = 'https://xui.ptlogin2.qq.com/ssl/ptqrlogin'
+/** OAuth 授权跳转端点（check_sig 之后跳到它）。 */
+export const QQ_LOGIN_JUMP_ENDPOINT = 'https://graph.qq.com/oauth2.0/login_jump'
+/** OAuth 授权端点（用 p_skey 换 code）。 */
+export const QQ_AUTHORIZE_ENDPOINT = 'https://graph.qq.com/oauth2.0/authorize'
+/** QQ 音乐换凭据端点（与 QQ_MUSICU 同一个）。 */
+export const QQ_MUSICU_LOGIN_ENDPOINT = QQ_MUSICU
+
+/** QQ 扫码的应用 id / 三方 id（参考实现 auth.go 的 url.Values）。 */
+export const QQ_QR_APP_ID = '716027609'
+export const QQ_QR_PT_3RD_AID = '100497308'
+/** 扫码/授权链路的 UA（参考实现 auth.go 的默认 UA）。 */
+export const QQ_AUTH_UA = 'Mozilla/5.0'
+/** OAuth 客户端 id（QQ 音乐网页登录）。 */
+export const QQ_OAUTH_CLIENT_ID = '100497308'
+/** OAuth scope。 */
+export const QQ_OAUTH_SCOPE = 'get_user_info,get_app_friends'
+/** OAuth openapi 版本。 */
+export const QQ_OAUTH_OPENAPI = '1010_1030'
+/** OAuth redirect_uri（QQ 音乐网页登录的回调页）。 */
+export const QQ_OAUTH_REDIRECT_URI =
+  'https://y.qq.com/portal/wx_redirect.html?login_type=1&surl=https://y.qq.com/'
+/** check_sig 只允许这个 host + path（参考实现 auth.go 的 trustedLoginURL）。 */
+export const QQ_CHECK_SIG_HOST = 'ssl.ptlogin2.graph.qq.com'
+export const QQ_CHECK_SIG_PATH = '/check_sig'
+/** login_jump 只允许这个 host + path。 */
+export const QQ_LOGIN_JUMP_HOST = 'graph.qq.com'
+export const QQ_LOGIN_JUMP_PATH = '/oauth2.0/login_jump'
+/** 授权 Cookie（p_uin / p_skey / pt_oauth_token）的 Domain：必须精确等于它，
+ *  更宽的域（.qq.com）里的同名 Cookie 不是这次的授权凭据
+ *  （参考实现 auth.go:284-295 的 authCookie）。 */
+export const QQ_AUTH_COOKIE_DOMAIN = 'graph.qq.com'
+/** OAuth 回调只允许这个 host + path。 */
+export const QQ_REDIRECT_HOST = 'y.qq.com'
+export const QQ_REDIRECT_PATH = '/portal/wx_redirect.html'
+/** g_tk 的 hash33 种子（参考实现 auth.go 的 hash33(skey, 5381)）。 */
+export const QQ_GTK_SEED = 5381
+/** PNG magic（8 字节）——用于校验 ptqrshow 的图片。 */
+export const PNG_MAGIC = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]
+
+/** ptuiCB 的外壳前缀。 */
+const PTUI_PREFIX = 'ptuiCB('
+/** ptuiCB 参数的严格形态：不含裸引号/反斜杠/换行；转义只允许 \' \\ \n \r \t \xNN \uNNNN。 */
+const PTUI_ARG_RE = /^(?:[^'\\\r\n]|\\(?:['\\nrt]|x[0-9a-fA-F]{2}|u[0-9a-fA-F]{4}))*$/
+/** 无法识别的扫码状态（空响应、非 ptuiCB、畸形参数都归到这里）。 */
+export const QQ_QR_UNKNOWN_STATUS = 'QQ 返回了无法识别的扫码状态，请刷新二维码重试'
+
+/** 带种子的 QQ hash33（参考实现 auth.go 的 hash33(s, initial)）：h = h*33 + c，取低 31 位。 */
+export function hash33Seed(text, initial = 0) {
+  let hash = initial | 0
+  for (const ch of String(text)) {
+    const code = ch.codePointAt(0) | 0
+    hash = (hash * 33 + code) | 0
+  }
+  return hash & 0x7fffffff
+}
+
+/** 随机字节：优先宿主 WebView 的 crypto.getRandomValues，取不到退回 Math.random。
+ *  页面 ctx 没有 ctx.crypto（见 v3-kit/docs/sdk/index.d.ts），因此这里用全局 crypto；
+ *  退化路径只影响本地 CSRF 随机量（state/ui/t），不影响换凭据的正确性。 */
+function randomBytes(length) {
+  const out = new Uint8Array(length)
+  const source = globalThis.crypto
+  if (source && typeof source.getRandomValues === 'function') {
+    source.getRandomValues(out)
+    return out
+  }
+  for (let i = 0; i < length; i += 1) out[i] = Math.floor(Math.random() * 256)
+  return out
+}
+
+/** 随机 hex（n 字节 → 2n 个小写 hex 字符）。 */
+export function randomHex(byteLength) {
+  return Array.from(randomBytes(byteLength))
+    .map((byte) => byte.toString(16).padStart(2, '0'))
+    .join('')
+}
+
+/** 随机 UUID 形态（8-4-4-4-12，参考实现 auth.go 的 ui 参数）。 */
+export function randomUuid() {
+  const hex = randomHex(16)
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`
+}
+
+/** ptqrshow 的 query（Go url.Values.Encode 排序结果；t 是 8 字节随机 hex）。 */
+export function ptqrShowParams(t) {
+  return queryEncode([
+    ['appid', QQ_QR_APP_ID],
+    ['e', '2'],
+    ['l', 'M'],
+    ['s', '3'],
+    ['d', '72'],
+    ['v', '4'],
+    ['t', String(t)],
+    ['daid', '383'],
+    ['pt_3rd_aid', QQ_QR_PT_3RD_AID],
+    ['u1', QQ_LOGIN_JUMP_ENDPOINT],
+  ])
+}
+
+/** ptqrshow 的完整 URL。 */
+export function ptqrShowUrl(t) {
+  return `${QQ_QR_SHOW_ENDPOINT}?${ptqrShowParams(t)}`
+}
+
+/** ptqrlogin 的 query：ptqrtoken = hash33(qrsig)。 */
+export function ptqrLoginParams(qrsig) {
+  return queryEncode([
+    ['u1', QQ_LOGIN_JUMP_ENDPOINT],
+    ['from_ui', '1'],
+    ['aid', QQ_QR_APP_ID],
+    ['daid', '383'],
+    ['pt_3rd_aid', QQ_QR_PT_3RD_AID],
+    ['ptqrtoken', String(hash33Seed(qrsig, 0))],
+  ])
+}
+
+/** ptqrlogin 的完整 URL。 */
+export function ptqrLoginUrl(qrsig) {
+  return `${QQ_QR_LOGIN_ENDPOINT}?${ptqrLoginParams(qrsig)}`
+}
+
+/** 解 ptuiCB 参数里的转义（\' \\ \n \r \t \xNN \uNNNN）。 */
+export function decodePtuiEscapes(raw) {
+  let out = ''
+  const text = String(raw ?? '')
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i]
+    if (ch !== '\\') {
+      out += ch
+      continue
+    }
+    i += 1
+    const esc = text[i]
+    if (esc === 'n') out += '\n'
+    else if (esc === 'r') out += '\r'
+    else if (esc === 't') out += '\t'
+    else if (esc === 'x' || esc === 'u') {
+      const size = esc === 'x' ? 2 : 4
+      const code = Number.parseInt(text.slice(i + 1, i + 1 + size), 16)
+      if (Number.isFinite(code)) {
+        out += String.fromCodePoint(code)
+        i += size
+      } else {
+        out += esc
+      }
+    } else out += esc ?? ''
+  }
+  return out
+}
+
+/**
+ * 严格解析 ptuiCB 状态响应（参考实现 auth.go 的 parsePtui）。
+ *
+ * 只接受 `ptuiCB('a','b',...)` 这种完整外壳：参数必须是带引号的字符串（6~7 个），
+ * 逗号分隔无空格以外的杂质；`'ptuiCB(66)'`、尾逗号、`;alert(1)`、空响应一律判为畸形，
+ * 避免把注入内容当成状态。返回 {values} 或 {error}。
+ */
+export function parsePtui(body) {
+  let text = String(body ?? '').trim()
+  if (text.endsWith(';')) text = text.slice(0, -1)
+  if (!text.startsWith(PTUI_PREFIX) || !text.endsWith(')')) return { error: QQ_QR_UNKNOWN_STATUS }
+  const inner = text.slice(PTUI_PREFIX.length, -1)
+  const scanned = scanQuotedArgs(inner, true)
+  if (!scanned) return { error: QQ_QR_UNKNOWN_STATUS }
+  const values = []
+  let cursor = 0
+  for (const item of scanned) {
+    const gap = inner.slice(cursor, item.start).trim()
+    if (values.length === 0) {
+      if (gap !== '') return { error: QQ_QR_UNKNOWN_STATUS }
+    } else if (gap !== ',') {
+      return { error: QQ_QR_UNKNOWN_STATUS }
+    }
+    values.push(item.value)
+    cursor = item.end
+  }
+  if (inner.slice(cursor).trim() !== '') return { error: QQ_QR_UNKNOWN_STATUS }
+  if (values.length < 6 || values.length > 7) return { error: QQ_QR_UNKNOWN_STATUS }
+  return { values }
+}
+
+/**
+ * ptuiCB 状态码 → 扫码状态（参考实现 auth.go 的 QRCheck 映射）。
+ * '0' 时 check_sig 是 args[2]（后续还要过重定向白名单）；未知状态码按服务端文案返回 failed。
+ */
+export function parseQqQrStatus(body) {
+  const parsed = parsePtui(body)
+  if (parsed.error) return parsed
+  const args = parsed.values
+  switch (args[0]) {
+    case '66': return { status: 'waiting', message: '', code: '66' }
+    case '67': return { status: 'scanned', message: '请在手机 QQ 上确认登录', code: '67' }
+    case '65': return { status: 'expired', message: '二维码已失效', code: '65' }
+    case '0': return { status: 'success', message: '登录成功', check_sig: args[2] ?? '', code: '0' }
+    default: return { status: 'failed', message: args[4] ?? '', code: args[0] }
+  }
+}
+
+/** 取原始 URL 的 authority（host[:port][@userinfo] 部分），不做规范化。 */
+function rawAuthority(raw) {
+  const text = String(raw ?? '')
+  const schemeEnd = text.indexOf('://')
+  if (schemeEnd === -1) return ''
+  const rest = text.slice(schemeEnd + 3)
+  const end = rest.search(/[/?#]/)
+  return end === -1 ? rest : rest.slice(0, end)
+}
+
+/**
+ * 重定向白名单（参考实现 auth.go 的 trustedLoginURL）：只接受 https + 精确 host
+ * （显式端口、userinfo 都算不等 → 拒绝）+ 精确 path，且不带 fragment。不合法返回 null。
+ */
+export function trustedLoginUrl(raw, host, path) {
+  let url
+  try {
+    url = new URL(String(raw ?? ''))
+  } catch {
+    return null
+  }
+  if (url.protocol !== 'https:') return null
+  // 用原始 authority 比较：URL 解析器会抹掉 https 的默认端口 :443，
+  // 而参考实现要求 host 逐字相等（Go 的 u.Host 保留显式端口）。
+  if (rawAuthority(raw) !== String(host)) return null
+  if (url.pathname !== String(path)) return null
+  if (url.username !== '' || url.password !== '') return null
+  if (url.hash !== '') return null
+  return url
+}
+
+/** OAuth 授权表单（Go url.Values.Encode 排序结果；字段集与参考实现 auth.go 一致）。 */
+export function authorizeForm({ state, ui, gTk, authTime }) {
+  return queryEncode([
+    ['response_type', 'code'],
+    ['client_id', QQ_OAUTH_CLIENT_ID],
+    ['redirect_uri', QQ_OAUTH_REDIRECT_URI],
+    ['scope', QQ_OAUTH_SCOPE],
+    ['state', String(state)],
+    ['switch', ''],
+    ['from_ptlogin', '1'],
+    ['src', '1'],
+    ['update_auth', '1'],
+    ['openapi', QQ_OAUTH_OPENAPI],
+    ['g_tk', String(gTk)],
+    ['auth_time', String(authTime)],
+    ['ui', String(ui)],
+  ])
+}
+
+/**
+ * OAuth 回调解析：只接受 y.qq.com 的 /portal/wx_redirect.html，且 code 形如
+ * ^[A-F0-9]{32}$、state 必须等于自己发出去的那个。任何不匹配都拒绝（不拿未校验的 code 去换凭据）。
+ */
+export function parseAuthorizeRedirect(location, expectedState) {
+  let url
+  try {
+    url = new URL(String(location ?? ''))
+  } catch {
+    return { error: 'QQ 授权跳转目标异常' }
+  }
+  if (url.protocol !== 'https:') return { error: 'QQ 授权跳转目标异常' }
+  if (rawAuthority(location) !== QQ_REDIRECT_HOST || url.pathname !== QQ_REDIRECT_PATH) {
+    return { error: 'QQ 授权跳转目标异常' }
+  }
+  const codes = url.searchParams.getAll('code')
+  const states = url.searchParams.getAll('state')
+  if (codes.length !== 1 || states.length !== 1) return { error: 'QQ 授权 state/code 校验失败' }
+  if (!/^[A-F0-9]{32}$/.test(codes[0])) return { error: 'QQ 授权 state/code 校验失败' }
+  if (states[0] !== String(expectedState)) return { error: 'QQ 授权 state/code 校验失败' }
+  return { code: codes[0] }
+}
+
+/** QQLogin 换凭据的请求体（JSON；键序按 Go json.Marshal 的 map 排序语义）。 */
+export function qqLoginRequestBody(code) {
+  return sortedStringify({
+    comm: { ct: 24, cv: 0, g_tk: 5381, platform: 'yqq' },
+    req: {
+      module: 'QQConnectLogin.LoginServer',
+      method: 'QQLogin',
+      param: { code: String(code) },
+    },
+  })
+}
+
+/** 取文本字段（兼容字符串与数字两种 JSON 形态；参考实现 auth_response.go 的 text()）。 */
+function textField(data, ...keys) {
+  for (const key of keys) {
+    const value = data?.[key]
+    if (typeof value === 'string' && value !== '') return value
+    if (typeof value === 'number' && Number.isFinite(value)) return String(value)
+  }
+  return ''
+}
+
+/** 取整数字段（兼容数字与数字字符串；参考实现的 loginOptionalInt）。 */
+function intField(data, key) {
+  const value = data?.[key]
+  if (typeof value === 'number' && Number.isFinite(value)) return Math.trunc(value)
+  if (typeof value === 'string' && /^-?\d+$/.test(value.trim())) return Number.parseInt(value.trim(), 10)
+  return 0
+}
+
+/**
+ * QQLogin 响应 → 登录凭据（参考实现 auth_response.go 的 decodeQQLoginResponse，expectedType=2）。
+ *
+ * 校验：顶层 code 与 req.code 都必须是 0；data.musicid 必须是 >0 的数字；
+ * data.musickey 非空；data.loginType 必须是 2（QQ 互联路径，微信路径才是 1）。
+ * 返回 {value:{musicid,musickey,loginType,...}} 或 {error}。
+ */
+export function parseQQLoginResponse(body, nowMsValue = Date.now()) {
+  let parsed
+  try {
+    parsed = JSON.parse(String(body ?? ''))
+  } catch {
+    return { error: 'QQ 音乐登录响应无法解析（L201）' }
+  }
+  const code = parsed?.code
+  const req = parsed?.req
+  if (typeof code !== 'number' || !req || typeof req?.code !== 'number') {
+    return { error: 'QQ 音乐未返回登录状态（L202）' }
+  }
+  if (code !== 0 || req.code !== 0) {
+    return { error: `QQ 音乐拒绝登录（服务码 ${code}/${req.code}）` }
+  }
+  const data = req.data
+  if (!data || typeof data !== 'object' || Array.isArray(data)) {
+    return { error: 'QQ 音乐未返回登录数据（L203）' }
+  }
+  const musicid = textField(data, 'musicid').trim()
+  if (!/^\d+$/.test(musicid) || Number(musicid) <= 0) {
+    return { error: 'QQ 音乐返回的账号标识无效（L204）' }
+  }
+  const musickey = textField(data, 'musickey')
+  if (musickey === '') return { error: 'QQ 音乐未返回登录凭据（L205）' }
+  const loginType = intField(data, 'loginType')
+  if (loginType !== 2) {
+    return { error: `QQ 音乐返回未支持的登录类型（${loginType}）` }
+  }
+  const createdAt = intField(data, 'musickeyCreateTime')
+  const expiresIn = intField(data, 'keyExpiresIn')
+  if (createdAt > 0 && expiresIn > 0 && nowMsValue >= (createdAt + expiresIn) * 1000) {
+    return { error: 'QQ 音乐返回的登录凭据已过期，请重新扫码' }
+  }
+  return {
+    value: {
+      musicid,
+      musickey,
+      loginType,
+      nick: textField(data, 'nick', 'nickname'),
+      logo: textField(data, 'logo'),
+      encryptUin: textField(data, 'encryptUin'),
+      openid: textField(data, 'openid'),
+      unionid: textField(data, 'unionid'),
+      refreshToken: textField(data, 'refresh_token'),
+      refreshKey: textField(data, 'refresh_key'),
+      musickeyCreateTime: createdAt,
+      keyExpiresIn: expiresIn,
+    },
+  }
+}
+
+/** base64 文本 → 字节（浏览器与 Node 都有 atob）。 */
+export function base64Bytes(text) {
+  const raw = String(text ?? '')
+  if (raw === '') return new Uint8Array(0)
+  let binary
+  try {
+    binary = atob(raw)
+  } catch {
+    return new Uint8Array(0)
+  }
+  const out = new Uint8Array(binary.length)
+  for (let i = 0; i < binary.length; i += 1) out[i] = binary.charCodeAt(i) & 0xff
+  return out
+}
+
+/** 是否 PNG（校验 magic，等价参考实现 auth.go 的 png.DecodeConfig）。 */
+export function isPng(bytes) {
+  if (!bytes || bytes.length < PNG_MAGIC.length) return false
+  return PNG_MAGIC.every((byte, index) => bytes[index] === byte)
 }

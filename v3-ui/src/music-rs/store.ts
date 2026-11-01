@@ -1,7 +1,7 @@
 // 音乐下载页面的状态与动作层。
 //
 // 行为基准是改写前的原生 JS 版页面（v3-ui/legacy/music-rs/page.js）：搜索/我的歌单/任务/设置
-// 四个分页、网易云扫码登录（unikey + 二维码 + 2 秒轮询）、手动粘贴 Cookie、CookieCloud 同步、
+// 四个分页、网易云与 QQ 音乐扫码登录（二维码 + 2 秒轮询）、手动粘贴 Cookie、CookieCloud 同步、
 // 单曲入队、歌单整单入队、任务重试/清理/索引对账/推进队列、设置保存、通知自检、最近动作日志，
 // 逐项对应（功能零变动，只是从原生 DOM 换成 Vue 3 组件）。
 //
@@ -23,6 +23,9 @@ import type {
   MusicSettings,
   PlaylistItem,
   PumpState,
+  QrPollResult,
+  QrSession,
+  QrStatus,
   Song,
   TaskEntry,
   Toast,
@@ -37,8 +40,12 @@ const POLL_INTERVAL_MS = 2000
 const TASK_REFRESH_MS = 5000
 /** 未登录时的引导文案关键字。 */
 const MUSIC_NOT_LOGIN_HINT = '未登录'
-/** 二维码有效期（毫秒）——网易云 unikey 约 3 分钟。 */
-const QR_TTL_MS = 180 * 1000
+/** 二维码有效期（毫秒）：QQ 官方二维码 120 秒（与 lib/qq.js QQ_QR_TTL_SECS 一致），
+ *  网易云 unikey 约 3 分钟。两个来源不共用一个有效期。 */
+const QR_TTL_BY_SOURCE: Record<string, number> = {
+  qq: 120 * 1000,
+  netease: 180 * 1000,
+}
 
 /** 音质档位的中文名（原生版同表）。 */
 export const QUALITY_LABELS: Record<string, string> = {
@@ -80,6 +87,11 @@ const QQ_WHITELIST = [
 /** 来源 id → 显示名。 */
 export function sourceName(id: string): string {
   return SOURCES.find((item) => item.id === id)?.name ?? id ?? '—'
+}
+
+/** 扫码提示文案（按来源）：网易云用 App 扫，QQ 用手机 QQ 扫。 */
+export function scanHint(id: string): string {
+  return id === 'qq' ? '用手机 QQ 扫一扫' : '用网易云音乐 App 扫一扫'
 }
 
 /** 音质 id → 显示名。 */
@@ -195,8 +207,9 @@ export function createMusicStore(ctx: HostContext) {
 
   // ── 扫码登录 ──────────────────────────────────────────
   const loginSource = ref<'netease' | 'qq'>('netease')
-  const qr = ref<{ source: string; key: string; content: string; expiresAt: number } | null>(null)
-  const qrStatus = ref('')
+  /** 当前二维码：网易云是 content（本地编码），QQ 是 image（官方 PNG）。 */
+  const qr = ref<QrSession | null>(null)
+  const qrStatus = ref<QrStatus>('')
   const qrBusy = ref(false)
   const qrMessage = ref('')
   const qrTitle = ref('尚未生成二维码')
@@ -381,6 +394,10 @@ export function createMusicStore(ctx: HostContext) {
   }
 
   // ── 扫码登录 ──────────────────────────────────────────
+  /** 二维码代次：每次新建/重置二维码 +1。在途的轮询回来后如果代次变了，
+   *  说明这次结果属于一张已经被替换掉的二维码 —— 直接丢弃，不改状态也不再挂轮询。 */
+  let qrGeneration = 0
+
   function stopQrPolling(): void {
     if (qrTimer !== null) {
       clearTimeout(qrTimer)
@@ -399,6 +416,8 @@ export function createMusicStore(ctx: HostContext) {
 
   function resetQr(): void {
     stopQrPolling()
+    qrGeneration += 1
+    qrBusy.value = false
     qr.value = null
     qrStatus.value = ''
     qrMessage.value = ''
@@ -406,8 +425,16 @@ export function createMusicStore(ctx: HostContext) {
     qrSub.value = '点右侧「获取二维码」开始扫码登录'
   }
 
+  /**
+   * 取二维码：按来源分派到各自的接口。
+   * - qq：qqQrCreate 返回官方 PNG（data URL），页面直接 <img> 渲染；
+   * - netease：neteaseQrCreate 只给登录页 URL，页面本地编码成 SVG。
+   * 两个来源的二维码有效期不同（QQ 120 秒 / 网易云 180 秒），各自算。
+   */
   async function createQr(src: string): Promise<void> {
     stopQrPolling()
+    qrGeneration += 1
+    const generation = qrGeneration
     qr.value = null
     qrBusy.value = true
     qrMessage.value = ''
@@ -415,24 +442,43 @@ export function createMusicStore(ctx: HostContext) {
     qrTitle.value = '正在生成二维码…'
     qrSub.value = ''
     try {
-      if (src === 'qq') throw new Error(api.QR_UNAVAILABLE)
-      const data = await api.neteaseQrCreate(deps)
-      qr.value = { source: src, key: data.key, content: data.qr_content, expiresAt: Date.now() + QR_TTL_MS }
+      const ttl = QR_TTL_BY_SOURCE[src] ?? QR_TTL_BY_SOURCE.netease
+      if (src === 'qq') {
+        const data = await api.qqQrCreate(deps)
+        const key = String(data?.key ?? '')
+        const image = String(data?.image ?? '')
+        if (!key) throw new Error('获取二维码失败：后端没给二维码句柄')
+        if (!image.startsWith('data:image/')) throw new Error('获取二维码失败：后端没给二维码图片')
+        if (generation !== qrGeneration) return
+        qr.value = { source: src, key, image, expiresAt: Date.now() + ttl }
+      } else {
+        const data = await api.neteaseQrCreate(deps)
+        const key = String(data?.key ?? '')
+        const content = String(data?.qr_content ?? '')
+        if (!key || !content) throw new Error('获取二维码失败：后端没给二维码内容')
+        if (generation !== qrGeneration) return
+        qr.value = { source: src, key, content, expiresAt: Date.now() + ttl }
+      }
       qrTitle.value = '等待扫码'
-      qrSub.value = `用${sourceName(src)}音乐 App 扫一扫`
+      qrSub.value = scanHint(src)
       qrStatus.value = 'waiting'
       qrBusy.value = false
       scheduleQrPoll()
     } catch (error) {
+      // 期间又换了一张二维码：这次失败不算数，别把新二维码的状态覆盖掉。
+      if (generation !== qrGeneration) return
       resetQr()
       qrBusy.value = false
       toast('error', errorText(error))
     }
   }
 
+  /** 轮询扫码状态：按来源分派；成功与否只看后端回的 logged_in。 */
   async function pollQr(): Promise<void> {
     const session = qr.value
     if (!session || disposed.value) return
+    // 本次轮询属于哪一代二维码：请求期间二维码被换掉/关掉，结果就作废。
+    const generation = qrGeneration
     // 页面被关闭（宿主中止 signal）就停掉轮询，别再发请求。
     if (ctx.signal?.aborted) {
       stopQrPolling()
@@ -443,24 +489,39 @@ export function createMusicStore(ctx: HostContext) {
       qrTitle.value = '二维码已过期'
       qrSub.value = '请重新获取'
       qrStatus.value = 'expired'
+      stopQrPolling()
       toast('warning', '二维码已过期，请重新获取')
       return
     }
     try {
-      const result = await api.neteaseQrPoll(deps, session.key)
-      qrMessage.value = result.message ?? ''
-      if (result.status === 'success' || result.logged_in === true) {
-        qrStatus.value = 'success'
-        qrTitle.value = '登录成功'
-        qrSub.value = '登录态已保存'
+      const result = (session.source === 'qq'
+        ? await api.qqQrPoll(deps, session.key)
+        : await api.neteaseQrPoll(deps, session.key)) as QrPollResult
+      // 回来的结果属于一张已经被换掉的二维码 —— 丢掉，别改新二维码的状态，也别再挂轮询。
+      if (generation !== qrGeneration) return
+      qrMessage.value = result?.message ?? ''
+      const status = (result?.status || 'waiting') as QrStatus
+      if (status === 'success') {
+        // 到这一步只是「扫到了」，登录成不成功看后端有没有真的拿到登录凭据。
         stopQrPolling()
-        qr.value = null
-        if (result.logged_in === true) toast('success', '登录成功')
-        else toast('warning', result.message || '扫码成功，但未能取得登录 Cookie；请改用「手动粘贴 Cookie」')
+        if (result?.logged_in === true) {
+          qrStatus.value = 'success'
+          qrTitle.value = '登录成功'
+          qrSub.value = '登录态已保存'
+          toast('success', '登录成功')
+          // 登录成了但收尾没做完（如宿主会话里的 QQ 授权 Cookie 没清掉）——单独告警。
+          if (result?.warning) toast('warning', result.warning)
+        } else {
+          // 没拿到凭据就如实说没拿到，绝不冒充登录成功。
+          qrStatus.value = 'no-login'
+          qrTitle.value = '扫码完成，未取得登录态'
+          qrSub.value = '请用「手动粘贴 Cookie」完成登录'
+          toast('warning', result?.message || '扫码成功，但没能取到登录 Cookie；请改用「手动粘贴 Cookie」')
+        }
         await refresh()
         return
       }
-      if (result.status === 'expired') {
+      if (status === 'expired') {
         qrTitle.value = '二维码已过期'
         qrSub.value = '请重新获取'
         qrStatus.value = 'expired'
@@ -468,15 +529,29 @@ export function createMusicStore(ctx: HostContext) {
         toast('warning', '二维码已过期，请重新获取')
         return
       }
-      if (result.status === 'scanned') {
+      if (status === 'waiting') {
+        // 上一轮轮询报错后恢复：文案回到「等待扫码」，别停在错误态。
+        qrTitle.value = '等待扫码'
+        qrSub.value = scanHint(session.source)
+      }
+      if (status === 'scanned') {
         qrTitle.value = '已扫码'
         qrSub.value = '请在手机上确认'
       }
-      qrStatus.value = result.status || 'waiting'
+      if (status === 'failed') {
+        qrTitle.value = '扫码状态异常'
+        qrSub.value = result?.message || '请重新获取二维码'
+      }
+      qrStatus.value = status
       scheduleQrPoll()
     } catch (error) {
+      // 期间二维码被换掉：这次失败属于旧会话，别把新二维码的状态改成失败。
+      if (generation !== qrGeneration) return
+      // 网络/会话类错误：如实显示，并按 2 秒继续重试，直到本地有效期到。
       qrMessage.value = errorText(error)
       qrStatus.value = 'failed'
+      qrTitle.value = '轮询失败'
+      qrSub.value = '正在重试；若持续失败请重新获取二维码'
       scheduleQrPoll()
     }
   }

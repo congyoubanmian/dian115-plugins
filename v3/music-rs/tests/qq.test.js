@@ -1,4 +1,7 @@
 // QQ 纯逻辑向量测试 —— 取链部分对齐参考项目 Lilt（mygo-qyin/internal/qqmusic）。
+// 扫码登录部分对齐同一参考项目的 internal/qqmusic/auth.go + auth_response.go：
+// 参数（Go url.Values.Encode 排序）、hash33 带种子、严格 ptuiCB 解析、重定向白名单、
+// OAuth 授权表单与 QQLogin 响应解析。
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
@@ -8,6 +11,9 @@ import {
   wxLoginPayload, parseJsArgs, qqStatusOf, wxStatusOf, parseWxErrcode, parseWxCode,
   extractWxUuid, loginKindOf, parseVkeyResponse, parseSearch, NO_LINK_ERROR, QR_UNAVAILABLE,
   QQ_STREAM_FALLBACK_DOMAIN,
+  hash33Seed, ptqrShowParams, ptqrShowUrl, ptqrLoginParams, ptqrLoginUrl, parsePtui,
+  parseQqQrStatus, trustedLoginUrl, authorizeForm, parseAuthorizeRedirect, qqLoginRequestBody,
+  parseQQLoginResponse, randomHex, randomUuid, isPng, base64Bytes, QQ_QR_UNKNOWN_STATUS,
 } from '../lib/qq.js'
 
 test('quality ladder matches the reference client (F000/M800/M500)', () => {
@@ -195,4 +201,169 @@ test('parseSearch maps qq songs like Go', () => {
   assert.equal(songs[0].source, 'qq')
   assert.equal(songs[0].quality, '320')
   assert.match(parseSearch('not json', 1).error, /^搜索解析失败: /)
+})
+
+// ─────────────────── QQ 扫码登录纯逻辑（参考实现 auth.go / auth_response.go）───────────────────
+
+test('hash33Seed matches the reference vectors (Go hash33(s, initial))', () => {
+  assert.equal(hash33Seed('AbCdEf123456', 0), 1510816170)
+  assert.equal(hash33Seed('fake-pskey', 5381), 74200821)
+  assert.equal(hash33Seed('fake-pskey', 0), 1321097136)
+  assert.equal(hash33Seed('AbCdEf123456', 5381), 850394671)
+  assert.equal(hash33Seed('AbCdEf123456'), 1510816170, '默认种子 0 与旧 hash33 同值')
+})
+
+test('ptqrshow query is the exact sorted string with u1', () => {
+  assert.equal(
+    ptqrShowParams('a1b2c3d4e5f60718'),
+    'appid=716027609&d=72&daid=383&e=2&l=M&pt_3rd_aid=100497308&s=3&t=a1b2c3d4e5f60718&u1=https%3A%2F%2Fgraph.qq.com%2Foauth2.0%2Flogin_jump&v=4',
+  )
+  assert.equal(
+    ptqrShowUrl('a1b2c3d4e5f60718'),
+    `https://xui.ptlogin2.qq.com/ssl/ptqrshow?${ptqrShowParams('a1b2c3d4e5f60718')}`,
+  )
+})
+
+test('ptqrlogin query carries ptqrtoken=hash33(qrsig)', () => {
+  assert.equal(
+    ptqrLoginParams('AbCdEf123456'),
+    'aid=716027609&daid=383&from_ui=1&pt_3rd_aid=100497308&ptqrtoken=1510816170&u1=https%3A%2F%2Fgraph.qq.com%2Foauth2.0%2Flogin_jump',
+  )
+  assert.ok(ptqrLoginUrl('AbCdEf123456').startsWith('https://xui.ptlogin2.qq.com/ssl/ptqrlogin?'))
+})
+
+test('parsePtui accepts the reference status strings', () => {
+  assert.deepEqual(
+    parsePtui("ptuiCB('66','0','','0','二维码未失效。', '')").values,
+    ['66', '0', '', '0', '二维码未失效。', ''],
+  )
+  assert.deepEqual(
+    parsePtui("ptuiCB('0','0','https://ssl.ptlogin2.graph.qq.com/check_sig?ptsigx=fake','0','ok','nick')").values,
+    ['0', '0', 'https://ssl.ptlogin2.graph.qq.com/check_sig?ptsigx=fake', '0', 'ok', 'nick'],
+  )
+  assert.equal(parsePtui("ptuiCB('0','0','u','0','m','n','o')").values.length, 7, '7 个参数也接受')
+  // 转义：\' \\ \n \r \t \xNN \uNNNN
+  assert.deepEqual(
+    parsePtui("ptuiCB('67','0','','0','it\\'s scanned','\\u4f60\\x21');").values,
+    ['67', '0', '', '0', "it's scanned", '你!'],
+  )
+})
+
+test('parsePtui rejects malformed or injected responses', () => {
+  const bad = [
+    'alert(1)',
+    "ptuiCB('66')",
+    "ptuiCB('66','0','','0','waiting','');alert(1)",
+    "ptuiCB('66','0','','0','waiting','',)",
+    "ptuiCB('66','0','','0','waiting','','x','y')",
+    'ptuiCB(66)',
+    '',
+    '   ',
+  ]
+  for (const body of bad) {
+    assert.equal(parsePtui(body).error, QQ_QR_UNKNOWN_STATUS, body)
+  }
+})
+
+test('parseQqQrStatus maps the QQ status codes', () => {
+  assert.equal(parseQqQrStatus("ptuiCB('66','0','','0','二维码未失效。','')").status, 'waiting')
+  const scanned = parseQqQrStatus("ptuiCB('67','0','','0','x','')")
+  assert.equal(scanned.status, 'scanned')
+  assert.match(scanned.message, /手机 QQ/)
+  assert.equal(parseQqQrStatus("ptuiCB('65','0','','0','x','')").status, 'expired')
+  const ok = parseQqQrStatus("ptuiCB('0','0','https://ssl.ptlogin2.graph.qq.com/check_sig?ptsigx=fake','0','ok','nick')")
+  assert.equal(ok.status, 'success')
+  assert.equal(ok.check_sig, 'https://ssl.ptlogin2.graph.qq.com/check_sig?ptsigx=fake')
+  const failed = parseQqQrStatus("ptuiCB('1','0','','0','二维码错误','')")
+  assert.equal(failed.status, 'failed')
+  assert.equal(failed.message, '二维码错误', '服务端文案原样带回')
+  assert.ok(parseQqQrStatus('').error, '空响应单独归类，不退化成等待中')
+})
+
+test('trustedLoginUrl only accepts the whitelisted host and path', () => {
+  assert.ok(trustedLoginUrl('https://ssl.ptlogin2.graph.qq.com/check_sig?ptsigx=1', 'ssl.ptlogin2.graph.qq.com', '/check_sig'))
+  const bad = [
+    'https://evil.test/check_sig',
+    'http://ssl.ptlogin2.graph.qq.com/check_sig',
+    'https://ssl.ptlogin2.graph.qq.com:443/check_sig',
+    'https://ssl.ptlogin2.graph.qq.com/check_sig/other',
+    'https://u:p@ssl.ptlogin2.graph.qq.com/check_sig',
+    'https://ssl.ptlogin2.graph.qq.com/check_sig#frag',
+    'https://graph.qq.com/check_sig',
+    'not a url',
+    '',
+  ]
+  for (const raw of bad) {
+    assert.equal(trustedLoginUrl(raw, 'ssl.ptlogin2.graph.qq.com', '/check_sig'), null, raw)
+  }
+})
+
+test('authorizeForm is the exact sorted form body', () => {
+  assert.equal(
+    authorizeForm({
+      state: '0123456789abcdef0123456789abcdef',
+      ui: '01234567-89ab-cdef-0123-456789abcdef',
+      gTk: 74200821,
+      authTime: 1759291234567,
+    }),
+    'auth_time=1759291234567&client_id=100497308&from_ptlogin=1&g_tk=74200821&openapi=1010_1030&redirect_uri=https%3A%2F%2Fy.qq.com%2Fportal%2Fwx_redirect.html%3Flogin_type%3D1%26surl%3Dhttps%3A%2F%2Fy.qq.com%2F&response_type=code&scope=get_user_info%2Cget_app_friends&src=1&state=0123456789abcdef0123456789abcdef&switch=&ui=01234567-89ab-cdef-0123-456789abcdef&update_auth=1',
+  )
+})
+
+test('parseAuthorizeRedirect validates host, path, code and state', () => {
+  const state = '0123456789abcdef0123456789abcdef'
+  const code = 'A'.repeat(32)
+  assert.equal(parseAuthorizeRedirect(`https://y.qq.com/portal/wx_redirect.html?code=${code}&state=${state}`, state).code, code)
+  assert.ok(parseAuthorizeRedirect(`https://y.qq.com/portal/wx_redirect.html?code=${code}&state=wrong`, state).error)
+  assert.ok(parseAuthorizeRedirect(`https://y.qq.com/portal/wx_redirect.html?code=short&state=${state}`, state).error)
+  assert.ok(parseAuthorizeRedirect('https://evil.test/portal/wx_redirect.html?code=X&state=' + state, state).error)
+  assert.ok(parseAuthorizeRedirect('https://y.qq.com/other?code=X&state=' + state, state).error)
+  assert.ok(parseAuthorizeRedirect('http://y.qq.com/portal/wx_redirect.html?code=X&state=' + state, state).error)
+  assert.ok(parseAuthorizeRedirect('https://y.qq.com/portal/wx_redirect.html?code=X&code=Y&state=' + state, state).error)
+})
+
+test('qqLoginRequestBody matches the reference JSON shape', () => {
+  assert.equal(
+    qqLoginRequestBody('ABCDEF0123456789ABCDEF0123456789'),
+    '{"comm":{"ct":24,"cv":0,"g_tk":5381,"platform":"yqq"},"req":{"method":"QQLogin","module":"QQConnectLogin.LoginServer","param":{"code":"ABCDEF0123456789ABCDEF0123456789"}}}',
+  )
+})
+
+test('parseQQLoginResponse accepts the reference payload', () => {
+  const body = '{"code":0,"req":{"code":0,"data":{"musicid":10001,"musickey":"fake-musickey","loginType":2,"nick":"Listener","logo":"https://example.test/avatar"}}}'
+  const parsed = parseQQLoginResponse(body)
+  assert.equal(parsed.value.musicid, '10001')
+  assert.equal(parsed.value.musickey, 'fake-musickey')
+  assert.equal(parsed.value.loginType, 2)
+  assert.equal(parsed.value.nick, 'Listener')
+  // 数字字符串形态的 musicid / loginType 也接受。
+  const text = parseQQLoginResponse('{"code":0,"req":{"code":0,"data":{"musicid":"10001","musickey":"k","loginType":"2"}}}')
+  assert.equal(text.value.musicid, '10001')
+  assert.equal(text.value.loginType, 2)
+})
+
+test('parseQQLoginResponse rejects incomplete or wrong payloads', () => {
+  assert.match(parseQQLoginResponse('not json').error, /L201/)
+  assert.match(parseQQLoginResponse('{"code":0}').error, /L202/)
+  assert.match(parseQQLoginResponse('{"code":0,"req":{"code":1,"data":{}}}').error, /拒绝登录/)
+  assert.match(parseQQLoginResponse('{"code":1,"req":{"code":0,"data":{}}}').error, /拒绝登录/)
+  assert.match(parseQQLoginResponse('{"code":0,"req":{"code":0}}').error, /L203/)
+  assert.match(parseQQLoginResponse('{"code":0,"req":{"code":0,"data":{"musickey":"k","loginType":2}}}').error, /L204/)
+  assert.match(parseQQLoginResponse('{"code":0,"req":{"code":0,"data":{"musicid":0,"musickey":"k","loginType":2}}}').error, /L204/)
+  assert.match(parseQQLoginResponse('{"code":0,"req":{"code":0,"data":{"musicid":10001,"loginType":2}}}').error, /L205/)
+  assert.match(parseQQLoginResponse('{"code":0,"req":{"code":0,"data":{"musicid":10001,"musickey":"k","loginType":1}}}').error, /登录类型/)
+})
+
+test('random values have the expected shape', () => {
+  assert.match(randomHex(8), /^[0-9a-f]{16}$/)
+  assert.match(randomHex(16), /^[0-9a-f]{32}$/)
+  assert.match(randomUuid(), /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/)
+  assert.notEqual(randomHex(16), randomHex(16))
+})
+
+test('isPng checks the PNG magic', () => {
+  assert.ok(isPng(base64Bytes(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00]).toString('base64'))))
+  assert.ok(!isPng(base64Bytes(Buffer.from([0xff, 0xd8, 0xff, 0xe0]).toString('base64'))), 'JPEG 不是 PNG')
+  assert.ok(!isPng(base64Bytes('')))
+  assert.ok(!isPng(base64Bytes('not-base64!!')))
 })

@@ -80,3 +80,39 @@ export interface Toast {
   kind: 'success' | 'error' | 'warning' | 'info'
   message: string
 }
+
+/**
+ * 扫码状态机（页面自己的一份投影，后端返回的 status 归一到这几种）：
+ * - ''：还没生成二维码；
+ * - waiting：等待扫码；
+ * - scanned：已扫码，待手机确认；
+ * - success：登录成功（后端确认拿到了登录凭据）；
+ * - no-login：扫码完成但没拿到登录凭据 —— 如实提示，不冒充登录成功；
+ * - expired：二维码已过期；
+ * - failed：轮询/状态异常。
+ */
+export type QrStatus = '' | 'waiting' | 'scanned' | 'success' | 'no-login' | 'expired' | 'failed'
+
+/** 一次二维码的生命周期（网易云 unikey 会话 / QQ 官方 PNG 二维码）。 */
+export interface QrSession {
+  /** netease / qq。 */
+  source: string
+  /** 轮询用的不透明句柄（网易云 unikey / QQ 随机 key），不是凭据。 */
+  key: string
+  /** 本地编码用的内容（网易云登录页 URL）；QQ 走图片二维码，没有这个字段。 */
+  content?: string
+  /** PNG 的 data URL（QQ 官方二维码图片）。 */
+  image?: string
+  /** 过期时刻（毫秒时间戳）。 */
+  expiresAt: number
+}
+
+/** 扫码轮询结果（两个来源同形）。 */
+export interface QrPollResult {
+  status: QrStatus
+  message?: string
+  /** 后端确认是否真的拿到了登录凭据（没有这个字段就按 false 处理）。 */
+  logged_in?: boolean
+  /** 登录成功但收尾没做完时的告警（如宿主会话里的 QQ 授权 Cookie 没清掉）。 */
+  warning?: string
+}
