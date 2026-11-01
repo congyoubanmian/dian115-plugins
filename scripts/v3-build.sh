@@ -28,6 +28,8 @@ for row in "${PLUGINS[@]}"; do
   IFS='|' read -r id src pkg <<<"$row"
   echo "== $id =="
   node "$CONFORMANCE/project-check.mjs" "$ROOT/$src"
+  # pack.mjs 以 wx 独占写入，重复执行前先清掉旧包
+  rm -f "$DIST/$pkg"
   node "$CONFORMANCE/pack.mjs" "$ROOT/$src" "$DIST/$pkg"
 done
 
