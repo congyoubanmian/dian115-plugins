@@ -34,7 +34,17 @@ import {
   authorizeForm, base64Bytes, hash33Seed, isPng, parseAuthorizeRedirect, parseQqQrStatus,
   parseQQLoginResponse, ptqrLoginUrl, ptqrShowUrl, qqLoginRequestBody, randomHex, randomUuid,
   trustedLoginUrl,
+  // 歌单 / 每日推荐 / 我喜欢（musicu）
+  authenticatedComm, musicuRequestBody, parseMusicuResponse, checkDissDataStatus, qqHasMore,
+  ownedPlaylistsParam, favoritePlaylistsParam, dailySongsParam, likedSongsParam,
+  publicPlaylistSongsParam, ownedPlaylistSongsParam, parseQqPlaylistList, parseQqSongList,
+  parseQqPlaylistInfo, qqTargetKind, numberField,
+  QQ_MODULE_PLAYLIST_BASE_READ, QQ_MODULE_PLAYLIST_FAV_READ, QQ_MODULE_AI_DISS_INFO,
+  QQ_MODULE_DISS_INFO, QQ_METHOD_GET_PLAYLIST_BY_UIN, QQ_METHOD_GET_PLAYLIST_FAV_INFO,
+  QQ_METHOD_UNIFORM_GET_DISSINFO, QQ_METHOD_CGI_GET_DISS,
+  QQ_FAV_PAGE_SIZE, QQ_FAV_MAX_OFFSET, QQ_LIKED_MAX_OFFSET, QQ_SONG_PAGE_SIZE,
 } from './qq.js'
+import { PLAYLIST_PAGE_SIZE } from './constants.js'
 
 /** 单曲取链结果（Go neteaseSongURL 的返回元组；SongUrl 契约字段 url/ext/level/size）。 */
 export const SONG_URL_FALLBACK_EXT = 'flac'
@@ -697,8 +707,10 @@ async function requestQqCredential(deps, code) {
 
 /** QQ 音乐凭据 → 插件 jar（cookies.qq）。
  *  形态对齐参考实现 client.go 的 Cookie：uin / qqmusic_uin / qm_keyst / qqmusic_key，
- *  外加 tmeLoginType（QQ 互联登录 = 2）。宿主 session 里已有的 QQ 音乐 Cookie 只用来补缺口，
- *  graph.qq.com 的全局授权 Cookie（p_skey / pt_oauth_token / p_uin）绝不落 KV。 */
+ *  外加 tmeLoginType（QQ 互联登录 = 2）与 encryptUin（账号标识，收藏歌单 / 我喜欢
+ *  接口的 uin 参数要用它 —— 参考实现 auth_response.go:110）。宿主 session 里已有的
+ *  QQ 音乐 Cookie 只用来补缺口，graph.qq.com 的全局授权 Cookie（p_skey /
+ *  pt_oauth_token / p_uin）绝不落 KV。 */
 async function persistQqCredential(deps, credential) {
   const host = await sessionCookies(deps, 'https://y.qq.com', QQ_LOGIN_SESSION)
   const musicid = String(Number(credential.musicid))
@@ -709,6 +721,11 @@ async function persistQqCredential(deps, credential) {
     qm_keyst: credential.musickey,
     tmeLoginType: String(credential.loginType),
   }
+  // encryptUin 只有一个来源：QQLogin 响应。响应里没有就写空串（不沿用旧值 ——
+  // 换账号时留着上一个账号的标识会让收藏歌单读到别人的数据）。
+  jar.encryptUin = String(credential.encryptUin ?? '')
+  // 账号标识是跟着账号走的：记下它属于哪个 uin，换账号后不再拿它去读收藏。
+  jar.encryptUinFor = musicid
   const hostUin = cookieValue(host, 'uin') || cookieValue(host, 'qqmusic_uin')
   const hostKey = cookieValue(host, 'qqmusic_key') || cookieValue(host, 'qm_keyst')
   if (!jar.uin && hostUin) jar.uin = hostUin
@@ -718,6 +735,419 @@ async function persistQqCredential(deps, credential) {
   }
   if (!jar.uin || !jar.qqmusic_key) throw new Error('QQ 音乐未返回登录凭据（L205）')
   await saveCookies(deps.kv, 'qq', jar)
+}
+
+// ─────────────────── QQ 歌单 / 每日推荐 / 我喜欢 ───────────────────
+//
+// 四个接口都是 POST JSON 到 u.y.qq.com/cgi-bin/musicu.fcg，登录态放在信封 comm 里
+// （参考实现 client.go:101-165 与 auth_device.go:41）。凭据只来自插件 KV 的
+// cookies.qq；错误消息只报「模块/方法 + 状态码」，不贴响应尾段（响应里可能带账号信息）。
+
+/** QQ uin 归一：去掉 o 前缀与前导零。
+ *  cookie 里的 uin（o0010001）与 QQLogin 的 musicid（10001）是同一个账号的两种写法，
+ *  比对账号归属时要先归一。 */
+function normalizeQqUin(value) {
+  let uin = String(value ?? '').trim()
+  if (uin.startsWith('o') || uin.startsWith('O')) uin = uin.slice(1)
+  return uin.replace(/^0+(?=\d)/, '')
+}
+
+/**
+ * 账号 musicid（参考实现 library.go:29 用的 s.MusicID —— QQLogin 响应的 musicid，
+ * 规范十进制：既没有 o 前缀，也不补零）。
+ *
+ * 扫码登录落盘时 jar.uin 就是这个 musicid（persistQqCredential 写的是
+ * String(Number(musicid))）；手动粘贴 Cookie 只能拿到浏览器 cookie 里的
+ * 「o + 补零」形态（o0000010001），归一（去 o、去全部前导零）后才是同一个账号 id。
+ * 有损归一（只去一个 o、一个 0）会把补零后的 id 发给账号级接口（如 GetPlaylistByUin）。
+ */
+function qqMusicId(jar) {
+  const raw = typeof jar?.uin === 'string' && jar.uin !== ''
+    ? jar.uin
+    : typeof jar?.qqmusic_uin === 'string' && jar.qqmusic_uin !== '' ? jar.qqmusic_uin : ''
+  const id = normalizeQqUin(raw)
+  return id === '' ? '0' : id
+}
+
+/** QQ 登录态摘要（只从插件 KV 的 cookies.qq 取）。
+ *  内部用：里面带凭据本身，绝不能进返回值、日志或错误消息。 */
+function qqSession(cookies) {
+  const jar = cookies ?? {}
+  const musicKey = typeof jar.qqmusic_key === 'string' ? jar.qqmusic_key : ''
+  const stored = typeof jar.encryptUin === 'string' ? jar.encryptUin : ''
+  // encryptUin 是跟着账号走的：它属于 jar.encryptUinFor 那个 uin。换账号（手动粘贴
+  // 别的账号的 Cookie）后就不能再拿它去读收藏歌单 —— 那会读到别人的歌单。
+  const owner = typeof jar.encryptUinFor === 'string' ? jar.encryptUinFor : ''
+  const mine = owner === '' || normalizeQqUin(owner) === qqMusicId(jar)
+  return {
+    // 账号级接口（GetPlaylistByUin）与信封 comm.qq 都用规范 musicid，不用补零形态。
+    uin: qqMusicId(jar),
+    musicKey,
+    encryptUin: mine ? stored : '',
+    loginType: Number(jar.tmeLoginType) || 1,
+    loggedIn: musicKey !== '',
+  }
+}
+
+/** QQ 歌单功能的登录态摘要（不含任何凭据值，可以回显给页面）。
+ *  has_account_id = 有 encryptUin：收藏歌单 / 我喜欢接口的 uin 参数要用它，
+ *  它只有一个来源（QQLogin 响应），手动粘贴 Cookie 登录拿不到。 */
+export function qqLibraryInfo(cookies) {
+  const session = qqSession(cookies)
+  return {
+    source: 'qq',
+    logged_in: session.loggedIn,
+    has_account_id: session.encryptUin !== '',
+  }
+}
+
+/** 自建歌单登记表：tid → 拥有者 uin（参考实现 client.go:36 RememberOwnedPlaylist）。
+ *  用来决定取曲目走「自建接口」（带 enc_host_uin）还是「公开接口」；带上拥有者是为了
+ *  换账号后不把上一个账号的歌单当成自建的。 */
+const qqOwnedPlaylists = new Map()
+
+/** 记住自建歌单的 tid（列表接口读到后调用）。 */
+export function rememberOwnedPlaylists(items, ownerUin = '') {
+  for (const item of items ?? []) {
+    const tid = Number(item?.id)
+    if (Number.isFinite(tid) && tid > 0 && item?.kind !== 'liked') {
+      qqOwnedPlaylists.set(tid, String(ownerUin ?? ''))
+    }
+  }
+}
+
+/** 某个 tid 是不是当前账号自建的歌单。 */
+export function isOwnedQqPlaylist(tid, ownerUin = '') {
+  const owner = qqOwnedPlaylists.get(Number(tid))
+  return owner !== undefined && owner === String(ownerUin ?? '')
+}
+
+/**
+ * musicu 请求（登录态 comm + 单个 req_0）。
+ *
+ * 登录态与 authst 只来自插件 KV 的 cookies.qq；没登录直接报错（这四个接口匿名调用
+ * 只会回空壳：实测 80030 / 80050 / 80120 / 10004，不能当成「空的歌单」）。
+ */
+export async function qqRpc(deps, module, method, param) {
+  const cookies = await loadCookies(deps.kv, 'qq')
+  return qqRpcWith(deps, cookies, module, method, param)
+}
+
+/** qqRpc 的内部形态：复用同一份 cookie 表，避免重复读 KV。 */
+async function qqRpcWith(deps, cookies, module, method, param) {
+  const session = qqSession(cookies)
+  if (!session.loggedIn) throw new Error('未登录 QQ 音乐，请先扫码登录')
+  const comm = authenticatedComm({ uin: session.uin, musicKey: session.musicKey, loginType: session.loginType })
+  const response = await httpRequest(deps, {
+    method: 'POST',
+    url: QQ_MUSICU,
+    headers: {
+      'content-type': 'application/json',
+      'user-agent': QQ_API_UA,
+      referer: 'https://y.qq.com/',
+      cookie: qqCookieHeader(cookies),
+    },
+    body: musicuRequestBody(comm, module, method, param),
+  })
+  const parsed = parseMusicuResponse(response.text)
+  if (parsed.error) throw new Error(`${module}/${method}: ${parsed.error}`)
+  const checked = checkDissDataStatus(parsed.value)
+  if (checked.error) throw new Error(`${module}/${method}: ${checked.error}`)
+  return checked.value
+}
+
+/**
+ * 我的歌单：我创建的 + 收藏的。
+ *
+ * 返回 {playlists, count, created, favorites, notice}。缺 encryptUin（账号标识，
+ * 只有 QQLogin 响应里有）时只返回我创建的，并在 notice 里说明收藏读不到 ——
+ * 不静默失败，也不把「读不到」说成「没有收藏」。
+ */
+export async function qqPlaylists(deps) {
+  const cookies = await loadCookies(deps.kv, 'qq')
+  const session = qqSession(cookies)
+  if (!session.loggedIn) throw new Error('未登录 QQ 音乐，请先扫码登录')
+  const owned = await qqRpcWith(
+    deps, cookies, QQ_MODULE_PLAYLIST_BASE_READ, QQ_METHOD_GET_PLAYLIST_BY_UIN,
+    ownedPlaylistsParam(session.uin),
+  )
+  const items = parseQqPlaylistList(owned?.v_playlist, 'created')
+  const liked = items.filter((item) => item.kind === 'liked')
+  const created = items.filter((item) => item.kind !== 'liked')
+  rememberOwnedPlaylists(created, session.uin)
+  let favorites = []
+  let notice = ''
+  if (!session.encryptUin) {
+    notice = '未取得账号标识（encryptUin），收藏的歌单读不到；请重新扫码登录后再试'
+  } else {
+    try {
+      favorites = await qqFavoritePlaylists(deps, cookies, session.encryptUin)
+    } catch (error) {
+      // 撞到分页硬上限：已读到的部分照样交给用户（参考实现 library.go:93
+      // 「返回部分结果 + 错误」，由调用方决定怎么展示），错误说明放在 notice 里。
+      favorites = Array.isArray(error?.playlists) ? error.playlists : []
+      notice = String(error?.message ?? error)
+    }
+  }
+  const playlists = [...liked, ...created, ...favorites]
+  return { playlists, count: playlists.length, created, favorites, notice }
+}
+
+/**
+ * 收藏的歌单（参考实现 library.go:69-93）。
+ *
+ * 游标 = offset，步进 = 本页实际条数（不是 size）；终止条件三选一：没有下一页、
+ * 本页 0 条、本页 0 条新 tid（QQ 的收藏列表会重复列出同一个 tid）。
+ */
+async function qqFavoritePlaylists(deps, cookies, encryptUin) {
+  const out = []
+  const seen = new Set()
+  let offset = 0
+  while (offset < QQ_FAV_MAX_OFFSET) {
+    const page = await qqRpcWith(
+      deps, cookies, QQ_MODULE_PLAYLIST_FAV_READ, QQ_METHOD_GET_PLAYLIST_FAV_INFO,
+      favoritePlaylistsParam(encryptUin, offset, QQ_FAV_PAGE_SIZE),
+    )
+    const entries = Array.isArray(page?.v_list) ? page.v_list : []
+    let fresh = 0
+    for (const item of parseQqPlaylistList(entries, 'fav')) {
+      if (seen.has(item.id)) continue
+      seen.add(item.id)
+      out.push(item)
+      fresh += 1
+    }
+    if (!qqHasMore(page) || entries.length === 0 || fresh === 0) return out
+    offset += entries.length
+  }
+  // 撞到硬上限：如实报「未能完整读取」，已读到的部分挂在 error.playlists 上。
+  const error = new Error('QQ 音乐收藏歌单过多，未能完整读取')
+  error.playlists = out
+  throw error
+}
+
+/**
+ * 歌单曲目（target 支持歌单 id、'201' 我喜欢、'202' 每日推荐）。
+ *
+ * 返回 {songs, total, name, has_more}。total 是整单曲目数（页接口恒带，
+ * 整单入队按它判取尽）。
+ */
+export async function qqPlaylistSongs(deps, target, begin = 0, num = QQ_SONG_PAGE_SIZE) {
+  const cookies = await loadCookies(deps.kv, 'qq')
+  const session = qqSession(cookies)
+  if (!session.loggedIn) throw new Error('未登录 QQ 音乐，请先扫码登录')
+  const kind = qqTargetKind(target)
+  const offset = Math.max(0, Math.trunc(begin) || 0)
+  const size = Math.max(1, Math.trunc(num) || QQ_SONG_PAGE_SIZE)
+  if (kind === 'daily') return qqDailySongsInternal(deps, cookies, session, offset, size)
+  if (kind === 'liked') return qqLikedSongsInternal(deps, cookies, session, offset, size)
+  return qqPlaylistSongsInternal(deps, cookies, session, target, offset, size)
+}
+
+/** 每日推荐（薄封装）：一次取回全部，没有游标。 */
+export async function qqDailyRecommendations(deps) {
+  const cookies = await loadCookies(deps.kv, 'qq')
+  const session = qqSession(cookies)
+  if (!session.loggedIn) throw new Error('未登录 QQ 音乐，请先扫码登录')
+  return qqDailySongsInternal(deps, cookies, session, 0, Number.MAX_SAFE_INTEGER)
+}
+
+/** 我喜欢（薄封装）：游标 = song_begin，步进 = 本页条数。 */
+export async function qqLikedSongs(deps, begin = 0, num = QQ_SONG_PAGE_SIZE) {
+  const cookies = await loadCookies(deps.kv, 'qq')
+  const session = qqSession(cookies)
+  if (!session.loggedIn) throw new Error('未登录 QQ 音乐，请先扫码登录')
+  return qqLikedSongsInternal(deps, cookies, session, begin, num)
+}
+
+/**
+ * 每日推荐缓存：账号 → {at, songs, total, name}。
+ *
+ * 每日推荐接口本身没有游标（dailySongsParam 不带 song_begin / song_num，参考实现
+ * library.go:102 同样如此），只能整份取回再本地切片；不缓存的话每翻一页都要把整份
+ * 列表重拉一遍（浏览时一页一次、整单入队时每页一次），翻页成本随页数线性放大。
+ */
+const qqDailyCache = new Map()
+
+/** 每日推荐缓存的存活时间（毫秒）：QQ 每天换一次榜，短 TTL 足够覆盖一次浏览。 */
+const QQ_DAILY_CACHE_TTL_MS = 5 * 60 * 1000
+
+/** 每日推荐（参考实现 library.go:97-109 uniform_get_Dissinfo dirid=202）。
+ *  整份取回后按 offset/size 本地切片；整份结果按账号缓存，翻页不再重拉。 */
+async function qqDailySongsInternal(deps, cookies, session, offset = 0, size = QQ_SONG_PAGE_SIZE) {
+  const account = session.uin
+  const cached = qqDailyCache.get(account)
+  let list = cached && Date.now() - cached.at < QQ_DAILY_CACHE_TTL_MS ? cached : null
+  if (!list) {
+    const data = await qqRpcWith(
+      deps, cookies, QQ_MODULE_AI_DISS_INFO, QQ_METHOD_UNIFORM_GET_DISSINFO, dailySongsParam(),
+    )
+    const parsed = parseQqSongList(data)
+    const info = parseQqPlaylistInfo(data)
+    list = {
+      at: Date.now(),
+      songs: parsed.songs,
+      total: parsed.total,
+      name: info.name || '每日推荐',
+    }
+    qqDailyCache.set(account, list)
+  }
+  const songs = list.songs.slice(offset, offset + size)
+  return {
+    songs,
+    total: list.total,
+    name: list.name,
+    has_more: offset + songs.length < list.total,
+  }
+}
+
+/**
+ * 「我喜欢」的跨页去重表：账号 → 已读到的 mid 集合。
+ *
+ * 参考实现 library.go:122-145：跨页用 seen 集合去重，本页没有新歌就报错
+ * 「未能完整读取」（QQ 偶尔把同一页再回一次，不去重的话页面上会出现重复歌曲）。
+ */
+const qqLikedSeen = new Map()
+
+/** 某账号的「我喜欢」去重表（账号维度隔离：换账号后不会把上一个账号的歌算成重复）。 */
+function qqLikedSeenSet(account) {
+  let seen = qqLikedSeen.get(account)
+  if (!seen) {
+    seen = new Set()
+    qqLikedSeen.set(account, seen)
+  }
+  return seen
+}
+
+/** 我喜欢（参考实现 library.go:111-150 CgiGetDiss dirid=201）。
+ *  enc_host_uin 必须是账号的 encryptUin，否则接口直接报参数错。 */
+async function qqLikedSongsInternal(deps, cookies, session, offset = 0, size = QQ_SONG_PAGE_SIZE) {
+  if (!session.encryptUin) throw new Error('QQ 音乐登录凭证缺少账号标识，请重新登录')
+  if (offset >= QQ_LIKED_MAX_OFFSET) throw new Error('QQ 音乐喜欢歌曲列表过多，未能完整读取')
+  const seen = qqLikedSeenSet(`${session.uin}:${session.encryptUin}`)
+  // 第一页 = 新一轮读取：从头开始去重（否则重开歌单会被判成「重复页」）。
+  if (offset === 0) seen.clear()
+  const data = await qqRpcWith(
+    deps, cookies, QQ_MODULE_DISS_INFO, QQ_METHOD_CGI_GET_DISS,
+    likedSongsParam(session.encryptUin, offset, size),
+  )
+  if (!('songlist' in data) || data.songlist === null) {
+    throw new Error('QQ 音乐未返回我喜欢列表的曲目')
+  }
+  const parsed = parseQqSongList(data)
+  const info = parseQqPlaylistInfo(data)
+  const fresh = parsed.songs.filter((song) => {
+    if (seen.has(song.id)) return false
+    seen.add(song.id)
+    return true
+  })
+  if (parsed.songs.length > 0 && fresh.length === 0) {
+    throw new Error('QQ 音乐喜欢歌曲列表未能完整读取（接口重复返回同一页）')
+  }
+  return {
+    songs: fresh,
+    total: parsed.total,
+    name: info.name || '我喜欢',
+    has_more: qqSongsHaveMore(data, parsed.songs.length, offset),
+  }
+}
+
+/**
+ * 还有下一页吗？（参考实现 library.go:141 的终止条件：hasmore 为假，或已读满
+ * total_song_num 就停 —— 不能只看 hasmore，否则 QQ 一直回 hasmore=1 时会一直报
+ * 「还有下一页」。）
+ *
+ * @param {object} data 接口返回的 data
+ * @param {number} count 本页实际读到的条数（去重前）
+ * @param {number} offset 本页游标（已读条数 = offset + count）
+ */
+function qqSongsHaveMore(data, count, offset = 0) {
+  if (!qqHasMore(data)) return false
+  if (count <= 0) return false
+  const total = numberField(data, 'total_song_num')
+  if (total > 0 && offset + count >= total) return false
+  return true
+}
+
+/**
+ * 「成功但空壳」的判定：songlist 是空的，可整单还有歌（total_song_num > 0）。
+ *
+ * 私密 / 不可访问的歌单用公开接口读回来就是这样：code=0、songlist=[]、但写着
+ * 共 N 首。当成「0 首但共 N 首」会让页面卡在 0/N（没有「加载更多」按钮）。
+ * 参考实现 catalog.go:93-107：这种壳要改走自建接口。
+ */
+function qqShellPlaylistError(total) {
+  return new Error(`QQ 音乐未返回歌单曲目（歌单共 ${total} 首，但接口没给曲目）`)
+}
+
+/** 歌单曲目（公开 / 自建）：自建歌单走带 enc_host_uin 的接口，公开歌单先走公开接口。 */
+async function qqPlaylistSongsInternal(deps, cookies, session, target, offset, size) {
+  const tid = Number(target)
+  if (!Number.isFinite(tid) || tid <= 0) throw new Error('歌单标识无效')
+  if (isOwnedQqPlaylist(tid, session.uin) && session.encryptUin) {
+    return qqOwnedPlaylistSongs(deps, cookies, session, tid, offset, size)
+  }
+  try {
+    return await qqPublicPlaylistSongs(deps, cookies, tid, offset, size)
+  } catch (error) {
+    // 私密歌单用公开接口只会回「成功但空」的壳：带 encryptUin 时改走自建接口重试。
+    if (!session.encryptUin) throw error
+    return qqOwnedPlaylistSongs(deps, cookies, session, tid, offset, size)
+  }
+}
+
+/** 公开歌单曲目（参考实现 catalog.go:178-214 uniform_get_Dissinfo disstid=...）。 */
+async function qqPublicPlaylistSongs(deps, cookies, tid, offset, size) {
+  const data = await qqRpcWith(
+    deps, cookies, QQ_MODULE_AI_DISS_INFO, QQ_METHOD_UNIFORM_GET_DISSINFO,
+    publicPlaylistSongsParam(tid, offset, size),
+  )
+  if (!('songlist' in data) || data.songlist === null) {
+    throw new Error('QQ 音乐未返回歌单曲目')
+  }
+  const parsed = parseQqSongList(data)
+  const info = parseQqPlaylistInfo(data)
+  // 「成功但空壳」不当成空歌单：抛出去让上层改走自建接口（私密歌单）。
+  if (parsed.songs.length === 0 && parsed.total > 0) {
+    throw qqShellPlaylistError(parsed.total)
+  }
+  return {
+    songs: parsed.songs,
+    total: parsed.total,
+    name: info.name,
+    has_more: qqSongsHaveMore(data, parsed.songs.length, offset),
+  }
+}
+
+/** 自建 / 私密歌单曲目（参考实现 catalog.go:115-149 CgiGetDiss disstid=...）。 */
+async function qqOwnedPlaylistSongs(deps, cookies, session, tid, offset, size) {
+  const data = await qqRpcWith(
+    deps, cookies, QQ_MODULE_DISS_INFO, QQ_METHOD_CGI_GET_DISS,
+    ownedPlaylistSongsParam(tid, session.encryptUin, offset, size),
+  )
+  if (!('songlist' in data) || data.songlist === null) {
+    throw new Error('QQ 音乐未返回歌单曲目')
+  }
+  const parsed = parseQqSongList(data)
+  const info = parseQqPlaylistInfo(data)
+  if (parsed.songs.length === 0 && parsed.total > 0) {
+    throw qqShellPlaylistError(parsed.total)
+  }
+  return {
+    songs: parsed.songs,
+    total: parsed.total,
+    name: info.name,
+    has_more: qqSongsHaveMore(data, parsed.songs.length, offset),
+  }
+}
+
+/** 歌单的歌曲页（与网易云同形：{name,total,page,page_size,songs}）。
+ *  整单入队状态机（lib/queue-pages.js）按 page*page_size >= total 判取尽。 */
+export async function qqPlaylistSongsPage(deps, target, page = 1, pageSize = PLAYLIST_PAGE_SIZE) {
+  const pageNo = Math.max(1, Math.trunc(page) || 1)
+  const size = Math.max(1, Math.trunc(pageSize) || PLAYLIST_PAGE_SIZE)
+  const begin = (pageNo - 1) * size
+  const result = await qqPlaylistSongs(deps, target, begin, size)
+  return playlistPage(result.name, result.total, pageNo, size, result.songs)
 }
 
 /** 单曲搜索（Go qqSearch）：page 从 1 起，每页 20 条。 */
@@ -788,8 +1218,16 @@ export async function qqSongUrl(deps, mid, level) {
   }
 
   let lastError = NO_LINK_ERROR
-  for (const [code, ext] of qualityLadder(level, loggedIn)) {
-    const body = songUrlRequestBody({ mid, mediaMid: detail.media_mid, guid, code, ext, uin, musicKey, loginType })
+  // 登录态就按登录态的阶梯来（F000/M800/M500），全失败即报错。
+  // 不再回落到匿名 comm：匿名请求本来就带不上会话（服务端不放行），一旦服务端按
+  // 残留 cookie 放行，用户选「无损 FLAC」会静默拿到 128K 的文件（pump 按返回的
+  // ext 把文件命名成 .mp3），且没有任何提示。
+  const ladder = loggedIn ? qualityLadder(level, true) : qualityLadder(level, false)
+  const requestMusicKey = loggedIn ? musicKey : ''
+  for (const [code, ext] of ladder) {
+    const body = songUrlRequestBody({
+      mid, mediaMid: detail.media_mid, guid, code, ext, uin, musicKey: requestMusicKey, loginType,
+    })
     const response = await httpRequest(deps, { method: 'POST', url: QQ_MUSICU, headers, body })
     const parsed = parseVkeyResponse(response.text, code, ext)
     if (!parsed.error) {

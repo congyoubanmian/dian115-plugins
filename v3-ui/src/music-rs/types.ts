@@ -42,6 +42,8 @@ export interface LoginInfo {
   has_key?: boolean
   source?: string
   error?: string
+  /** QQ 才有：有账号标识（encryptUin）—— 收藏歌单 / 我喜欢接口的 uin 参数要用它。 */
+  has_account_id?: boolean
 }
 
 /** 设置视图。 */
@@ -59,13 +61,38 @@ export interface LogEntry {
   message: string
 }
 
-/** 歌单条目。 */
+/** 歌单条目（网易云 / QQ 通用投影）。 */
 export interface PlaylistItem {
   id: string
   name: string
   cover: string
   count: number
   creator: string
+  /** QQ 才有：'created' 我创建的 / 'fav' 收藏的 / 'liked' 我喜欢；网易云没有这个维度。 */
+  kind?: string
+  /** QQ 才有：私有歌单（QQ 的 dirShow=2）。 */
+  private?: boolean
+  /** 特殊入口标记（'daily' 每日推荐 / 'liked' 我喜欢）：不是普通歌单，走各自的后端接口。 */
+  special?: string
+}
+
+/**
+ * 打开中的歌单视图。
+ *
+ * target 是「取曲目的目标」，两个来源的语义不同：
+ * - 网易云：歌单 id（数字字符串）；
+ * - QQ：歌单 tid，或特殊入口 'daily'（每日推荐）/ 'liked'（我喜欢）。
+ */
+export interface PlaylistView {
+  /** 歌单 id（网易云 = 歌单 id；QQ 特殊入口 = 'daily' / 'liked'）。 */
+  id: string
+  name: string
+  /** 所属来源：netease / qq。 */
+  source: string
+  /** 取曲目的目标（见上）。 */
+  target: string
+  /** 特殊入口标记（'daily' / 'liked'）；普通歌单为空串。 */
+  special?: string
 }
 
 /** 一次队列推进的状态摘要（KV state.last_pump）。 */

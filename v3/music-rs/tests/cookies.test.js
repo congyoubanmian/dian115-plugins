@@ -53,6 +53,25 @@ test('qqCookieHeader sorts keys like BTreeMap', () => {
   assert.equal(qqCookieHeader({}), '')
 })
 
+test('qqCookieHeader only sends the four credential fields', () => {
+  // 参考实现 client.go:128 只发 uin / qqmusic_uin / qm_keyst / qqmusic_key。
+  // encryptUin（账号标识）、encryptUinFor（插件自用簿记）、tmeLoginType 都不是
+  // QQ 协议的凭据，不该整表出网。
+  assert.equal(
+    qqCookieHeader({
+      uin: 'o1',
+      qqmusic_uin: '1',
+      qm_keyst: '@Q',
+      qqmusic_key: '@K',
+      encryptUin: 'ENC',
+      encryptUinFor: '1',
+      tmeLoginType: '2',
+      p_skey: '@PS',
+    }),
+    'qm_keyst=@Q; qqmusic_key=@K; qqmusic_uin=1; uin=o1',
+  )
+})
+
 test('parseSetCookie takes first pair', () => {
   assert.deepEqual(parseSetCookie('MUSIC_U=abc; Path=/; HttpOnly'), ['MUSIC_U', 'abc'])
   assert.deepEqual(parseSetCookie('__csrf_token=a=b; Path=/'), ['__csrf_token', 'a=b'])
@@ -102,7 +121,10 @@ test('cleanQqCookieString whitelists, trims and requires key', () => {
   assert.equal(filled.jar.qqmusic_key, '@PS')
   assert.ok(cleanQqCookieString('Path=/; Domain=y.qq.com').error)
   assert.ok(cleanQqCookieString('').error)
-  assert.deepEqual(QQ_COOKIE_NAMES.length, 13)
+  // 白名单里多一项 encryptUin：QQLogin 响应里的账号标识（收藏歌单 / 我喜欢接口的
+  // uin 参数要用它），它和凭据一起存在 cookies.qq 这张表里。
+  assert.deepEqual(QQ_COOKIE_NAMES.length, 14)
+  assert.ok(QQ_COOKIE_NAMES.includes('encryptUin'))
 })
 
 test('cookiecloud domain filters are suffix-exact', () => {

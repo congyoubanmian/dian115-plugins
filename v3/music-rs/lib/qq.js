@@ -170,6 +170,26 @@ export function qualityFilename(code, ext, mid, mediaMid) {
   return `${code}${mid}${mediaMid || mid}.${ext}`
 }
 
+/**
+ * 登录态 comm（参考 Lilt internal/qqmusic/auth_device.go:41-48 authenticatedComm）。
+ *
+ * 形如 {ct:11,cv:14090008,v:14090008,chid:'10003505',tmeAppID:'qqmusic',
+ * qq:<uin>,authst:<musickey>,tmeLoginType:<2>} —— 微信设备字段不在这里（参考实现
+ * 只在微信登录路径上补设备信息）。
+ */
+export function authenticatedComm({ uin, musicKey, loginType } = {}) {
+  return {
+    ct: 11,
+    cv: 14090008,
+    v: 14090008,
+    chid: '10003505',
+    tmeAppID: 'qqmusic',
+    qq: String(uin ?? ''),
+    authst: String(musicKey ?? ''),
+    tmeLoginType: Number(loginType) || 1,
+  }
+}
+
 /** 单档取链的 POST body（键排序形态）。
  *  - 登录态：music.vkey.GetVkey / UrlGetVkey，comm 带 qq/authst/tmeLoginType；
  *  - 匿名：vkey.GetVkeyServer / CgiGetVkey，uin=0、loginflag=1、platform=20。
@@ -180,16 +200,7 @@ export function songUrlRequestBody(options) {
   const loggedIn = typeof musicKey === 'string' && musicKey !== ''
   if (loggedIn) {
     return sortedStringify({
-      comm: {
-        ct: 11,
-        cv: 14090008,
-        v: 14090008,
-        chid: '10003505',
-        tmeAppID: 'qqmusic',
-        qq: uin,
-        authst: musicKey,
-        tmeLoginType: Number(loginType) || 1,
-      },
+      comm: authenticatedComm({ uin, musicKey, loginType }),
       req_0: {
         module: 'music.vkey.GetVkey',
         method: 'UrlGetVkey',
@@ -903,4 +914,334 @@ export function base64Bytes(text) {
 export function isPng(bytes) {
   if (!bytes || bytes.length < PNG_MAGIC.length) return false
   return PNG_MAGIC.every((byte, index) => bytes[index] === byte)
+}
+
+// ─────────────────── QQ 歌单 / 每日推荐 / 我喜欢（musicu RPC）───────────────────
+//
+// 参数与响应解析对齐参考实现 Lilt（mygo-qyin/internal/qqmusic）：
+// - library.go:23-150  我创建的歌单 / 收藏的歌单 / 每日推荐 / 我喜欢
+// - catalog.go:114-214 公开歌单与自建（私密）歌单的曲目分页
+// - client.go:101-165  musicu 信封与两级状态码
+// 网络请求在 lib/music-api.js；这里只有纯逻辑。
+
+/** 歌单类接口的模块名（参考实现 library.go / catalog.go 的 rpc 调用）。 */
+export const QQ_MODULE_PLAYLIST_BASE_READ = 'music.musicasset.PlaylistBaseRead'
+export const QQ_MODULE_PLAYLIST_FAV_READ = 'music.musicasset.PlaylistFavRead'
+export const QQ_MODULE_AI_DISS_INFO = 'music.srfDissInfo.aiDissInfo'
+export const QQ_MODULE_DISS_INFO = 'music.srfDissInfo.DissInfo'
+
+/** 方法名。 */
+export const QQ_METHOD_GET_PLAYLIST_BY_UIN = 'GetPlaylistByUin'
+export const QQ_METHOD_GET_PLAYLIST_FAV_INFO = 'CgiGetPlaylistFavInfo'
+export const QQ_METHOD_UNIFORM_GET_DISSINFO = 'uniform_get_Dissinfo'
+export const QQ_METHOD_CGI_GET_DISS = 'CgiGetDiss'
+
+/** 「我喜欢」的 dirId（参考实现 library.go:36、:126）。 */
+export const QQ_DIR_ID_LIKED = 201
+/** 「每日推荐」的 dirId（参考实现 library.go:102）。 */
+export const QQ_DIR_ID_DAILY = 202
+/** 收藏歌单每页条数（参考实现 library.go:75）。 */
+export const QQ_FAV_PAGE_SIZE = 100
+/** 收藏歌单分页硬上限（参考实现 library.go:73：offset < 10000）。 */
+export const QQ_FAV_MAX_OFFSET = 10000
+/** 「我喜欢」分页硬上限（参考实现 library.go:124：song_begin < 100000）。 */
+export const QQ_LIKED_MAX_OFFSET = 100000
+/** 歌单曲目分页硬上限（参考实现 catalog.go:120：最多 100 页）。 */
+export const QQ_PLAYLIST_MAX_PAGES = 100
+
+/** 歌单曲目每页条数（与插件契约的 PLAYLIST_PAGE_SIZE=100 对齐）。 */
+export const QQ_SONG_PAGE_SIZE = 100
+
+/** 取整数字段（兼容数字与数字字符串；第一个能解析成整数的键胜出）。
+ *  参考实现 client.go:282 number()。 */
+export function numberField(source, ...keys) {
+  for (const key of keys) {
+    const value = source?.[key]
+    if (typeof value === 'number' && Number.isFinite(value)) return Math.trunc(value)
+    if (typeof value === 'string' && /^-?\d+$/.test(value.trim())) return Number.parseInt(value.trim(), 10)
+  }
+  return 0
+}
+
+/** musicu 请求体（登录态 comm + 单个 req_0；参考实现 client.go:116 的信封）。 */
+export function musicuRequestBody(comm, module, method, param) {
+  return sortedStringify({ comm, req_0: { module, method, param } })
+}
+
+/** 我创建的歌单（参考实现 library.go:29 GetPlaylistByUin）。 */
+export function ownedPlaylistsParam(uin) {
+  return { uin: String(uin ?? '') }
+}
+
+/** 收藏的歌单（参考实现 library.go:75 CgiGetPlaylistFavInfo）。 */
+export function favoritePlaylistsParam(encryptUin, offset = 0, size = QQ_FAV_PAGE_SIZE) {
+  return {
+    uin: String(encryptUin ?? ''),
+    offset: Math.trunc(offset) || 0,
+    size: Math.trunc(size) || QQ_FAV_PAGE_SIZE,
+  }
+}
+
+/** 每日推荐（参考实现 library.go:102 uniform_get_Dissinfo dirid=202）。 */
+export function dailySongsParam() {
+  return { dirid: QQ_DIR_ID_DAILY, optype: 3, tag: 1, userinfo: 0, pic_dpi: 300 }
+}
+
+/** 我喜欢（参考实现 library.go:126 CgiGetDiss dirid=201）。 */
+export function likedSongsParam(encryptUin, songBegin = 0, songNum = QQ_SONG_PAGE_SIZE) {
+  return {
+    disstid: 0,
+    dirid: QQ_DIR_ID_LIKED,
+    tag: true,
+    song_begin: Math.trunc(songBegin) || 0,
+    song_num: Math.trunc(songNum) || QQ_SONG_PAGE_SIZE,
+    userinfo: true,
+    orderlist: true,
+    enc_host_uin: String(encryptUin ?? ''),
+  }
+}
+
+/** 公开歌单曲目（参考实现 catalog.go:184 uniform_get_Dissinfo disstid=...）。 */
+export function publicPlaylistSongsParam(tid, songBegin = 0, songNum = QQ_SONG_PAGE_SIZE) {
+  return {
+    disstid: numberField({ disstid: tid }, 'disstid'),
+    userinfo: 1,
+    tag: 1,
+    orderlist: 1,
+    song_begin: Math.trunc(songBegin) || 0,
+    song_num: Math.trunc(songNum) || QQ_SONG_PAGE_SIZE,
+    onlysonglist: 0,
+    enc_host_uin: '',
+  }
+}
+
+/** 自建 / 私密歌单曲目（参考实现 catalog.go:122 CgiGetDiss disstid=...）。
+ *  自建歌单必须带 enc_host_uin（= 账号的 encryptUin），否则只回空壳。 */
+export function ownedPlaylistSongsParam(tid, encryptUin, songBegin = 0, songNum = QQ_SONG_PAGE_SIZE) {
+  return {
+    disstid: numberField({ disstid: tid }, 'disstid'),
+    dirid: 0,
+    tag: true,
+    song_begin: Math.trunc(songBegin) || 0,
+    song_num: Math.trunc(songNum) || QQ_SONG_PAGE_SIZE,
+    userinfo: true,
+    orderlist: true,
+    enc_host_uin: String(encryptUin ?? ''),
+  }
+}
+
+/** 业务码 → 提示文案（只讲状态码语义，不带任何账号信息）。
+ *  80030/80050/80120/10004 是「未登录 / 登录态失效」的实测业务码。 */
+export function qqCodeHint(code) {
+  switch (Number(code)) {
+    case 80030:
+    case 80050:
+    case 80120:
+    case 10004:
+      return '未登录或登录态已失效'
+    case -100008:
+      return '请求参数被拒（登录态缺少账号标识）'
+    default:
+      return ''
+  }
+}
+
+/**
+ * musicu 信封 → {value: data} 或 {error}。
+ *
+ * 两级状态码都要查：信封 code / req_0.code / req_0.subcode（参考实现
+ * client.go:148-157），再查方法内的 data.code / data.subcode（参考实现
+ * catalog.go:158-176 —— DissInfo 家族会在 200 信封里回内层错误）。
+ * 错误消息只报「模块/方法 + 状态码」，不贴响应尾段（响应里可能带账号信息）。
+ */
+export function parseMusicuResponse(body) {
+  let parsed
+  try {
+    parsed = JSON.parse(String(body ?? ''))
+  } catch {
+    return { error: 'QQ 音乐响应解析失败' }
+  }
+  const code = parsed?.code
+  const req = parsed?.req_0
+  if (typeof code !== 'number' || !req || typeof req?.code !== 'number') {
+    return { error: 'QQ 音乐未返回请求状态' }
+  }
+  const subcode = typeof req.subcode === 'number' ? req.subcode : 0
+  if (code !== 0 || req.code !== 0 || subcode !== 0) {
+    const business = req.code !== 0 ? req.code : subcode
+    const hint = qqCodeHint(business) || qqCodeHint(code)
+    const tail = hint ? `：${hint}` : ''
+    return { error: `QQ 音乐接口错误（网关 ${code} / 业务 ${business}）${tail}` }
+  }
+  const data = req.data
+  if (!data || typeof data !== 'object' || Array.isArray(data)) {
+    return { error: 'QQ 音乐未返回数据' }
+  }
+  return { value: data }
+}
+
+/** 方法内的 data.code / data.subcode 检查（参考实现 catalog.go:158-169）。 */
+export function checkDissDataStatus(data) {
+  const source = data && typeof data === 'object' ? data : {}
+  for (const key of ['code', 'subcode']) {
+    if (!(key in source)) continue
+    const value = source[key]
+    if (typeof value === 'number') {
+      if (value !== 0) return { error: `QQ 音乐接口错误（数据 ${key} ${value}）` }
+      continue
+    }
+    if (typeof value === 'string') {
+      if (value !== '0') return { error: `QQ 音乐接口错误（数据 ${key} ${value}）` }
+      continue
+    }
+    return { error: `QQ 音乐接口错误（数据 ${key} 不可解析）` }
+  }
+  return { value: source }
+}
+
+/** hasmore 判定（参考实现 library.go:96 libraryMore / catalog.go:151 playlistHasMore）：
+ *  数字 1、布尔 true、字符串 '1'/'true' 都算「还有下一页」。 */
+export function qqHasMore(data) {
+  const value = data?.hasmore
+  if (value === true) return true
+  if (typeof value === 'number') return value === 1
+  if (typeof value === 'string') return value === '1' || value === 'true'
+  return false
+}
+
+/** 歌曲封面（album.mid → QQ 图床直链；参考实现 client.go:257-262 albumCover）。
+ *  QQ 只认固定尺寸，别自己改尺寸后缀。 */
+export function qqAlbumCover(mid) {
+  const value = String(mid ?? '').trim()
+  if (value === '') return ''
+  return `https://y.gtimg.cn/music/photo_new/T002R500x500M000${value}.jpg?max_age=2592000`
+}
+
+/**
+ * 歌单条目 → 插件契约形状（字段与回退顺序对齐参考实现 library.go:33 libraryPlaylist）。
+ *
+ * kind 是归属维度（'created' 我创建的 / 'fav' 收藏的 / 'liked' 我喜欢）——
+ * UI 侧的 PlaylistItem 已有 kind / private / special 字段（见 v3-ui/src/music-rs/types.ts）。
+ * 「我喜欢」是 dirId=201 的伪歌单，没有可用的 tid：用 201 当标识，
+ * 取曲目走 CgiGetDiss(dirid=201)。
+ */
+export function mapQqPlaylist(entry, kind = 'created') {
+  const source = entry && typeof entry === 'object' ? entry : {}
+  const tid = numberField(source, 'tid', 'dissid', 'id')
+  const dirId = numberField(source, 'dirId', 'dirid')
+  const dirShow = numberField(source, 'dirShow', 'dir_show')
+  const item = {
+    id: '',
+    name: textField(source, 'dirName', 'dissname', 'title', 'name'),
+    cover: textField(source, 'bigpicUrl', 'picUrl', 'picurl', 'coverUrl', 'logo', 'albumPicUrl'),
+    count: numberField(source, 'songNum', 'songnum', 'song_cnt'),
+    creator: textField(source, 'nick', 'nickname', 'host_nick'),
+    kind,
+    dirId,
+    private: dirShow === 2,
+  }
+  if (dirId === QQ_DIR_ID_LIKED) {
+    item.id = String(QQ_DIR_ID_LIKED)
+    item.kind = 'liked'
+  } else {
+    item.id = tid > 0 ? String(tid) : ''
+  }
+  return item
+}
+
+/** 歌单条目数组 → 插件契约形状（跳过没有 id 的条目；参考实现 library.go:60）。 */
+export function parseQqPlaylistList(entries, kind = 'created') {
+  const list = Array.isArray(entries) ? entries : []
+  const out = []
+  for (const entry of list) {
+    const item = mapQqPlaylist(entry, kind)
+    if (!item.id) continue
+    out.push(item)
+  }
+  return out
+}
+
+/**
+ * 文件大小：先读 file 子对象，取不到（0）再回退顶层字段
+ * （参考实现 client.go:361-372 —— 先 file.size_128mp3，为 0 时回退顶层 size128）。
+ */
+function qqFileSize(file, source, keys) {
+  for (const key of keys) {
+    const value = numberField(file, key)
+    if (value > 0) return value
+  }
+  for (const key of keys) {
+    const value = numberField(source, key)
+    if (value > 0) return value
+  }
+  return 0
+}
+
+/**
+ * 歌单曲目 → 插件契约形状。
+ *
+ * id 必须是 mid（字符串）：入队后 song_id 直接进取链（qqSongUrl 用 mid 拼文件名），
+ * 数字 id 取不到链。
+ */
+export function mapQqSong(entry) {
+  const source = entry && typeof entry === 'object' ? entry : {}
+  const mid = textField(source, 'mid', 'songmid', 'songMid')
+  if (!mid) return null
+  const album = source.album && typeof source.album === 'object' ? source.album : {}
+  const file = source.file && typeof source.file === 'object' ? source.file : {}
+  const singerList = Array.isArray(source.singer) ? source.singer
+    : Array.isArray(source.singers) ? source.singers : []
+  const singers = singerList
+    .map((singer) => textField(singer, 'name', 'singername'))
+    .filter((name) => name !== '')
+    .join('/')
+  const qualities = []
+  if (qqFileSize(file, source, ['size_flac', 'sizeflac']) > 0) qualities.push('flac')
+  if (qqFileSize(file, source, ['size_320mp3', 'size320']) > 0) qualities.push('320')
+  if (qqFileSize(file, source, ['size_128mp3', 'size128']) > 0) qualities.push('128')
+  const albumMid = textField(album, 'mid', 'albummid', 'album_mid')
+  return {
+    id: mid,
+    name: textField(source, 'title', 'name', 'songname'),
+    singers,
+    album: textField(album, 'name', 'title') || textField(source, 'albumname', 'album_name'),
+    cover: qqAlbumCover(albumMid),
+    duration_ms: numberField(source, 'interval') * 1000,
+    source: 'qq',
+    qualities,
+  }
+}
+
+/** 歌单曲目列表 → {songs, total}（total 取 total_song_num，缺失回退 dirinfo.songnum）。 */
+export function parseQqSongList(data) {
+  const source = data && typeof data === 'object' ? data : {}
+  const list = Array.isArray(source.songlist) ? source.songlist : []
+  const songs = []
+  for (const entry of list) {
+    const song = mapQqSong(entry)
+    if (song) songs.push(song)
+  }
+  const info = source.dirinfo && typeof source.dirinfo === 'object' ? source.dirinfo : {}
+  const total = numberField(source, 'total_song_num') || numberField(info, 'songnum') || songs.length
+  return { songs, total }
+}
+
+/** 歌单详情（uniform_get_Dissinfo 的 data.dirinfo）→ {name, cover, count, creator}。 */
+export function parseQqPlaylistInfo(data) {
+  const source = data && typeof data === 'object' ? data : {}
+  const info = source.dirinfo && typeof source.dirinfo === 'object' ? source.dirinfo : {}
+  return {
+    name: textField(info, 'title'),
+    cover: textField(info, 'picurl', 'picurl2'),
+    count: numberField(info, 'songnum') || numberField(source, 'total_song_num'),
+    creator: textField(info, 'host_nick'),
+  }
+}
+
+/** 目标归一化：'daily'/'202' → 每日推荐，'liked'/'201' → 我喜欢，其余按歌单 id 处理。 */
+export function qqTargetKind(target) {
+  const value = String(target ?? '').trim().toLowerCase()
+  if (value === 'daily' || value === 'qq-daily' || value === String(QQ_DIR_ID_DAILY)) return 'daily'
+  if (value === 'liked' || value === 'qq-liked' || value === String(QQ_DIR_ID_LIKED)) return 'liked'
+  return 'playlist'
 }

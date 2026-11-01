@@ -7,6 +7,8 @@ import {
   neteaseSearch, neteaseQrCreate, neteaseQrPoll, neteasePlaylists, neteasePlaylistSongs,
   neteaseSongUrl, qqSearch, qqSongUrl, resolveSongUrl, loadCookies, saveCookies,
   qqQrCreate, qqQrPoll, NETEASE_LOGIN_SESSION, QQ_LOGIN_SESSION, QQ_MUSICU_SESSION,
+  qqPlaylists, qqPlaylistSongs, qqPlaylistSongsPage, qqDailyRecommendations, qqLikedSongs, qqRpc,
+  qqLibraryInfo,
 } from '../lib/music-api.js'
 import { SEARCH_URL, SONG_URL_API, QR_UNIKEY_URL, QR_LOGIN_URL, PLAYLIST_DETAIL_URL, SONG_DETAIL_URL, CHROME_UA } from '../lib/eapi.js'
 import {
@@ -752,4 +754,569 @@ test('neteaseQrPoll refuses to claim success when the KV write fails', async () 
   deps.kv.set = async () => { throw new Error('KV 写入失败：配额超限') }
   const created = await neteaseQrCreate(deps)
   await assert.rejects(neteaseQrPoll(deps, created.key), /保存登录态失败/)
+})
+
+// ─────────────────── QQ 歌单 / 每日推荐 / 我喜欢（假 ctx 集成）───────────────────
+// 全部用假 http 驱动，不发真实网络请求。
+
+/** musicu 路由：按 req_0 的 module/method 分发（返回 null 表示不接管）。 */
+function musicuRoute(handler) {
+  return (options) => {
+    if (options.url !== QQ_MUSICU) return null
+    let body
+    try {
+      body = JSON.parse(String(options.body ?? ''))
+    } catch {
+      return null
+    }
+    const hit = handler(`${body.req_0?.module}/${body.req_0?.method}`, body, options)
+    if (!hit) return null
+    return { body: typeof hit === 'string' ? hit : JSON.stringify(hit) }
+  }
+}
+
+/** 成功信封（参考实现 client.go 的 musicu 响应形态）。 */
+function musicuOk(data) {
+  return { code: 0, req_0: { code: 0, data } }
+}
+
+/** 一首歌（songlist 条目）。 */
+function qqSongEntry(mid, title, interval = 200) {
+  return {
+    id: 1,
+    mid,
+    title,
+    interval,
+    singer: [{ name: '歌手' }],
+    album: { mid: 'ALBUM', name: '专辑' },
+    file: { media_mid: 'MEDIA', size_128mp3: 100, size_320mp3: 200, size_flac: 0 },
+  }
+}
+
+/** 带 QQ 登录态的假宿主。
+ *  uin 可指定：插件按账号缓存「每日推荐」与「我喜欢」的跨页去重表，
+ *  不同用例用不同账号才不会互相污染。 */
+async function qqHost(http, jar = {}, uin = 'o0012345678') {
+  const deps = host(http)
+  await saveCookies(deps.kv, 'qq', {
+    uin, qqmusic_key: '@K', tmeLoginType: '2', ...jar,
+  })
+  return deps
+}
+
+test('qqPlaylists lists the created and the favorite playlists', async () => {
+  const http = fakeHttp([
+    musicuRoute((key, body) => {
+      if (key === 'music.musicasset.PlaylistBaseRead/GetPlaylistByUin') {
+        // 账号 id 是规范 musicid（cookie 里的 o0012345678 → 12345678），
+        // 不是补零形态 —— 参考实现 library.go:29 用的就是 s.MusicID。
+        assert.deepEqual(body.req_0.param, { uin: '12345678' })
+        return musicuOk({
+          v_playlist: [
+            { tid: 1001, dirName: '我的歌单', songNum: 110, bigpicUrl: 'https://cover/1.jpg', nick: '我', dirId: 5 },
+            { tid: 0, dirName: '没有 tid', dirId: 6 },
+            { dirName: '我喜欢', dirId: 201, songNum: 300, nick: '我' },
+          ],
+        })
+      }
+      if (key === 'music.musicasset.PlaylistFavRead/CgiGetPlaylistFavInfo') {
+        assert.deepEqual(body.req_0.param, { uin: 'ENC', offset: 0, size: 100 })
+        return musicuOk({
+          hasmore: 0,
+          v_list: [{ tid: 900, dirName: '别人的歌单', songNum: 12, picurl: 'https://cover/2.jpg', nick: '别人' }],
+        })
+      }
+      return null
+    }),
+  ])
+  const deps = await qqHost(http, { encryptUin: 'ENC' })
+  const result = await qqPlaylists(deps)
+  assert.equal(result.count, 3)
+  assert.equal(result.notice, '')
+  assert.deepEqual(result.playlists.map((item) => item.id), ['201', '1001', '900'])
+  assert.deepEqual(result.playlists.map((item) => item.kind), ['liked', 'created', 'fav'])
+  assert.equal(result.playlists[1].name, '我的歌单')
+  assert.equal(result.playlists[1].count, 110)
+  assert.equal(result.playlists[1].cover, 'https://cover/1.jpg')
+  assert.equal(result.playlists[2].cover, 'https://cover/2.jpg')
+  assert.equal(result.created.length, 1)
+  assert.equal(result.favorites.length, 1)
+  // 登录态在信封里，Cookie 头带上凭据（都来自插件 KV 的 cookies.qq）。
+  const call = http.calls[0]
+  const body = JSON.parse(call.body)
+  assert.equal(body.comm.authst, '@K')
+  assert.equal(body.comm.qq, '12345678')
+  assert.equal(body.comm.tmeLoginType, 2)
+  assert.equal(body.comm.ct, 11)
+  assert.equal(call.headers['user-agent'], QQ_API_UA)
+  assert.equal(call.headers.referer, 'https://y.qq.com/')
+  assert.ok(call.headers.cookie.includes('qqmusic_key=@K'))
+})
+
+test('qqPlaylists reports a missing account id instead of failing silently', async () => {
+  const http = fakeHttp([
+    musicuRoute((key) => (key === 'music.musicasset.PlaylistBaseRead/GetPlaylistByUin'
+      ? musicuOk({ v_playlist: [{ tid: 5, dirName: 'A', dirId: 3 }] })
+      : null)),
+  ])
+  const deps = await qqHost(http)
+  const result = await qqPlaylists(deps)
+  assert.equal(result.count, 1)
+  assert.equal(result.favorites.length, 0)
+  assert.match(result.notice, /encryptUin/)
+  assert.equal(http.calls.length, 1, '没有 encryptUin 就不发收藏请求')
+})
+
+test('qqPlaylists refuses to work without a login and sends no request', async () => {
+  const http = fakeHttp([])
+  const deps = host(http)
+  await assert.rejects(qqPlaylists(deps), /未登录/)
+  assert.equal(http.calls.length, 0, '没登录就不该发请求')
+})
+
+test('qqPlaylists pages the favorites by the real row count and drops duplicates', async () => {
+  const pages = [
+    { hasmore: 1, v_list: [{ tid: 1, dirName: 'A' }, { tid: 2, dirName: 'B' }] },
+    { hasmore: 1, v_list: [{ tid: 2, dirName: 'B' }, { tid: 3, dirName: 'C' }] },
+    { hasmore: 1, v_list: [{ tid: 3, dirName: 'C' }] },
+  ]
+  const offsets = []
+  const http = fakeHttp([
+    musicuRoute((key, body) => {
+      if (key === 'music.musicasset.PlaylistBaseRead/GetPlaylistByUin') return musicuOk({ v_playlist: [] })
+      if (key === 'music.musicasset.PlaylistFavRead/CgiGetPlaylistFavInfo') {
+        offsets.push(body.req_0.param.offset)
+        return musicuOk(pages[offsets.length - 1])
+      }
+      return null
+    }),
+  ])
+  const deps = await qqHost(http, { encryptUin: 'ENC' })
+  const result = await qqPlaylists(deps)
+  assert.deepEqual(offsets, [0, 2, 4], '游标步进是本页实际条数，不是 size')
+  assert.deepEqual(result.favorites.map((item) => item.id), ['1', '2', '3'], '跨页按 tid 去重')
+  assert.equal(http.calls.length, 4, '本页没有新 tid 就停')
+})
+
+test('qqPlaylistSongs routes the playlist, the liked list and the daily list', async () => {
+  const http = fakeHttp([
+    musicuRoute((key, body) => {
+      if (key === 'music.srfDissInfo.aiDissInfo/uniform_get_Dissinfo') {
+        if (body.req_0.param.disstid) {
+          return musicuOk({
+            total_song_num: 110,
+            hasmore: 1,
+            songlist: [qqSongEntry('MID1', '一')],
+            dirinfo: { title: '公开歌单' },
+          })
+        }
+        return musicuOk({
+          total_song_num: 30,
+          songlist: [qqSongEntry('DAILY', '每日')],
+          dirinfo: { title: '每日推荐' },
+        })
+      }
+      if (key === 'music.srfDissInfo.DissInfo/CgiGetDiss') {
+        return musicuOk({
+          total_song_num: 300,
+          hasmore: 1,
+          songlist: [qqSongEntry('LIKED', '喜欢')],
+          dirinfo: { title: '我喜欢' },
+        })
+      }
+      return null
+    }),
+  ])
+  const deps = await qqHost(http, { encryptUin: 'ENC' }, 'o0011111111')
+
+  const playlist = await qqPlaylistSongs(deps, '2002', 0, 100)
+  assert.equal(playlist.songs.length, 1)
+  assert.equal(playlist.songs[0].id, 'MID1', '歌曲 id 是 mid')
+  assert.equal(playlist.total, 110)
+  assert.equal(playlist.name, '公开歌单')
+  let body = JSON.parse(http.calls.at(-1).body)
+  assert.equal(body.req_0.module, 'music.srfDissInfo.aiDissInfo')
+  assert.equal(body.req_0.method, 'uniform_get_Dissinfo')
+  assert.deepEqual(body.req_0.param, {
+    disstid: 2002, userinfo: 1, tag: 1, orderlist: 1,
+    song_begin: 0, song_num: 100, onlysonglist: 0, enc_host_uin: '',
+  })
+
+  const liked = await qqPlaylistSongs(deps, '201', 100, 100)
+  assert.equal(liked.songs[0].id, 'LIKED')
+  assert.equal(liked.name, '我喜欢')
+  body = JSON.parse(http.calls.at(-1).body)
+  assert.equal(body.req_0.module, 'music.srfDissInfo.DissInfo')
+  assert.equal(body.req_0.method, 'CgiGetDiss')
+  assert.deepEqual(body.req_0.param, {
+    disstid: 0, dirid: 201, tag: true, song_begin: 100, song_num: 100,
+    userinfo: true, orderlist: true, enc_host_uin: 'ENC',
+  })
+
+  const daily = await qqPlaylistSongs(deps, '202', 0, 100)
+  assert.equal(daily.songs[0].id, 'DAILY')
+  assert.equal(daily.total, 30)
+  body = JSON.parse(http.calls.at(-1).body)
+  assert.deepEqual(body.req_0.param, { dirid: 202, optype: 3, tag: 1, userinfo: 0, pic_dpi: 300 })
+})
+
+test('an owned playlist is read through the owner API with enc_host_uin', async () => {
+  const http = fakeHttp([
+    musicuRoute((key) => {
+      if (key === 'music.musicasset.PlaylistBaseRead/GetPlaylistByUin') {
+        return musicuOk({ v_playlist: [{ tid: 3003, dirName: '我的歌单', dirId: 5 }] })
+      }
+      if (key === 'music.musicasset.PlaylistFavRead/CgiGetPlaylistFavInfo') {
+        return musicuOk({ hasmore: 0, v_list: [] })
+      }
+      if (key === 'music.srfDissInfo.DissInfo/CgiGetDiss') {
+        return musicuOk({ total_song_num: 1, songlist: [qqSongEntry('OWNED', '我的')] })
+      }
+      return null
+    }),
+  ])
+  const deps = await qqHost(http, { encryptUin: 'ENC' })
+  await qqPlaylists(deps)
+  const result = await qqPlaylistSongs(deps, '3003', 0, 100)
+  assert.equal(result.songs[0].id, 'OWNED')
+  const body = JSON.parse(http.calls.at(-1).body)
+  assert.equal(body.req_0.method, 'CgiGetDiss', '自建歌单走带 enc_host_uin 的接口')
+  assert.equal(body.req_0.param.enc_host_uin, 'ENC')
+})
+
+test('a private playlist falls back to the owner API when the public API returns a shell', async () => {
+  const http = fakeHttp([
+    musicuRoute((key) => {
+      if (key === 'music.srfDissInfo.aiDissInfo/uniform_get_Dissinfo') return musicuOk({ total_song_num: 0 })
+      if (key === 'music.srfDissInfo.DissInfo/CgiGetDiss') {
+        return musicuOk({ total_song_num: 2, songlist: [qqSongEntry('P1', '私密'), qqSongEntry('P2', '私密2')] })
+      }
+      return null
+    }),
+  ])
+  const deps = await qqHost(http, { encryptUin: 'ENC' })
+  const result = await qqPlaylistSongs(deps, '4004', 0, 100)
+  assert.equal(result.songs.length, 2, '空壳不算空歌单，要改走自建接口')
+  assert.equal(http.calls.length, 2)
+})
+
+test('a missing song list is an error, not an empty playlist', async () => {
+  const http = fakeHttp([
+    musicuRoute(() => musicuOk({ total_song_num: 5 })),
+  ])
+  const deps = await qqHost(http, { encryptUin: 'ENC' })
+  await assert.rejects(qqPlaylistSongs(deps, '5005', 0, 100), /歌单曲目/)
+})
+
+test('qqPlaylistSongsPage returns the netease-shaped envelope', async () => {
+  const http = fakeHttp([
+    musicuRoute(() => musicuOk({
+      total_song_num: 250,
+      songlist: [qqSongEntry('M1', '一'), qqSongEntry('M2', '二')],
+      dirinfo: { title: '歌单' },
+    })),
+  ])
+  const deps = await qqHost(http, { encryptUin: 'ENC' })
+  const page = await qqPlaylistSongsPage(deps, '6006', 2, 100)
+  assert.deepEqual(Object.keys(page).sort(), ['name', 'page', 'page_size', 'songs', 'total'])
+  assert.equal(page.name, '歌单')
+  assert.equal(page.total, 250)
+  assert.equal(page.page, 2)
+  assert.equal(page.page_size, 100)
+  assert.equal(page.songs.length, 2)
+  const body = JSON.parse(http.calls.at(-1).body)
+  assert.equal(body.req_0.param.song_begin, 100, '第二页从第 100 首开始')
+})
+
+test('qqDailyRecommendations and qqLikedSongs are thin wrappers', async () => {
+  const http = fakeHttp([
+    musicuRoute((key) => {
+      if (key === 'music.srfDissInfo.aiDissInfo/uniform_get_Dissinfo') {
+        return musicuOk({ total_song_num: 1, songlist: [qqSongEntry('DAILY', '每日')], dirinfo: { title: '每日推荐' } })
+      }
+      if (key === 'music.srfDissInfo.DissInfo/CgiGetDiss') {
+        return musicuOk({ total_song_num: 1, songlist: [qqSongEntry('LIKED', '喜欢')] })
+      }
+      return null
+    }),
+  ])
+  const deps = await qqHost(http, { encryptUin: 'ENC' }, 'o0022222222')
+  const daily = await qqDailyRecommendations(deps)
+  assert.equal(daily.songs[0].id, 'DAILY')
+  assert.equal(daily.name, '每日推荐')
+  const liked = await qqLikedSongs(deps, 0, 100)
+  assert.equal(liked.songs[0].id, 'LIKED')
+  const body = JSON.parse(http.calls.at(-1).body)
+  assert.equal(body.req_0.param.dirid, 201)
+  assert.equal(body.req_0.param.enc_host_uin, 'ENC')
+})
+
+test('the liked list refuses to work without the account id', async () => {
+  const http = fakeHttp([])
+  const deps = await qqHost(http)
+  await assert.rejects(qqLikedSongs(deps, 0, 100), /账号标识/)
+  assert.equal(http.calls.length, 0)
+})
+
+test('qqRpc surfaces the business code and never leaks the credential', async () => {
+  const http = fakeHttp([
+    musicuRoute(() => ({ code: 0, req_0: { code: 80030, data: { msg: 'musickey=@SECRET' } } })),
+  ])
+  const deps = await qqHost(http, { encryptUin: 'ENC-SECRET' })
+  await assert.rejects(
+    qqRpc(deps, 'music.musicasset.PlaylistBaseRead', 'GetPlaylistByUin', { uin: '1' }),
+    (error) => {
+      assert.match(error.message, /80030/)
+      assert.ok(!error.message.includes('@SECRET'))
+      assert.ok(!error.message.includes('ENC-SECRET'))
+      assert.ok(!error.message.includes('musickey'))
+      return true
+    },
+  )
+})
+
+test('qqPlaylists reports an expired login instead of an empty list', async () => {
+  const http = fakeHttp([
+    musicuRoute(() => ({ code: 0, req_0: { code: 80030, data: {} } })),
+  ])
+  const deps = await qqHost(http)
+  await assert.rejects(qqPlaylists(deps), /80030/)
+})
+
+test('qqQrPoll stores the account id (encryptUin) next to the credential', async () => {
+  const sessions = fakeSessions()
+  const http = fakeHttp(qqRoutes(sessions, {
+    poll: () => ({ body: "ptuiCB('0','0','https://ssl.ptlogin2.graph.qq.com/check_sig?ptsigx=fake','0','ok','nick')" }),
+    musicu: () => ({
+      body: '{"code":0,"req":{"code":0,"data":{"musicid":10001,"musickey":"fake-musickey","loginType":2,' +
+        '"nick":"Listener","encryptUin":"ENC-UIN"}}}',
+    }),
+  }))
+  const deps = host(http, new Map(), sessions)
+  const created = await qqQrCreate(deps)
+  const polled = await qqQrPoll(deps, created.key)
+  assert.equal(polled.logged_in, true)
+  const jar = await loadCookies(deps.kv, 'qq')
+  assert.equal(jar.encryptUin, 'ENC-UIN', '账号标识要落盘（收藏歌单 / 我喜欢接口要用）')
+  assert.equal(jar.encryptUinFor, '10001', '账号标识要记下属于哪个 uin')
+  assert.equal(jar.qqmusic_key, 'fake-musickey')
+  assert.ok(!('p_skey' in jar), 'graph.qq.com 的全局授权 Cookie 仍然不进 KV')
+  assert.ok(!('pt_oauth_token' in jar))
+})
+
+test('qqSongUrl does not fall back to the anonymous comm when the signed request has no link', async () => {
+  const http = fakeHttp([
+    (options) => (options.url === QQ_MUSICU && String(options.body).includes('music.pf_song_detail_svr')
+      ? { body: '{"req_0":{"data":{"track_info":{"mid":"MID","file":{"media_mid":"MEDIA","size_128mp3":33}}}}}' }
+      : null),
+    (options) => {
+      if (options.url !== QQ_MUSICU) return null
+      const body = JSON.parse(options.body)
+      if (body.comm.authst) return { body: '{"req_0":{"data":{"midurlinfo":[{"songmid":"MID","purl":""}]}}}' }
+      return { body: '{"req_0":{"data":{"midurlinfo":[{"songmid":"MID","purl":"M500MIDMEDIA.mp3"}]}}}' }
+    },
+  ])
+  const deps = await qqHost(http)
+  // 登录态取不到链接就报错：不再多发一次匿名请求（匿名请求带不上会话，
+  // 一旦服务端按 cookie 放行，用户选「无损 FLAC」会静默拿到 128K 的文件）。
+  await assert.rejects(qqSongUrl(deps, 'MID', '128'), /所有音质均未获取到链接/)
+  const bodies = http.calls.filter((call) => call.url === QQ_MUSICU).map((call) => JSON.parse(call.body))
+  assert.equal(bodies.length, 2, '一次详情 + 一次登录态取链（不再有匿名回落）')
+  assert.equal(bodies[1].comm.authst, '@K', '只试带 authst 的 comm')
+  assert.equal(bodies[1].req_0.module, 'music.vkey.GetVkey')
+})
+
+test('qqLibraryInfo reports the login state without any credential value', async () => {
+  const http = fakeHttp([])
+  const deps = host(http)
+  await saveCookies(deps.kv, 'qq', { uin: '10001', qqmusic_key: '@K', encryptUin: 'ENC', encryptUinFor: '10001' })
+  const info = qqLibraryInfo(await loadCookies(deps.kv, 'qq'))
+  assert.deepEqual(info, { source: 'qq', logged_in: true, has_account_id: true })
+  assert.ok(!JSON.stringify(info).includes('@K'))
+  assert.ok(!JSON.stringify(info).includes('ENC'))
+  // 手动粘贴 Cookie 登录拿不到账号标识。
+  const manual = qqLibraryInfo({ uin: '10001', qqmusic_key: '@K' })
+  assert.equal(manual.has_account_id, false)
+  // 账号标识属于别的账号时也不能用（换账号后不该读到别人的收藏歌单）。
+  const other = qqLibraryInfo({ uin: 'o0022222222', qqmusic_key: '@K', encryptUin: 'ENC', encryptUinFor: '10001' })
+  assert.equal(other.has_account_id, false)
+})
+
+test('a re-login without the account id clears the stale one', async () => {
+  const sessions = fakeSessions()
+  const http = fakeHttp(qqRoutes(sessions, {
+    poll: () => ({ body: "ptuiCB('0','0','https://ssl.ptlogin2.graph.qq.com/check_sig?ptsigx=fake','0','ok','nick')" }),
+    musicu: () => ({
+      body: '{"code":0,"req":{"code":0,"data":{"musicid":10001,"musickey":"fake-musickey","loginType":2}}}',
+    }),
+  }))
+  const deps = host(http, new Map(), sessions)
+  await saveCookies(deps.kv, 'qq', { uin: '10001', qqmusic_key: 'old', encryptUin: 'OLD-ENC' })
+  const created = await qqQrCreate(deps)
+  await qqQrPoll(deps, created.key)
+  const jar = await loadCookies(deps.kv, 'qq')
+  assert.equal(jar.encryptUin, '', '旧账号的账号标识不能留着')
+  assert.equal(jar.qqmusic_key, 'fake-musickey')
+})
+
+test('the favorites paging stops at the hard limit and says so', async () => {
+  let page = 0
+  const http = fakeHttp([
+    musicuRoute((key) => {
+      if (key === 'music.musicasset.PlaylistBaseRead/GetPlaylistByUin') return musicuOk({ v_playlist: [] })
+      if (key === 'music.musicasset.PlaylistFavRead/CgiGetPlaylistFavInfo') {
+        const base = page * 100
+        page += 1
+        return musicuOk({
+          hasmore: 1,
+          v_list: Array.from({ length: 100 }, (_, index) => ({ tid: base + index + 1, dirName: `歌单${base + index + 1}` })),
+        })
+      }
+      return null
+    }),
+  ])
+  const deps = await qqHost(http, { encryptUin: 'ENC' })
+  const result = await qqPlaylists(deps)
+  assert.match(result.notice, /收藏歌单过多，未能完整读取/, '撞上限要说清楚')
+  assert.equal(result.favorites.length, 10000, '已读到的部分结果照样给用户，不整份丢掉')
+  assert.equal(result.count, 10000)
+  assert.equal(page, 100, 'offset 上限 10000 = 100 页 × 100 条')
+})
+
+test('an account id from another account is not used for the favorites', async () => {
+  const http = fakeHttp([
+    musicuRoute((key) => (key === 'music.musicasset.PlaylistBaseRead/GetPlaylistByUin'
+      ? musicuOk({ v_playlist: [{ tid: 7, dirName: 'A', dirId: 3 }] })
+      : null)),
+  ])
+  const deps = host(http)
+  // 手动粘贴了另一个账号的 Cookie，但 jar 里还留着上一个账号的账号标识。
+  await saveCookies(deps.kv, 'qq', {
+    uin: 'o0022222222', qqmusic_key: '@K', tmeLoginType: '2', encryptUin: 'OLD-ENC', encryptUinFor: '10001',
+  })
+  const result = await qqPlaylists(deps)
+  assert.equal(result.count, 1)
+  assert.equal(result.favorites.length, 0)
+  assert.match(result.notice, /encryptUin/)
+  assert.equal(http.calls.length, 1, '别账号的账号标识不发出去')
+})
+
+test('the owned playlists are addressed with the canonical musicid', async () => {
+  const http = fakeHttp([
+    musicuRoute((key, body) => {
+      if (key === 'music.musicasset.PlaylistBaseRead/GetPlaylistByUin') {
+        // 手动粘贴的 Cookie 是补零形态（o0000010001）；账号级接口要的是规范
+        // musicid（参考实现 library.go:29 的 s.MusicID），不是补零后的 id。
+        assert.equal(body.req_0.param.uin, '10001')
+        assert.equal(body.comm.qq, '10001')
+        return musicuOk({ v_playlist: [] })
+      }
+      return null
+    }),
+  ])
+  const deps = host(http)
+  await saveCookies(deps.kv, 'qq', { uin: 'o0000010001', qqmusic_key: '@K', tmeLoginType: '2' })
+  await qqPlaylists(deps)
+  assert.equal(http.calls.length, 1)
+})
+
+test('a private playlist that answers with an empty shell falls back to the owner API', async () => {
+  const http = fakeHttp([
+    musicuRoute((key) => {
+      if (key === 'music.srfDissInfo.aiDissInfo/uniform_get_Dissinfo') {
+        // 「成功但空壳」：code=0、songlist=[]，可整单写着 110 首。
+        return musicuOk({ total_song_num: 110, songlist: [], dirinfo: { title: '私密歌单' } })
+      }
+      if (key === 'music.srfDissInfo.DissInfo/CgiGetDiss') {
+        return musicuOk({ total_song_num: 2, songlist: [qqSongEntry('P1', '私密'), qqSongEntry('P2', '私密2')] })
+      }
+      return null
+    }),
+  ])
+  const deps = await qqHost(http, { encryptUin: 'ENC' }, 'o0033333333')
+  const result = await qqPlaylistSongs(deps, '4004', 0, 100)
+  assert.equal(result.songs.length, 2, '空壳不算空歌单，要改走自建接口')
+  assert.equal(result.total, 2)
+  assert.equal(http.calls.length, 2, '公开接口 + 自建接口各一次')
+})
+
+test('an unreadable playlist without the account id reports the error instead of 0 songs', async () => {
+  const http = fakeHttp([
+    musicuRoute((key) => (key === 'music.srfDissInfo.aiDissInfo/uniform_get_Dissinfo'
+      ? musicuOk({ total_song_num: 110, songlist: [] })
+      : null)),
+  ])
+  const deps = await qqHost(http, {}, 'o0044444444')
+  await assert.rejects(qqPlaylistSongs(deps, '4004', 0, 100), /歌单曲目/)
+  assert.equal(http.calls.length, 1, '没有账号标识就没法回落，如实报错')
+})
+
+test('the liked list drops the songs it already showed', async () => {
+  const http = fakeHttp([
+    musicuRoute((key, body) => {
+      if (key === 'music.srfDissInfo.DissInfo/CgiGetDiss') {
+        const begin = body.req_0.param.song_begin
+        return musicuOk(begin === 0
+          ? { total_song_num: 4, songlist: [qqSongEntry('L1', '一'), qqSongEntry('L2', '二')] }
+          : { total_song_num: 4, songlist: [qqSongEntry('L2', '二'), qqSongEntry('L3', '三')] })
+      }
+      return null
+    }),
+  ])
+  const deps = await qqHost(http, { encryptUin: 'ENC' }, 'o0055555555')
+  const first = await qqLikedSongs(deps, 0, 100)
+  assert.deepEqual(first.songs.map((song) => song.id), ['L1', 'L2'])
+  const second = await qqLikedSongs(deps, 100, 100)
+  assert.deepEqual(second.songs.map((song) => song.id), ['L3'], '跨页重复的歌不再出现')
+  assert.equal(second.total, 4)
+})
+
+test('the liked list reports a repeated page instead of showing duplicates', async () => {
+  const http = fakeHttp([
+    musicuRoute((key) => (key === 'music.srfDissInfo.DissInfo/CgiGetDiss'
+      ? musicuOk({ total_song_num: 2, songlist: [qqSongEntry('L1', '一'), qqSongEntry('L2', '二')] })
+      : null)),
+  ])
+  const deps = await qqHost(http, { encryptUin: 'ENC' }, 'o0066666666')
+  await qqLikedSongs(deps, 0, 100)
+  await assert.rejects(qqLikedSongs(deps, 100, 100), /未能完整读取/)
+})
+
+test('the playlist songs stop asking for more pages once the total is reached', async () => {
+  const http = fakeHttp([
+    musicuRoute((key) => (key === 'music.srfDissInfo.aiDissInfo/uniform_get_Dissinfo'
+      ? musicuOk({
+        total_song_num: 2,
+        hasmore: 1,
+        songlist: [qqSongEntry('M1', '一'), qqSongEntry('M2', '二')],
+        dirinfo: { title: '歌单' },
+      })
+      : null)),
+  ])
+  const deps = await qqHost(http, { encryptUin: 'ENC' }, 'o0077777777')
+  const result = await qqPlaylistSongs(deps, '7007', 0, 100)
+  assert.equal(result.has_more, false, '读满了 total_song_num 就停（hasmore=1 也不多报）')
+})
+
+test('the daily list is fetched once and sliced page by page', async () => {
+  let calls = 0
+  const http = fakeHttp([
+    musicuRoute((key) => {
+      if (key === 'music.srfDissInfo.aiDissInfo/uniform_get_Dissinfo') {
+        calls += 1
+        return musicuOk({
+          total_song_num: 3,
+          songlist: [qqSongEntry('D1', '一'), qqSongEntry('D2', '二'), qqSongEntry('D3', '三')],
+          dirinfo: { title: '每日推荐' },
+        })
+      }
+      return null
+    }),
+  ])
+  const deps = await qqHost(http, { encryptUin: 'ENC' }, 'o0088888888')
+  const first = await qqPlaylistSongs(deps, 'daily', 0, 2)
+  assert.deepEqual(first.songs.map((song) => song.id), ['D1', 'D2'])
+  const second = await qqPlaylistSongs(deps, 'daily', 2, 2)
+  assert.deepEqual(second.songs.map((song) => song.id), ['D3'])
+  assert.equal(calls, 1, '整份列表只拉一次，翻页走本地切片')
 })

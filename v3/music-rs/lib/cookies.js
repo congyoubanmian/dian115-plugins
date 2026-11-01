@@ -10,10 +10,13 @@ export const QQ_COOKIE_KEY = 'cookies.qq'
 /** cookie 头固定前缀（Go netease.go:53；与 eapi payload 的 header 同源）。 */
 export const COOKIE_BASE = 'os=pc; appver=; osver=; deviceId=pyncm!'
 
-/** QQ 会话 cookie 白名单（qq.rs QQ_COOKIE_NAMES，qq.go:68-71）。 */
+/** QQ 会话 cookie 白名单（qq.rs QQ_COOKIE_NAMES，qq.go:68-71）。
+ *  encryptUin 不是浏览器 cookie，而是 QQLogin 响应里的账号标识（收藏歌单 / 我喜欢
+ *  接口的 uin 参数要用它），但它和凭据一起存在 cookies.qq 这张表里，所以一并列出：
+ *  落盘时不丢、整表读写时不丢。它不是授权凭据（授权凭据是 qqmusic_key）。 */
 export const QQ_COOKIE_NAMES = [
   'qrsig', 'uin', 'skey', 'p_skey', 'ptui_loginuin', 'luin', 'qqmusic_key', 'musickey',
-  'wxuin', 'wxunionid', 'euin', 'tmeLoginType', 'qqmusic_u',
+  'wxuin', 'wxunionid', 'euin', 'tmeLoginType', 'qqmusic_u', 'encryptUin',
 ]
 
 /** 解析 `name=value; name2=value2`（Go netease.go:219-224 的 SplitN("=", 2)）：
@@ -59,12 +62,24 @@ export function neteaseCookieHeader(cookies) {
   return header
 }
 
+/**
+ * QQ cookie 头里允许出网的四个凭据字段（参考实现 client.go:128）。
+ *
+ * 表里的其它字段不是 QQ 协议的凭据，不该整表出网：
+ * - encryptUin：账号标识（收藏歌单 / 我喜欢接口的 uin 参数要用它），不是 Cookie；
+ * - encryptUinFor：插件自用的「这个账号标识属于哪个 uin」簿记标记，纯内部；
+ * - tmeLoginType：登录类型标记，走请求信封的 tmeLoginType 字段，不走 Cookie。
+ */
+export const QQ_COOKIE_HEADER_KEYS = ['uin', 'qqmusic_uin', 'qm_keyst', 'qqmusic_key']
+
 /** QQ cookie 头（Go qqCookieHeader / sidecar server.mjs:76 cookieOf）：k=v 以 `; ` 连接，
- *  键按字典序（Rust BTreeMap 语义，形态稳定）。 */
+ *  只带 QQ_COOKIE_HEADER_KEYS 里的凭据字段，键按字典序（Rust BTreeMap 语义，形态稳定）。 */
 export function qqCookieHeader(cookies) {
-  return Object.keys(cookies ?? {})
+  const jar = cookies ?? {}
+  return QQ_COOKIE_HEADER_KEYS
+    .filter((name) => name in jar)
     .sort()
-    .map((name) => `${name}=${cookies[name]}`)
+    .map((name) => `${name}=${jar[name]}`)
     .join('; ')
 }
 

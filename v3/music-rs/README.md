@@ -1,6 +1,6 @@
 # 音乐下载（dian115 插件 v3）
 
-网易云 / QQ 音乐搜索、**网易云与 QQ 音乐双源扫码登录**（QQ 走官方二维码 + OAuth 授权换凭据）与手动粘贴 Cookie 回退、按音质逐级取链；单曲与整张歌单入队后由后台任务自动推进：取链接 → 下载到插件暂存目录 → 定名 → 移交宿主 move 进目标目录（CD2 挂载由宿主自动分流）→ 失败通知带「重试」按钮。
+网易云 / QQ 音乐搜索、**网易云与 QQ 音乐双源扫码登录**（QQ 走官方二维码 + OAuth 授权换凭据）与手动粘贴 Cookie 回退、**两个来源的「我的歌单」**（我创建的 + 收藏的；QQ 另有「每日推荐」「我喜欢」）、按音质逐级取链；单曲与整张歌单入队后由后台任务自动推进：取链接 → 下载到插件暂存目录 → 定名 → 移交宿主 move 进目标目录（CD2 挂载由宿主自动分流）→ 失败通知带「重试」按钮。
 
 本插件是 `plugins/music-rs`（旧 schema 1，Rust WASM 0.3.19）的 **v3 迁移版**：Rust 业务逐函数移植为宿主内 ESM JavaScript（无 npm 依赖、无 Node 内置模块），WASM 基建（abi/arena/host/protocol/store 乐观锁幂等键/clock）由 v3 宿主能力取代。
 
@@ -9,7 +9,7 @@
 - **搜索**：网易云（`/api/cloudsearch/pc`，每页 30 条）/ QQ（`search_for_qq_cp`，每页 20 条），页面直连。
 - **登录**：**网易云与 QQ 音乐两个来源的扫码都在本插件内实现**（网络层 `lib/music-api.js` + 纯逻辑 `lib/qq.js`），页面只渲染二维码与每 2 秒轮询一次；两源都保留手动粘贴 Cookie（白名单清洗 + 合并写入）与 CookieCloud 一键同步（v3 用宿主内置服务）作为回退。细节见「登录」一节。
 - **取链**：网易云 eapi（AES-128-ECB + MD5，宿主 `ctx.crypto`）按 8 档音质阶梯逐级回退；QQ 按参考客户端 Lilt 的流程：先读歌曲详情拿 `media_mid`，登录态请求 `F000(flac) → M800(320k) → M500(128k)`，匿名只请求 `M500`；每档单独请求 vkey，相对 purl 用响应里的 `sip` 域名拼接（详见 `lib/qq.js` 注释）。
-- **歌单**：我的歌单列表 + 分页浏览（1×v6 全量索引 + 每页 1×v3 详情切片）；整单分批入队（每批 5 页 × 100 首，`next_page` 续批游标，页面级失败不回滚已入队）。
+- **歌单**：**网易云与 QQ 音乐都支持「我的歌单」**（我创建的 + 收藏的）；歌单内分页浏览（每页 100 首）；整单分批入队（每批 5 页 × 100 首，`next_page` 续批游标，页面级失败不回滚已入队）。**QQ 另有两个特殊入口：「每日推荐」「我喜欢」**。详见「歌单」一节。
 - **下载队列**：KV 分片（`tasks.idx` + `task.<id>`），去重按 `source+song_id+quality`；定时任务（每 5 分钟）与页面手动「推进队列」走同一入口；`queued → downloading → copying → done/failed`，失败重试 ≤3 次后发通知（Telegram 按钮 `callback_data: retry:<短id>`，点击触发回调任务重新排队）。
 - **任务运维**：重试、清空已完成、索引对账（孤儿分片挂回）。
 
@@ -71,6 +71,7 @@
    方法 `QQLogin`；校验 `code`、`musicid`（>0 的数字）、`musickey`（非空）、`loginType=2`
    （QQ 互联路径），拿到 **`musicid`（uin）与 `musickey`**。
 5. **落盘**：只写 QQ 音乐自己的凭据（`uin` / `qqmusic_uin` / `qqmusic_key` / `qm_keyst` / `tmeLoginType`）
+   与账号标识 **`encryptUin`**（`QQLogin` 响应里带回的账号 id；**收藏歌单 / 我喜欢接口的 `uin` 参数要用它**）
    到插件 KV `cookies.qq`；`graph.qq.com` 的全局授权 Cookie 不写进 KV，随后清空宿主 session。
 
 ### 失败回退
@@ -82,11 +83,80 @@
 - **手动粘贴 Cookie**（一直保留的通道）：浏览器登录后复制整行 Cookie 粘进登录卡，
   按白名单清洗后合并写入插件 KV（网易云必须有 `MUSIC_U`/`MUSIC_A`；QQ 必须有 `qqmusic_key`
   或可补齐的 `p_skey`/`skey`/`musickey`）；
+  注意：**手动粘贴拿不到 `encryptUin`**（它只在 `QQLogin` 响应里），
+  所以这条通道下 QQ 的「收藏的歌单」与「我喜欢」读不到，只有「我创建的」能用 —— 要用这两个入口得扫码登录；
 - **CookieCloud 一键同步**：v3 用宿主内置服务 `ctx.cookiecloud('read')`（域：网易云 `music.163.com`、
   QQ `qq.com` 及其子域），按白名单提取后写入同一份 KV。
 
 > 真机状态：以上两条登录链路在本机**只有离线单测覆盖**（本机没有可用的 dian115 宿主），
 > 真机扫码（手机确认、OAuth 跳转、凭据落盘）未验证。
+
+## 歌单
+
+**两个来源都支持「我的歌单」（我创建的 + 收藏的）、歌单内分页浏览、整单入队**；
+QQ 音乐另外有两个特殊入口：**「每日推荐」**与**「我喜欢」**。
+
+歌单链路**全部依赖登录态**（两个来源各自一份）：
+
+| 来源 | 依赖 | 缺了会怎样 |
+| --- | --- | --- |
+| 网易云 | 插件 KV `cookies.netease` 里的 `MUSIC_U` / `MUSIC_A` | 「我的歌单」与曲目都取不到，页面如实报错 |
+| QQ 音乐 | 插件 KV `cookies.qq` 里的 `qqmusic_key`（或 `qm_keyst`）+ 账号 `uin` | 同上（未登录时插件直接报错、**不发请求**，不把空壳当空歌单） |
+| QQ 音乐（收藏 / 我喜欢） | 额外要 **`encryptUin`**（账号标识） | **只有「我创建的」能读**；收藏与「我喜欢」读不到，页面显示提示（见下） |
+
+### 网易云
+
+| 环节 | 接口 |
+| --- | --- |
+| 我的歌单 | `GET https://music.163.com/api/user/playlist?uid=<uid>&limit=100&offset=<n>&includeVideo=true`（先 `GET /api/nuser/account/get` 拿 uid；每页 100，最多翻到 2000 条） |
+| 歌单索引 | `GET https://music.163.com/api/v6/playlist/detail?id=<id>&n=0`（一次拿全量 `trackIds`） |
+| 歌单曲目 | `POST https://music.163.com/api/v3/song/detail`（每 200 个 id 一批） |
+
+- 「我的歌单」这一条接口返回该账号的歌单列表（**创建的与收藏的在同一份列表里**，插件不分栏）；
+- 页面每页 100 首（`lib/constants.js` 的 `PLAYLIST_PAGE_SIZE`），整单入队也按这个页大小翻。
+
+### QQ 音乐
+
+歌单类接口都是 `POST https://u.y.qq.com/cgi-bin/musicu.fcg` 的 JSON 信封 `{comm, req_0}`，
+**登录态放在信封 `comm` 里**（`lib/qq.js:180` 的 `authenticatedComm`：`qq` = 账号 musicid、
+`authst` = `qqmusic_key`、`tmeLoginType` = 登录类型），请求的 Cookie 头只带
+`uin` / `qqmusic_uin` / `qm_keyst` / `qqmusic_key` 四个凭据字段
+（`lib/cookies.js` 的 `QQ_COOKIE_HEADER_KEYS`）。
+
+| 入口 | 模块 / 方法 | 参数要点 |
+| --- | --- | --- |
+| 我创建的 | `music.musicasset.PlaylistBaseRead` / `GetPlaylistByUin` | `uin` = 账号 musicid（去 `o` 前缀与前导零的规范形态） |
+| 收藏的 | `music.musicasset.PlaylistFavRead` / `CgiGetPlaylistFavInfo` | `uin` = **`encryptUin`**、`offset` + `size`（100） |
+| 每日推荐 | `music.srfDissInfo.aiDissInfo` / `uniform_get_Dissinfo` | `dirid=202`（**无游标**，整份取回后本地切片） |
+| 我喜欢 | `music.srfDissInfo.DissInfo` / `CgiGetDiss` | `dirid=201`、`enc_host_uin` = **`encryptUin`**、`song_begin` + `song_num` |
+| 普通歌单曲目 | `aiDissInfo/uniform_get_Dissinfo`（公开）或 `DissInfo/CgiGetDiss`（自建 / 私密） | `disstid` = 歌单 id |
+
+行为细节（都与参考实现 Lilt 的 `internal/qqmusic/library.go`、`catalog.go` 对齐）：
+
+- **encryptUin 是账号标识，只有一个来源：扫码登录时 `QQLogin` 的响应**
+  （`lib/music-api.js:714` 的 `persistQqCredential` 把它写进 `cookies.qq`）。
+  收藏的歌单与「我喜欢」的 `uin` 参数都要它。**手动粘贴 Cookie 拿不到** →
+  收藏与「我喜欢」读不到，页面显示「未取得账号标识」的提示，「我创建的」仍可读；
+  换账号后旧 encryptUin 不再使用（记在 `encryptUinFor`，不属于当前账号就不取）。
+- 收藏歌单按「本页实际条数」推进游标（不是 `size`），`offset` 硬上限 10000；
+  撞上限时返回**已读到的部分 + 说明**，不假装读完了。
+- 私密歌单用公开接口只会回「成功但空壳」（`songlist` 空但 `total_song_num > 0`）：
+  这时改走带 `enc_host_uin` 的自建接口（`lib/music-api.js:1083`）。
+- 「我喜欢」跨页按 mid 去重；某一页全是重复曲时如实报「未能完整读取」，不显示重复歌曲。
+- 「每日推荐」接口没有游标，插件一次整份取回后按页切片（按账号缓存 5 分钟），翻页不重拉。
+- QQ 曲目的 `song_id` 是 **mid**（字符串），与 QQ 取链（`qqSongUrl`）用的是同一个 id。
+- 页面把「还没加载过」「读不到」「确实是空的」分成三种状态展示，不把失败说成空列表。
+
+### 整单入队
+
+两个来源同一条路径（`lib/queue-pages.js` 的 `queuePlaylistPages`）：每批 5 页 × 100 首，
+`next_page` 作续批游标；**页面级失败不回滚已入队的歌**（单首入队失败只记账跳过）。
+QQ 走 `qqPlaylistSongsPage`（游标 `begin = (page-1) × 100`），
+网易云走 v6 全量索引 + v3 详情切片。
+
+> 真机状态：本节用到的 musicu 接口与网易云歌单接口在本机**只有离线单测覆盖**
+> （本机没有可用的 dian115 宿主，也没有真实账号），真实返回的字段形态、分页终止条件
+> 与「空壳」判定未在真机上验证过。
 
 ## 旧版 → v3 的架构性差异（如实说明）
 
@@ -111,16 +181,19 @@
 
 ```sh
 node --check lib/*.js jobs/*.js ui/*.js   # 语法
-node --test tests/*.test.js               # 131 项单测（eapi/cookie/qq/queue/pump/QR 向量）
+node --test tests/*.test.js               # 173 项单测（eapi/cookie/qq/queue/pump/QR 向量）
 node v3-kit/conformance/project-check.mjs v3/music-rs
 node v3-kit/conformance/pack.mjs v3/music-rs dist/music-rs.dian115p
 ```
 
-131 项的分布（`node --test tests/<file>` 逐个文件跑出来的 `ℹ tests` 数）：
-`qq` 31 / `music-api` 28 / `cookies` 13 / `settings-queue` 12 / `encoding` 11 / `tasks-core` 9 /
+173 项的分布（`node --test tests/<file>` 逐个文件跑出来的 `ℹ tests` 数）：
+`music-api` 54 / `qq` 46 / `cookies` 14 / `settings-queue` 12 / `encoding` 11 / `tasks-core` 9 /
 `netease` 8 / `eapi` 6 / `pump` 6 / `qr` 4 / `jobs` 2 / `kv-path` 1。
 
 注意：本机没有可用的 dian115 宿主（授权锁定），以上为离线验证；真机安装行为（两条扫码链路、取链、下载、通知投递）未验证。
+另：`tests/pump.test.js:287` 的「队首」断言**偶发失败**（本轮连跑 10 次复现 2 次）——
+该用例用随机短 id 排序来预测队首，与 `sortIndex` 的同毫秒并列排序会撞车；
+它是既有问题（`main` 上同样复现），与本轮歌单改动无关，也**没有删改这条测试**。
 
 ## 文件
 
@@ -128,21 +201,21 @@ node v3-kit/conformance/pack.mjs v3/music-rs dist/music-rs.dian115p
 plugin.json          清单（schema 3，requires.api 3.5，jobs ×2，events ×1）
 lib/encoding.js      Go 编码语义（QueryEscape/Encode/ParseQuery/hash33/base36/短 id）
 lib/eapi.js          网易云 eapi（明文装配；AES/MD5 由宿主 ctx.crypto 注入）+ 音质阶梯
-lib/cookies.js       cookie 解析/白名单/合并/登录态 + CookieCloud 提取
-lib/qq.js            QQ 纯逻辑（音质阶梯/取链参数/扫码授权链解析/重定向白名单/凭据校验）
+lib/cookies.js       cookie 解析/白名单/合并/登录态 + CookieCloud 提取（QQ 出网只带 4 个凭据字段）
+lib/qq.js            QQ 纯逻辑（音质阶梯/取链参数/扫码授权链解析/重定向白名单/凭据校验 + 歌单/每日推荐/我喜欢的参数与响应解析）
 lib/netease.js       网易云纯映射（搜索/歌单/详情）
 lib/tasks-core.js    任务常量、命名、索引投影、回调提取
 lib/settings.js      设置默认值/归一化/补丁合并
 lib/queue-pages.js   整单入队分批状态机
 lib/queue-store.js   KV 任务队列（CAS 去重入队/重试/对账/清理）
 lib/kv.js            ctx.storage 适配（getMeta 带 revision、CAS 读改写）
-lib/music-api.js     网络层（网易云/QQ 全部端点 + 两条扫码登录链路，页面与后台共用）
+lib/music-api.js     网络层（网易云/QQ 全部端点 + 两条扫码登录链路 + QQ 歌单/每日推荐/我喜欢四个 musicu 接口，页面与后台共用）
 lib/pump.js          下载管线状态机
 lib/logs.js          运行日志（滚动 40 条）
 jobs/queue-pump.js   定时任务（*/5 * * * *）+ 手动快进入口
 jobs/tg-callback.js  Telegram 重试回调（event=callback）
 jobs/runtime.js      ctx → deps 装配（crypto 适配、状态文档组装）
-ui/page.js           插件页面（原生 JS + DOM，四分页 + 登录卡 + 最近动作）
+ui/page.js           插件页面（Vue 3 构建产物 ESM：搜索 / 我的歌单 / 任务 / 设置四分页 + 登录卡 + 最近动作）
 ui/qr.js             QR Model 2 编码器（Nayuki MIT 移植，供网易云扫码）
-tests/               node:test 单测 ×131（向量来自旧 Rust 测试）
+tests/               node:test 单测 ×173（向量来自旧 Rust 测试）
 ```

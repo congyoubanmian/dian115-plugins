@@ -5,7 +5,7 @@
 | 插件 | v3 源码目录 | 版本 | 任务数 | 旧实现 |
 | --- | --- | --- | --- | --- |
 | 追剧管家 `chase.rs` | `v3/chase-rs/` | 0.1.11 | 4 | `plugins/chase-rs`（0.1.9） |
-| 音乐下载 `music.rs` | `v3/music-rs/` | 1.0.2 | 2 + 1 event | `plugins/music-rs`（0.3.19） |
+| 音乐下载 `music.rs` | `v3/music-rs/` | 1.1.0 | 2 + 1 event | `plugins/music-rs`（0.3.19） |
 | 豆瓣中心 `douban.rs` | `v3/douban-rs/` | 1.1.1 | 16 | `plugins/douban-rs`（0.2.4） |
 
 约定：宿主插件 API 为 **3.5**（三个 `plugin.json` 的 `requires.api` 均为 `"3.5"`）；后台是宿主内 ESM
@@ -85,7 +85,7 @@ dist/                   构建产物 .dian115p（本地生成，不提交；现�
 - 旧版没有事件订阅，v3 也不声明 `events[]`；没有新增消息/回调能力。
 - 每日报告的实际渠道取决于宿主通知配置；旧版经宿主通知端点投递，本次未在真机核对渠道与按钮渲染。
 
-### 音乐下载（`v3/music-rs`，music.rs 1.0.2）
+### 音乐下载（`v3/music-rs`，music.rs 1.1.0）
 
 **Covered（离线可验证）**
 
@@ -98,6 +98,10 @@ dist/                   构建产物 .dian115p（本地生成，不提交；现�
 - 取链：网易云 eapi（AES-128-ECB + MD5，走 `ctx.crypto`）8 档音质阶梯；QQ `master/flac/320/128`
   7 档阶梯。
 - 歌单：全量索引 + 分页详情，整单分批入队（每批 5 页 × 100 首，`next_page` 续批）。
+- QQ 音乐歌单（musicu RPC）：我创建的 / 收藏的 / 每日推荐 / 我喜欢四个入口，曲目按
+  `begin/num` 游标取；私密歌单公开接口回「成功但空壳」时改走自建接口；「我喜欢」跨页去重，
+  重复页报「未能完整读取」；收藏歌单撞分页硬上限时返回已读到的部分 + 说明。缺账号标识
+  （`encryptUin`，只有 QQLogin 响应里有）时如实提示「收藏读不到」，不装作「没有收藏」。
 - 下载队列：KV 分片（`tasks.idx` + `task.<id>`），按 `source+song_id+quality` 去重；
   `queued → downloading → copying → done/failed`，失败重试 ≤3 次后通知；`*/5 * * * *` 的 `queue-pump`
   与页面手动推进共用入口。
@@ -105,7 +109,7 @@ dist/                   构建产物 .dian115p（本地生成，不提交；现�
   复制进目标目录（CD2 挂载由宿主分流）。
 - Telegram 失败通知带 `callback_data: retry:<短id>` 按钮；点击触发 `tg-callback` 事件任务重新排队。
 - 页面四个分页 + 登录卡 + 最近动作；`ui/qr.js` 为旧 `frontend/src/qr.ts` 的移植。
-- 131 个 `node --test` 用例；正常全过，但 `tests/pump.test.js:287` 的队首断言偶发失败（约 10%，见 Gaps；
+- 173 个 `node --test` 用例；正常全过，但 `tests/pump.test.js:287` 的队首断言偶发失败（约 10%，见 Gaps；
   本轮连跑 10 次未复现，断言前提未变）。
 
 **Gaps**
@@ -323,7 +327,7 @@ node scripts/v3-pack-check.mjs dist/chase-rs-0.1.11.dian115p v3/chase-rs   # 查
 
 # 4) 纯逻辑单测（Node 24 下要传文件 glob，不能只传目录）
 (cd v3/chase-rs  && node --test tests/*.test.mjs)   # 119 pass
-(cd v3/music-rs  && node --test tests/*.test.js)    # 131 用例
+(cd v3/music-rs  && node --test tests/*.test.js)    # 173 用例
 (cd v3/douban-rs && node --test tests/*.test.mjs)   # 113 pass
 
 # 5) 语法检查
@@ -394,9 +398,9 @@ v3 索引 schema。仓库内旧 `plugin-market/index.json` 是 v1 格式，v3 �
 
 | 检查 | 命令 | 结果 |
 | --- | --- | --- |
-| 三个插件结构检查 | `node v3-kit/conformance/project-check.mjs v3/<plugin>` | 3/3 通过：`chase.rs 0.1.11`、`music.rs 1.0.2`、`douban.rs 1.1.1` |
+| 三个插件结构检查 | `node v3-kit/conformance/project-check.mjs v3/<plugin>` | 3/3 通过：`chase.rs 0.1.11`、`music.rs 1.1.0`、`douban.rs 1.1.1` |
 | 全部 JS 语法 | `find v3/... -name '*.js' -exec node --check {} +` | 通过：chase 16 / music 30 / douban 38 个文件 |
-| 纯逻辑单测 | `(cd v3/<plugin> && node --test tests/*.test.*)` | chase 119 pass / music 131 pass / douban 113 pass，0 fail |
+| 纯逻辑单测 | `(cd v3/<plugin> && node --test tests/*.test.*)` | chase 119 pass / music 173 pass / douban 113 pass，0 fail |
 | 打包 | `bash scripts/v3-build.sh`（连跑两次） | 两次 sha256 完全一致；产物 193844 / 258318 / 263162 字节（界面换成 Vue 3 自打包后比原生 JS 版大；sha256 见表下） |
 | 索引 JSON | `node -e 'JSON.parse(...)'` | 通过 |
 | 索引字段与摘要 | 本地校验脚本（必填/id/sha256/delivery/homepage，sha256 对 dist 实算） | 通过；仅 `source_url` 相对路径为已知偏差 |
@@ -412,7 +416,7 @@ v3 索引 schema。仓库内旧 `plugin-market/index.json` 是 v1 格式，v3 �
 | 检查 | 命令 | 结果 |
 | --- | --- | --- |
 | 脚本语法 | `bash -n scripts/v3-build.sh scripts/v3-build-ui.sh` | 通过（另加 `bash -n scripts/v3-verify-ui-artifacts.sh`） |
-| 三个插件结构检查 | `node v3-kit/conformance/project-check.mjs v3/<plugin>` | 3/3 通过：`chase.rs 0.1.11`、`music.rs 1.0.2`、`douban.rs 1.1.1` |
+| 三个插件结构检查 | `node v3-kit/conformance/project-check.mjs v3/<plugin>` | 3/3 通过：`chase.rs 0.1.11`、`music.rs 1.1.0`、`douban.rs 1.1.1` |
 | 界面构建可重复 | `bash scripts/v3-build-ui.sh` 连跑两次，比对 sha256 | 两次产物字节相同（chase `897e1d4c…5937c8ad`、douban `fc90a3dd…1e967675`、music `1d3f3f53…5a4fc1ba`） |
 | 锁文件可复现 | 干净副本里 `rm -rf node_modules && npm ci` 后重建 | 与入库产物逐字节相同；本地多次打包 sha256 一致（跨环境的 zip 压缩字节会略差十余字节，以 Release 的 `SHA256SUMS.txt` 为准） |
 | 一键构建幂等 | `bash scripts/v3-build.sh` 连跑两次 | 两次 sha256 完全一致（本地值；Release 实算值见市场索引）；产物 193844 / 258318 / 263162 字节 |

@@ -22,6 +22,7 @@ import type {
   LoginInfo,
   MusicSettings,
   PlaylistItem,
+  PlaylistView,
   PumpState,
   QrPollResult,
   QrSession,
@@ -63,14 +64,17 @@ export const QUALITY_LABELS: Record<string, string> = {
   128: '128K',
 }
 
+/** QQ 可用的音质档位（取链阶梯只认这几档；见 lib/qq.js qualityStart）。 */
+export const QQ_QUALITIES = ['master', 'flac', '320', '128']
+
 /** 两个音乐来源及其可选音质（原生版同表）。 */
 export const SOURCES = [
   { id: 'netease', name: '网易云', qualities: api.LEVELS as string[] },
-  { id: 'qq', name: 'QQ音乐', qualities: ['master', 'flac', '320', '128'] },
+  { id: 'qq', name: 'QQ音乐', qualities: QQ_QUALITIES },
 ]
 
 /** 设置与音质 chips 用的全部档位（去重，顺序同原生版）。 */
-export const ALL_QUALITIES: string[] = [...(api.LEVELS as string[]), 'master', 'flac', '320', '128'].filter(
+export const ALL_QUALITIES: string[] = [...(api.LEVELS as string[]), ...QQ_QUALITIES].filter(
   (value, index, all) => all.indexOf(value) === index,
 )
 
@@ -97,6 +101,17 @@ export function scanHint(id: string): string {
 /** 音质 id → 显示名。 */
 export function qualityLabel(value: string | undefined): string {
   return QUALITY_LABELS[value ?? ''] ?? value ?? '—'
+}
+
+/** 某个来源的合法音质档位（网易云 = eapi LEVELS；QQ = master/flac/320/128）。 */
+export function qualitiesOfSource(id: string): string[] {
+  return SOURCES.find((item) => item.id === id)?.qualities ?? (api.LEVELS as string[])
+}
+
+/** 统一音质是否适用于目标来源；不适用就换成该来源的默认档（不伪造别的档位）。 */
+export function qualityForSource(id: string, current: string): string {
+  if (qualitiesOfSource(id).includes(current)) return current
+  return id === 'qq' ? 'flac' : api.DEFAULT_QUALITY
 }
 
 /** 错误 → 文本。 */
@@ -159,12 +174,20 @@ export function createMusicStore(ctx: HostContext) {
 
   // ── 歌单 ──────────────────────────────────────────────
   const playlists = ref<PlaylistItem[]>([])
-  const playlistView = ref<{ id: string; name: string } | null>(null)
+  const playlistView = ref<PlaylistView | null>(null)
   const playlistSongs = ref<Song[]>([])
   const playlistTotal = ref(0)
   const playlistPage = ref(1)
   const playlistProgress = ref('')
   const playlistQuality = ref<string>(api.DEFAULT_QUALITY)
+  /** 歌单列表区的后端提示（如 QQ 缺 encryptUin 读不到收藏）——原样展示，不静默。 */
+  const playlistNotice = ref('')
+  /** 当前来源的歌单是否已经成功拉取过一次：没拉过 ≠ 一个都没有（空态文案要分开）。 */
+  const playlistsLoaded = ref(false)
+  /** 歌单列表区的真实错误（未登录 / 网络失败等）——原样展示，不伪造空列表。 */
+  const playlistError = ref('')
+  /** 歌单详情区的真实错误（取曲目失败，如私密歌单缺凭据）。 */
+  const playlistSongsError = ref('')
   /** 歌单封面（经 ctx.http 取回的 data URL；键是歌单 id）。 */
   const playlistCovers = reactive(new Map<string, string>())
   const coverInflight = new Set<string>()
@@ -204,6 +227,41 @@ export function createMusicStore(ctx: HostContext) {
   function setPlaylistQuality(value: string): void {
     playlistQuality.value = value
   }
+
+  /** QQ 歌单分段：我创建的（kind = created；「我喜欢」是伪歌单，单独走特殊入口）。 */
+  const playlistCreated = computed<PlaylistItem[]>(() =>
+    source.value === 'qq'
+      ? playlists.value.filter((item) => (item.kind ?? 'created') === 'created')
+      : playlists.value,
+  )
+
+  /** QQ 歌单分段：收藏的（kind = fav）。 */
+  const playlistFavorites = computed<PlaylistItem[]>(() =>
+    source.value === 'qq'
+      ? playlists.value.filter((item) => item.kind === 'fav' || item.kind === 'saved')
+      : [],
+  )
+
+  /**
+   * QQ 特殊入口（每日推荐 / 我喜欢）——它们不是普通歌单，取曲目走各自的后端接口
+   * （qqDailyRecommendations / qqLikedSongs）。网易云后端没有对应接口，故只对 QQ 出现。
+   */
+  const specialPlaylists = computed<PlaylistItem[]>(() => {
+    if (source.value !== 'qq') return []
+    const liked = playlists.value.find((item) => item.kind === 'liked')
+    return [
+      { id: 'daily', name: '每日推荐', cover: '', count: 0, creator: '', kind: 'special', special: 'daily' },
+      {
+        id: 'liked',
+        name: '我喜欢',
+        cover: '',
+        count: Number(liked?.count) || 0,
+        creator: '',
+        kind: 'special',
+        special: 'liked',
+      },
+    ]
+  })
 
   // ── 扫码登录 ──────────────────────────────────────────
   const loginSource = ref<'netease' | 'qq'>('netease')
@@ -285,7 +343,9 @@ export function createMusicStore(ctx: HostContext) {
       settings.value = api.settingsView(settingsRaw)
       tasks.value = api.stateView(index)
       login.netease = api.neteaseLoginInfo(neteaseJar)
-      login.qq = api.qqLoginInfo(qqJar)
+      // QQ：登录态摘要 + 有没有账号标识（encryptUin）。收藏歌单 / 我喜欢接口的
+      // uin 参数要用它，没有就如实告诉页面「读不到」，别装作没有收藏。
+      login.qq = { ...api.qqLoginInfo(qqJar), ...api.qqLibraryInfo(qqJar) }
       logs.value = logList.slice(-50).reverse()
       lastPump.value = pumpState?.last_pump ?? null
     } catch (error) {
@@ -355,14 +415,19 @@ export function createMusicStore(ctx: HostContext) {
     searchPage.value = 1
   }
 
-  /** 切换歌单来源（原生版歌单段控件：清空歌单并回列表，切回网易云时重新拉取）。 */
+  /** 切换歌单来源（原生版歌单段控件：清空歌单并回列表，再按新来源重新拉取）。 */
   function switchPlaylistSource(next: string): void {
     if (source.value === next) return
     source.value = next
     playlists.value = []
+    playlistNotice.value = ''
+    playlistError.value = ''
+    // 还没拉过新来源的歌单：空态不能说「没有歌单」（那是在断言一件没验证的事）。
+    playlistsLoaded.value = false
     closePlaylist()
-    if (next !== 'netease') toast('warning', '该来源暂不支持歌单，先支持网易云')
-    else void loadPlaylists()
+    // 统一音质按来源换档（网易云的档位对 QQ 无效，反之亦然）。
+    playlistQuality.value = qualityForSource(next, playlistQuality.value)
+    void loadPlaylists()
   }
 
   // ── 单曲入队 ──────────────────────────────────────────
@@ -618,46 +683,139 @@ export function createMusicStore(ctx: HostContext) {
   }
 
   // ── 歌单 ──────────────────────────────────────────────
+  /**
+   * 我的歌单：按当前来源分派（网易云走原逻辑，QQ 走 qqPlaylists）。
+   *
+   * 错误与提示都如实落在歌单区（playlistError / playlistNotice），
+   * 不把「读不到」说成「没有歌单」。
+   */
   async function loadPlaylists(): Promise<void> {
+    // 上一次操作还在跑时，withBusy 会直接跳过 —— 别让它悄悄变成「这个来源没有歌单」。
+    if (busy.value) {
+      toast('warning', '有操作正在进行，稍后点「刷新」重试')
+      return
+    }
+    playlistNotice.value = ''
+    playlistError.value = ''
     await withBusy('playlists', '歌单获取失败', async () => {
-      if (source.value !== 'netease') {
-        toast('warning', '该来源暂不支持歌单，先支持网易云')
-        return
+      try {
+        if (source.value === 'qq') {
+          const result = await api.qqPlaylists(deps)
+          playlists.value = Array.isArray(result?.playlists) ? result.playlists : []
+          // 后端提示（如缺 encryptUin 读不到收藏）原样展示。
+          playlistNotice.value = String(result?.notice ?? '')
+          playlistsLoaded.value = true
+          void loadPlaylistCovers(playlists.value)
+          if (!playlists.value.length) toast('info', '没有取到歌单')
+          return
+        }
+        const result = await api.neteasePlaylists(deps)
+        playlists.value = Array.isArray(result?.playlists) ? result.playlists : []
+        playlistsLoaded.value = true
+        void loadPlaylistCovers(playlists.value)
+        if (!playlists.value.length) toast('info', '没有取到歌单（可能还没登录）')
+      } catch (error) {
+        playlistError.value = loginHint(errorText(error))
+        throw error
       }
-      const result = await api.neteasePlaylists(deps)
-      playlists.value = result.playlists
-      void loadPlaylistCovers(result.playlists)
-      if (!playlists.value.length) toast('info', '没有取到歌单（可能还没登录）')
     })
   }
 
+  /** 打开一个歌单（普通歌单或 QQ 的特殊入口）。 */
   async function openPlaylist(playlist: PlaylistItem): Promise<void> {
     const id = String(playlist.id ?? '')
     if (!id) return
-    playlistView.value = { id, name: String(playlist.name || '') }
+    const special = String(playlist.special ?? '')
+    playlistView.value = {
+      id,
+      name: String(playlist.name || ''),
+      source: source.value,
+      // 特殊入口用 'daily' / 'liked' 当目标（后端按目标分派）；普通歌单用歌单 id。
+      target: special || id,
+      special,
+    }
     playlistSongs.value = []
+    playlistSongsError.value = ''
     playlistTotal.value = Number(playlist.count) || 0
     playlistPage.value = 1
+    // 统一音质按来源换档（当前档位对这个来源无效时才换）。
+    playlistQuality.value = qualityForSource(source.value, playlistQuality.value)
     await fetchPlaylistSongs(1)
   }
 
   function closePlaylist(): void {
     playlistView.value = null
     playlistSongs.value = []
+    playlistSongsError.value = ''
     playlistTotal.value = 0
     playlistPage.value = 1
     playlistProgress.value = ''
   }
 
+  /**
+   * QQ 曲目取回：按入口分派到各自的后端接口。
+   * - 每日推荐：qqDailyRecommendations（一次取回全部，页面按 begin/num 本地切片）；
+   * - 我喜欢：qqLikedSongs（游标 = begin）；
+   * - 普通歌单：qqPlaylistSongs（游标 = begin）。
+   */
+  async function fetchQqSongs(
+    view: PlaylistView,
+    begin: number,
+    size: number,
+  ): Promise<{ songs: Song[]; total: number; name: string }> {
+    if (view.special === 'daily') {
+      // 每日推荐接口没有游标：后端整份取回后按 begin/num 切片（后端按账号缓存了
+      // 整份列表，翻页不会把全量重新拉一遍）。
+      const result = await api.qqPlaylistSongs(deps, 'daily', begin, size)
+      const songs = Array.isArray(result?.songs) ? result.songs : []
+      return {
+        songs,
+        total: typeof result?.total === 'number' ? result.total : songs.length,
+        name: String(result?.name || '每日推荐'),
+      }
+    }
+    if (view.special === 'liked') {
+      const result = await api.qqLikedSongs(deps, begin, size)
+      return {
+        songs: Array.isArray(result?.songs) ? result.songs : [],
+        total: typeof result?.total === 'number' ? result.total : 0,
+        name: String(result?.name || '我喜欢'),
+      }
+    }
+    const result = await api.qqPlaylistSongs(deps, view.target, begin, size)
+    return {
+      songs: Array.isArray(result?.songs) ? result.songs : [],
+      total: typeof result?.total === 'number' ? result.total : 0,
+      name: String(result?.name || view.name || ''),
+    }
+  }
+
+  /** 歌单曲目：按页拉取（网易云走原接口，QQ 走 begin/num 游标）。 */
   async function fetchPlaylistSongs(nextPage: number): Promise<void> {
     const view = playlistView.value
     if (!view) return
+    playlistSongsError.value = ''
     await withBusy('pl-songs', '歌单内容获取失败', async () => {
-      const result = await api.neteasePlaylistSongs(deps, view.id, nextPage, 100)
-      playlistSongs.value = nextPage > 1 ? [...playlistSongs.value, ...result.songs] : result.songs
-      playlistPage.value = nextPage
-      if (result.name) playlistView.value = { ...view, name: result.name }
-      if (typeof result.total === 'number') playlistTotal.value = result.total
+      try {
+        if (view.source === 'qq') {
+          const size = api.PLAYLIST_PAGE_SIZE
+          const begin = (nextPage - 1) * size
+          const result = await fetchQqSongs(view, begin, size)
+          playlistSongs.value = nextPage > 1 ? [...playlistSongs.value, ...result.songs] : result.songs
+          playlistPage.value = nextPage
+          if (result.name) playlistView.value = { ...view, name: result.name }
+          if (typeof result.total === 'number') playlistTotal.value = result.total
+          return
+        }
+        const result = await api.neteasePlaylistSongs(deps, view.id, nextPage, api.PLAYLIST_PAGE_SIZE)
+        playlistSongs.value = nextPage > 1 ? [...playlistSongs.value, ...result.songs] : result.songs
+        playlistPage.value = nextPage
+        if (result.name) playlistView.value = { ...view, name: result.name }
+        if (typeof result.total === 'number') playlistTotal.value = result.total
+      } catch (error) {
+        playlistSongsError.value = loginHint(errorText(error))
+        throw error
+      }
     })
   }
 
@@ -668,6 +826,7 @@ export function createMusicStore(ctx: HostContext) {
       toast('warning', '请先打开一个歌单')
       return
     }
+    const isQq = view.source === 'qq'
     await withBusy('pl-all', '整单入队失败', async () => {
       const total = playlistTotal.value > 0 ? playlistTotal.value : 0
       let queued = 0
@@ -688,7 +847,7 @@ export function createMusicStore(ctx: HostContext) {
           async (song: Song) => {
             if (cancelled()) throw new Error('页面已关闭')
             const outcome = await api.enqueue(deps.kv, {
-              source: 'netease',
+              source: view.source,
               song_id: String(song.id ?? '').trim(),
               name: song.name ?? '',
               singers: song.singers ?? '',
@@ -699,6 +858,8 @@ export function createMusicStore(ctx: HostContext) {
           },
           async (page: number, pageSize: number) => {
             if (cancelled()) throw new Error('页面已关闭')
+            // QQ：与网易云同形的分页接口（游标 = begin = (page-1)*pageSize）。
+            if (isQq) return api.qqPlaylistSongsPage(deps, view.target, page, pageSize)
             if (!index) index = await api.neteasePlaylistIndex({ ...deps, playlistId: view.id })
             return api.neteasePlaylistSongsFromIndex(deps, index, page, pageSize)
           },
@@ -898,6 +1059,13 @@ export function createMusicStore(ctx: HostContext) {
     playlistPage,
     playlistProgress,
     playlistQuality,
+    playlistNotice,
+    playlistError,
+    playlistSongsError,
+    playlistsLoaded,
+    playlistCreated,
+    playlistFavorites,
+    specialPlaylists,
     setPlaylistQuality,
     coverFor,
     loginSource,

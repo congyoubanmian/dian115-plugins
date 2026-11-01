@@ -14,6 +14,12 @@ import {
   hash33Seed, ptqrShowParams, ptqrShowUrl, ptqrLoginParams, ptqrLoginUrl, parsePtui,
   parseQqQrStatus, trustedLoginUrl, authorizeForm, parseAuthorizeRedirect, qqLoginRequestBody,
   parseQQLoginResponse, randomHex, randomUuid, isPng, base64Bytes, QQ_QR_UNKNOWN_STATUS,
+  // 歌单 / 每日推荐 / 我喜欢
+  authenticatedComm, musicuRequestBody, numberField, ownedPlaylistsParam, favoritePlaylistsParam,
+  dailySongsParam, likedSongsParam, publicPlaylistSongsParam, ownedPlaylistSongsParam,
+  parseMusicuResponse, checkDissDataStatus, qqHasMore, qqCodeHint, mapQqPlaylist,
+  parseQqPlaylistList, mapQqSong, parseQqSongList, parseQqPlaylistInfo, qqAlbumCover,
+  qqTargetKind, QQ_DIR_ID_LIKED, QQ_DIR_ID_DAILY, QQ_FAV_PAGE_SIZE,
 } from '../lib/qq.js'
 
 test('quality ladder matches the reference client (F000/M800/M500)', () => {
@@ -366,4 +372,264 @@ test('isPng checks the PNG magic', () => {
   assert.ok(!isPng(base64Bytes(Buffer.from([0xff, 0xd8, 0xff, 0xe0]).toString('base64'))), 'JPEG 不是 PNG')
   assert.ok(!isPng(base64Bytes('')))
   assert.ok(!isPng(base64Bytes('not-base64!!')))
+})
+
+// ─────────────────── QQ 歌单 / 每日推荐 / 我喜欢（musicu 纯逻辑）───────────────────
+// 参数与解析对齐参考实现 Lilt（mygo-qyin/internal/qqmusic）：
+// library.go:23-150（我创建的 / 收藏的 / 每日推荐 / 我喜欢）、
+// catalog.go:114-214（公开与自建歌单的曲目分页）、client.go:101-165（信封与状态码）。
+
+test('authenticatedComm matches the reference comm shape', () => {
+  assert.deepEqual(authenticatedComm({ uin: '012345678', musicKey: '@K', loginType: 2 }), {
+    ct: 11,
+    cv: 14090008,
+    v: 14090008,
+    chid: '10003505',
+    tmeAppID: 'qqmusic',
+    qq: '012345678',
+    authst: '@K',
+    tmeLoginType: 2,
+  })
+  // 缺省值也要给出可用形状（空 authst 由调用方自己判断登录态）。
+  assert.equal(authenticatedComm({}).qq, '')
+  assert.equal(authenticatedComm({ loginType: 0 }).tmeLoginType, 1)
+})
+
+test('musicuRequestBody builds the comm + req_0 envelope', () => {
+  const body = musicuRequestBody(
+    authenticatedComm({ uin: '012345678', musicKey: '@K', loginType: 2 }),
+    'music.musicasset.PlaylistBaseRead',
+    'GetPlaylistByUin',
+    { uin: '012345678' },
+  )
+  assert.equal(
+    body,
+    '{"comm":{"authst":"@K","chid":"10003505","ct":11,"cv":14090008,"qq":"012345678",' +
+    '"tmeAppID":"qqmusic","tmeLoginType":2,"v":14090008},"req_0":{"method":"GetPlaylistByUin",' +
+    '"module":"music.musicasset.PlaylistBaseRead","param":{"uin":"012345678"}}}',
+  )
+})
+
+test('the four library params match the reference requests', () => {
+  // 我创建的歌单：uin 是账号 musicid（参考实现 library.go:29）。
+  assert.deepEqual(ownedPlaylistsParam('10001'), { uin: '10001' })
+  // 收藏的歌单：uin 是 encryptUin，offset 是游标，size 固定 100（参考实现 library.go:75）。
+  assert.deepEqual(favoritePlaylistsParam('ENC', 0, QQ_FAV_PAGE_SIZE), { uin: 'ENC', offset: 0, size: 100 })
+  assert.deepEqual(favoritePlaylistsParam('ENC', 120), { uin: 'ENC', offset: 120, size: 100 })
+  // 每日推荐：dirid=202（参考实现 library.go:102）。
+  assert.deepEqual(dailySongsParam(), { dirid: 202, optype: 3, tag: 1, userinfo: 0, pic_dpi: 300 })
+  // 我喜欢：dirid=201 + enc_host_uin（参考实现 library.go:126）。
+  assert.deepEqual(likedSongsParam('ENC', 100, 100), {
+    disstid: 0,
+    dirid: 201,
+    tag: true,
+    song_begin: 100,
+    song_num: 100,
+    userinfo: true,
+    orderlist: true,
+    enc_host_uin: 'ENC',
+  })
+  // 公开歌单曲目（参考实现 catalog.go:184）。
+  assert.deepEqual(publicPlaylistSongsParam(8003104149, 100, 100), {
+    disstid: 8003104149,
+    userinfo: 1,
+    tag: 1,
+    orderlist: 1,
+    song_begin: 100,
+    song_num: 100,
+    onlysonglist: 0,
+    enc_host_uin: '',
+  })
+  // 自建歌单曲目：必须带 enc_host_uin（参考实现 catalog.go:122）。
+  assert.deepEqual(ownedPlaylistSongsParam(8003104149, 'ENC', 0, 100), {
+    disstid: 8003104149,
+    dirid: 0,
+    tag: true,
+    song_begin: 0,
+    song_num: 100,
+    userinfo: true,
+    orderlist: true,
+    enc_host_uin: 'ENC',
+  })
+})
+
+test('numberField reads numbers and numeric strings', () => {
+  assert.equal(numberField({ a: 12 }, 'a'), 12)
+  assert.equal(numberField({ a: '12' }, 'a'), 12)
+  assert.equal(numberField({ a: 'x' }, 'a'), 0)
+  assert.equal(numberField({ a: 1.9 }, 'a'), 1)
+  assert.equal(numberField({}, 'a', 'b'), 0)
+  // 参考实现 client.go:282 number()：第一个能解析成整数的键就返回（0 也是有效值）。
+  assert.equal(numberField({ a: 0, b: 7 }, 'a', 'b'), 0)
+})
+
+test('parseMusicuResponse checks both status levels', () => {
+  const ok = parseMusicuResponse('{"code":0,"req_0":{"code":0,"data":{"v_playlist":[]}}}')
+  assert.deepEqual(ok.value, { v_playlist: [] })
+  // 信封层错误。
+  assert.match(parseMusicuResponse('{"code":1,"req_0":{"code":0,"data":{}}}').error, /网关 1/)
+  // req_0 层错误。
+  const business = parseMusicuResponse('{"code":0,"req_0":{"code":80030,"data":{}}}')
+  assert.match(business.error, /业务 80030/)
+  assert.match(business.error, /未登录或登录态已失效/)
+  // subcode 也要查。
+  assert.match(parseMusicuResponse('{"code":0,"req_0":{"code":0,"subcode":80120,"data":{}}}').error, /业务 80120/)
+  // 结构不对 / 没有数据都不当成功。
+  assert.ok(parseMusicuResponse('not json').error)
+  assert.ok(parseMusicuResponse('{"code":0}').error)
+  assert.ok(parseMusicuResponse('{"code":0,"req_0":{"code":0}}').error)
+  // 错误消息里只有状态码，不带任何响应尾段（响应里可能有账号信息）。
+  const leaky = parseMusicuResponse('{"code":0,"req_0":{"code":80030,"data":{"msg":"secret-musickey-value"}}}')
+  assert.ok(!leaky.error.includes('secret-musickey-value'))
+  assert.ok(!leaky.error.includes('musickey'))
+})
+
+test('checkDissDataStatus reports the inner code of the DissInfo family', () => {
+  assert.ok(!checkDissDataStatus({ code: 0 }).error)
+  assert.ok(!checkDissDataStatus({ code: '0' }).error)
+  assert.ok(!checkDissDataStatus({ v_playlist: [] }).error)
+  assert.match(checkDissDataStatus({ code: -100008 }).error, /-100008/)
+  assert.match(checkDissDataStatus({ subcode: 3 }).error, /subcode 3/)
+  assert.match(checkDissDataStatus({ code: {} }).error, /不可解析/)
+})
+
+test('qqHasMore accepts the reference hasmore forms', () => {
+  assert.ok(qqHasMore({ hasmore: 1 }))
+  assert.ok(qqHasMore({ hasmore: '1' }))
+  assert.ok(qqHasMore({ hasmore: true }))
+  assert.ok(qqHasMore({ hasmore: 'true' }))
+  assert.ok(!qqHasMore({ hasmore: 0 }))
+  assert.ok(!qqHasMore({ hasmore: 'false' }))
+  assert.ok(!qqHasMore({}))
+})
+
+test('mapQqPlaylist maps the reference fields and fallbacks', () => {
+  const item = mapQqPlaylist({
+    tid: 8003104149,
+    dirName: '歌单名',
+    bigpicUrl: 'https://cover/1.jpg',
+    songNum: 110,
+    nick: '创建者',
+    dirId: 5,
+    dirShow: 2,
+  }, 'created')
+  assert.equal(item.id, '8003104149')
+  assert.equal(item.name, '歌单名')
+  assert.equal(item.cover, 'https://cover/1.jpg')
+  assert.equal(item.count, 110)
+  assert.equal(item.creator, '创建者')
+  assert.equal(item.kind, 'created')
+  assert.equal(item.dirId, 5)
+  assert.equal(item.private, true, 'dirShow=2 是私密歌单')
+  // 回退顺序：dirName → dissname → title → name；封面与计数同理。
+  const fallback = mapQqPlaylist({ dissid: 7, dissname: 'D', picurl: 'https://c/2.jpg', songnum: 3, nickname: 'N' }, 'fav')
+  assert.equal(fallback.id, '7')
+  assert.equal(fallback.name, 'D')
+  assert.equal(fallback.cover, 'https://c/2.jpg')
+  assert.equal(fallback.count, 3)
+  assert.equal(fallback.creator, 'N')
+  assert.equal(fallback.kind, 'fav')
+  // 「我喜欢」伪歌单：没有可用的 tid，用 dirId 201 当标识。
+  const liked = mapQqPlaylist({ tid: 12345, dirName: '我喜欢', dirId: 201, songNum: 300 }, 'created')
+  assert.equal(liked.id, String(QQ_DIR_ID_LIKED))
+  assert.equal(liked.kind, 'liked')
+})
+
+test('parseQqPlaylistList skips entries without an id', () => {
+  const items = parseQqPlaylistList([
+    { tid: 1, dirName: 'A' },
+    { dirName: '没有 tid' },
+    { tid: 0, dirName: 'tid 为 0' },
+  ], 'created')
+  assert.equal(items.length, 1)
+  assert.equal(items[0].id, '1')
+  assert.deepEqual(parseQqPlaylistList(null, 'created'), [])
+})
+
+test('mapQqSong maps mid, singers, album and qualities', () => {
+  const song = mapQqSong({
+    id: 123,
+    mid: '003aAYrm3GE0Xg',
+    title: '晴天',
+    interval: 269,
+    singer: [{ name: '周杰伦' }, { name: '杨瑞代' }],
+    album: { mid: 'ALBUMMID', name: '叶惠美' },
+    file: { media_mid: 'MEDIA', size_128mp3: 4307652, size_320mp3: 9434136, size_flac: 0 },
+  })
+  assert.equal(song.id, '003aAYrm3GE0Xg', 'id 必须是 mid（入队后按 mid 取链）')
+  assert.equal(song.name, '晴天')
+  assert.equal(song.singers, '周杰伦/杨瑞代')
+  assert.equal(song.album, '叶惠美')
+  assert.equal(song.duration_ms, 269000)
+  assert.equal(song.source, 'qq')
+  assert.equal(song.cover, qqAlbumCover('ALBUMMID'))
+  assert.deepEqual(song.qualities, ['320', '128'], '没有 flac 就不给 flac')
+  // 没有 mid 的条目不能入队（取链要 mid）→ 直接丢掉。
+  assert.equal(mapQqSong({ id: 1, title: '无 mid' }), null)
+})
+
+test('mapQqSong falls back to the top level file sizes', () => {
+  // 参考实现 client.go:361-372：file 里取不到就回退顶层 size128/size320/sizeflac。
+  const song = mapQqSong({
+    mid: '003aAYrm3GE0Xg',
+    title: '晴天',
+    interval: 269,
+    singer: [{ name: '周杰伦' }],
+    album: { mid: 'ALBUMMID', name: '叶惠美' },
+    sizeflac: 30,
+    size320: 20,
+    size128: 10,
+  })
+  assert.deepEqual(song.qualities, ['flac', '320', '128'], 'file 缺失时用顶层的文件大小')
+  // file 里的尺寸优先于顶层；file 为 0 才回退顶层（档位顺序固定 flac/320/128）。
+  const both = mapQqSong({
+    mid: 'M', title: 'x', file: { size_flac: 0, size_320mp3: 20 }, sizeflac: 30, size320: 99,
+  })
+  assert.deepEqual(both.qualities, ['flac', '320'], 'file 有值就用 file 的；file 为 0 才回退顶层')
+})
+
+test('parseQqSongList reads the songlist and the total', () => {
+  const parsed = parseQqSongList({
+    total_song_num: 110,
+    songlist: [
+      { mid: 'M1', title: '一', interval: 100, singer: [{ name: 'A' }] },
+      { mid: 'M2', title: '二', interval: 200, singer: [] },
+    ],
+  })
+  assert.equal(parsed.songs.length, 2)
+  assert.equal(parsed.total, 110)
+  // songlist 缺失时也不能当「空歌单」：总数回退到 0（调用方负责报错）。
+  assert.equal(parseQqSongList({}).songs.length, 0)
+  assert.equal(parseQqSongList({ songlist: null }).total, 0)
+})
+
+test('parseQqPlaylistInfo reads dirinfo', () => {
+  const info = parseQqPlaylistInfo({
+    dirinfo: { title: '歌单', picurl: 'https://cover/x.jpg', host_nick: '主人', songnum: 12 },
+    total_song_num: 30,
+  })
+  assert.equal(info.name, '歌单')
+  assert.equal(info.cover, 'https://cover/x.jpg')
+  assert.equal(info.creator, '主人')
+  assert.equal(info.count, 12)
+  const empty = parseQqPlaylistInfo({ total_song_num: 30 })
+  assert.equal(empty.name, '')
+  assert.equal(empty.count, 30)
+})
+
+test('qqTargetKind routes the pseudo playlists', () => {
+  assert.equal(qqTargetKind('202'), 'daily')
+  assert.equal(qqTargetKind('daily'), 'daily')
+  assert.equal(qqTargetKind('qq-daily'), 'daily')
+  assert.equal(qqTargetKind('201'), 'liked')
+  assert.equal(qqTargetKind('liked'), 'liked')
+  assert.equal(qqTargetKind('qq-liked'), 'liked')
+  assert.equal(qqTargetKind('8003104149'), 'playlist')
+})
+
+test('qqCodeHint maps the login-related business codes', () => {
+  assert.match(qqCodeHint(80030), /未登录/)
+  assert.match(qqCodeHint(80120), /未登录/)
+  assert.match(qqCodeHint(-100008), /账号标识/)
+  assert.equal(qqCodeHint(0), '')
 })
