@@ -137,13 +137,20 @@ function delay(ms) {
 
 // ─────────────────────────── 运行时会话 ───────────────────────────
 
+/** 后台 ctx 只有 ctx.plugin.id（页面才有 ctx.id）；统一取插件 ID。 */
+export function pluginIdOf(ctx) {
+  const id = ctx?.id ?? ctx?.plugin?.id ?? ''
+  if (id === '') throw new Error('缺少插件 ID（ctx.id / ctx.plugin.id）')
+  return id
+}
+
 /**
  * 读取状态文档三态（对照 store.rs load_state_with_retry）：
  * loaded（读到本文档）/ fresh（确认无键的全新安装）/ unavailable（宿主不可读）。
  * 只有前两种才允许落盘 —— unavailable 时绝不落盘，免得默认值覆盖用户配置。
  */
 export async function loadRuntimeState(ctx) {
-  const path = `/api/extensions/v3/${encodeURIComponent(ctx.id)}/storage/${STATE_KEY}`
+  const path = `/api/extensions/v3/${encodeURIComponent(pluginIdOf(ctx))}/storage/${STATE_KEY}`
   let lastMessage = ''
   for (let attempt = 0; attempt < 3; attempt += 1) {
     const result = await tryApi(ctx, 'GET', path)
@@ -206,7 +213,7 @@ export class Session {
     } catch (error) {
       return { ok: false, message: error.message }
     }
-    const path = `/api/extensions/v3/${encodeURIComponent(this.ctx.id)}/storage/${STATE_KEY}`
+    const path = `/api/extensions/v3/${encodeURIComponent(pluginIdOf(this.ctx))}/storage/${STATE_KEY}`
     let expected = this.revision
     for (let attempt = 0; attempt < 2; attempt += 1) {
       const result = await tryApi(this.ctx, 'PUT', path, { value: JSON.parse(text), expected_revision: expected })

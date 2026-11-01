@@ -26,7 +26,7 @@ export function cryptoAdapter(crypto) {
 export function buildDeps(ctx) {
   const deps = {
     ctx,
-    id: ctx.id,
+    id: ctx.id ?? ctx.plugin?.id ?? '',
     kv: createKv(ctx),
     http: ctx.http,
     notify: (options) => ctx.notify(options),

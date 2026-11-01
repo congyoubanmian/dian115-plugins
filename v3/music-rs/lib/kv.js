@@ -4,9 +4,16 @@
 // {value, revision}），SDK 的 storage.get 只返回 value，所以 CAS 需要的 revision
 // 经 ctx.api 读原始信封（openapi-v3.json /storage/{key} GET: {value, revision}）。
 
+/** 后台 ctx 只有 ctx.plugin.id（页面才有 ctx.id）；统一取插件 ID。 */
+export function pluginIdOf(ctx) {
+  const id = ctx?.id ?? ctx?.plugin?.id ?? ''
+  if (id === '') throw new Error('缺少插件 ID（ctx.id / ctx.plugin.id）')
+  return id
+}
+
 /** 构造 kv 适配器：{get, getMeta, set, remove}。get 对 404 返回 null（全新安装）。 */
 export function createKv(ctx) {
-  const base = `/api/extensions/v3/${ctx.id}/storage`
+  const base = `/api/extensions/v3/${pluginIdOf(ctx)}/storage`
 
   async function getMeta(key) {
     try {
