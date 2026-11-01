@@ -88,6 +88,16 @@ test('整体不是对象 / 关键节类型不符 → 解析失败', () => {
   assert.equal(parseStateDoc({ stats: { by_list: 3 } }), null)
 })
 
+test('v3.0.0 遗留的 poster_url:{} 按空串修复，整份文档仍可识别', () => {
+  const doc = parseStateDoc({
+    settings: { lists: { movie_wom: { source: 'chart_html' } } },
+    snapshot: { lists: { movie_wom: [{ title: '罗斯', poster_url: {} }, { title: '托尼', poster_url: 'https://img/x.jpg' }] } },
+  })
+  assert.ok(isRecognizable(doc))
+  assert.equal(doc.snapshot.lists.movie_wom[0].poster_url, '')
+  assert.equal(doc.snapshot.lists.movie_wom[1].poster_url, 'https://img/x.jpg')
+})
+
 test('未知字段忽略；wishlist 评分/年份字段带默认值', () => {
   const doc = parseStateDoc({ settings: { lists: { hot: { source: 'x' } } }, unknown_top: true })
   assert.equal(doc.settings.lists.hot.source, 'x')

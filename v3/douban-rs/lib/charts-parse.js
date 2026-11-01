@@ -41,8 +41,10 @@ export function parseSubjectsJson(payload) {
   return items
 }
 
-/** Go `main.go:711` fetchChart 的解析段：`#listCont2` 里每个 `<li class="clearfix">` 一行。 */
-export function parseChartHtml(html, limit, hooks = {}) {
+/** Go `main.go:711` fetchChart 的解析段：`#listCont2` 里每个 `<li class="clearfix">` 一行。
+ *  deep_refresh 的海报回调是网络请求（async）；这里必须 await，否则 Promise 会被写进
+ *  poster_url，JSON 落盘后变成 {}，下一次读取整份状态文档都会被判为无法识别。 */
+export async function parseChartHtml(html, limit, hooks = {}) {
   const items = []
   const seen = new Set()
   const segment = sectionAfter(html, 'id="listCont2"', '', '</ul>')
@@ -61,7 +63,7 @@ export function parseChartHtml(html, limit, hooks = {}) {
     // 口碑榜 HTML 不带海报：deep_refresh 时只对前 POSTER_LOOKUP_LIMIT 条按标题补
     let poster = ''
     if (hooks.lookupPoster && items.length < (hooks.posterLookupLimit ?? 8)) {
-      poster = hooks.lookupPoster(title, id)
+      poster = await hooks.lookupPoster(title, id)
     }
     items.push({
       ...newChartItem(),
@@ -69,7 +71,7 @@ export function parseChartHtml(html, limit, hooks = {}) {
       title,
       rank,
       hotness: parseWant(row),
-      poster_url: poster,
+      poster_url: typeof poster === 'string' ? poster : '',
       url: `https://movie.douban.com/subject/${id}/`,
     })
     // Go 是 append 后再比 len >= limit：limit=0/负数也会收下第一条

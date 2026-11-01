@@ -184,7 +184,9 @@ function parseChartItem(raw) {
     rate: str(raw, 'rate'),
     rank: str(raw, 'rank'),
     hotness: int(raw, 'hotness'),
-    poster_url: str(raw, 'poster_url'),
+    // v3.0.0 的 deep refresh 曾把未 await 的 Promise 写进 poster_url（JSON 落盘为 {}）。
+    // 这是本插件自己的历史脏数据，按空串归一，避免整份文档被判为 foreign；下次刷新会补齐。
+    poster_url: typeof raw.poster_url === 'string' ? raw.poster_url : '',
     url: str(raw, 'url'),
     year: str(raw, 'year'),
   }

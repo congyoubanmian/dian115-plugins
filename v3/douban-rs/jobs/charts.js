@@ -62,7 +62,7 @@ export async function fetchComing(session, limit, ctx) {
 export async function fetchChart(session, limit, ctx, { deep } = {}) {
   const got = await doubanGet(ctx, 'https://movie.douban.com/chart', 'text/html,application/xhtml+xml;q=0.9')
   if (got.error) throw new Error(got.error)
-  return parseChartHtml(got.text, limit, {
+  return await parseChartHtml(got.text, limit, {
     deep,
     posterLookupLimit: POSTER_LOOKUP_LIMIT,
     lookupPoster: deep ? (title, id) => moviePoster(session, ctx, title, id) : undefined,

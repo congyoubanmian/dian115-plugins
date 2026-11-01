@@ -95,8 +95,8 @@ test('coming_html 无锚点时整页找 item（Go sectionAfter 原样返回）',
   assert.equal(items[0].hotness, 0)
 })
 
-test('chart_html 真实页面解析（无海报查询）', () => {
-  const items = parseChartHtml(CHART_HTML, 20, {})
+test('chart_html 真实页面解析（无海报查询）', async () => {
+  const items = await parseChartHtml(CHART_HTML, 20, {})
   assert.equal(items.length, 10)
   assert.equal(items[0].douban_ref, 'db:subj:35322132')
   assert.equal(items[0].title, '罗斯')
@@ -110,12 +110,13 @@ test('chart_html 真实页面解析（无海报查询）', () => {
   assert.equal(items[9].douban_ref, 'db:subj:37002986')
 })
 
-test('chart_html deep_refresh 时对前 8 条调海报回调（校验 id）', () => {
+test('chart_html deep_refresh 时对前 8 条 await 海报回调（校验 id）', async () => {
   const calls = []
-  const items = parseChartHtml(CHART_HTML, 20, {
+  const items = await parseChartHtml(CHART_HTML, 20, {
     deep: true,
     posterLookupLimit: 8,
-    lookupPoster: (title, id) => {
+    // 真实实现是 async 网络请求；这里用 async 回调覆盖「Promise 被直接写进 poster_url」的回归。
+    lookupPoster: async (title, id) => {
       calls.push([title, id])
       return id === '35322132' ? 'https://img3.doubanio.com/right.jpg' : ''
     },
