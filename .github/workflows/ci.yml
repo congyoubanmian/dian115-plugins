@@ -90,6 +90,9 @@ jobs:
       - name: 自托管索引（v3-market-index.json）
         run: node v3-kit/conformance/market-check.mjs v3-market-index.json
 
+      - name: 市场索引副本（plugin-market/v3/index.json）
+        run: node v3-kit/conformance/market-check.mjs plugin-market/v3/index.json
+
       # 商店 PR 素材：只产索引条目与图标，不产包/密钥/源码。
       - name: 生成并校验商店 PR 素材
         run: |

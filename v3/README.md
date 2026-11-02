@@ -325,7 +325,7 @@ node scripts/v3-pack-check.mjs dist/chase-rs-0.1.13.dian115p v3/chase-rs   # 查
 
 # 4) 纯逻辑单测（Node 24 下要传文件 glob，不能只传目录）
 (cd v3/tests/chase-rs  && node --test *.test.mjs)   # 119 pass
-(cd v3/tests/music-rs  && node --test *.test.js)    # 170 用例
+(cd v3/tests/music-rs  && node --test *.test.js)    # 171 用例
 (cd v3/tests/douban-rs && node --test *.test.mjs)   # 100 pass
 
 # 5) 语法检查
