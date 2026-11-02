@@ -24,10 +24,6 @@ node_modules/
 # Rust 构建产物（容器内 root 写入, 绝不提交）
 **/target/
 
-# music-rs: 宿主契约参考资料(打包时从官方仓库取, 不入库)与前端构建产物
-plugins/music-rs/docs-ref/
-plugins/music-rs/frontend/dist/
-
 # vite 本地缓存目录
 **/.vite/
 
@@ -37,8 +33,10 @@ plugins/music-rs/frontend/dist/
 # v3 官方开发套件本地镜像（上游仓库无 license，不随本仓库分发；按 v3/README.md 的说明重新拉取）
 v3-kit/
 
-# 发布流水线生成的索引副本（不入库）
+# 发布流水线生成的索引副本与商店 PR 素材（不入库；用 scripts/v3-store-pr.mjs 重建）
 v3-market-index.release.json
+store-pr/
+dist/
 
 # v3-ui（三个 v3 插件的 Vue 3 界面源码与共享构建底座）
 # - node_modules 不入库（上面的 **/node_modules/ 已覆盖，这里写明意图）

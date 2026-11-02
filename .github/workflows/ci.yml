@@ -1,7 +1,10 @@
 name: CI
 
-# push 到 main 与所有 pull_request 跑测试/构建/契约检查。
-# 标签发布仍由 release-*.yml 负责，本工作流不监听 tag。
+# push 到 main 与所有 pull_request 跑：单测 → 官方审查闸门 → 构建/打包 → 产物一致性
+# → 密钥扫描 → 市场索引校验。
+#
+# 正式发布不在本工作流：正式包是宿主「编译 MCP」签出的 protected-v4 包，需要可达的
+# DIAN115 实例与系统 OpenAPI Key，CI 拿不到；走 scripts/release-v3-local.sh（本地）。
 on:
   push:
     branches: [main]
@@ -15,206 +18,80 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  rust-tests:
-    name: rust tests (${{ matrix.plugin }})
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        plugin: [chase-rs, douban-rs, music-rs]
-    steps:
-      - uses: actions/checkout@v4
-
-      # 与 release 构建一致，在 rust:1-slim（按 digest 固定，见下方镜像引用）容器内跑
-      # 测试，避免 runner 上的 Rust 版本漂移。
-      # 挂载仓库根而不是单个插件目录: 三个插件都以 path 依赖引用 plugins/common。
-      - name: cargo test（${{ matrix.plugin }}）
-        run: docker run --rm -v "$PWD:/src" -w "/src/plugins/${{ matrix.plugin }}" rust@sha256:4df2ae8cfdfebdfc13a65da7f253b73d68983dc0339f2719bc17a279c913b13d cargo test
-
-  common:
-    name: rust common
+  unit-tests:
+    name: 离线单测（v3/tests）
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      # common 是 path 依赖，cargo clippy 默认只 lint 当前包；这里单独跑
-      # --all-features 覆盖 chase-rs 用的 ext 面。
-      - name: cargo test + fmt + clippy（common）
-        run: |
-          docker run --rm -v "$PWD:/src" -w /src/plugins/common rust@sha256:4df2ae8cfdfebdfc13a65da7f253b73d68983dc0339f2719bc17a279c913b13d \
-            sh -c 'rustup component add rustfmt clippy && cargo test --all-features && cargo fmt --check && cargo clippy --all-targets --all-features -- -D warnings'
-
-  lint:
-    name: rust lint (${{ matrix.plugin }})
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        plugin: [chase-rs, douban-rs, music-rs]
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: cargo fmt + clippy（${{ matrix.plugin }}）
-        run: |
-          docker run --rm -v "$PWD:/src" -w "/src/plugins/${{ matrix.plugin }}" rust@sha256:4df2ae8cfdfebdfc13a65da7f253b73d68983dc0339f2719bc17a279c913b13d \
-            sh -c 'rustup component add rustfmt clippy && cargo fmt --check && cargo clippy --all-targets -- -D warnings'
-
-  frontend:
-    name: frontend (${{ matrix.plugin }})
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - plugin: music-rs
-            directory: plugins/music-rs
-            command: node build-ui.mjs --check
-          - plugin: chase-rs
-            directory: plugins/chase-rs/frontend
-            command: npm run build:ui
-          - plugin: douban-center
-            directory: plugins/douban-center
-            command: npm run build:ui
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@v4
         with:
-          node-version: '20'
-          cache: npm
-          cache-dependency-path: |
-            plugins/music-rs/package-lock.json
-            plugins/chase-rs/frontend/package-lock.json
-            plugins/douban-center/package-lock.json
+          node-version: '24'
 
-      - name: 安装依赖（${{ matrix.plugin }}）
-        working-directory: ${{ matrix.directory }}
+      - name: 三个插件的 node:test 用例
+        run: bash scripts/v3-test.sh
+
+  build-and-audit:
+    name: 构建 + 官方审查闸门 + 打包
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: v3-ui/package-lock.json
+
+      - name: 拉取宿主 v3 开发套件（conformance/audit/market-check）
+        run: bash scripts/fetch-v3-kit.sh
+
+      - name: 安装 UI 依赖（npm ci，严格按入库锁文件）
+        working-directory: v3-ui
         run: npm ci
 
-      # music-rs 只做确定性检查；chase-rs 与 douban-center 做完整 UI 构建。
-      - name: 构建/检查 UI（${{ matrix.plugin }}）
-        working-directory: ${{ matrix.directory }}
-        run: ${{ matrix.command }}
+      # v3-build.sh：构建 Vue 界面 → 官方结构检查 + 恶意特征扫描（critical/high 必须在
+      # scripts/v3-audit-allowlist.json 登记误报理由）→ project-check → pack → 查包。
+      - name: 构建 + 审查 + 打包
+        run: bash scripts/v3-build.sh
 
-  conformance:
-    name: conformance
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        plugin: [chase-rs, douban-rs, music-rs]
-    steps:
-      - uses: actions/checkout@v4
+      # 产物是入库的：重建结果必须与 git 里的版本一致，否则说明源码改了没重建。
+      - name: 校验 UI 产物可复现（重建结果 == 入库版本）
+        run: bash scripts/v3-verify-ui-artifacts.sh
 
-      - uses: actions/setup-node@v7
-        with:
-          node-version: '20'
-
-      # 遍历全部 plugins/*，按 vendored market-index.schema.json 校验发布时
-      # 实际生成的条目（含 manifest.permissions 的 schema 兼容性），并核对
-      # runtime/package_url。模板 version 按发版流程用 manifest.version 归一化。
-      - name: 市场模板一致性检查
-        run: node tools/check-market-templates.mjs
-
-      - name: 市场模板检查回归测试
-        run: node --test tools/check-market-templates.test.mjs
-
-      - name: project-check（${{ matrix.plugin }}）
-        working-directory: plugins/${{ matrix.plugin }}
-        run: node ../../tools/conformance/project-check.mjs
-
-      - name: 公共接口面检查
-        run: node tools/conformance/verify-public-surface.mjs
-
-      - name: OpenAPI 契约检查
-        run: node tools/conformance/openapi-check.mjs
-
-  runtime-contract:
-    name: runtime contract
+  secret-scan:
+    name: 密钥扫描
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '24'
 
-      # 与插件无关的 runtime/schedule 契约回归，单独跑一次即可，
-      # 不放进 conformance 的 3 插件 matrix。测试按相对路径读取
-      # ../manifest.schema.json 并 import ./runtime-check.mjs。
-      - name: runtime-check 回归测试
-        run: node --test tools/conformance/runtime-check.test.mjs
+      # 开发者凭据只允许存在于 .env.local（已 gitignore）或 CI secret；
+      # 本地 .env.local 不在 CI 里，扫描照样能发现硬编码的凭据形态。
+      - name: 跟踪文件里不得有开发者凭据
+        run: node scripts/v3-secret-scan.mjs
 
-  plugin-tools:
-    name: plugin tools
+  market-index:
+    name: 市场索引校验
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '24'
 
-      # 打包上限是三个插件共用的纯逻辑，与 conformance 的插件 matrix 无关；
-      # 单独一个 job，确保回归测试只跑一次。
-      - name: 打包上限回归测试
-        run: node --test tools/plugin-tools/package-limits.test.mjs
+      - name: 拉取宿主 v3 开发套件
+        run: bash scripts/fetch-v3-kit.sh
 
-  build-conformance:
-    name: build conformance (${{ matrix.plugin }})
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - plugin: music-rs
-            package_dir: plugins/music-rs
-            ui_dir: plugins/music-rs
-            ui_command: node build-ui.mjs
-            ui_dist: plugins/music-rs/frontend/dist
-          - plugin: chase-rs
-            package_dir: plugins/chase-rs
-            ui_dir: plugins/chase-rs/frontend
-            ui_command: npm run build:ui
-            ui_dist: plugins/chase-rs/frontend/build/frontend/dist
-          - plugin: douban-rs
-            package_dir: plugins/douban-rs
-            ui_dir: plugins/douban-center
-            ui_command: npm run build:ui
-            ui_dist: plugins/douban-center/build/frontend/dist
-    steps:
-      - uses: actions/checkout@v4
+      - name: 自托管索引（v3-market-index.json）
+        run: node v3-kit/conformance/market-check.mjs v3-market-index.json
 
-      - uses: actions/setup-node@v7
-        with:
-          node-version: '20'
-          cache: npm
-          cache-dependency-path: |
-            plugins/music-rs/package-lock.json
-            plugins/chase-rs/frontend/package-lock.json
-            plugins/douban-center/package-lock.json
-
-      # project-check 的 --require-build 需要真实 UI 产物(WASM magic/2MiB/
-      # encoding/json 与 Federation entry 都只在 build root 存在时才检查)。
-      - name: 构建 UI（${{ matrix.plugin }}）
-        working-directory: ${{ matrix.ui_dir }}
+      # 商店 PR 素材：只产索引条目与图标，不产包/密钥/源码。
+      - name: 生成并校验商店 PR 素材
         run: |
-          npm ci
-          ${{ matrix.ui_command }}
-
-      - name: 构建 WASM（${{ matrix.plugin }}）
-        run: |
-          docker run --rm -v "$PWD:/src" -w "/src/${{ matrix.package_dir }}" \
-            rust@sha256:4df2ae8cfdfebdfc13a65da7f253b73d68983dc0339f2719bc17a279c913b13d \
-            sh -c 'rustup target list --installed | grep -qx wasm32-unknown-unknown || rustup target add wasm32-unknown-unknown; cargo build --release --target wasm32-unknown-unknown'
-
-      - name: project-check --require-build（${{ matrix.plugin }}）
-        run: |
-          set -euo pipefail
-          rm -rf /tmp/conf-build && mkdir -p /tmp/conf-build/runtime /tmp/conf-build/frontend/dist
-          cp "${{ matrix.package_dir }}/target/wasm32-unknown-unknown/release/plugin.wasm" /tmp/conf-build/runtime/
-          cp -a "${{ matrix.ui_dist }}/." /tmp/conf-build/frontend/dist/
-          node tools/conformance/project-check.mjs \
-            --manifest "${{ matrix.package_dir }}/manifest.template.json" \
-            --market "${{ matrix.package_dir }}/market-entry.template.json" \
-            --build-root /tmp/conf-build --require-build
+          node scripts/v3-store-pr.mjs
+          node v3-kit/conformance/market-check.mjs store-pr/index.json

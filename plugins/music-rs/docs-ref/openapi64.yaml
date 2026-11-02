@@ -6,7 +6,7 @@ info:
     name: Contract documentation only
     identifier: NOASSERTION
   description: |
-    DIAN115 插件 Host API 开发契约。宿主托管的 WASM 插件通过 Host Call 直接调用安装时批准的 METHOD + /api/path；宿主校验权限后分发到真实 Handler，无需连接 DIAN115 HTTP 端口。
+    DIAN115 插件 Host API 开发契约。宿主管理的 process 插件通过 Host Call 直接调用安装时批准的 METHOD + /api/path；宿主校验权限后分发到真实 Handler，无需连接 DIAN115 HTTP 端口。
 
     本文档只描述插件开发所需的直接宿主接口。
 servers:
@@ -15,14 +15,14 @@ servers:
 security: []
 tags:
   - name: Direct Host APIs
-    description: 安装时逐项批准、由 WASM 插件的 host.call 调用的真实 DIAN115 接口。
+    description: 安装时逐项批准、由 process host.call 调用的真实 DIAN115 接口。
   - name: Plugin Discovery
     description: 管理员读取当前版本可声明的 Host API 目录。
 x-dian115-host-call:
   local_request: '{"method":"GET","path":"/api/tmdb/search","headers":{},"body_base64":""}'
   external_request: '{"method":"GET","path":"http://127.0.0.1:8080/items","headers":{},"body_base64":""}'
   authorization: permissions.apis validates local METHOD + path. External HTTP/HTTPS is brokered by the host, including local and LAN targets; permissions.network supplies optional per-origin/method routing preferences, and host proxy-domain rules always win.
-  limits: plugin invocation frames are limited to 16 MiB; decoded host.call request and response bodies are limited to 8 MiB, leaving room for Base64 and the JSON envelope.
+  limits: process JSON-RPC frames are limited to 16 MiB; decoded host.call request and response bodies are limited to 8 MiB, leaving room for Base64 and the JSON envelope.
 x-dian115-host-apis:
   generated_from: internal Host API catalog
   entries:
@@ -1276,6 +1276,8 @@ paths:
                 permissions_accepted:
                   type: boolean
                   const: true
+                process_risk_accepted:
+                  type: boolean
                 consent_digest:
                   type: string
                   pattern: '^[0-9a-f]{64}$'
@@ -6646,29 +6648,6 @@ components:
         deduplicated: {type: boolean}
         suppressed: {type: boolean}
         suppression_reason: {type: string}
-        channels:
-          type: array
-          description: 每条已配置通道会保留或丢弃这条通知的哪些能力。能力出现在 `dropped` 里，说明该通道无法承载它——例如企业微信和微信 ClawBot 都无法把回调按钮的点击送回插件，此时插件应当改用链接按钮或提示用户用文字回复，而不是等待一个永远不会到来的回调。
-          items:
-            $ref: '#/components/schemas/ChannelSupport'
-    ChannelSupport:
-      type: object
-      additionalProperties: false
-      required: [channel]
-      properties:
-        channel:
-          type: string
-          enum: [telegram, wecom, wechat_claw]
-        preserved:
-          type: array
-          items:
-            type: string
-            enum: [link_buttons, callback_buttons, images]
-        dropped:
-          type: array
-          items:
-            type: string
-            enum: [link_buttons, callback_buttons, images]
     NotificationEnvelope:
       type: object
       additionalProperties: false

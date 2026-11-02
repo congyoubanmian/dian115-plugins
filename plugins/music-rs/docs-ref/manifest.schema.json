@@ -57,8 +57,8 @@
       "$ref": "#/$defs/compatibility"
     },
     "runtime": {
-      "$ref": "#/$defs/wasmRuntime",
-      "description": "The signed runtime executes inside the DIAN115 container. WASM is the only supported isolation boundary."
+      "oneOf": [{"$ref":"#/$defs/processRuntime"},{"$ref":"#/$defs/wasmRuntime"}],
+      "description": "The signed runtime executes inside the DIAN115 container. WASM is the default isolation boundary."
     },
     "permissions": {
       "$ref": "#/$defs/permissions"
@@ -83,9 +83,6 @@
       "items": {
         "$ref": "#/$defs/job"
       }
-    },
-    "telegram": {
-      "$ref": "#/$defs/telegram"
     },
     "homepage": {
       "type": "string",
@@ -170,6 +167,60 @@
         }
       }
     },
+    "processRuntime": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "entry",
+        "protocol"
+      ],
+      "properties": {
+        "kind": {
+          "const": "process"
+        },
+        "entry": {
+          "$ref": "#/$defs/packagePath"
+        },
+        "protocol": {
+          "const": "dian115:process@1"
+        },
+        "startup_timeout_ms": {
+          "type": "integer",
+          "minimum": 1000,
+          "maximum": 60000,
+          "default": 10000
+        },
+        "shutdown_timeout_ms": {
+          "type": "integer",
+          "minimum": 1000,
+          "maximum": 60000,
+          "default": 5000
+        },
+        "timeout_ms": {
+          "type": "integer",
+          "minimum": 100,
+          "maximum": 120000,
+          "default": 30000
+        },
+        "background_timeout_ms": {
+          "type": "integer",
+          "minimum": 1000,
+          "maximum": 3600000,
+          "default": 300000
+        },
+        "max_concurrency": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 16,
+          "default": 4
+        },
+        "restart_policy": {
+          "const": "on-failure",
+          "default": "on-failure"
+        }
+      }
+    },
     "wasmRuntime": {
       "type": "object",
       "additionalProperties": false,
@@ -194,7 +245,7 @@
     },
     "permissions": {
       "type": "object",
-      "description": "安装时整体确认的精确宿主接口声明。插件模块不能创建网络 socket；任意 HTTP/HTTPS 请求（包括本机、容器和局域网目标）均通过宿主网络 Broker。network 用于声明特定地址的代理路由偏好，未声明地址默认跟随宿主规则。",
+      "description": "安装时整体确认的精确宿主接口声明。插件进程不能创建网络 socket；任意 HTTP/HTTPS 请求（包括本机、容器和局域网目标）均通过宿主网络 Broker。network 用于声明特定地址的代理路由偏好，未声明地址默认跟随宿主规则。",
       "additionalProperties": false,
       "required": ["apis"],
       "properties": {
@@ -272,57 +323,6 @@
           "description": "Vue component expose loaded by the host. Defaults to ./AppPage when omitted."
         }
       }
-    },
-    "telegram": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "commands": {
-          "type": "array",
-          "maxItems": 3,
-          "uniqueItems": true,
-          "items": {
-            "type": "object",
-            "additionalProperties": false,
-            "required": ["command"],
-            "properties": {
-              "command": {
-                "type": "string",
-                "minLength": 1,
-                "maxLength": 32,
-                "pattern": "^[a-z][a-z0-9_]*$"
-              },
-              "description": {
-                "type": "string",
-                "maxLength": 200
-              }
-            }
-          }
-        },
-        "keywords": {
-          "type": "array",
-          "maxItems": 3,
-          "uniqueItems": true,
-          "items": {
-            "type": "object",
-            "additionalProperties": false,
-            "required": ["keyword"],
-            "properties": {
-              "keyword": {
-                "type": "string",
-                "minLength": 1,
-                "maxLength": 64
-              },
-              "match": {
-                "type": "string",
-                "enum": ["exact", "prefix", "contains"],
-                "default": "exact"
-              }
-            }
-          }
-        }
-      },
-      "description": "Telegram routes the host matches before the plugin is loaded. Declaring them here (instead of registering at runtime) is what lets the host keep a Telegram plugin unloaded until a message arrives."
     },
     "job": {
       "type": "object",

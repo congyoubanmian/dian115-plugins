@@ -4,16 +4,16 @@
 
 | 插件 | v3 源码目录 | 版本 | 任务数 | 旧实现 |
 | --- | --- | --- | --- | --- |
-| 追剧管家 `chase.rs` | `v3/chase-rs/` | 0.1.13 | 4 | `plugins/chase-rs`（0.1.9） |
-| 音乐下载 `music.rs` | `v3/music-rs/` | 1.2.1 | 2 + 1 event | `plugins/music-rs`（0.3.19） |
-| 豆瓣中心 `douban.rs` | `v3/douban-rs/` | 1.1.4 | 16 | `plugins/douban-rs`（0.2.4） |
+| 追剧管家 `chase.rs` | `v3/chase-rs/` | 0.1.13 | 4 | 旧 schema 1 Rust 版 0.1.9（源码已删除） |
+| 音乐下载 `music.rs` | `v3/music-rs/` | 1.2.1 | 2 + 1 event | 旧 schema 1 Rust 版 0.3.19（源码已删除） |
+| 豆瓣中心 `douban.rs` | `v3/douban-rs/` | 1.1.4 | 16 | 旧 schema 1 Rust 版 0.2.4（源码已删除） |
 
 约定：宿主插件 API 为 **3.5**（chase.rs / douban.rs 的 `requires.api` 为 `"3.5"`）；**music.rs 为 `"3.9"`**——
 它要用 `save_to` 直写用户目标目录（省一次跨盘拷贝），宿主不开放该能力时自动回落「暂存 → 定名 → move」。后台是宿主内 ESM
 JavaScript（无 `require`、无 Node 内置模块、无子进程），页面是 `ui/page.js` 导出的
 `mount(el, ctx)`。页面已迁到 **Vue 3**（vue / naive-ui / lucide 全部自打包进 `ui/page.js`，
 不依赖宿主共享单例）；界面源码与依赖在仓库根的 `v3-ui/`，见[「界面（Vue 3）」](#界面vue-3)。
-旧的 `plugins/` 源码保持原样，未修改。
+旧的 schema 1（Rust → WASM）源码已随归档删除：新宿主只认 `protected-v4` 编译包，旧 `.d115p` 装不上也更新不了，历史仍可从 git tag 找回。
 
 > **验证边界**：本机没有可用的 DIAN115 宿主（授权被锁）。已完成的是离线检查：`project-check`、
 > `node --check`、`node --test`、`pack.mjs`、索引 JSON 校验。**安装、inspect/确认、定时任务、
@@ -38,8 +38,9 @@ dist/                   构建产物 .dian115p（本地生成，不提交；现�
 
 ## 旧 → 新映射
 
-旧形态以 `plugins/*/manifest.template.json`（schema 1）和 `plugins/*/src/*.rs` 为准，新形态以
-`v3/*/plugin.json`、`v3/*/jobs/*.js`、`v3/*/ui/page.js` 为准。逐维度对应如下。
+旧形态是 schema 1 的 Rust → WASM（`manifest.template.json` + `src/*.rs`），其源码已随归档删除
+（历史可从 git tag 找回）；新形态以 `v3/*/plugin.json`、`v3/*/jobs/*.js`、`v3/*/ui/page.js` 为准。
+下表保留为对照用的维度说明。
 
 | 维度 | 旧（schema 1，WASM） | v3 |
 | --- | --- | --- |
