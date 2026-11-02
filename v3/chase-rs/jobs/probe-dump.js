@@ -5,7 +5,7 @@ import { runProbeDump } from './runtime.js'
 import { taskCheckpoint, taskUpdate } from './task.js'
 
 export async function run(ctx) {
-  await taskUpdate(ctx, { stage: 'probe', message: '正在探测诊断（emby/instances + 未知端点的参数矩阵）' })
+  await taskUpdate(ctx, { title: '探测诊断', stage: 'probe', message: '正在探测诊断（emby/instances + 未知端点的参数矩阵）' })
   const result = await runProbeDump(ctx)
   await taskCheckpoint(ctx, { stage: 'completed', result })
   await taskUpdate(ctx, { stage: 'done', message: result.message, progress: 100 })

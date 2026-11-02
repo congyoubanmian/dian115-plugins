@@ -10,7 +10,7 @@
 - **登录**：**网易云与 QQ 音乐两个来源的扫码都在本插件内实现**（网络层 `lib/music-api.js` + 纯逻辑 `lib/qq.js`），页面只渲染二维码与每 2 秒轮询一次；两源都保留手动粘贴 Cookie（白名单清洗 + 合并写入）作为回退；按宿主新规约插件不读取 CookieCloud。细节见「登录」一节。
 - **取链**：网易云 eapi（AES-128-ECB + MD5，宿主 `ctx.crypto`）按 8 档音质阶梯逐级回退；QQ 按参考客户端 Lilt 的流程：先读歌曲详情拿 `media_mid`，登录态请求 `F000(flac) → M800(320k) → M500(128k)`，匿名只请求 `M500`；每档单独请求 vkey，相对 purl 用响应里的 `sip` 域名拼接（详见 `lib/qq.js` 注释）。
 - **歌单**：**网易云与 QQ 音乐都支持「我的歌单」**（我创建的 + 收藏的）；歌单内分页浏览（每页 100 首）；整单分批入队（每批 5 页 × 100 首，`next_page` 续批游标，页面级失败不回滚已入队）。**QQ 另有两个特殊入口：「每日推荐」「我喜欢」**。详见「歌单」一节。
-- **下载队列**：KV 分片（`tasks.idx` + `task.<id>`），去重按 `source+song_id+quality`；定时任务（每 5 分钟）与页面手动「推进队列」走同一入口；`queued → downloading → copying → done/failed`，失败重试 ≤3 次后发通知（Telegram 按钮 `callback_data: retry:<短id>`，点击触发回调任务重新排队）。
+- **下载队列**（API 3.9：`save_to` 可直写用户目标目录，省一次跨盘拷贝；宿主不开放该能力时自动回落「插件暂存 → 定名 → move」）：KV 分片（`tasks.idx` + `task.<id>`），去重按 `source+song_id+quality`；定时任务（每 5 分钟）与页面手动「推进队列」走同一入口；`queued → downloading → copying → done/failed`，失败重试 ≤3 次后发通知（Telegram 按钮 `callback_data: retry:<短id>`，点击触发回调任务重新排队）。
 - **任务运维**：重试、清空已完成、索引对账（孤儿分片挂回）。
 
 ## 登录
@@ -171,7 +171,7 @@ node v3-kit/conformance/pack.mjs v3/music-rs dist/music-rs.dian115p
 ## 文件
 
 ```
-plugin.json          清单（schema 3，requires.api 3.5，jobs ×2，events ×1）
+plugin.json          清单（schema 3，requires.api 3.9，jobs ×2，events ×1；设置做在页面里，不声明 settings[]）
 lib/encoding.js      Go 编码语义（QueryEscape/Encode/ParseQuery/hash33/base36/短 id）
 lib/eapi.js          网易云 eapi（明文装配；AES/MD5 由宿主 ctx.crypto 注入）+ 音质阶梯
 lib/cookies.js       cookie 解析/白名单/合并/登录态（QQ 出网只带 4 个凭据字段）

@@ -46,7 +46,21 @@ function delay(ctx, ms) {
  * 其他失败 → {error: message}。
  */
 export async function readKey(ctx, key) {
-  const result = await tryApi(ctx, 'GET', storagePath(ctx, key))
+  // 值走官方 ctx.storage.get（404 = 没有这个键 = 全新安装）；
+  // 版本号仍从自有存储信封读 —— 后台 ctx.storage.set 不暴露 expected_revision，
+  // 拿不到版本号就没法做乐观锁（信封读每个键只做一次）。
+  const path = storagePath(ctx, key)
+  if (typeof ctx.storage?.get === 'function') {
+    try {
+      const value = await ctx.storage.get(key)
+      return { value: value ?? null, revision: await readRevision(ctx, path), missing: value === null || value === undefined }
+    } catch (error) {
+      const status = Number(error?.status ?? 0)
+      if (status === 404) return { value: null, revision: 0, missing: true }
+      return { error: error?.message ?? String(error) }
+    }
+  }
+  const result = await tryApi(ctx, 'GET', path)
   if (result.ok) {
     const data = result.data
     if (data && typeof data === 'object' && 'value' in data) {
@@ -56,6 +70,13 @@ export async function readKey(ctx, key) {
   }
   if (result.status === 404) return { value: null, revision: 0, missing: true }
   return { error: result.message }
+}
+
+/** 读存储信封里的版本号（CAS 用）。 */
+async function readRevision(ctx, path) {
+  const result = await tryApi(ctx, 'GET', path)
+  if (!result.ok) return 0
+  return typeof result.data?.revision === 'number' ? result.data.revision : 0
 }
 
 /**

@@ -6,7 +6,7 @@ import { taskUpdate } from './task.js'
 
 export async function run(ctx) {
   const session = await Session.open(ctx)
-  await taskUpdate(ctx, { stage: 'wish-sync', message: '开始想看同步与到期订阅' })
+  await taskUpdate(ctx, { title: '想看同步与到期订阅', stage: 'wish-sync', message: '开始想看同步与到期订阅' })
   try {
     const result = await runWishSyncJob(session, ctx, ctx.task?.id ?? 'job-wish-sync')
     await taskUpdate(ctx, { stage: 'done', message: result.message, progress: 100 })

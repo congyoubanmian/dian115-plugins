@@ -3,7 +3,7 @@
   "schema_version": 3,
   "id": "chase.rs",
   "name": "追剧管家（Rust 版）",
-  "version": "0.1.12",
+  "version": "0.1.13",
   "description": "小时级对齐「订阅池里的剧集订阅」与「Emby 已有集数」：只对可解析的条目做只增 PATCH total_episodes，并产出追剧日历与当天一次的日报；减方向只给建议，从不写。已核实无缺口的条目在 5 小时窗口内复用缓存，不重复探测 Emby。界面按统一设计稿重绘：指标瓦片、徽标胶囊、双栏看板与移动端单栏适配。",
   "author": "congyoubanmian",
   "homepage": "https://github.com/congyoubanmian/dian115-plugins",
@@ -18,20 +18,6 @@
     "title": "追剧管家",
     "order": 40
   },
-  "settings": [
-    { "key": "enabled", "label": "启用插件", "type": "boolean", "default": true, "help": "关掉后整点任务与「立即对齐」都不写入" },
-    { "key": "auto_bump", "label": "自动补订", "type": "boolean", "default": true, "help": "关掉后整点任务只判定不补订（立即对齐不受此开关限制）" },
-    { "key": "dry_run", "label": "只判定不写入", "type": "boolean", "default": false, "help": "dry-run：结果表会标「待补订」" },
-    { "key": "write_episode_strings", "label": "写回集数字符串", "type": "boolean", "default": false, "help": "仅在原串能严格解析且逐字节往返一致时才追加" },
-    { "key": "emby_proxy_id", "label": "Emby 实例 ID", "type": "number", "default": -1, "help": "-1 = 跟随宿主默认实例；≥1 = 指定实例 id；0 = 旧版单实例" },
-    { "key": "max_patch_per_run", "label": "单轮最多补订（条）", "type": "number", "default": 5, "help": "后端硬上限 20" },
-    { "key": "max_raise_per_run", "label": "单条最大抬升（集）", "type": "number", "default": 20, "help": "超出视为元数据异常，跳过" },
-    { "key": "catch_up_days", "label": "日历窗口（天）", "type": "number", "default": 7 },
-    { "key": "emby_probe_budget", "label": "Emby 探测预算（次/轮）", "type": "number", "default": 120, "help": "Emby 覆盖与 TMDB 目标取数共用这份预算" },
-    { "key": "report_enabled", "label": "发送每日报告", "type": "boolean", "default": false, "help": "到点后当天首次运行发送，每天最多一条" },
-    { "key": "report_hour", "label": "发送小时（本地）", "type": "number", "default": 9 },
-    { "key": "report_tz_offset_minutes", "label": "时区偏移（分钟）", "type": "number", "default": 480, "help": "+08:00 = 480" }
-  ],
   "jobs": [
     {
       "id": "align",

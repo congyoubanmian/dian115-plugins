@@ -14,7 +14,7 @@ import { DEFAULT_QUALITY } from '../../music-rs/lib/settings.js'
 
 // ─────────────────────────── 假宿主 ───────────────────────────
 
-function makeHost({ songUrlBodies = null } = {}) {
+function makeHost({ songUrlBodies = null, refuseDirectWrite = false } = {}) {
   const kvStore = new Map()
   const files = new Map() // path → size
   const calls = { http: [], files: [], notify: [] }
@@ -67,6 +67,10 @@ function makeHost({ songUrlBodies = null } = {}) {
       async request(options) {
         calls.http.push(options)
         if (options.save_to) {
+          // 宿主不支持 3.9 直写目标目录时（绝对路径）抛错，插件应回落暂存→定名→move。
+          if (refuseDirectWrite && String(options.save_to).startsWith('/')) {
+            throw new Error('save_to 写绝对路径需要宿主插件 API 3.9')
+          }
           // save_to：模拟 2xx 流式写盘。
           files.set(options.save_to, 4321)
           return { status: 200, url: options.url, headers: {}, body: '', cached: false, path: options.save_to, size: 4321, sha256: 'deadbeef' }
@@ -155,7 +159,7 @@ async function runPump(host) {
 
 // ─────────────────────────── 用例 ───────────────────────────
 
-test('pump full pipeline: url → save_to → rename → move → done', async () => {
+test('pump full pipeline: url → save_to 直写目标目录 → done（API 3.9）', async () => {
   const host = makeHost()
   const { task } = await seedEnqueued(host)
   const summary = await runPump(host)
@@ -165,24 +169,35 @@ test('pump full pipeline: url → save_to → rename → move → done', async (
   // 取链请求带 eapi 表单；下载请求带 save_to。
   const download = host.calls.http.find((c) => c.save_to)
   assert.ok(download, '必须有 save_to 下载请求')
-  assert.equal(download.save_to, `${STAGING_SUBDIR}/${task.id}.part`)
+  const target = `${normalizeSettings(null).target_dir}/周杰伦 - 晴天.flac`
+  assert.equal(download.save_to, target, 'API 3.9：直写目标目录，不经暂存')
   assert.equal(download.timeout_seconds, DOWNLOAD_TIMEOUT_SECONDS)
   assert.ok(download.url.startsWith('https://cdn.example.com/'))
-  // 文件操作：rename → move。
-  const rename = host.calls.files.find((c) => c.operation === 'rename')
-  assert.equal(rename.name, '周杰伦 - 晴天.flac')
-  const move = host.calls.files.find((c) => c.operation === 'move')
-  assert.equal(move.destination_dir, normalizeSettings(null).target_dir)
-  assert.equal(move.overwrite, false)
-  // move 后暂存目录清空。
-  assert.equal(host.files.size, 0)
+  // 直写路径没有定名与 move。
+  assert.equal(host.calls.files.find((c) => c.operation === 'rename'), undefined)
+  assert.equal(host.calls.files.find((c) => c.operation === 'move'), undefined)
+  assert.ok(host.files.has(target), '文件已在目标目录')
   // 任务落盘为 done。
   const done = await loadTask(createKv(host.ctx), task.id)
   assert.equal(done.status, 'done')
   assert.equal(done.out_name, '周杰伦 - 晴天.flac')
+  assert.equal(done.staged_path, target)
   assert.equal(done.error, '')
   const index = await loadIndex(createKv(host.ctx))
   assert.equal(index[0].status, 'done')
+})
+
+test('宿主不支持 3.9 直写时回落：暂存 → 定名 → move → done', async () => {
+  const host = makeHost({ refuseDirectWrite: true })
+  const { task } = await seedEnqueued(host)
+  const summary = await runPump(host)
+  assert.deepEqual(summary.completed, [task.id])
+  const rename = host.calls.files.find((c) => c.operation === 'rename')
+  assert.equal(rename.name, '周杰伦 - 晴天.flac')
+  const move = host.calls.files.find((c) => c.operation === 'move')
+  assert.equal(move.destination_dir, normalizeSettings(null).target_dir)
+  const done = await loadTask(createKv(host.ctx), task.id)
+  assert.equal(done.status, 'done')
 })
 
 test('pump reports link failure and requeues until MAX_ATTEMPTS then notifies with retry button', async () => {
@@ -211,7 +226,8 @@ test('pump reports link failure and requeues until MAX_ATTEMPTS then notifies wi
 })
 
 test('pump counts move failure on copying and finishes after the target frees up', async () => {
-  const host = makeHost()
+  // 拒绝 3.9 直写 → 走暂存→定名→move，move 失败才有场景
+  const host = makeHost({ refuseDirectWrite: true })
   const { task } = await seedEnqueued(host)
   // 第 1 轮：入库失败（目标已存在）→ copying + attempts=1，暂存文件保留。
   host.failMoveFor.add('周杰伦 - 晴天.flac')

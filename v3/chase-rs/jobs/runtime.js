@@ -149,23 +149,57 @@ export function pluginIdOf(ctx) {
  * loaded（读到本文档）/ fresh（确认无键的全新安装）/ unavailable（宿主不可读）。
  * 只有前两种才允许落盘 —— unavailable 时绝不落盘，免得默认值覆盖用户配置。
  */
+/**
+ * 读插件自己的数据：值走官方 `ctx.storage.get`（无键 = 全新安装）。
+ *
+ * CAS 需要的版本号仍从自有存储信封读：后台 `ctx.storage.set(key, value)` 不暴露
+ * `expected_revision`（见 v3-kit/docs/sdk/background.d.ts），拿不到版本号就没法做
+ * 乐观锁；信封读只在会话开始时做一次。
+ */
 export async function loadRuntimeState(ctx) {
   const path = `/api/extensions/v3/${encodeURIComponent(pluginIdOf(ctx))}/storage/${STATE_KEY}`
   let lastMessage = ''
   for (let attempt = 0; attempt < 3; attempt += 1) {
-    const result = await tryApi(ctx, 'GET', path)
-    if (result.ok) {
-      const revision = typeof result.data?.revision === 'number' ? result.data.revision : 0
-      const value = result.data?.value
-      if (value === null || value === undefined) return { kind: 'fresh', doc: null, revision: 0 }
-      const doc = normalizeStateDoc(value)
+    const stored = await readStoredValue(ctx, STATE_KEY)
+    if (stored.ok) {
+      if (stored.missing) return { kind: 'fresh', doc: null, revision: 0 }
+      const revision = await readStoredRevision(ctx, path)
+      const doc = normalizeStateDoc(stored.value)
       return { kind: doc ? 'loaded' : 'foreign', doc, revision }
     }
-    if (result.status === 404) return { kind: 'fresh', doc: null, revision: 0 }
-    lastMessage = result.message
+    lastMessage = stored.message
     await delay(200)
   }
   return { kind: 'unavailable', doc: null, revision: 0, message: lastMessage }
+}
+
+/** 用官方 ctx.storage.get 取值；404 = 没有这个键。 */
+async function readStoredValue(ctx, key) {
+  if (typeof ctx.storage?.get === 'function') {
+    try {
+      const value = await ctx.storage.get(key)
+      return { ok: true, missing: value === null || value === undefined, value }
+    } catch (error) {
+      const status = Number(error?.status ?? 0)
+      if (status === 404) return { ok: true, missing: true, value: null }
+      return { ok: false, message: error?.message ?? String(error) }
+    }
+  }
+  // 宿主没有 ctx.storage（极老版本）→ 回落自有存储信封
+  const result = await tryApi(ctx, 'GET', `/api/extensions/v3/${encodeURIComponent(pluginIdOf(ctx))}/storage/${encodeURIComponent(key)}`)
+  if (!result.ok) {
+    if (result.status === 404) return { ok: true, missing: true, value: null }
+    return { ok: false, message: result.message }
+  }
+  const value = result.data?.value
+  return { ok: true, missing: value === null || value === undefined, value }
+}
+
+/** 读存储信封里的版本号（CAS 用）。 */
+async function readStoredRevision(ctx, path) {
+  const result = await tryApi(ctx, 'GET', path)
+  if (!result.ok) return 0
+  return typeof result.data?.revision === 'number' ? result.data.revision : 0
 }
 
 /** 一次性运行时会话：文档 + 存储可用性 + 轮次序号。 */
@@ -1264,6 +1298,8 @@ export async function runAlignNow(ctx) {
     patched: counters.patched,
     skipped: counters.skipped,
     absent: counters.absent,
+    intents_seen: counters.intents_seen,
+    failed: counters.failed,
     budget_hit: budgetHit,
     message: session.doc.last_message,
   }

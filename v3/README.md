@@ -4,11 +4,12 @@
 
 | 插件 | v3 源码目录 | 版本 | 任务数 | 旧实现 |
 | --- | --- | --- | --- | --- |
-| 追剧管家 `chase.rs` | `v3/chase-rs/` | 0.1.12 | 4 | `plugins/chase-rs`（0.1.9） |
-| 音乐下载 `music.rs` | `v3/music-rs/` | 1.1.1 | 2 + 1 event | `plugins/music-rs`（0.3.19） |
-| 豆瓣中心 `douban.rs` | `v3/douban-rs/` | 1.1.2 | 16 | `plugins/douban-rs`（0.2.4） |
+| 追剧管家 `chase.rs` | `v3/chase-rs/` | 0.1.13 | 4 | `plugins/chase-rs`（0.1.9） |
+| 音乐下载 `music.rs` | `v3/music-rs/` | 1.2.0 | 2 + 1 event | `plugins/music-rs`（0.3.19） |
+| 豆瓣中心 `douban.rs` | `v3/douban-rs/` | 1.1.3 | 16 | `plugins/douban-rs`（0.2.4） |
 
-约定：宿主插件 API 为 **3.5**（三个 `plugin.json` 的 `requires.api` 均为 `"3.5"`）；后台是宿主内 ESM
+约定：宿主插件 API 为 **3.5**（chase.rs / douban.rs 的 `requires.api` 为 `"3.5"`）；**music.rs 为 `"3.9"`**——
+它要用 `save_to` 直写用户目标目录（省一次跨盘拷贝），宿主不开放该能力时自动回落「暂存 → 定名 → move」。后台是宿主内 ESM
 JavaScript（无 `require`、无 Node 内置模块、无子进程），页面是 `ui/page.js` 导出的
 `mount(el, ctx)`。页面已迁到 **Vue 3**（vue / naive-ui / lucide 全部自打包进 `ui/page.js`，
 不依赖宿主共享单例）；界面源码与依赖在仓库根的 `v3-ui/`，见[「界面（Vue 3）」](#界面vue-3)。
@@ -42,7 +43,7 @@ dist/                   构建产物 .dian115p（本地生成，不提交；现�
 
 | 维度 | 旧（schema 1，WASM） | v3 |
 | --- | --- | --- |
-| 清单 | `manifest.template.json`：`schema_version: 1`、`compatibility.plugin_api: "^2.0"` | `plugin.json`：`schema_version: 3`、`requires.api: "3.5"` |
+| 清单 | `manifest.template.json`：`schema_version: 1`、`compatibility.plugin_api: "^2.0"` | `plugin.json`：`schema_version: 3`、`requires.api: "3.5"`（music.rs 3.9） |
 | 运行时 | `runtime.kind: "wasm"`、`entry: "runtime/plugin.wasm"`、`protocol: "dian115:wasm@1"`、`memory_mb` / `max_concurrency` / `restart_policy`；Rust 侧 `abi.rs` / `arena.rs` / `host.rs` / `protocol.rs` | **删除 `runtime` 段**。宿主按任务加载 `jobs/<id>.js` 的 ESM 入口；无常驻 VM，每次运行由 `run(ctx, input)` 进入，`recover(ctx, checkpoint)` 续跑；超时/并发由清单的 `timeout_seconds` / `allow_overlap` 描述 |
 | 任务与调度 | 清单 `jobs[]` 只写 `id` + Rust `handler` 名（如 `alignHourly`）+ `default_schedule`；WASM 内自行分发 | 清单 `jobs[]` 写 `entry` / `handler` / `recover` / `default_schedule`（cron）或 `interval_seconds` / `timeout_seconds` / `queue`；页面动作是 `queue:false` 的短任务 |
 | 事件 | `events: ["telegram.callback"]`（music-rs），WASM 内处理回调 | `events: [{event: "callback", job: "tg-callback"}]`：事件触发一个普通任务；music-rs 用它重排失败任务 |
@@ -53,7 +54,7 @@ dist/                   构建产物 .dian115p（本地生成，不提交；现�
 | 通知 | `POST /api/notifications/plugin`（music-rs 的 `callback_data` 会被 400 拒） | `ctx.notify({title, body, buttons, dedupe_key, ...})`，原生支持按钮回调；返回逐渠道结果 |
 | UI 入口 | `ui.mode: "federation"` + `ui.federation.entry: "frontend/dist/assets/remoteEntry.js"` + `module: "./AppPage"`（Vue 远程模块） | `ui.entry: "ui/page.js"`，`export async function mount(el, ctx)`；`menu` / `icon` 也在清单里 |
 | UI ↔ 后台桥 | 旧前端通过 WASM 的 `state` / `action` op 回调（`invokeAction` → `RuntimeCallback`）取状态、发动作 | 页面直接 `ctx.storage.get('state')` / `ctx.settings.get()` 读，`ctx.tasks.run(job, business_key, input)` + `ctx.tasks.get(id)` 发动作并轮询；`ctx.http` 可在页面直接取图 |
-| 设置 | 设置嵌在状态文档里，WASM 侧白名单合并 | 清单 `settings[]` 由宿主渲染表单并保存到 `settings` KV；`ctx.settings.get/set` 与后台共用；复杂配置仍留在状态文档 |
+| 设置 | 设置嵌在状态文档里，WASM 侧白名单合并 | **设置做在页面里**（有页面的插件不再声明清单 `settings[]`）；`ctx.settings.get/set` 与后台共用，宿主把值存 `settings` KV；代码侧 `FLAT_DEFAULTS` 兜底，复杂配置仍留在状态文档 |
 | CookieCloud | 插件自己配置地址/UUID/口令 + 插件内 AES-CBC 解密（`cookiecloud.rs`） | **已下线**：宿主新规约禁止插件读 CookieCloud；douban.rs / music.rs 的登录态只来自扫码或用户手动粘贴 |
 | 交付 | schema 1 签名包（Ed25519，`publisher.key_id`，`*.d115p`） | `.dian115p` 源码 ZIP（`v3-kit/conformance/pack.mjs`），`delivery: "source"`；宿主安装时静态分析实际代码并让用户确认 token，加密交付是可选项，本仓库三个插件都没有用 |
 
@@ -62,7 +63,7 @@ dist/                   构建产物 .dian115p（本地生成，不提交；现�
 
 ## 各插件 covered / gaps
 
-### 追剧管家（`v3/chase-rs`，chase.rs 0.1.12）
+### 追剧管家（`v3/chase-rs`，chase.rs 0.1.13）
 
 **Covered（离线可验证）**
 
@@ -73,7 +74,7 @@ dist/                   构建产物 .dian115p（本地生成，不提交；现�
 - 订阅池读取（`media_type=tv`，≤4 页 × 500）、追剧日历、每日日报（`ctx.notify` + `dedupe_key`）。
 - 状态文档：默认值/上限裁剪/256KB 逐级降级，`expected_revision` CAS；404 两次确认视为全新安装，
   其他读取失败不落盘。
-- 清单 `settings[]` 覆盖旧页面 12 个用户配置项；页面用 Vue 3 重写（源码 `v3-ui/src/chase-rs/`），
+- 旧页面 12 个用户配置项现在都在页面设置抽屉里（清单不再声明 `settings[]`）；页面用 Vue 3 重写（源码 `v3-ui/src/chase-rs/`），
   保留指标瓦片（`StatTile.vue`）、看板（`AlignCard.vue`）与移动端单栏（`styles.css` 里
   `@media (max-width: 1000px)` 收成单列）。
 - 117 个 `node --test` 用例通过。
@@ -86,7 +87,7 @@ dist/                   构建产物 .dian115p（本地生成，不提交；现�
 - 旧版没有事件订阅，v3 也不声明 `events[]`；没有新增消息/回调能力。
 - 每日报告的实际渠道取决于宿主通知配置；旧版经宿主通知端点投递，本次未在真机核对渠道与按钮渲染。
 
-### 音乐下载（`v3/music-rs`，music.rs 1.1.1）
+### 音乐下载（`v3/music-rs`，music.rs 1.2.0）
 
 **Covered（离线可验证）**
 
@@ -131,7 +132,7 @@ dist/                   构建产物 .dian115p（本地生成，不提交；现�
   实现，交给 music-rs 负责人决定是改成索引首条还是注入固定时钟。
 - 真机上的扫码、eapi 取链、下载落盘、CD2 move 与通知按钮回调均未验证。
 
-### 豆瓣中心（`v3/douban-rs`，douban.rs 1.1.2）
+### 豆瓣中心（`v3/douban-rs`，douban.rs 1.1.3）
 
 **Covered（离线可验证）**
 
@@ -234,7 +235,7 @@ naive-ui 的 `n-config-provider`；订阅在卸载时退订。颜色与排版用
 
 ### 设置双入口
 
-清单 `plugin.json` 的 `settings[]` 保留（宿主在「管理」页渲染表单）；页面里用
+清单 `plugin.json` 不再声明 `settings[]`（设置做在页面里，宿主规范要求）；页面里用
 `ctx.settings.get()` / `ctx.settings.set()` 读写**同一份**设置，两边看到的内容一致。
 
 ### 产物是否入库
@@ -302,7 +303,7 @@ bash scripts/v3-build.sh      # 再 project-check → pack → 打印 sha256
 相同的包；已有包会被覆盖。产物：
 
 ```
-dist/chase-rs-0.1.12.dian115p
+dist/chase-rs-0.1.13.dian115p
 dist/music-rs.dian115p
 dist/douban-rs.dian115p
 ```
@@ -321,10 +322,10 @@ node v3-kit/conformance/project-check.mjs v3/music-rs
 node v3-kit/conformance/project-check.mjs v3/douban-rs
 
 # 3) 打包（输出必须在源码目录之外；后缀必须是 .dian115p）
-node v3-kit/conformance/pack.mjs v3/chase-rs dist/chase-rs-0.1.12.dian115p
+node v3-kit/conformance/pack.mjs v3/chase-rs dist/chase-rs-0.1.13.dian115p
 node v3-kit/conformance/pack.mjs v3/music-rs dist/music-rs.dian115p
 node v3-kit/conformance/pack.mjs v3/douban-rs dist/douban-rs.dian115p
-node scripts/v3-pack-check.mjs dist/chase-rs-0.1.12.dian115p v3/chase-rs   # 查包
+node scripts/v3-pack-check.mjs dist/chase-rs-0.1.13.dian115p v3/chase-rs   # 查包
 
 # 4) 纯逻辑单测（Node 24 下要传文件 glob，不能只传目录）
 (cd v3/tests/chase-rs  && node --test *.test.mjs)   # 119 pass
@@ -405,9 +406,9 @@ CI 拿不到，正式发布因此在本地发版脚本里完成。
 
 | id | version | delivery | source_url | sha256 |
 | --- | --- | --- | --- | --- |
-| `chase.rs` | 0.1.12 | protected-v4 | 正式包 `chase.rs-<release_id>.dian115p` | 见 `v3-market-index.json` |
-| `music.rs` | 1.1.1 | protected-v4 | 正式包 `music.rs-<release_id>.dian115p` | 见 `v3-market-index.json` |
-| `douban.rs` | 1.1.2 | protected-v4 | 正式包 `douban.rs-<release_id>.dian115p` | 见 `v3-market-index.json` |
+| `chase.rs` | 0.1.13 | protected-v4 | 正式包 `chase.rs-<release_id>.dian115p` | 见 `v3-market-index.json` |
+| `music.rs` | 1.2.0 | protected-v4 | 正式包 `music.rs-<release_id>.dian115p` | 见 `v3-market-index.json` |
+| `douban.rs` | 1.1.3 | protected-v4 | 正式包 `douban.rs-<release_id>.dian115p` | 见 `v3-market-index.json` |
 
 （正式包由宿主「编译 MCP」签发，`delivery` 是 `protected-v4`，`author` 是签名绑定的**会员昵称**；
 `sha256` 与 `source_url` 由发布脚本按实际产物实算写入 `v3-market-index.json`。）
@@ -435,7 +436,7 @@ v3 索引 schema。仓库内旧 `plugin-market/index.json` 是 v1 格式，v3 �
 
 | 检查 | 命令 | 结果 |
 | --- | --- | --- |
-| 三个插件结构检查 | `node v3-kit/conformance/project-check.mjs v3/<plugin>` | 3/3 通过：`chase.rs 0.1.12`、`music.rs 1.1.1`、`douban.rs 1.1.2` |
+| 三个插件结构检查 | `node v3-kit/conformance/project-check.mjs v3/<plugin>` | 3/3 通过：`chase.rs 0.1.13`、`music.rs 1.2.0`、`douban.rs 1.1.3` |
 | 全部 JS 语法 | `find v3/... -name '*.js' -exec node --check {} +` | 通过：chase 16 / music 30 / douban 38 个文件 |
 | 纯逻辑单测 | `(cd v3/tests/<plugin> && node --test *.test.*)` | chase 119 pass / music 170 pass / douban 100 pass，0 fail |
 | 打包 | `bash scripts/v3-build.sh`（连跑两次） | 两次 sha256 完全一致；产物 193844 / 284582 / 263162 字节（界面换成 Vue 3 自打包后比原生 JS 版大；sha256 见表下） |
@@ -453,7 +454,7 @@ v3 索引 schema。仓库内旧 `plugin-market/index.json` 是 v1 格式，v3 �
 | 检查 | 命令 | 结果 |
 | --- | --- | --- |
 | 脚本语法 | `bash -n scripts/v3-build.sh scripts/v3-build-ui.sh` | 通过（另加 `bash -n scripts/v3-verify-ui-artifacts.sh`） |
-| 三个插件结构检查 | `node v3-kit/conformance/project-check.mjs v3/<plugin>` | 3/3 通过：`chase.rs 0.1.12`、`music.rs 1.1.1`、`douban.rs 1.1.2` |
+| 三个插件结构检查 | `node v3-kit/conformance/project-check.mjs v3/<plugin>` | 3/3 通过：`chase.rs 0.1.13`、`music.rs 1.2.0`、`douban.rs 1.1.3` |
 | 界面构建可重复 | `bash scripts/v3-build-ui.sh` 连跑两次，比对 sha256 | 两次产物字节相同（chase `897e1d4c…5937c8ad`、douban `fc90a3dd…1e967675`、music `574a6486…554628e2`） |
 | 锁文件可复现 | 干净副本里 `rm -rf node_modules && npm ci` 后重建 | 与入库产物逐字节相同；本地多次打包 sha256 一致（跨环境的 zip 压缩字节会略差十余字节，以 Release 的 `SHA256SUMS.txt` 为准） |
 | 一键构建幂等 | `bash scripts/v3-build.sh` 连跑两次 | 两次 sha256 完全一致（本地值；Release 实算值见市场索引）；产物 193844 / 284582 / 263162 字节 |

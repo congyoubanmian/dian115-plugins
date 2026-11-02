@@ -8,7 +8,7 @@
 // 只读 zip 的中央目录拿文件名，不解压、不依赖外部命令（unzip 可能没装）。
 //
 // 用法：
-//   node scripts/v3-pack-check.mjs dist/chase-rs-0.1.12.dian115p [插件源码目录]
+//   node scripts/v3-pack-check.mjs dist/chase-rs-0.1.13.dian115p [插件源码目录]
 
 import { readFileSync, existsSync, readdirSync, statSync } from 'node:fs'
 import { resolve, join, relative, sep } from 'node:path'

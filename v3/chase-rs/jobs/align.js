@@ -7,10 +7,20 @@ import { runHourlyAlign } from './runtime.js'
 import { taskCheckpoint, taskUpdate } from './task.js'
 
 export async function run(ctx, input) {
-  await taskUpdate(ctx, { stage: 'align', message: '开始整点对齐' })
+  await taskUpdate(ctx, { title: '整点对齐', stage: 'align', message: '开始整点对齐' })
   const result = await runHourlyAlign(ctx)
   await taskCheckpoint(ctx, { stage: 'completed', result })
-  await taskUpdate(ctx, { stage: 'done', message: result.message ?? result.status, progress: 100 })
+  const total = Number(result.intents_seen ?? 0)
+  const failed = Number(result.failed ?? 0)
+  await taskUpdate(ctx, {
+    title: '整点对齐',
+    stage: 'done',
+    message: result.message ?? result.status,
+    progress: 100,
+    total,
+    done: Math.max(0, total - failed),
+    failed,
+  })
   return result
 }
 

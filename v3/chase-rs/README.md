@@ -14,7 +14,7 @@ find v3/chase-rs -name '*.js' -not -path '*/node_modules/*' -exec node --check {
 
 # 官方黑盒检查 + 打包（包必须在源码目录外）
 node v3-kit/conformance/project-check.mjs v3/chase-rs
-node v3-kit/conformance/pack.mjs v3/chase-rs dist/chase-rs-0.1.12.dian115p
+node v3-kit/conformance/pack.mjs v3/chase-rs dist/chase-rs-0.1.13.dian115p
 ```
 
 `package.json` 只声明 `{"type":"module"}`：宿主 v3 直接 import ESM，本地
@@ -23,7 +23,7 @@ node v3-kit/conformance/pack.mjs v3/chase-rs dist/chase-rs-0.1.12.dian115p
 ## 布局
 
 ```
-plugin.json          v3 清单（schema_version 3，requires.api 3.5）
+plugin.json          v3 清单（schema_version 3，requires.api 3.5；设置做在页面里，不声明 settings[]）
 icon.svg             复制自旧插件
 lib/                 纯逻辑（无 IO，node --test 直接覆盖）
   loose.js           防御式 JSON：多候选字段名 / 松散取数 / UTF-8 截断 / 凭据键脱敏（raw.rs）
@@ -67,7 +67,7 @@ ui/page.js           原生 JS + DOM 重写的页面（mount(el, ctx)）
    不落盘页面就永远看不到结果 —— 因此这两条路径在结束时把状态文档写回插件 KV
    （存储读写是插件自有路由，不再有旧版 host.call 预算问题）。
 2. **settings 迁到 ctx.settings。** 旧版把 settings 嵌在状态文档里白名单合并；
-   v3 的设置由宿主保存在插件 KV 的 `settings` 键。按任务要求，清单 `settings[]`
+   v3 的设置由宿主保存在插件 KV 的 `settings` 键。按宿主规范（有页面的插件把设置做在页面里），清单 `settings[]`
    覆盖原 UI 的全部 12 个用户配置项（布尔/数值，默认值与 model.rs 一致）；
    页面内设置抽屉照旧存在，读写走 `ctx.settings.get()/set()`（与宿主卡片上的
    设置表单是同一份数据）。探测形状指纹（`settings.probe.*`）是运行时内部状态

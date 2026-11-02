@@ -6,7 +6,7 @@ import { taskCheckpoint, taskUpdate } from './task.js'
 export async function run(ctx) {
   const result = await runRefresh(ctx)
   await taskCheckpoint(ctx, { stage: 'completed', result })
-  await taskUpdate(ctx, { stage: 'done', message: result.message, progress: 100 })
+  await taskUpdate(ctx, { title: '刷新追剧日历', stage: 'done', message: result.message, progress: 100 })
   return result
 }
 

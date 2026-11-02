@@ -6,10 +6,20 @@ import { taskUpdate } from './task.js'
 
 export async function run(ctx) {
   const session = await Session.open(ctx)
-  await taskUpdate(ctx, { stage: 'refresh', message: '开始定时刷新' })
+  await taskUpdate(ctx, { title: '定时刷新榜单', stage: 'refresh', message: '开始定时刷新' })
   try {
     const result = await refreshNow(session, ctx, ctx.task?.id ?? 'job-refresh-charts', { deep: true })
-    await taskUpdate(ctx, { stage: 'done', message: result.message, progress: 100 })
+    const failures = Array.isArray(result.failures) ? result.failures.length : 0
+    const total = Number(result.subscribed ?? 0) + Number(result.needs_review ?? 0) + failures
+    await taskUpdate(ctx, {
+      title: '定时刷新榜单',
+      stage: 'done',
+      message: result.message,
+      progress: 100,
+      total,
+      done: Number(result.subscribed ?? 0) + Number(result.needs_review ?? 0),
+      failed: failures,
+    })
     return { status: 'accepted', message: result.message, subscribed: result.subscribed, needs_review: result.needs_review }
   } catch (error) {
     const message = `定时刷新失败: ${error.message}`

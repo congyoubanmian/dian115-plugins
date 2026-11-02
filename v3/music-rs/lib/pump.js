@@ -73,6 +73,16 @@ async function cleanupStaged(ctx, taskId) {
   }
 }
 
+/** 直写目标目录失败时清掉半截文件（尽力而为；清不掉也不该挡住任务失败语义）。 */
+async function removePartial(ctx, path) {
+  if (!path) return
+  try {
+    await ctx.files.call({ operation: 'remove', paths: [path] })
+  } catch {
+    /* 半截文件残留由用户处理，不影响任务失败语义 */
+  }
+}
+
 /** 失败处理：尝试次数用尽 → 置 failed 并发通知；否则回 queued 等下轮重试。 */
 async function failTask(deps, task, error, report) {
   task.error = error
@@ -177,9 +187,51 @@ async function runTask(ctx, deps, task, report) {
   // 暂存：清掉旧残留 → save_to 流式写盘。
   await cleanupStaged(ctx, task.id)
   const partName = `${task.id}.part`
+  const directPath = `${deps.settings.target_dir}/${task.out_name}`
   let download
+  let direct = false
   try {
+    // API 3.9（requires.api=3.9）：save_to 可直写宿主/CD2 目标目录 —— 省一次跨盘拷贝。
+    // 宿主若不开放该能力（错误里带 3.9/不支持字样）→ 回落「暂存 → 定名 → move」。
     download = await deps.http.request({
+      url: song.url,
+      method: 'GET',
+      save_to: directPath,
+      timeout_seconds: DOWNLOAD_TIMEOUT_SECONDS,
+    })
+    direct = true
+  } catch (error) {
+    const message = error?.message ?? String(error)
+    if (!/3\.9|不支持|未开放|requires/i.test(message)) {
+      await failTask(deps, task, `下载失败: ${message}`, report)
+      await persistTask(deps.kv, task)
+      return
+    }
+    download = null
+  }
+  if (download) {
+    if (download.status >= 400) {
+      await removePartial(ctx, directPath)
+      await failTask(deps, task, `下载失败: HTTP ${download.status} ${truncateChars(download.body ?? '', 200)}`, report)
+      await persistTask(deps.kv, task)
+      return
+    }
+    // 直写成功：文件已在目标目录，不需要定名与 move。
+    task.staged_path = directPath
+    task.status = STATUS_DONE
+    task.job_ref = ''
+    task.cd2_ref = ''
+    task.error = ''
+    task.updated_ms = nowMs()
+    await persistTask(deps.kv, task)
+    report.completed.push(task.id)
+    report.messages.push(`任务 ${task.id} 完成: ${task.out_name}`)
+    return
+  }
+  // 回落路径：暂存 → 定名 → move（老宿主或目标目录不可直写时走这里）。
+  let stagedDownload
+  try {
+    stagedDownload = await deps.http.request({
       url: song.url,
       method: 'GET',
       save_to: `${STAGING_SUBDIR}/${partName}`,
@@ -190,12 +242,12 @@ async function runTask(ctx, deps, task, report) {
     await persistTask(deps.kv, task)
     return
   }
-  if (download.status >= 400) {
-    await failTask(deps, task, `下载失败: HTTP ${download.status} ${truncateChars(download.body ?? '', 200)}`, report)
+  if (stagedDownload.status >= 400) {
+    await failTask(deps, task, `下载失败: HTTP ${stagedDownload.status} ${truncateChars(stagedDownload.body ?? '', 200)}`, report)
     await persistTask(deps.kv, task)
     return
   }
-  const staged = typeof download.path === 'string' && download.path ? download.path : `${STAGING_SUBDIR}/${partName}`
+  const staged = typeof stagedDownload.path === 'string' && stagedDownload.path ? stagedDownload.path : `${STAGING_SUBDIR}/${partName}`
   task.staged_path = staged
   task.status = STATUS_COPYING
   task.updated_ms = nowMs()

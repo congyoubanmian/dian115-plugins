@@ -105,17 +105,12 @@ test('plugin.json：v3 清单的基本约束', () => {
   assert.equal(MANIFEST.events, undefined)
 })
 
-test('plugin.json 的 settings[] 与 FLAT_DEFAULTS 同源', () => {
-  const keys = MANIFEST.settings.map((setting) => setting.key)
-  assert.deepEqual([...keys].sort(), [...FLAT_KEYS].sort())
-  for (const setting of MANIFEST.settings) {
-    assert.ok(setting.label, setting.key)
-    assert.ok(['boolean', 'number'].includes(setting.type), setting.key)
-    assert.equal(
-      setting.default,
-      FLAT_DEFAULTS[setting.key],
-      `${setting.key} 的清单默认值必须与代码默认一致`,
-    )
+test('plugin.json 不声明 settings（设置做在页面里），默认值由代码兜底', () => {
+  // 宿主规范：有页面的插件把设置做在页面里，清单不再声明 settings[]。
+  assert.equal(MANIFEST.settings, undefined, '有页面的插件不应在清单里声明 settings[]')
+  assert.ok(FLAT_KEYS.length > 0, '代码侧仍要有一份默认值，页面读不到宿主设置时用它兜底')
+  for (const key of FLAT_KEYS) {
+    assert.ok(key in FLAT_DEFAULTS, `${key} 必须有代码默认值`)
   }
 })
 

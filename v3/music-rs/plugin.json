@@ -3,12 +3,12 @@
   "schema_version": 3,
   "id": "music.rs",
   "name": "音乐下载",
-  "version": "1.1.1",
+  "version": "1.2.0",
   "description": "网易云 / QQ 音乐搜索、扫码登录（网易云 unikey 二维码；QQ 官方二维码 + graph.qq.com OAuth 授权换音乐凭据）与手动粘贴 Cookie 回退、我的歌单（网易云与 QQ 都能读我创建的与收藏的歌单；QQ 另有「每日推荐」与「我喜欢」两个入口）、按音质逐级取链；单曲与整张歌单入队后由后台任务自动推进：取链接 → 下载到插件暂存目录 → 定名 → 移交宿主复制进目标目录（CD2 挂载由宿主自动分流）→ 失败通知带「重试」按钮。旧 schema 1 WASM 插件（plugins/music-rs 0.3.19）的 v3 迁移版。",
   "author": "congyoubanmian",
   "homepage": "https://github.com/congyoubanmian/dian115-plugins",
   "requires": {
-    "api": "3.5"
+    "api": "3.9"
   },
   "icon": "icon.svg",
   "ui": {
