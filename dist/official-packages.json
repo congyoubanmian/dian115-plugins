@@ -1,32 +1,32 @@
 {
   "chase.rs": {
     "id": "chase.rs",
-    "filename": "chase.rs-91c08149-f82b-4b22-b0a4-a64e74537c81.dian115p",
-    "sha256": "135542fc57c149d64bb18f4b373bac939b597fc2bb3bb282502e5cf9739b988e",
+    "filename": "chase.rs-6cafa85b-fcc4-4590-8eda-87d50dd6a998.dian115p",
+    "sha256": "8487e29fe43c9fedc3b552464ab922e446b9a55c91fb9784f814816f62d0b48c",
     "bytes": 366834,
-    "release_id": "91c08149-f82b-4b22-b0a4-a64e74537c81",
+    "release_id": "6cafa85b-fcc4-4590-8eda-87d50dd6a998",
     "nickname": "镜头的蒙太奇",
     "member_id": 1876,
     "version": "0.1.13"
   },
   "music.rs": {
     "id": "music.rs",
-    "filename": "music.rs-0add168e-311b-413a-85b6-b3ce024e948e.dian115p",
-    "sha256": "d7a548692f0d25d0d48ea57c603813c18f0de38408b0e6cd9419b0d8b7ff8126",
+    "filename": "music.rs-8fa5af2e-e2d6-49b3-bd3b-1957a158bf63.dian115p",
+    "sha256": "f8eaf4b195160d29981ef3117c9a60e6b209196c0efbbee82179e62538cfaad5",
     "bytes": 527951,
-    "release_id": "0add168e-311b-413a-85b6-b3ce024e948e",
+    "release_id": "8fa5af2e-e2d6-49b3-bd3b-1957a158bf63",
     "nickname": "镜头的蒙太奇",
     "member_id": 1876,
     "version": "1.2.1"
   },
   "douban.rs": {
     "id": "douban.rs",
-    "filename": "douban.rs-a89df24a-ff36-4ec4-b79a-aa5c95f12610.dian115p",
-    "sha256": "96667834616ee84c57480b187829dba7240b3e248fde06cd873cf135201f4808",
-    "bytes": 425462,
-    "release_id": "a89df24a-ff36-4ec4-b79a-aa5c95f12610",
+    "filename": "douban.rs-6a766c5a-4326-499b-8a40-9c39a4f848dd.dian115p",
+    "sha256": "91b0e4966d0f19a411eba58dd21bba256b580215d64d4c9d8f71e39e3bc98f9f",
+    "bytes": 425451,
+    "release_id": "6a766c5a-4326-499b-8a40-9c39a4f848dd",
     "nickname": "镜头的蒙太奇",
     "member_id": 1876,
-    "version": "1.1.3"
+    "version": "1.1.4"
   }
 }
