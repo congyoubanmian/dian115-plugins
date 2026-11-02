@@ -4,9 +4,9 @@
 
 | 插件 | v3 源码目录 | 版本 | 任务数 | 旧实现 |
 | --- | --- | --- | --- | --- |
-| 追剧管家 `chase.rs` | `v3/chase-rs/` | 0.1.11 | 4 | `plugins/chase-rs`（0.1.9） |
-| 音乐下载 `music.rs` | `v3/music-rs/` | 1.1.0 | 2 + 1 event | `plugins/music-rs`（0.3.19） |
-| 豆瓣中心 `douban.rs` | `v3/douban-rs/` | 1.1.1 | 16 | `plugins/douban-rs`（0.2.4） |
+| 追剧管家 `chase.rs` | `v3/chase-rs/` | 0.1.12 | 4 | `plugins/chase-rs`（0.1.9） |
+| 音乐下载 `music.rs` | `v3/music-rs/` | 1.1.1 | 2 + 1 event | `plugins/music-rs`（0.3.19） |
+| 豆瓣中心 `douban.rs` | `v3/douban-rs/` | 1.1.2 | 16 | `plugins/douban-rs`（0.2.4） |
 
 约定：宿主插件 API 为 **3.5**（三个 `plugin.json` 的 `requires.api` 均为 `"3.5"`）；后台是宿主内 ESM
 JavaScript（无 `require`、无 Node 内置模块、无子进程），页面是 `ui/page.js` 导出的
@@ -62,7 +62,7 @@ dist/                   构建产物 .dian115p（本地生成，不提交；现�
 
 ## 各插件 covered / gaps
 
-### 追剧管家（`v3/chase-rs`，chase.rs 0.1.11）
+### 追剧管家（`v3/chase-rs`，chase.rs 0.1.12）
 
 **Covered（离线可验证）**
 
@@ -86,7 +86,7 @@ dist/                   构建产物 .dian115p（本地生成，不提交；现�
 - 旧版没有事件订阅，v3 也不声明 `events[]`；没有新增消息/回调能力。
 - 每日报告的实际渠道取决于宿主通知配置；旧版经宿主通知端点投递，本次未在真机核对渠道与按钮渲染。
 
-### 音乐下载（`v3/music-rs`，music.rs 1.1.0）
+### 音乐下载（`v3/music-rs`，music.rs 1.1.1）
 
 **Covered（离线可验证）**
 
@@ -131,7 +131,7 @@ dist/                   构建产物 .dian115p（本地生成，不提交；现�
   实现，交给 music-rs 负责人决定是改成索引首条还是注入固定时钟。
 - 真机上的扫码、eapi 取链、下载落盘、CD2 move 与通知按钮回调均未验证。
 
-### 豆瓣中心（`v3/douban-rs`，douban.rs 1.1.1）
+### 豆瓣中心（`v3/douban-rs`，douban.rs 1.1.2）
 
 **Covered（离线可验证）**
 
@@ -302,7 +302,7 @@ bash scripts/v3-build.sh      # 再 project-check → pack → 打印 sha256
 相同的包；已有包会被覆盖。产物：
 
 ```
-dist/chase-rs-0.1.11.dian115p
+dist/chase-rs-0.1.12.dian115p
 dist/music-rs.dian115p
 dist/douban-rs.dian115p
 ```
@@ -321,10 +321,10 @@ node v3-kit/conformance/project-check.mjs v3/music-rs
 node v3-kit/conformance/project-check.mjs v3/douban-rs
 
 # 3) 打包（输出必须在源码目录之外；后缀必须是 .dian115p）
-node v3-kit/conformance/pack.mjs v3/chase-rs dist/chase-rs-0.1.11.dian115p
+node v3-kit/conformance/pack.mjs v3/chase-rs dist/chase-rs-0.1.12.dian115p
 node v3-kit/conformance/pack.mjs v3/music-rs dist/music-rs.dian115p
 node v3-kit/conformance/pack.mjs v3/douban-rs dist/douban-rs.dian115p
-node scripts/v3-pack-check.mjs dist/chase-rs-0.1.11.dian115p v3/chase-rs   # 查包
+node scripts/v3-pack-check.mjs dist/chase-rs-0.1.12.dian115p v3/chase-rs   # 查包
 
 # 4) 纯逻辑单测（Node 24 下要传文件 glob，不能只传目录）
 (cd v3/tests/chase-rs  && node --test *.test.mjs)   # 119 pass
@@ -346,6 +346,37 @@ bash scripts/v3-verify-ui-artifacts.sh
 单测与夹具放在 `v3/tests/<plugin>/`（插件目录之外）：官方 `starter` 模板的插件目录也不含测试，
 测试不进 `.dian115p` 包（避免审计把夹具里的向量当成可疑编码数据）；
 必须传文件 glob。
+
+## 正式发布：编译 MCP（protected-v4）
+
+宿主 2026-11-02 起要求**正式安装/更新走「编译 MCP」签出的 `protected-v4` 包**；`check.mjs --pack`
+产出的可读 `.dian115p` 只是**本机调试包**，不能上架、也不能覆盖同 ID 的正式安装。
+
+签发链路（契约见 `v3-kit/docs/plugin-platform/examples/dian-plugin/references/compilation.md`）：
+
+- 端点：`POST {DIAN115_URL}/api/openapi/v1/plugin-build/mcp`，请求头带**系统设置里的 OpenAPI Key**
+  （`X-OpenAPI-Key` 或 `Authorization: Bearer`）；JSON-RPC 2.0 + Streamable HTTP，协议版本 `2025-06-18`。
+- 工具：`dian115_build_environment`（环境/预算/账号/阻塞项）、`dian115_verify_build_account`（实时会员身份）、
+  `dian115_check_plugin`（结构与受限调用检查，不出包）、`dian115_compile_plugin`（验会员 → 真实编译 → 加密 →
+  本地签名 → 出 `package_base64`）。
+- 成功判据：非错误结果 **且** `structuredContent.release_ready === true` **且** 有 `package_base64`
+  **且** 解码后 SHA256 与返回值一致。
+- 署名：正式包的开发者名 = 签名绑定的**会员昵称**（宿主覆盖源码自填 `author`），市场索引的 `author` 用同一昵称。
+
+本仓库的接入：
+
+| 脚本 | 作用 |
+| --- | --- |
+| `scripts/v3-compile.mjs` | 编译 MCP 客户端：`env` / `account` / `check <目录>` / `compile <目录>`；正式包与 `dist/official-packages.json` 清单 |
+| `scripts/release-v3-local.sh` | 本地发版：构建 → 审查闸门 → 可读调试包 → 逐个插件签发正式包 → 更新市场索引 → 提交 → 打 tag → 上传 Release 资产 |
+| `scripts/v3-dev-verify.mjs` | 用地址 + APIKEY 探测实例可达性与鉴权 |
+| `scripts/v3-check-official.mjs` | 官方结构检查 + 恶意特征扫描；critical/high 必须在 `scripts/v3-audit-allowlist.json` 登记误报理由 |
+
+凭据只走仓库根的 `.env.local`（已 gitignore）或 CI secret：`DIAN115_URL` / `DIAN115_API_KEY` /
+`DIAN115_ACCOUNT_ID`（癫影账号 id，多账号时必填；**不是**会员 id，也不是 API Key）。
+
+CI（`release-v3.yml`）只做检查与**可读调试包** artifact：编译 MCP 需要可达的实例与系统 Key，
+CI 拿不到，正式发布因此在本地发版脚本里完成。
 
 ## 安装到 DIAN115（手动上传 .dian115p）
 
@@ -374,9 +405,12 @@ bash scripts/v3-verify-ui-artifacts.sh
 
 | id | version | delivery | source_url | sha256 |
 | --- | --- | --- | --- | --- |
-| `chase.rs` | 0.1.11 | source | `…/releases/download/v3-2026.11.02/chase-rs-0.1.11.dian115p` | `23aa8b7c…e6c7c3d3` |
-| `music.rs` | 1.1.0 | source | `…/releases/download/v3-2026.11.02/music-rs.dian115p` | `8c43b0dc…81df1b32` |
-| `douban.rs` | 1.1.1 | source | `…/releases/download/v3-2026.11.02/douban-rs.dian115p` | `cafb7662…3047079b` |
+| `chase.rs` | 0.1.12 | protected-v4 | 正式包 `chase.rs-<release_id>.dian115p` | 见 `v3-market-index.json` |
+| `music.rs` | 1.1.1 | protected-v4 | 正式包 `music.rs-<release_id>.dian115p` | 见 `v3-market-index.json` |
+| `douban.rs` | 1.1.2 | protected-v4 | 正式包 `douban.rs-<release_id>.dian115p` | 见 `v3-market-index.json` |
+
+（正式包由宿主「编译 MCP」签发，`delivery` 是 `protected-v4`，`author` 是签名绑定的**会员昵称**；
+`sha256` 与 `source_url` 由发布脚本按实际产物实算写入 `v3-market-index.json`。）
 
 （表中的 sha256 为节选，完整 64 位值以 `v3-market-index.json` 为准；Release 资产与
 `SHA256SUMS.txt` 是发布环境的实算值。本地构建的包逐文件内容一致，但 zip 压缩字节会随
@@ -401,7 +435,7 @@ v3 索引 schema。仓库内旧 `plugin-market/index.json` 是 v1 格式，v3 �
 
 | 检查 | 命令 | 结果 |
 | --- | --- | --- |
-| 三个插件结构检查 | `node v3-kit/conformance/project-check.mjs v3/<plugin>` | 3/3 通过：`chase.rs 0.1.11`、`music.rs 1.1.0`、`douban.rs 1.1.1` |
+| 三个插件结构检查 | `node v3-kit/conformance/project-check.mjs v3/<plugin>` | 3/3 通过：`chase.rs 0.1.12`、`music.rs 1.1.1`、`douban.rs 1.1.2` |
 | 全部 JS 语法 | `find v3/... -name '*.js' -exec node --check {} +` | 通过：chase 16 / music 30 / douban 38 个文件 |
 | 纯逻辑单测 | `(cd v3/tests/<plugin> && node --test *.test.*)` | chase 119 pass / music 170 pass / douban 100 pass，0 fail |
 | 打包 | `bash scripts/v3-build.sh`（连跑两次） | 两次 sha256 完全一致；产物 193844 / 284582 / 263162 字节（界面换成 Vue 3 自打包后比原生 JS 版大；sha256 见表下） |
@@ -419,7 +453,7 @@ v3 索引 schema。仓库内旧 `plugin-market/index.json` 是 v1 格式，v3 �
 | 检查 | 命令 | 结果 |
 | --- | --- | --- |
 | 脚本语法 | `bash -n scripts/v3-build.sh scripts/v3-build-ui.sh` | 通过（另加 `bash -n scripts/v3-verify-ui-artifacts.sh`） |
-| 三个插件结构检查 | `node v3-kit/conformance/project-check.mjs v3/<plugin>` | 3/3 通过：`chase.rs 0.1.11`、`music.rs 1.1.0`、`douban.rs 1.1.1` |
+| 三个插件结构检查 | `node v3-kit/conformance/project-check.mjs v3/<plugin>` | 3/3 通过：`chase.rs 0.1.12`、`music.rs 1.1.1`、`douban.rs 1.1.2` |
 | 界面构建可重复 | `bash scripts/v3-build-ui.sh` 连跑两次，比对 sha256 | 两次产物字节相同（chase `897e1d4c…5937c8ad`、douban `fc90a3dd…1e967675`、music `574a6486…554628e2`） |
 | 锁文件可复现 | 干净副本里 `rm -rf node_modules && npm ci` 后重建 | 与入库产物逐字节相同；本地多次打包 sha256 一致（跨环境的 zip 压缩字节会略差十余字节，以 Release 的 `SHA256SUMS.txt` 为准） |
 | 一键构建幂等 | `bash scripts/v3-build.sh` 连跑两次 | 两次 sha256 完全一致（本地值；Release 实算值见市场索引）；产物 193844 / 284582 / 263162 字节 |

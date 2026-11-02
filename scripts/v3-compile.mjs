@@ -151,6 +151,14 @@ function collectFiles(directory) {
   return { files, binary }
 }
 
+function pluginIdOf(directory) {
+  try {
+    return JSON.parse(readFileSync(resolve(directory, 'plugin.json'), 'utf8')).id
+  } catch {
+    return 'unknown'
+  }
+}
+
 function toTextArgs(collected) {
   if (collected.binary) {
     const payload = {}
@@ -174,7 +182,14 @@ const handshakeResult = await handshake()
 const serverInfo = handshakeResult?.serverInfo?.name ? `（服务端 ${handshakeResult.serverInfo.name}）` : ''
 console.log(`MCP 已连接 ${base}${MCP_PATH}${serverInfo}`)
 
-if (command === 'env') {
+if (command === 'tools') {
+  const result = await rpc('tools/list', {})
+  for (const tool of result?.tools ?? []) {
+    console.log(`\n── ${tool.name}`)
+    if (tool.description) console.log(tool.description.split('\n')[0].slice(0, 160))
+    console.log('   入参 schema：' + JSON.stringify(tool.inputSchema ?? {}).slice(0, 1200))
+  }
+} else if (command === 'env') {
   const result = await callTool('dian115_build_environment', {})
   console.log(JSON.stringify(result.structured ?? result.text, null, 2))
   if (result.isError) {
@@ -199,7 +214,10 @@ if (command === 'env') {
     console.error('超出 MCP 预算：最多 4096 个文件、源码合计 16 MiB。')
     process.exit(1)
   }
-  const payload = { ...toTextArgs(collected), ...(accountId ? { account_id: accountId } : {}) }
+  // check 的入参只认 files/files_base64（additionalProperties:false）；account_id 只给 compile。
+  const payload = command === 'compile' && accountId
+    ? { ...toTextArgs(collected), account_id: accountId }
+    : toTextArgs(collected)
   const result = await callTool(command === 'compile' ? 'dian115_compile_plugin' : 'dian115_check_plugin', payload)
   if (command === 'check') {
     console.log(JSON.stringify(result.structured ?? result.text, null, 2))
@@ -212,6 +230,12 @@ if (command === 'env') {
       console.error(JSON.stringify(structured ?? result.text, null, 2))
       process.exit(1)
     }
+    // 署名昵称：编译响应里不一定带，取会员校验结果补上（市场索引的 author 要用同一个昵称）
+    let nickname = structured.nickname ?? ''
+    if (!nickname) {
+      const verify = await callTool('dian115_verify_build_account', accountId ? { account_id: accountId } : {})
+      nickname = verify?.structured?.identity?.nickname ?? ''
+    }
     const bytes = Buffer.from(base64, 'base64')
     const sha256 = createHash('sha256').update(bytes).digest('hex')
     const expected = structured.sha256 ?? structured.sha256_hex
@@ -223,11 +247,25 @@ if (command === 'env') {
     mkdirSync(resolve(root, outDir), { recursive: true })
     const target = resolve(root, outDir, filename)
     writeFileSync(target, bytes)
+    // 记进 dist/official-packages.json：市场索引要用正式包的文件名与 sha256（作者取会员昵称）
+    const ledgerPath = resolve(root, outDir, 'official-packages.json')
+    let ledger = existsSync(ledgerPath) ? JSON.parse(readFileSync(ledgerPath, 'utf8')) : {}
+    ledger[pluginIdOf(directory)] = {
+      id: pluginIdOf(directory),
+      filename,
+      sha256,
+      bytes: bytes.length,
+      release_id: structured.release_id ?? structured.releaseId ?? '',
+      nickname,
+      member_id: structured.member_id ?? '',
+      version: structured.version ?? '',
+    }
+    writeFileSync(ledgerPath, JSON.stringify(ledger, null, 2) + '\n')
     console.log(`正式包已保存：${target}`)
     console.log(`  字节 ${bytes.length}｜sha256 ${sha256}`)
     console.log(`  开发者署名取签名里的会员昵称（宿主会覆盖源码自填 author）；市场 author 也要用同一昵称。`)
   }
 } else {
-  console.error('用法：node scripts/v3-compile.mjs env | account | check <目录> | compile <目录>')
+  console.error('用法：node scripts/v3-compile.mjs tools | env | account | check <目录> | compile <目录>')
   process.exit(64)
 }
