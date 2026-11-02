@@ -41,7 +41,7 @@ jobs:
           ref: ${{ inputs.ref || github.ref }}
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: '24'
           # npm 缓存：缓存键由 v3-ui/package-lock.json 决定，锁文件不变就命中缓存。
