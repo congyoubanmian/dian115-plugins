@@ -49,3 +49,7 @@ v3-ui/node_modules/
 v3-ui/dist/
 v3-ui/.vite/
 *.tsbuildinfo
+
+# 开发者实例凭据（地址 + 系统设置里的 APIKEY）；模板见 .env.example
+.env.local
+.env
