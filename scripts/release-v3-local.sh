@@ -38,6 +38,8 @@ if [ ! -f .env.local ]; then
 fi
 
 echo "== 1) 构建 + 审查 + 可读调试包 =="
+# 先清掉历史产物：dist/ 里留着上一轮的可读包与正式包，上传时会混进 Release
+rm -f dist/*.dian115p dist/official-packages.json
 bash scripts/v3-build.sh
 
 echo "== 2) 编译 MCP 签发正式包 =="
