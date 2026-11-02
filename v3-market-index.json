@@ -34,7 +34,7 @@
     {
       "id": "music.rs",
       "name": "音乐下载",
-      "version": "1.2.0",
+      "version": "1.2.1",
       "description": "网易云 / QQ 音乐搜索、扫码登录（网易云 unikey 二维码；QQ 官方二维码 + graph.qq.com OAuth 授权换音乐凭据）与手动粘贴 Cookie 回退、按音质逐级取链；单曲与整张歌单入队后由后台任务自动推进：取链接 → 下载到插件暂存目录 → 定名 → 移交宿主复制进目标目录（CD2 挂载由宿主自动分流）→ 失败通知带「重试」按钮。旧 schema 1 WASM 插件（plugins/music-rs 0.3.19）的 v3 迁移版。",
       "author": "镜头的蒙太奇",
       "source_url": "https://github.com/congyoubanmian/dian115-plugins/releases/download/v3-2026.11.02-2/music.rs-c7bf8ce3-2b50-4e87-af65-fa3c723f337f.dian115p",
@@ -63,7 +63,7 @@
         "risk": "把网易云/QQ 音乐直链下载到插件暂存目录并复制进用户配置的宿主目录（可能经 CD2 上传网盘）；失败时发送带重试按钮的通知；从宿主 CookieCloud 读取网易云/QQ 域登录 Cookie；扫码登录在本插件 KV 里保存网易云/QQ 音乐登录凭据（QQ 扫码登录期间会访问 graph.qq.com 的 OAuth 授权端点换凭据）。"
       },
       "homepage": "https://github.com/congyoubanmian/dian115-plugins",
-      "changelog": "v3 迁移首个发布：plugins/music-rs 0.3.19（Rust WASM）迁移为宿主内 ESM；搜索/登录/取链/歌单入队/下载队列保留，暂存改插件自有 downloads/，入库交给宿主 move（移除 CD2 直送），CookieCloud 走宿主内置服务，Telegram 重试改为清单 events 回调任务。1.0.1：页面改写为 Vue 3；QQ 取链对齐参考客户端 Lilt：先取 media_mid，登录态按 F000/M800/M500 逐档请求 vkey，相对 purl 用 sip 域名拼接，匿名仅请求 M500。1.0.2：网易云与 QQ 音乐扫码登录都在单插件内实现；QQ 走官方二维码 + graph.qq.com OAuth 授权换 musicid/musickey，登录 Cookie 只写插件 KV，保留手动粘贴回退。1.1.0：QQ 音乐内容能力补齐——我的歌单（我创建的 + 收藏的）、每日推荐、我喜欢、歌单歌曲分页与整单入队；musicu 请求带 authst，登录时保存 encryptUin。；本版起按宿主「编译 MCP」出正式包（protected-v4），署名取签名绑定的会员昵称。；1.2.0：requires.api 提到 3.9，下载直写目标目录（宿主不支持时回落暂存→move）；设置做在页面里。\""
+      "changelog": "v3 迁移首个发布：plugins/music-rs 0.3.19（Rust WASM）迁移为宿主内 ESM；搜索/登录/取链/歌单入队/下载队列保留，暂存改插件自有 downloads/，入库交给宿主 move（移除 CD2 直送），CookieCloud 走宿主内置服务，Telegram 重试改为清单 events 回调任务。1.0.1：页面改写为 Vue 3；QQ 取链对齐参考客户端 Lilt：先取 media_mid，登录态按 F000/M800/M500 逐档请求 vkey，相对 purl 用 sip 域名拼接，匿名仅请求 M500。1.0.2：网易云与 QQ 音乐扫码登录都在单插件内实现；QQ 走官方二维码 + graph.qq.com OAuth 授权换 musicid/musickey，登录 Cookie 只写插件 KV，保留手动粘贴回退。1.1.0：QQ 音乐内容能力补齐——我的歌单（我创建的 + 收藏的）、每日推荐、我喜欢、歌单歌曲分页与整单入队；musicu 请求带 authst，登录时保存 encryptUin。；本版起按宿主「编译 MCP」出正式包（protected-v4），署名取签名绑定的会员昵称。；1.2.0：requires.api 提到 3.9，下载直写目标目录（宿主不支持时回落暂存→move）；设置做在页面里。；1.2.1：直写目标目录的能力判断改用宿主上报的 host_api（不再靠错误信息猜测）。\""
     },
     {
       "id": "douban.rs",

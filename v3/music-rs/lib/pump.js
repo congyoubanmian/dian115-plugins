@@ -73,6 +73,16 @@ async function cleanupStaged(ctx, taskId) {
   }
 }
 
+/** 宿主上报的插件 API 版本是否 ≥ 指定版本（host_api 形如 "3.9"；读不到按不支持处理）。 */
+function hostApiAtLeast(hostApi, major, minor) {
+  const parts = String(hostApi ?? '').split('.')
+  const maj = Number.parseInt(parts[0] ?? '', 10)
+  const min = Number.parseInt(parts[1] ?? '', 10)
+  if (!Number.isFinite(maj)) return false
+  if (maj > major) return true
+  return maj === major && (Number.isFinite(min) ? min : 0) >= minor
+}
+
 /** 直写目标目录失败时清掉半截文件（尽力而为；清不掉也不该挡住任务失败语义）。 */
 async function removePartial(ctx, path) {
   if (!path) return
@@ -188,26 +198,30 @@ async function runTask(ctx, deps, task, report) {
   await cleanupStaged(ctx, task.id)
   const partName = `${task.id}.part`
   const directPath = `${deps.settings.target_dir}/${task.out_name}`
+  // API 3.9（requires.api=3.9）：save_to 可直写宿主/CD2 目标目录 —— 省一次跨盘拷贝。
+  // 能力判断以宿主上报的 host_api 为准；真失败时只有「像是能力没开放」才回落
+  // 「暂存 → 定名 → move」，其余按下载失败处理（避免把网络错误当成能力缺失重下一遍）。
+  const directSupported = hostApiAtLeast(ctx.plugin?.host_api, 3, 9)
   let download
   let direct = false
-  try {
-    // API 3.9（requires.api=3.9）：save_to 可直写宿主/CD2 目标目录 —— 省一次跨盘拷贝。
-    // 宿主若不开放该能力（错误里带 3.9/不支持字样）→ 回落「暂存 → 定名 → move」。
-    download = await deps.http.request({
-      url: song.url,
-      method: 'GET',
-      save_to: directPath,
-      timeout_seconds: DOWNLOAD_TIMEOUT_SECONDS,
-    })
-    direct = true
-  } catch (error) {
-    const message = error?.message ?? String(error)
-    if (!/3\.9|不支持|未开放|requires/i.test(message)) {
-      await failTask(deps, task, `下载失败: ${message}`, report)
-      await persistTask(deps.kv, task)
-      return
+  if (directSupported) {
+    try {
+      download = await deps.http.request({
+        url: song.url,
+        method: 'GET',
+        save_to: directPath,
+        timeout_seconds: DOWNLOAD_TIMEOUT_SECONDS,
+      })
+      direct = true
+    } catch (error) {
+      const message = error?.message ?? String(error)
+      if (!/3\.9|不支持|未开放|requires|api/i.test(message)) {
+        await failTask(deps, task, `下载失败: ${message}`, report)
+        await persistTask(deps.kv, task)
+        return
+      }
+      download = null
     }
-    download = null
   }
   if (download) {
     if (download.status >= 400) {

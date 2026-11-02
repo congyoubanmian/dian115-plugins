@@ -14,7 +14,7 @@ import { DEFAULT_QUALITY } from '../../music-rs/lib/settings.js'
 
 // ─────────────────────────── 假宿主 ───────────────────────────
 
-function makeHost({ songUrlBodies = null, refuseDirectWrite = false } = {}) {
+function makeHost({ songUrlBodies = null, refuseDirectWrite = false, hostApi = '3.9' } = {}) {
   const kvStore = new Map()
   const files = new Map() // path → size
   const calls = { http: [], files: [], notify: [] }
@@ -47,6 +47,8 @@ function makeHost({ songUrlBodies = null, refuseDirectWrite = false } = {}) {
   const ctx = {
     id: 'music.rs',
     signal: undefined,
+    // 宿主上报的插件 API 版本：3.9 起 save_to 可直写宿主/CD2 目标目录
+    plugin: { id: 'music.rs', name: '音乐下载', version: '1.2.0', generation: 'g', revision: 'r', host_api: hostApi },
     storage,
     api: {
       async get(path) {
@@ -188,7 +190,7 @@ test('pump full pipeline: url → save_to 直写目标目录 → done（API 3.9�
 })
 
 test('宿主不支持 3.9 直写时回落：暂存 → 定名 → move → done', async () => {
-  const host = makeHost({ refuseDirectWrite: true })
+  const host = makeHost({ hostApi: '3.5' })
   const { task } = await seedEnqueued(host)
   const summary = await runPump(host)
   assert.deepEqual(summary.completed, [task.id])
@@ -226,8 +228,8 @@ test('pump reports link failure and requeues until MAX_ATTEMPTS then notifies wi
 })
 
 test('pump counts move failure on copying and finishes after the target frees up', async () => {
-  // 拒绝 3.9 直写 → 走暂存→定名→move，move 失败才有场景
-  const host = makeHost({ refuseDirectWrite: true })
+  // 宿主 API 3.5（无直写能力）→ 走暂存→定名→move，move 失败才有场景
+  const host = makeHost({ hostApi: '3.5' })
   const { task } = await seedEnqueued(host)
   // 第 1 轮：入库失败（目标已存在）→ copying + attempts=1，暂存文件保留。
   host.failMoveFor.add('周杰伦 - 晴天.flac')
@@ -307,10 +309,11 @@ test('pump respects max_active and the one-finalization gate', async () => {
   const b = await seedEnqueued(host, { song_id: '2' })
   await seedEnqueued(host, { song_id: '3' })
   // 队列取序与分片 Rust pump 一致：从排序后的索引头取第一个 queued
-  // （索引按 updated_ms 倒序、同值按 id 倒序；persistTask 就地替换不重排 —— 三条
-  // 任务同一毫秒入队时，队首 = id 最大的那条）。
+  // （索引按 updated_ms 倒序、同值按 id 倒序，见 tasks-core.sortIndex）。
+  // 这里直接按索引顺序取队首，不猜「id 最大的那条」——三条任务入队跨毫秒时
+  // updated_ms 不同，队首由时间戳决定，猜 id 会偶发失败。
   const index = await loadIndex(kv)
-  const head = index.filter((entry) => entry.status === 'queued').map((entry) => entry.id).sort().at(-1)
+  const head = index.find((entry) => entry.status === 'queued')?.id
   const summary = await runPump(host)
   // max_active=2：本轮最多新开 2 首；但收尾门禁（一次 pump 最多收尾 1 首）在第一首
   // 完成后停止新开 —— 所以恰好 started=1，完成的是队首。

@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="豆瓣中心">
+  <rect width="64" height="64" rx="16" fill="#00A344"/>
+  <!-- 榜单星标 -->
+  <path fill="#fff" d="M32 11l4.9 9.9 10.9 1.6-7.9 7.7 1.9 10.8L32 35.5l-9.8 5.5 1.9-10.8-7.9-7.7 10.9-1.6z"/>
+  <!-- 排名条 -->
+  <rect x="15" y="39" width="12" height="6" rx="3" fill="#EAF7EE"/>
+  <rect x="15" y="47" width="20" height="6" rx="3" fill="#EAF7EE"/>
+  <rect x="15" y="55" width="28" height="6" rx="3" fill="#fff"/>
+</svg>

@@ -159,14 +159,11 @@ node v3-kit/conformance/project-check.mjs v3/music-rs
 node v3-kit/conformance/pack.mjs v3/music-rs dist/music-rs.dian115p
 ```
 
-170 项的分布（`node --test <file>` 逐个文件跑出来的 `ℹ tests` 数）：
+171 项的分布（`node --test <file>` 逐个文件跑出来的 `ℹ tests` 数）：
 `music-api` 54 / `qq` 46 / `cookies` 14 / `settings-queue` 12 / `encoding` 11 / `tasks-core` 9 /
 `netease` 8 / `eapi` 6 / `pump` 6 / `qr` 4 / `jobs` 2 / `kv-path` 1。
 
 注意：本机没有可用的 dian115 宿主（授权锁定），以上为离线验证；真机安装行为（两条扫码链路、取链、下载、通知投递）未验证。
-另：`v3/tests/music-rs/pump.test.js:287` 的「队首」断言**偶发失败**（本轮连跑 10 次复现 2 次）——
-该用例用随机短 id 排序来预测队首，与 `sortIndex` 的同毫秒并列排序会撞车；
-它是既有问题（`main` 上同样复现），与本轮歌单改动无关，也**没有删改这条测试**。
 
 ## 文件
 

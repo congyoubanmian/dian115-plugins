@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="音乐下载">
+  <rect width="64" height="64" rx="16" fill="#2080f0"/>
+  <!-- 音符 -->
+  <path fill="#fff" d="M40.5 13v24.6a7.5 7.5 0 1 1-4-6.63V19.8l-11 2.4v19.4a7.5 7.5 0 1 1-4-6.63V18.2a2.5 2.5 0 0 1 1.95-2.44l14-3.05A2.5 2.5 0 0 1 40.5 13z"/>
+  <!-- 下载箭头条 -->
+  <rect x="14" y="50" width="24" height="5" rx="2.5" fill="#dbeafe"/>
+  <rect x="14" y="57" width="36" height="4" rx="2" fill="#fff"/>
+</svg>
