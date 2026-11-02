@@ -13,8 +13,8 @@
       "version": "0.1.13",
       "description": "小时级对齐「订阅池里的剧集订阅」与「Emby 已有集数」：只对可解析的条目做只增 PATCH total_episodes，并产出追剧日历与当天一次的日报；减方向只给建议，从不写。已核实无缺口的条目在 5 小时窗口内复用缓存，不重复探测 Emby。界面按统一设计稿重绘：指标瓦片、徽标胶囊、双栏看板与移动端单栏适配。",
       "author": "镜头的蒙太奇",
-      "source_url": "https://github.com/congyoubanmian/dian115-plugins/releases/download/v3-2026.11.02-2/chase.rs-c603183c-59dd-4b85-9787-19edc5df4714.dian115p",
-      "sha256": "b4d21d8da700d4d81d25d6545a35d08566ea9d4f83b0cdb61d1875393ecc137f",
+      "source_url": "https://github.com/congyoubanmian/dian115-plugins/releases/download/v3-2026.11.02-3/chase.rs-91c08149-f82b-4b22-b0a4-a64e74537c81.dian115p",
+      "sha256": "135542fc57c149d64bb18f4b373bac939b597fc2bb3bb282502e5cf9739b988e",
       "delivery": "protected-v4",
       "declared_usage": {
         "apis": [
@@ -35,11 +35,11 @@
     {
       "id": "music.rs",
       "name": "音乐下载",
-      "version": "1.2.0",
+      "version": "1.2.1",
       "description": "网易云 / QQ 音乐搜索、扫码登录（网易云 unikey 二维码；QQ 官方二维码 + graph.qq.com OAuth 授权换音乐凭据）与手动粘贴 Cookie 回退、按音质逐级取链；单曲与整张歌单入队后由后台任务自动推进：取链接 → 下载到插件暂存目录 → 定名 → 移交宿主复制进目标目录（CD2 挂载由宿主自动分流）→ 失败通知带「重试」按钮。旧 schema 1 WASM 插件（plugins/music-rs 0.3.19）的 v3 迁移版。",
       "author": "镜头的蒙太奇",
-      "source_url": "https://github.com/congyoubanmian/dian115-plugins/releases/download/v3-2026.11.02-2/music.rs-c7bf8ce3-2b50-4e87-af65-fa3c723f337f.dian115p",
-      "sha256": "af5dcd5b2e1dc5d08afb3d5a68c14c4dea236b7f744cd80fce5c90708851ec66",
+      "source_url": "https://github.com/congyoubanmian/dian115-plugins/releases/download/v3-2026.11.02-3/music.rs-0add168e-311b-413a-85b6-b3ce024e948e.dian115p",
+      "sha256": "d7a548692f0d25d0d48ea57c603813c18f0de38408b0e6cd9419b0d8b7ff8126",
       "delivery": "protected-v4",
       "declared_usage": {
         "apis": [
@@ -64,7 +64,7 @@
         "risk": "把网易云/QQ 音乐直链下载到插件暂存目录并复制进用户配置的宿主目录（可能经 CD2 上传网盘）；失败时发送带重试按钮的通知；从宿主 CookieCloud 读取网易云/QQ 域登录 Cookie；扫码登录在本插件 KV 里保存网易云/QQ 音乐登录凭据（QQ 扫码登录期间会访问 graph.qq.com 的 OAuth 授权端点换凭据）。"
       },
       "homepage": "https://github.com/congyoubanmian/dian115-plugins",
-      "changelog": "v3 迁移首个发布：plugins/music-rs 0.3.19（Rust WASM）迁移为宿主内 ESM；搜索/登录/取链/歌单入队/下载队列保留，暂存改插件自有 downloads/，入库交给宿主 move（移除 CD2 直送），CookieCloud 走宿主内置服务，Telegram 重试改为清单 events 回调任务。1.0.1：页面改写为 Vue 3；QQ 取链对齐参考客户端 Lilt：先取 media_mid，登录态按 F000/M800/M500 逐档请求 vkey，相对 purl 用 sip 域名拼接，匿名仅请求 M500。1.0.2：网易云与 QQ 音乐扫码登录都在单插件内实现；QQ 走官方二维码 + graph.qq.com OAuth 授权换 musicid/musickey，登录 Cookie 只写插件 KV，保留手动粘贴回退。1.1.0：QQ 音乐内容能力补齐——我的歌单（我创建的 + 收藏的）、每日推荐、我喜欢、歌单歌曲分页与整单入队；musicu 请求带 authst，登录时保存 encryptUin。；本版起按宿主「编译 MCP」出正式包（protected-v4），署名取签名绑定的会员昵称。；1.2.0：requires.api 提到 3.9，下载直写目标目录（宿主不支持时回落暂存→move）；设置做在页面里。\""
+      "changelog": "v3 迁移首个发布：plugins/music-rs 0.3.19（Rust WASM）迁移为宿主内 ESM；搜索/登录/取链/歌单入队/下载队列保留，暂存改插件自有 downloads/，入库交给宿主 move（移除 CD2 直送），CookieCloud 走宿主内置服务，Telegram 重试改为清单 events 回调任务。1.0.1：页面改写为 Vue 3；QQ 取链对齐参考客户端 Lilt：先取 media_mid，登录态按 F000/M800/M500 逐档请求 vkey，相对 purl 用 sip 域名拼接，匿名仅请求 M500。1.0.2：网易云与 QQ 音乐扫码登录都在单插件内实现；QQ 走官方二维码 + graph.qq.com OAuth 授权换 musicid/musickey，登录 Cookie 只写插件 KV，保留手动粘贴回退。1.1.0：QQ 音乐内容能力补齐——我的歌单（我创建的 + 收藏的）、每日推荐、我喜欢、歌单歌曲分页与整单入队；musicu 请求带 authst，登录时保存 encryptUin。；本版起按宿主「编译 MCP」出正式包（protected-v4），署名取签名绑定的会员昵称。；1.2.0：requires.api 提到 3.9，下载直写目标目录（宿主不支持时回落暂存→move）；设置做在页面里。；1.2.1：直写目标目录的能力判断改用宿主上报的 host_api（不再靠错误信息猜测）。\""
     },
     {
       "id": "douban.rs",
@@ -72,8 +72,8 @@
       "version": "1.1.3",
       "description": "豆瓣榜单抓取 + 黑名单过滤 + 观察队列 + 聚合订阅；从宿主 CookieCloud（或自建 CookieCloud / 手动粘贴 cookie）取豆瓣登录态，自动追订「我的想看」；TMDB 匹配失败时用豆瓣详情（原名/又名）回退重搜；支持最低评分/年份/地区订阅过滤与「已删除不重订」墓碑集。旧 schema 1 WASM 插件（plugins/douban-rs 0.2.4）的 v3 迁移版；页面提供榜单海报墙、观察队列/我的想看、历史日志与设置。",
       "author": "镜头的蒙太奇",
-      "source_url": "https://github.com/congyoubanmian/dian115-plugins/releases/download/v3-2026.11.02-2/douban.rs-b8bde64c-016e-4324-bcd3-7fe0fbf6ca8d.dian115p",
-      "sha256": "28a563c7c58c9e3b719663cb257981351421550e2ba7d9dd7192607475933609",
+      "source_url": "https://github.com/congyoubanmian/dian115-plugins/releases/download/v3-2026.11.02-3/douban.rs-a89df24a-ff36-4ec4-b79a-aa5c95f12610.dian115p",
+      "sha256": "96667834616ee84c57480b187829dba7240b3e248fde06cd873cf135201f4808",
       "delivery": "protected-v4",
       "declared_usage": {
         "apis": [
