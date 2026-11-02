@@ -37,6 +37,9 @@ if [ ! -f .env.local ]; then
   exit 1
 fi
 
+echo "== 0) 密钥扫描（凭据没漏进仓库）=="
+node scripts/v3-secret-scan.mjs
+
 echo "== 1) 构建 + 审查 + 可读调试包 =="
 # 先清掉历史产物：dist/ 里留着上一轮的可读包与正式包，上传时会混进 Release
 rm -f dist/*.dian115p dist/official-packages.json
