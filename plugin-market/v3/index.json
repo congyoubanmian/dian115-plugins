@@ -13,7 +13,7 @@
       "description": "小时级对齐「订阅池里的剧集订阅」与「Emby 已有集数」：只对可解析的条目做只增 PATCH total_episodes，并产出追剧日历与当天一次的日报；减方向只给建议，从不写。已核实无缺口的条目在 5 小时窗口内复用缓存，不重复探测 Emby。界面按统一设计稿重绘：指标瓦片、徽标胶囊、双栏看板与移动端单栏适配。",
       "author": "congyoubanmian",
       "source_url": "https://github.com/congyoubanmian/dian115-plugins/releases/download/v3-2026.11.02/chase-rs-0.1.11.dian115p",
-      "sha256": "df3c2bab52831a0e7fcc69250dae956654ee97bc065f5c98b171d8bfd0398410",
+      "sha256": "23aa8b7c1f0243044ff988617d9816b75a2b20ee2ef26f9c6f8278ade6c7c3d3",
       "delivery": "source",
       "declared_usage": {
         "apis": [
@@ -38,7 +38,7 @@
       "description": "网易云 / QQ 音乐搜索、扫码登录（网易云 unikey 二维码；QQ 官方二维码 + graph.qq.com OAuth 授权换音乐凭据）与手动粘贴 Cookie 回退、按音质逐级取链；单曲与整张歌单入队后由后台任务自动推进：取链接 → 下载到插件暂存目录 → 定名 → 移交宿主复制进目标目录（CD2 挂载由宿主自动分流）→ 失败通知带「重试」按钮。旧 schema 1 WASM 插件（plugins/music-rs 0.3.19）的 v3 迁移版。",
       "author": "congyoubanmian",
       "source_url": "https://github.com/congyoubanmian/dian115-plugins/releases/download/v3-2026.11.02/music-rs.dian115p",
-      "sha256": "be50ecd4e539479a388f05adf241790ac9428eaace444b9a1206b1b1a0b422c6",
+      "sha256": "8c43b0dc49ea4d2c44cbe55a79ca33987e980ebe2b5ac7a0a28c563198df1b32",
       "delivery": "source",
       "declared_usage": {
         "apis": [
@@ -72,7 +72,7 @@
       "description": "豆瓣榜单抓取 + 黑名单过滤 + 观察队列 + 聚合订阅；从宿主 CookieCloud（或自建 CookieCloud / 手动粘贴 cookie）取豆瓣登录态，自动追订「我的想看」；TMDB 匹配失败时用豆瓣详情（原名/又名）回退重搜；支持最低评分/年份/地区订阅过滤与「已删除不重订」墓碑集。旧 schema 1 WASM 插件（plugins/douban-rs 0.2.4）的 v3 迁移版；页面提供榜单海报墙、观察队列/我的想看、历史日志与设置。",
       "author": "congyoubanmian",
       "source_url": "https://github.com/congyoubanmian/dian115-plugins/releases/download/v3-2026.11.02/douban-rs.dian115p",
-      "sha256": "e3f7274b533a77c72a349fe1c61f33edd98a75ed53b57e1c929dbdb91e39e9f5",
+      "sha256": "cafb7662f9f34cfffde66406c2bd01d7f40f8aa7d4612b829696be213047079b",
       "delivery": "source",
       "declared_usage": {
         "apis": [
