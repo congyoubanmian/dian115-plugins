@@ -4,7 +4,7 @@
 
 ## 图文组(news_notice) — 5 事件(本次分区)
 - 事件: media_library_add / media_library_update / library_organize_success / tg_auto_transfer / subscribe_landed, 输出 `图文组(news_notice).json`(JSON 数组, 元素含 event 键便于宿主索引)。
-- 基线模板: `douban-center-wasm/notify-wecom-templates.json`(md 版), 占位符沿用宿主 Jinja `{{ var }}` / `{% if %}`, 变量名全部取自 md 版, 未自造。
+- 基线模板: `dian115-plugins/notify-wecom-templates.json`(md 版), 占位符沿用宿主 Jinja `{{ var }}` / `{% if %}`, 变量名全部取自 md 版, 未自造。
 - 字段口径: news_notice = source.desc "Dian115 媒体中心" + main_title(title/desc, desc 放 🕐 时间) + card_image + vertical_content_list(≤4: 年份/类型/大小或文件数/画质) + card_action(type=1 url); subscribe_landed 另加 jump_list(1 条 TMDB 详情, ≤3)。
 - 图片: 全部用 card_image(1 图模式), url=`{% if picurl %}https://dian115.congyoubanmian.com{{ picurl }}{% endif %}`, aspect_ratio=1.78(官方区间 1.3~2.25 内); 未用 image_text_area(二选一满足)。
 - speculative: picurl 缺失时 card_image.url 渲染为空串——官方 url 为必填, 需宿主保证 image_mode=auto 事件带 picurl 或降级; 此风险已记录未解决。

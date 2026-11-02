@@ -182,8 +182,8 @@
       "allow_overlap": false
     }
   ],
-  "homepage": "https://github.com/congyoubanmian/douban-center-wasm",
-  "repository": "https://github.com/congyoubanmian/douban-center-wasm",
+  "homepage": "https://github.com/congyoubanmian/dian115-plugins",
+  "repository": "https://github.com/congyoubanmian/dian115-plugins",
   "license": "MIT",
   "tags": [
     "douban",

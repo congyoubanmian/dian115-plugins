@@ -6,7 +6,7 @@
 | --- | --- | --- | --- | --- |
 | 追剧管家 `chase.rs` | `v3/chase-rs/` | 0.1.13 | 4 | `plugins/chase-rs`（0.1.9） |
 | 音乐下载 `music.rs` | `v3/music-rs/` | 1.2.1 | 2 + 1 event | `plugins/music-rs`（0.3.19） |
-| 豆瓣中心 `douban.rs` | `v3/douban-rs/` | 1.1.3 | 16 | `plugins/douban-rs`（0.2.4） |
+| 豆瓣中心 `douban.rs` | `v3/douban-rs/` | 1.1.4 | 16 | `plugins/douban-rs`（0.2.4） |
 
 约定：宿主插件 API 为 **3.5**（chase.rs / douban.rs 的 `requires.api` 为 `"3.5"`）；**music.rs 为 `"3.9"`**——
 它要用 `save_to` 直写用户目标目录（省一次跨盘拷贝），宿主不开放该能力时自动回落「暂存 → 定名 → move」。后台是宿主内 ESM
@@ -127,7 +127,7 @@ dist/                   构建产物 .dian115p（本地生成，不提交；现�
 - 队列页没有「取消单条任务」入口（旧版也没有独立取消动作，只有重试/清空已完成/对账）。
 - 真机上的扫码、eapi 取链、下载落盘、CD2 move 与通知按钮回调均未验证。
 
-### 豆瓣中心（`v3/douban-rs`，douban.rs 1.1.3）
+### 豆瓣中心（`v3/douban-rs`，douban.rs 1.1.4）
 
 **Covered（离线可验证）**
 
@@ -403,7 +403,7 @@ CI 拿不到，正式发布因此在本地发版脚本里完成。
 | --- | --- | --- | --- | --- |
 | `chase.rs` | 0.1.13 | protected-v4 | 正式包 `chase.rs-<release_id>.dian115p` | 见 `v3-market-index.json` |
 | `music.rs` | 1.2.1 | protected-v4 | 正式包 `music.rs-<release_id>.dian115p` | 见 `v3-market-index.json` |
-| `douban.rs` | 1.1.3 | protected-v4 | 正式包 `douban.rs-<release_id>.dian115p` | 见 `v3-market-index.json` |
+| `douban.rs` | 1.1.4 | protected-v4 | 正式包 `douban.rs-<release_id>.dian115p` | 见 `v3-market-index.json` |
 
 （正式包由宿主「编译 MCP」签发，`delivery` 是 `protected-v4`，`author` 是签名绑定的**会员昵称**；
 `sha256` 与 `source_url` 由发布脚本按实际产物实算写入 `v3-market-index.json`。）
@@ -431,7 +431,7 @@ v3 索引 schema。仓库内旧 `plugin-market/index.json` 是 v1 格式，v3 �
 
 | 检查 | 命令 | 结果 |
 | --- | --- | --- |
-| 三个插件结构检查 | `node v3-kit/conformance/project-check.mjs v3/<plugin>` | 3/3 通过：`chase.rs 0.1.13`、`music.rs 1.2.1`、`douban.rs 1.1.3` |
+| 三个插件结构检查 | `node v3-kit/conformance/project-check.mjs v3/<plugin>` | 3/3 通过：`chase.rs 0.1.13`、`music.rs 1.2.1`、`douban.rs 1.1.4` |
 | 全部 JS 语法 | `find v3/... -name '*.js' -exec node --check {} +` | 通过：chase 16 / music 30 / douban 38 个文件 |
 | 纯逻辑单测 | `(cd v3/tests/<plugin> && node --test *.test.*)` | chase 119 pass / music 170 pass / douban 100 pass，0 fail |
 | 打包 | `bash scripts/v3-build.sh`（连跑两次） | 两次 sha256 完全一致；产物 193844 / 284582 / 263162 字节（界面换成 Vue 3 自打包后比原生 JS 版大；sha256 见表下） |
@@ -449,7 +449,7 @@ v3 索引 schema。仓库内旧 `plugin-market/index.json` 是 v1 格式，v3 �
 | 检查 | 命令 | 结果 |
 | --- | --- | --- |
 | 脚本语法 | `bash -n scripts/v3-build.sh scripts/v3-build-ui.sh` | 通过（另加 `bash -n scripts/v3-verify-ui-artifacts.sh`） |
-| 三个插件结构检查 | `node v3-kit/conformance/project-check.mjs v3/<plugin>` | 3/3 通过：`chase.rs 0.1.13`、`music.rs 1.2.1`、`douban.rs 1.1.3` |
+| 三个插件结构检查 | `node v3-kit/conformance/project-check.mjs v3/<plugin>` | 3/3 通过：`chase.rs 0.1.13`、`music.rs 1.2.1`、`douban.rs 1.1.4` |
 | 界面构建可重复 | `bash scripts/v3-build-ui.sh` 连跑两次，比对 sha256 | 两次产物字节相同（chase `897e1d4c…5937c8ad`、douban `fc90a3dd…1e967675`、music `574a6486…554628e2`） |
 | 锁文件可复现 | 干净副本里 `rm -rf node_modules && npm ci` 后重建 | 与入库产物逐字节相同；本地多次打包 sha256 一致（跨环境的 zip 压缩字节会略差十余字节，以 Release 的 `SHA256SUMS.txt` 为准） |
 | 一键构建幂等 | `bash scripts/v3-build.sh` 连跑两次 | 两次 sha256 完全一致（本地值；Release 实算值见市场索引）；产物 193844 / 284582 / 263162 字节 |
