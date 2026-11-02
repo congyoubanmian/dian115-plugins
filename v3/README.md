@@ -371,9 +371,9 @@ bash scripts/v3-verify-ui-artifacts.sh
 
 | id | version | delivery | source_url | sha256 |
 | --- | --- | --- | --- | --- |
-| `chase.rs` | 0.1.11 | source | `…/releases/download/v3-2026.11.02/chase-rs-0.1.11.dian115p` | `df3c2bab…d0398410` |
-| `music.rs` | 1.1.0 | source | `…/releases/download/v3-2026.11.02/music-rs.dian115p` | `be50ecd4…0b422c6` |
-| `douban.rs` | 1.1.1 | source | `…/releases/download/v3-2026.11.02/douban-rs.dian115p` | `e3f7274b…1e39e9f5` |
+| `chase.rs` | 0.1.11 | source | `…/releases/download/v3-2026.11.02/chase-rs-0.1.11.dian115p` | `23aa8b7c…e6c7c3d3` |
+| `music.rs` | 1.1.0 | source | `…/releases/download/v3-2026.11.02/music-rs.dian115p` | `8c43b0dc…81df1b32` |
+| `douban.rs` | 1.1.1 | source | `…/releases/download/v3-2026.11.02/douban-rs.dian115p` | `cafb7662…3047079b` |
 
 （表中的 sha256 为节选，完整 64 位值以 `v3-market-index.json` 为准；Release 资产与
 `SHA256SUMS.txt` 是发布环境的实算值。本地构建的包逐文件内容一致，但 zip 压缩字节会随
