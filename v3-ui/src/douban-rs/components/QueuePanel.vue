@@ -214,7 +214,7 @@ function wishState(item: WishItem): { label: string; tone: string } {
         <div v-if="wishItems.length === 0" class="db-empty">
           <p>还没有想看数据。</p>
           <p class="db-empty__note">
-            先在设置里配置宿主 CookieCloud（或自建 CookieCloud / 手动粘贴 cookie），再点「同步想看」。
+            先在设置里粘贴浏览器里的豆瓣 Cookie（需含 dbcl2），再点「同步想看」。
           </p>
         </div>
         <div v-else class="db-wish-list">

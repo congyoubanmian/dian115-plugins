@@ -163,7 +163,7 @@ onBeforeUnmount(() => {
       </div>
       <div v-if="showFreshHint" class="db-banner db-banner--info">
         <span class="db-banner__dot" />
-        <span>全新安装：还没有榜单快照。点击「刷新榜单」抓取第一轮数据；想看同步需要先配置 CookieCloud 或手动 cookie。</span>
+        <span>全新安装：还没有榜单快照。点击「刷新榜单」抓取第一轮数据；想看同步需要先在设置里粘贴豆瓣 Cookie。</span>
       </div>
       <div v-if="showNoSnapshotHint" class="db-banner db-banner--info">
         <span class="db-banner__dot" />

@@ -60,7 +60,6 @@ export const ACTION_LABELS: Record<string, string> = {
   archive: '归档历史与日志',
   'no-resub-clear': '清除重订限制',
   'send-test': '通知自检',
-  'cookiecloud-test': 'CookieCloud 测试',
   'settings-update': '保存设置',
 }
 
@@ -76,6 +75,5 @@ export const BUSY_TEXT: Record<string, string> = {
   archive: '正在归档历史与日志…',
   'no-resub-clear': '正在清除重订限制…',
   'send-test': '正在发送测试通知…',
-  'cookiecloud-test': '正在读取 CookieCloud 并校验豆瓣登录…',
   'settings-update': '正在保存设置（状态文档 + 宿主设置 KV）…',
 }

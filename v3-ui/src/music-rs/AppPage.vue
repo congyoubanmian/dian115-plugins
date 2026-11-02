@@ -6,7 +6,7 @@
 // 音质档位）→ 下划线式 Tabs（搜索 / 我的歌单 / 任务 / 设置）→ 最近动作 → 页脚。
 //
 // 数据与能力只走 ctx（store.ts 装配）：ctx.storage / ctx.settings / ctx.tasks / ctx.http /
-// ctx.cookiecloud / ctx.notify；主题由 shared/mount.ts 接到 naive-ui 的 n-config-provider。
+// ctx.notify；主题由 shared/mount.ts 接到 naive-ui 的 n-config-provider。
 // 页面不直接 fetch 宿主业务接口，也不自建 WebSocket。
 
 import { computed, onBeforeUnmount, onMounted, provide, ref, watch } from 'vue'

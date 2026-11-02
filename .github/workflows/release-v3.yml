@@ -51,6 +51,10 @@ jobs:
       - name: Fetch dian115 v3 kit
         run: bash scripts/fetch-v3-kit.sh
 
+      # ── 离线单测（测试在 v3/tests/<plugin>/，不在插件目录里）──────────────
+      - name: 离线单测
+        run: bash scripts/v3-test.sh
+
       # ── 构建 UI（Vue 3）─────────────────────────────────────────────────
       # npm ci 严格按入库的 v3-ui/package-lock.json 安装（锁文件生效：不解析新版本，
       # 不改动锁文件）；npm run build 把 v3-ui/src/<plugin>/ 打成 v3/<plugin>/ui/page.js，
@@ -64,8 +68,10 @@ jobs:
         run: npm run build
 
       # v3-build.sh 内部会再跑一次 scripts/v3-build-ui.sh（幂等，同样字节），
-      # 然后才 project-check → pack：界面产物必须先于打包存在。
-      - name: Build packages (project-check + pack + sha256)
+      # 然后先过官方审查闸门（结构 + 恶意特征扫描，critical/high 必须在
+      # scripts/v3-audit-allowlist.json 里登记过误报理由），再 project-check → pack：
+      # 界面产物必须先于打包存在。
+      - name: Build packages (audit + project-check + pack + sha256)
         run: bash scripts/v3-build.sh
 
       # 产物是入库的，CI 必须能复现本地那份：重建结果与 git 里的版本不一致就报错

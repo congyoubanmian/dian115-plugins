@@ -8,7 +8,7 @@
 import { POSTER_CACHE_LIMIT, MAX_POSTER_BYTES, IMAGE_ACCEPT, sniffImage, mirrorCandidates, withMirrorHost, downscaleUrl, dataUrlOf } from '../lib/poster-core.js'
 import { queryEscape, pathEscape } from '../lib/text.js'
 import { doubanGet } from './httpx.js'
-import { base64Encode } from './crypto.js'
+import { base64Encode } from '../lib/base64.js'
 
 /** poster.rs suggest_poster：只有 id == want_id 且 img 以 http 开头才采用。 */
 export async function suggestPoster(session, ctx, title, wantId) {

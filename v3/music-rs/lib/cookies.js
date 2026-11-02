@@ -1,5 +1,6 @@
 // 会话 cookie 的解析 / 白名单清洗 / 合并 / 登录态判定 —— 从 plugins/music-rs/src/
-// {netease,qq,cookiecloud}.rs 逐函数移植。KV 键沿用旧契约：`cookies.netease` / `cookies.qq`。
+// {netease,qq}.rs 逐函数移植。KV 键沿用旧契约：`cookies.netease` / `cookies.qq`。
+// 宿主新规约：插件不读取 CookieCloud，这里只有手动粘贴与扫码两条路径。
 
 import { NETEASE_COOKIE_NAMES } from './eapi.js'
 
@@ -163,63 +164,6 @@ export function cleanQqCookieString(raw) {
   return { jar }
 }
 
-// ─────────────────────────── CookieCloud（v3 宿主内置）───────────────────────────
-
-/** CookieCloud 域名键归一化：去首尾空白与开头的 `.`（通配形态）、结尾的 `.`（FQDN）。 */
-function normalizeDomain(domain) {
-  return String(domain ?? '').trim().replace(/^\./, '').replace(/\.$/, '')
-}
-
-/** 网易云登录域：`music.163.com` 及其子域（后缀精确匹配，xmusic.163.com 不算）。 */
-export function isNeteaseCloudDomain(domain) {
-  const host = normalizeDomain(domain)
-  return host === 'music.163.com' || host.endsWith('.music.163.com')
-}
-
-/** QQ 音乐登录域：`qq.com` 及其所有子域（y.qq.com / music.qq.com / .qq.com 通配桶的并集）。 */
-export function isQqCloudDomain(domain) {
-  const host = normalizeDomain(domain)
-  return host === 'qq.com' || host.endsWith('.qq.com')
-}
-
-/**
- * 从 CookieCloud 快照里按域 + 白名单提取 cookie（cookiecloud.rs extract_cookies_from_cloud）。
- *
- * `snapshot.cookies` 是宿主 `ctx.cookiecloud('read')` 返回的
- * `[{name,value,domain,...}]`（core-types.d.ts Cookie）；为兼容旧版形态也接受
- * 旧 `{域: [{name,value}] | {name:value}}` 文档。同名先见先得（结果确定）。
- */
-export function extractCookiesFromSnapshot(snapshot, domainMatch, whitelist) {
-  const jar = {}
-  const entries = Array.isArray(snapshot?.cookies) ? snapshot.cookies : legacyEntries(snapshot)
-  for (const entry of entries) {
-    if (!entry || typeof entry !== 'object') continue
-    const domain = entry.domain ?? entry.__domain ?? ''
-    if (!domainMatch(domain)) continue
-    if (!whitelist.includes(entry.name)) continue
-    if (entry.value === undefined || entry.value === null || entry.value === '') continue
-    if (!(entry.name in jar)) jar[entry.name] = entry.value
-  }
-  return jar
-}
-
-/** 旧版 `{域: [...]|{...}}` 文档 → 扁平条目（BTreeMap 字典序遍历语义：按键排序）。 */
-function legacyEntries(snapshot) {
-  const data = snapshot?.cookie_data ?? snapshot?.domains ?? null
-  if (!data || typeof data !== 'object') return []
-  const entries = []
-  for (const domain of Object.keys(data).sort()) {
-    const raw = data[domain]
-    if (Array.isArray(raw)) {
-      for (const item of raw) entries.push({ ...item, domain })
-    } else if (raw && typeof raw === 'object') {
-      for (const name of Object.keys(raw)) entries.push({ name, value: raw[name], domain })
-    }
-  }
-  return entries
-}
-
-/** 登录态摘要（绝不回显 cookie 值，宿主禁止凭据出现在响应里）。 */
 export function neteaseLoginInfo(jar) {
   const cookies = jar ?? {}
   return {

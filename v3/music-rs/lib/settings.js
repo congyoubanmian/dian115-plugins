@@ -1,7 +1,7 @@
 // 下载管线设置 —— 从 plugins/music-rs/src/download.rs 的 Settings/settings_view/settings_update
 // 移植。v3 变化（架构使然，详见 README）：
 // - `staging_dir` 移除：v3 的插件自有文件目录（downloads/）就是暂存区（developer-guide §文件与 CD2）；
-// - CookieCloud 三项移除：v3 用宿主统一配置的 CookieCloud（ctx.cookiecloud），无需插件自配地址；
+// - CookieCloud 三项移除：宿主新规约下插件不读 CookieCloud，登录态只来自扫码或手动粘贴；
 // - CD2 直送五项移除：v3 宿主文件操作自动按 CD2 挂载前缀分流，不再需要插件直连 gRPC-Web。
 
 /** 最终落点默认值（与 sidecar MUSIC_MOUNT + DL_SUBDIR 一致）。 */

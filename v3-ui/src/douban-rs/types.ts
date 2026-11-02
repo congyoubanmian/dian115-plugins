@@ -121,9 +121,6 @@ export interface ListConfig {
 export interface DocSettings {
   lists?: Record<string, ListConfig>
   blacklist?: string[]
-  cookiecloud_url?: string
-  cookiecloud_uuid?: string
-  cookiecloud_key?: string
   manual_cookie?: string
   wish_sync_enabled?: boolean
   [key: string]: unknown
@@ -159,9 +156,6 @@ export interface StateDoc {
 export interface FlatSettings {
   wish_sync_enabled: boolean
   manual_cookie: string
-  cookiecloud_url: string
-  cookiecloud_uuid: string
-  cookiecloud_key: string
   observe_period_hours: number
   auto_subscribe: boolean
   notify_on_subscribe: boolean

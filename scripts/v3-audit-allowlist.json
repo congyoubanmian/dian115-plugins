@@ -1,0 +1,95 @@
+{
+  "policy": "宿主官方 audit.mjs 的启发式会命中我们自打包的 Vue 运行时、以及「必须带 Cookie 调站点 API」这类插件天然需要的形态。这里逐条记录已复核的误报：每条必须写清为什么是误报、怎么复核。新增条目要在 PR 里说明；未登记的 critical/high 会直接让发版失败。",
+  "entries": [
+    {
+      "plugin": "chase-rs",
+      "rule": "dynamic-eval",
+      "file": "ui/page.js",
+      "reason": "页面把 Vue 3.5 + naive-ui 自打包进 ui/page.js（页面契约要求自打包，不能依赖宿主共享单例）。命中的是 Vue 运行时取 globalThis 的 Function('return this')() 形态。可读源码在 v3-ui/src/chase-rs/，逐行可审。"
+    },
+    {
+      "plugin": "music-rs",
+      "rule": "dynamic-eval",
+      "file": "ui/page.js",
+      "reason": "同上：Vue 3.5 + naive-ui 自打包运行时。可读源码在 v3-ui/src/music-rs/。"
+    },
+    {
+      "plugin": "music-rs",
+      "rule": "combo-decode-exec",
+      "file": "ui/page.js",
+      "reason": "「解码」命中 base64/Blob 解码，「执行」命中自打包运行时；两者都在同一个打包产物里，插件不从网络取码再执行。可读源码在 v3-ui/src/music-rs/。"
+    },
+    {
+      "plugin": "music-rs",
+      "rule": "combo-remote-exec",
+      "file": "ui/page.js",
+      "reason": "「联网」是调用网易云/QQ 音乐公开 API，「动态执行」是自打包 Vue 运行时；插件不下载并执行远程代码。可读源码在 v3-ui/src/music-rs/。"
+    },
+    {
+      "plugin": "music-rs",
+      "rule": "combo-credential-exfil",
+      "file": "lib/eapi.js",
+      "reason": "eapi 请求必须带登录 Cookie 调网易云（插件用途就是网易云音乐），Cookie 只发往 interface.music.163.com（declared_usage.sites 已声明），不外发第三方。"
+    },
+    {
+      "plugin": "music-rs",
+      "rule": "combo-credential-exfil",
+      "file": "ui/page.js",
+      "reason": "页面把 lib/eapi.js 一起打进产物；凭据相关代码与出网地址同文件是 eapi 的固有形态，出网目标只有网易云。"
+    },
+    {
+      "plugin": "music-rs",
+      "rule": "combo-credential-network",
+      "file": "ui/page.js",
+      "reason": "扫码登录需要把授权结果写回插件自己的 KV（cookies.qq），并在同一次会话里访问 graph.qq.com 的 OAuth 端点换音乐凭据；凭据不出插件、不发往作者控制的地址。"
+    },
+    {
+      "plugin": "music-rs",
+      "rule": "combo-cookie-network",
+      "file": "lib/music-api.js",
+      "reason": "取链/搜索必须带登录 Cookie 调网易云与 QQ 音乐接口；Cookie 只发往这两个站点（declared_usage.sites 已声明）。"
+    },
+    {
+      "plugin": "music-rs",
+      "rule": "combo-cookie-network",
+      "file": "ui/page.js",
+      "reason": "页面打包了 lib/music-api.js，出网目标同上。"
+    },
+    {
+      "plugin": "music-rs",
+      "rule": "credential-api",
+      "file": "lib/eapi.js",
+      "reason": "命中的是网易云扫码登录 URL 常量（interface.music.163.com/api/login/qrcode/*），不是宿主凭据接口。"
+    },
+    {
+      "plugin": "music-rs",
+      "rule": "credential-api",
+      "file": "ui/page.js",
+      "reason": "同上：lib/eapi.js 的网易云扫码 URL 常量被一起打包。"
+    },
+    {
+      "plugin": "music-rs",
+      "rule": "destructive-file",
+      "file": "lib/pump.js",
+      "reason": "清理的是插件自有暂存目录 downloads/<短id>.part 的残留文件（路径在插件目录内，经宿主 files API），不触碰宿主目录。"
+    },
+    {
+      "plugin": "douban-rs",
+      "rule": "dynamic-eval",
+      "file": "ui/page.js",
+      "reason": "页面把 Vue 3.5 + naive-ui 自打包进 ui/page.js（页面契约要求自打包）。可读源码在 v3-ui/src/douban-rs/。"
+    },
+    {
+      "plugin": "douban-rs",
+      "rule": "combo-remote-exec",
+      "file": "ui/page.js",
+      "reason": "「联网」是抓豆瓣榜单/想看列表，「动态执行」是自打包 Vue 运行时；插件不下载并执行远程代码。可读源码在 v3-ui/src/douban-rs/。"
+    },
+    {
+      "plugin": "douban-rs",
+      "rule": "host-page-tamper",
+      "file": "ui/page.js",
+      "reason": "命中的是海报灯箱的 Esc 键监听（window.addEventListener('keydown', ...)），只作用于插件自己的 iframe 窗口，不改写宿主界面，也不监听粘贴/按键输入。源码：v3-ui/src/douban-rs/components/PosterLightbox.vue。"
+    }
+  ]
+}

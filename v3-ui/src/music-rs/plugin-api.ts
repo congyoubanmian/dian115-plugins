@@ -45,9 +45,6 @@ export {
   cleanQqCookieString,
   neteaseLoginInfo,
   qqLoginInfo,
-  extractCookiesFromSnapshot,
-  isNeteaseCloudDomain,
-  isQqCloudDomain,
   normalizeCookies,
 } from '../../../v3/music-rs/lib/cookies.js'
 export { enqueue, retry, adopt, clearFinished, loadIndex } from '../../../v3/music-rs/lib/queue-store.js'

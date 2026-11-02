@@ -2,7 +2,7 @@
 //
 // ctx 由 mount 装配时 provide('ctx', ctx) 注入（见 shared/mount.ts）；
 // 页面所有数据与能力都只能走它（ctx.api / ctx.storage / ctx.settings / ctx.tasks /
-// ctx.http / ctx.notifications / ctx.cookiecloud / ctx.theme / ctx.signal）。
+// ctx.http / ctx.notifications / ctx.theme / ctx.signal）。
 
 import { inject } from 'vue'
 import { CTX_KEY } from './mount'

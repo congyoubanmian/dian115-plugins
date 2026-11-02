@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // 设置（对应原生版的 renderSettings + saveSettings）。
 //
-// 六块：运行状态（只读）、基础设置、账号与 CookieCloud、榜单配置、
+// 六块：运行状态（只读）、基础设置、登录态、榜单配置、
 // 黑名单关键词、维护（墓碑）。底部保存栏把改动交给 settings-update job ——
 // 它同时写宿主 settings KV 与状态文档（榜单 lists、账号字段、过滤器、保留条数）。
 //
@@ -42,10 +42,6 @@ const form = reactive({
   logs: '0',
   regions: '',
   sources: '',
-  ccUrl: '',
-  ccUuid: '',
-  ccKey: '',
-  ccKeyClear: false,
   manual: '',
   manualClear: false,
   lists: {} as Record<string, ListForm>,
@@ -68,10 +64,6 @@ function resetForm(): void {
   form.logs = String(f.max_logs)
   form.regions = (f.regions ?? []).join(', ')
   form.sources = (f.subscribe_source_filter ?? []).join(', ')
-  form.ccUrl = f.cookiecloud_url
-  form.ccUuid = f.cookiecloud_uuid
-  form.ccKey = ''
-  form.ccKeyClear = false
   form.manual = ''
   form.manualClear = false
 
@@ -135,8 +127,6 @@ async function save(): Promise<void> {
     regions: splitListValue(form.regions),
     subscribe_source_filter: splitListValue(form.sources),
     lists: {},
-    cookiecloud_url: form.ccUrl.trim(),
-    cookiecloud_uuid: form.ccUuid.trim(),
   }
 
   const lists: Record<string, unknown> = {}
@@ -153,8 +143,6 @@ async function save(): Promise<void> {
   }
   patch.lists = lists
 
-  if (form.ccKey !== '') patch.cookiecloud_key = form.ccKey
-  else if (form.ccKeyClear) patch.cookiecloud_key = ''
   if (form.manual !== '') patch.manual_cookie = form.manual.trim()
   else if (form.manualClear) patch.manual_cookie = ''
 
@@ -228,9 +216,6 @@ type TextField =
   | 'logs'
   | 'regions'
   | 'sources'
-  | 'ccUrl'
-  | 'ccUuid'
-  | 'ccKey'
   | 'manual'
 
 function onFieldInput(field: TextField, event: Event): void {
@@ -373,46 +358,9 @@ function onKeywordInput(event: Event): void {
       </div>
     </BlockCard>
 
-    <!-- 账号与 CookieCloud -->
-    <BlockCard title="账号与 CookieCloud" subtitle="优先宿主内置 CookieCloud；显式填写地址/UUID/口令时改用自建服务。">
-      <template #actions>
-        <NButton
-          size="tiny"
-          secondary
-          :disabled="locked"
-          data-busy-lock="1"
-          @click="store.runAction('cookiecloud-test', {})"
-        >
-          测试 CookieCloud
-        </NButton>
-      </template>
-
+    <!-- 登录态：只保留手动 Cookie（宿主新规约禁止插件读 CookieCloud） -->
+    <BlockCard title="登录态" subtitle="粘贴浏览器里的豆瓣 Cookie（需含 dbcl2）；插件不读取 CookieCloud。">
       <div class="db-form-grid">
-        <label class="db-field">
-          <span class="db-field-label">自建 CookieCloud 地址</span>
-          <input :value="form.ccUrl" @input="onFieldInput('ccUrl', $event)" class="db-input" type="text" placeholder="https://cookiecloud.example.com" aria-label="自建 CookieCloud 地址" />
-          <span class="db-field-help">留空 = 用宿主统一配置的内置 CookieCloud</span>
-        </label>
-        <label class="db-field">
-          <span class="db-field-label">CookieCloud UUID</span>
-          <input :value="form.ccUuid" @input="onFieldInput('ccUuid', $event)" class="db-input" type="text" placeholder="自建 CookieCloud 的 UUID" aria-label="CookieCloud UUID" />
-        </label>
-        <div class="db-field">
-          <span class="db-field-label">CookieCloud 口令（自建时填）</span>
-          <input
-            :value="form.ccKey" @input="onFieldInput('ccKey', $event)"
-            class="db-input"
-            type="password"
-            autocomplete="new-password"
-            :placeholder="flat.cookiecloud_key !== '' || settingsView?.cc_key_set ? '已配置，留空保持不变' : '未配置'"
-            aria-label="CookieCloud 口令（自建时填）"
-          />
-          <label class="db-clear">
-            <input v-model="form.ccKeyClear" type="checkbox" />
-            清除已保存的值
-          </label>
-          <span class="db-field-help">仅在自建 CookieCloud 时使用；插件内 AES 解密依赖宿主 ctx.crypto</span>
-        </div>
         <div class="db-field">
           <span class="db-field-label">手动豆瓣 Cookie（可选）</span>
           <input
@@ -427,11 +375,11 @@ function onKeywordInput(event: Event): void {
             <input v-model="form.manualClear" type="checkbox" />
             清除已保存的值
           </label>
-          <span class="db-field-help">整段 cookie 头或仅 dbcl2=xxx；CookieCloud 拉不到登录态时回退</span>
+          <span class="db-field-help">整段 cookie 头或仅 dbcl2=xxx；</span>
         </div>
       </div>
       <p class="db-note">
-        自建模式要求地址/UUID/口令三项齐全；三项留空且宿主内置可用时走宿主 CookieCloud。口令与手动 cookie 不会回显。
+        插件不读取 CookieCloud（宿主新规约），登录态只来自这里粘贴的内容；粘贴的 cookie 不会回显。
       </p>
     </BlockCard>
 

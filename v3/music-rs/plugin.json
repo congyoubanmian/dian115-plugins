@@ -52,7 +52,6 @@
       "POST /api/extensions/v3/{id}/notify",
       "POST /api/extensions/v3/{id}/http",
       "POST /api/extensions/v3/{id}/files",
-      "POST /api/extensions/v3/{id}/cookiecloud/read",
       "POST /api/extensions/v3/{id}/jobs/{job}"
     ],
     "sites": [
@@ -64,6 +63,6 @@
       "downloads/*（插件自有暂存目录：直链下载、定名，再由宿主 move 到用户配置的目标目录）"
     ],
     "notifications": true,
-    "risk": "把网易云/QQ 音乐直链下载到插件暂存目录并复制进用户配置的宿主目录（可能经 CD2 上传网盘）；失败时发送带重试按钮的通知；从宿主 CookieCloud 读取网易云/QQ 域登录 Cookie；扫码登录在本插件 KV 里保存网易云/QQ 音乐登录凭据（QQ 还保存账号标识 encryptUin，用于读收藏的歌单与「我喜欢」；QQ 扫码登录期间会访问 graph.qq.com 的 OAuth 授权端点换凭据）。"
+    "risk": "把网易云/QQ 音乐直链下载到插件暂存目录并复制进用户配置的宿主目录（可能经 CD2 上传网盘）；失败时发送带重试按钮的通知；按宿主新规约不读取 CookieCloud，登录态只来自扫码或用户手动粘贴的 Cookie；扫码登录在本插件 KV 里保存网易云/QQ 音乐登录凭据（QQ 还保存账号标识 encryptUin，用于读收藏的歌单与「我喜欢」；QQ 扫码登录期间会访问 graph.qq.com 的 OAuth 授权端点换凭据）。"
   }
 }

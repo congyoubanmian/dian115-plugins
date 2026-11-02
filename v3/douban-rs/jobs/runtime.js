@@ -66,9 +66,6 @@ export class Session {
 
   /** 账号键只覆盖非空字段（runtime.rs load_account_overlay）。 */
   applyAccountOverlay(account) {
-    if (account.cookiecloud_url !== '') this.doc.settings.cookiecloud_url = account.cookiecloud_url
-    if (account.cookiecloud_uuid !== '') this.doc.settings.cookiecloud_uuid = account.cookiecloud_uuid
-    if (account.cookiecloud_key !== '') this.doc.settings.cookiecloud_key = account.cookiecloud_key
     if (account.manual_cookie !== '') this.doc.settings.manual_cookie = account.manual_cookie
     if (account.wish_sync_enabled === true) this.doc.settings.wish_sync_enabled = true
   }
@@ -84,9 +81,6 @@ export class Session {
     this.flat = normalizeFlat(raw)
     // 状态文档里的账号字段（旧文档兼容）优先于空白的清单设置
     const docSettings = this.doc.settings
-    if (docSettings.cookiecloud_url && !this.flat.cookiecloud_url) this.flat.cookiecloud_url = docSettings.cookiecloud_url
-    if (docSettings.cookiecloud_uuid && !this.flat.cookiecloud_uuid) this.flat.cookiecloud_uuid = docSettings.cookiecloud_uuid
-    if (docSettings.cookiecloud_key && !this.flat.cookiecloud_key) this.flat.cookiecloud_key = docSettings.cookiecloud_key
     if (docSettings.manual_cookie && !this.flat.manual_cookie) this.flat.manual_cookie = docSettings.manual_cookie
     if (docSettings.wish_sync_enabled && !this.flat.wish_sync_enabled) this.flat.wish_sync_enabled = true
     return this.flat
@@ -198,9 +192,6 @@ export class Session {
   accountFields() {
     const settings = this.doc.settings
     return {
-      cookiecloud_url: settings.cookiecloud_url ?? '',
-      cookiecloud_uuid: settings.cookiecloud_uuid ?? '',
-      cookiecloud_key: settings.cookiecloud_key ?? '',
       manual_cookie: settings.manual_cookie ?? '',
       wish_sync_enabled: settings.wish_sync_enabled === true,
     }
@@ -453,7 +444,7 @@ export async function settingsUpdate(session, patch) {
   }
   // ② 账号字段：trim 后写入；任一变化作废解密缓存
   let accountChanged = false
-  for (const key of ['cookiecloud_url', 'cookiecloud_uuid', 'cookiecloud_key', 'manual_cookie']) {
+  for (const key of ['manual_cookie']) {
     if (typeof input[key] === 'string') {
       const trimmed = input[key].trim()
       if (trimmed !== session.doc.settings[key]) accountChanged = true
@@ -522,9 +513,6 @@ export async function persistFlatSettings(session, flat) {
   const next = applyFlatPatch(saved, {
     wish_sync_enabled: flat.wish_sync_enabled,
     manual_cookie: flat.manual_cookie,
-    cookiecloud_url: flat.cookiecloud_url,
-    cookiecloud_uuid: flat.cookiecloud_uuid,
-    cookiecloud_key: flat.cookiecloud_key,
     observe_period_hours: flat.observe_period_hours,
     auto_subscribe: flat.auto_subscribe,
     notify_on_subscribe: flat.notify_on_subscribe,

@@ -13,31 +13,31 @@
 | `lib/model.js` | `model.rs` | 状态文档契约（settings/snapshot/queue/history/logs/stats/blackstate/wish/wish_seen/wish_info/cookie/no_resub）、null↔nil 语义、严格解析（类型不符整份拒绝）、脱敏视图、绝对路径清洗 |
 | `lib/settings.js` | `runtime.rs` settingsUpdate/normalize | 清单扁平设置 ↔ 运行时视图、榜单配置合并保存、upcoming 强制 coming_html |
 | `lib/charts-parse.js` | `charts.rs` 纯函数 | 三种榜单来源的解析（正则逐条对齐 Go ASCII 类）、黑名单判定/入队、成本排序 |
-| `lib/cookiecloud-core.js` | `cookiecloud.rs`/`wish.rs` 纯函数 | 自建 CookieCloud 的解密链（EVP_BytesToKey + AES-CBC/PKCS7，密钥材料 = md5 hex 前 16 字符）、豆瓣 cookie 提取（新旧两种文档形态 + v3 宿主快照）、手动 cookie 解析、45min 缓存 TTL |
+| `lib/cookie.js` | `wish.rs` 纯函数 | 手动 cookie 解析（需含 dbcl2）、45min 缓存 TTL |
+| `lib/base64.js` | 编解码 | base64 编解码（jobs 环境没有 Node 内置模块，自带实现） |
 | `lib/subscribe-core.js` | `subscribe.rs` 纯函数 | TMDB 匹配置信度（0.7/0.4/0.25/0.05，阈值 0.5）、订阅请求体（v3 openapi PoolIntentCreateRequest）、宿主池解析与去重判定 |
 | `lib/poster-core.js` | `poster.rs` 纯函数 | MIME 嗅探（PNG 只看 data[1..4] 的原样行为）、img1~img9 镜像候选、s_ratio→m_ratio 降级 |
 | `lib/filter-core.js` | `filter.rs` 纯函数 | min_rating/min_year/regions 三段过滤（地区只在详情已取到时生效）、墓碑集常量与 `tmdb:<type>:<id>` 解析、历史合格判定、landed/caught_up 完成态 |
 | `lib/wish-core.js` | `wish.rs` 纯函数 | 想看条目映射（只收 movie/tv，评分补提取 8.6/8.7/5.8 向量）、flexId（id 字符串/数字双形态）、分页 URL |
 | `jobs/store.js` | `store.rs` | 三态加载（loaded/fresh/unavailable，404 两次确认）、CAS 写回（409/412 重读重试一次）、account/diag 键、4MiB 预算 |
-| `jobs/crypto.js` | cookiecloud 原语接线 | `ctx.crypto`/`ctx.codec` 适配器；MD5 纯 JS 兜底（向量对拍）；base64 自实现（宿主/测试行为一致） |
 | `jobs/httpx.js` | `runtime.rs` httpGet / `wish.rs` httpGetWithCookie | 桌面 UA + 豆瓣防盗链 Referer / iPhone UA + 想看 referer；Go `(body, status, err)` 三元组语义 |
 | `jobs/runtime.js` | `runtime.rs` | Session（读盘三态 + 账号键覆盖 + load 面包屑 + 日志/历史/统计 + persist）、动作实现（observe-remove/blacklist/settings-update/archive/open-source/send-test/no-resub-clear）、墓碑守卫与判定 |
 | `jobs/charts.js` | `charts.rs` | refreshNow 编排（防重入、成本排序、预算跳过、快照、过滤入队、deep 才跑订阅、想看同步、摘要文案逐字对齐） |
 | `jobs/poster.js` | `poster.rs` | moviePoster（suggest 校验 id → rexxar 兜底）、get-poster（内存缓存 64、镜像回退、每候选 2 次、128KiB 上限） |
-| `jobs/cookiecloud.js` | `cookiecloud.rs`/`wish.rs` | doubanCookie（自建 → 宿主内置 → 手动 cookie，45min 缓存）、cookieCloudPull（Not Found/过大/异常文案逐字对齐）、cookiecloud-test |
+| `jobs/cookie.js` | `wish.rs` | doubanCookie（只用手�� cookie，45min 缓存）、cookieCacheFresh |
 | `jobs/subscribe-engine.js` | `subscribe.rs`/`subject.rs` | tmdbSearch、匹配回退（rexxar original_title→aka 重搜取最高置信）、processDue（守卫顺序：墓碑→过滤；needs_review 不留队列；attempt<3 保留）、doSubscribe（去重→创建→历史→统计）、subscribe/subscribe-now 两入口 |
 | `jobs/subject.js` | `subject.rs` | rexxar 详情（id/type 双校验，字段路径按真实响应取证）、回退候选（原名→aka 去重保序）、doubanSubjectId |
 | `jobs/wish.js` | `wish.rs` | syncWishList（movie+tv 去重、seen 先写再守卫、内联订阅 vs 入队、due_at 口径）、fetchWish 分页、actionWishSync、runWishSyncJob（想看+到期订阅+墓碑判定节流 6h） |
 | `jobs/<id>.js`（16 个） | 旧 action/job 分发表 | 薄壳入口：`run`/`recover` + 进度上报 |
 | `ui/page.js` | 旧 Vue `AppPage.vue`（已删除） | 原生 JS + DOM：榜单/海报墙、观察队列与我的想看、历史日志、设置表单、手动刷新/同步/订阅/维护动作 |
 
-测试夹具（`tests/fixtures/`）原样复用旧仓库的脱敏真实样本：state_val / wish_movie / wish_tv /
-subject_detail{,_tv} / chart_listcont2 / coming_showing_soon / search_subjects / cookiecloud_vectors。
+测试夹具（`v3/tests/douban-rs/fixtures/`）原样复用旧仓库的脱敏真实样本：state_val / wish_movie / wish_tv /
+subject_detail{,_tv} / chart_listcont2 / coming_showing_soon / search_subjects。
 
 ## 运行方式
 
 ```bash
-node --test tests/*.test.mjs        # 112 个用例
+node --test *.test.mjs               # 100 个用例（在 v3/tests/douban-rs/）
 node --check <每个 .js>             # 语法
 node v3-kit/conformance/project-check.mjs v3/douban-rs
 ```
@@ -47,10 +47,7 @@ node v3-kit/conformance/project-check.mjs v3/douban-rs
 1. **无常驻 VM**：旧 WASM 的内存态 + `ensure_loaded` 单次加载改为每次 job `Session.open(ctx)`，
    落盘经 `expected_revision` CAS（旧 ETag/If-Match 由 v3 宿主收敛）。三态加载、404 两次确认、
    foreign 文档拒绝落盘、4MiB 预算、日志留尾 40 等安全语义全部保留。
-2. **CookieCloud**：v3 主路径是宿主内置 `ctx.cookiecloud('read')`（宿主负责解密与配置）；
-   旧"自建服务器 + 插件内 AES 解密"整条链保留（settings 里显式填写地址/UUID/口令时启用），
-   加解密原语用 `ctx.crypto`（AES 不做插件内兜底实现 —— 未经真机验证的密码学代码比明确报错危险，
-   MD5/base64 的纯 JS 兜底已被向量对拍）。手动粘贴 cookie 回退原样保留。
+2. **登录态**：按宿主新规约不再读取 CookieCloud；登录态只来自用户手动粘贴的豆瓣 Cookie（需含 `dbcl2`），解析结果进 45 分钟缓存（状态文档 `cookie` 字段）。
 3. **幂等键**：`ctx.api` 不暴露自定义请求头，旧 `dc-sub-<invocation>-<tmdb_id>` /
    `dc-put-<key>-<nonce>-<n>` 幂等键不再携带；幂等由宿主任务队列 business_key +
    宿主侧 (tmdb_id, media_type) 去重 + storage CAS 保底。
@@ -75,7 +72,7 @@ node v3-kit/conformance/project-check.mjs v3/douban-rs
   state 文档只展示空状态并提示，不会写回。
 - **动作**：`ctx.tasks.run(job, business_key, input)` + 轮询 `ctx.tasks.get(id)`；使用 `refresh`、
   `wish-sync-now`、`subscribe`、`subscribe-now`、`observe-remove`、`blacklist-add/remove`、
-  `settings-update`、`archive`、`no-resub-clear`、`send-test`、`cookiecloud-test`、`get-poster`。
+  `settings-update`、`archive`、`no-resub-clear`、`send-test`、`get-poster`。
 - **海报**：豆瓣 CDN 无 Referer 返回 418，页面用 `ctx.http.request` 带
   `Referer: https://movie.douban.com/` 取 `response_type:'base64'`；失败回退 `get-poster` job。
   页面内存缓存最多 160 张，IntersectionObserver 懒加载，并发 4。

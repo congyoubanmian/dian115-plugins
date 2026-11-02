@@ -12,7 +12,7 @@ import { candidateFromWishItem, regionDegradedLog } from '../lib/filter-core.js'
 import { newQueueItem } from '../lib/model.js'
 import { nowRfc3339, nowUnixNanos, rfc3339 } from '../lib/clock.js'
 import { doubanGetWithCookie } from './httpx.js'
-import { doubanCookie } from './cookiecloud.js'
+import { doubanCookie } from './cookie.js'
 import { subscribeQueueItem, processDue } from './subscribe-engine.js'
 
 /** 拉取单类型想看列表（分页，上限 WISH_MAX_PAGES 页；终止条件与 Go 一致）。 */

@@ -75,23 +75,6 @@ export function queryEncode(pairs) {
 /** Go `url.Values.Encode()` 的同名语义（netease.rs `form_encode`）：按键排序后 k=v 用 & 连接。 */
 export const formEncode = queryEncode
 
-/** Go `url.PathEscape`（encodePathSegment 模式）：未保留字符与 $&+=:@ 原样，其余 %XX 大写
- *  （RFC 3986 §3.3：`;` `/` `,` `?` 留给段语义，一律转义 —— Go shouldEscape 同款）。
- *  cookiecloud.rs `path_escape` 的移植（v3 里 CookieCloud 走宿主，这里供 UUID 拼路径兜底）。 */
-export function pathEscape(text) {
-  let out = ''
-  for (const byte of new TextEncoder().encode(String(text))) {
-    const keep =
-      (byte >= 0x41 && byte <= 0x5a) ||
-      (byte >= 0x61 && byte <= 0x7a) ||
-      (byte >= 0x30 && byte <= 0x39) ||
-      byte === 0x2d || byte === 0x5f || byte === 0x2e || byte === 0x7e ||
-      byte === 0x24 || byte === 0x26 || byte === 0x2b || byte === 0x3a ||
-      byte === 0x3d || byte === 0x40
-    out += keep ? String.fromCharCode(byte) : '%' + HEX[byte >> 4] + HEX[byte & 0x0f]
-  }
-  return out
-}
 
 // ─────────────────────────── Go url.ParseQuery ───────────────────────────
 

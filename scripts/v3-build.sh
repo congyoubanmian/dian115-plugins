@@ -39,7 +39,14 @@ mkdir -p "$DIST"
 echo "== 构建 Vue 界面（v3-ui/src/<plugin> → v3/<plugin>/ui/）=="
 bash "$ROOT/scripts/v3-build-ui.sh"
 
-# ── 2) 清单检查 + 打包 ──────────────────────────────────────────────────────
+# ── 2) 官方审查闸门（结构 + 恶意特征扫描）──────────────────────────────
+# 宿主官方 scripts/check.mjs 在 do-not-install 时会拒绝打包；这里用等价的检查脚本
+# （scripts/v3-check-official.mjs），critical/high 必须逐条登记在
+# scripts/v3-audit-allowlist.json 里才算通过，避免"绕过闸门"。
+echo "== 官方审查（结构检查 + 恶意特征扫描）=="
+node "$ROOT/scripts/v3-check-official.mjs"
+
+# ── 3) 清单检查 + 打包 ──────────────────────────────────────────────────────
 for row in "${PLUGINS[@]}"; do
   IFS='|' read -r id src pkg <<<"$row"
   echo "== $id =="

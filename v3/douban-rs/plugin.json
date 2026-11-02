@@ -4,7 +4,7 @@
   "id": "douban.rs",
   "name": "豆瓣中心（Rust 版）",
   "version": "1.1.1",
-  "description": "豆瓣榜单抓取 + 黑名单过滤 + 观察队列 + 聚合订阅；从宿主 CookieCloud（或自建 CookieCloud / 手动粘贴 cookie）取豆瓣登录态，自动追订「我的想看」；TMDB 匹配失败时用豆瓣详情（原名/又名）回退重搜；支持最低评分/年份/地区订阅过滤与「已删除不重订」墓碑集。旧 schema 1 WASM 插件（plugins/douban-rs 0.2.4）的 v3 迁移版；页面提供榜单海报墙、观察队列/我的想看、历史日志与设置。",
+  "description": "豆瓣榜单抓取 + 黑名单过滤 + 观察队列 + 聚合订阅；按宿主新规约不再读取 CookieCloud；登录态由用户手动粘贴浏览器里的豆瓣 Cookie 提供，自动追订「我的想看」；TMDB 匹配失败时用豆瓣详情（原名/又名）回退重搜；支持最低评分/年份/地区订阅过滤与「已删除不重订」墓碑集。旧 schema 1 WASM 插件（plugins/douban-rs 0.2.4）的 v3 迁移版；页面提供榜单海报墙、观察队列/我的想看、历史日志与设置。",
   "author": "congyoubanmian",
   "homepage": "https://github.com/congyoubanmian/douban-center-wasm",
   "requires": {
@@ -19,20 +19,81 @@
     "order": 30
   },
   "settings": [
-    { "key": "wish_sync_enabled", "label": "同步我的想看", "type": "boolean", "default": true, "help": "用豆瓣登录态拉取「想看」列表，新条目进观察队列或直接订阅" },
-    { "key": "manual_cookie", "label": "手动豆瓣 Cookie（可选）", "type": "password", "default": "", "help": "整段 cookie 头或仅 dbcl2=xxx；CookieCloud 拉不到登录态时的回退" },
-    { "key": "cookiecloud_url", "label": "自建 CookieCloud 地址（可选）", "type": "url", "default": "", "help": "留空 = 用宿主统一配置的内置 CookieCloud；填写后按旧版协议 GET {地址}/get/{UUID} 自行解密" },
-    { "key": "cookiecloud_uuid", "label": "CookieCloud UUID（自建时填）", "type": "text", "default": "", "help": "仅自建 CookieCloud 服务时需要" },
-    { "key": "cookiecloud_key", "label": "CookieCloud 口令（自建时填）", "type": "password", "default": "", "help": "仅自建 CookieCloud 服务时需要" },
-    { "key": "observe_period_hours", "label": "观察期（小时）", "type": "number", "default": 24, "help": "榜单条目入队后到订阅前的观察时长；0 按 24 小时" },
-    { "key": "auto_subscribe", "label": "到期自动订阅", "type": "boolean", "default": true, "help": "观察期到点 / 想看新条目按此开关决定直接订阅还是等后台处理" },
-    { "key": "notify_on_subscribe", "label": "订阅成功发通知", "type": "boolean", "default": true, "help": "经宿主通知渠道推送订阅结果" },
-    { "key": "min_rating", "label": "最低豆瓣评分", "type": "number", "default": 0, "help": "0 = 不限；无评分的条目按「低于阈值」处理，会被过滤" },
-    { "key": "min_year", "label": "最低年份", "type": "number", "default": 0, "help": "0 = 不限；豆瓣口碑榜/即将上映榜多数条目没有年份" },
-    { "key": "regions", "label": "地区白名单", "type": "text", "default": "", "help": "逗号分隔，留空 = 不限；只在已取到豆瓣条目详情（countries）时生效" },
-    { "key": "subscribe_source_filter", "label": "订阅来源过滤", "type": "text", "default": "", "help": "逗号分隔，写入聚合订阅的 enabled_sources；留空 = 宿主默认来源" },
-    { "key": "max_history", "label": "历史保留条数", "type": "number", "default": 200 },
-    { "key": "max_logs", "label": "日志保留条数", "type": "number", "default": 200 }
+    {
+      "key": "wish_sync_enabled",
+      "label": "同步我的想看",
+      "type": "boolean",
+      "default": true,
+      "help": "用豆瓣登录态拉取「想看」列表，新条目进观察队列或直接订阅"
+    },
+    {
+      "key": "manual_cookie",
+      "label": "手动豆瓣 Cookie（可选）",
+      "type": "password",
+      "default": "",
+      "help": "整段 cookie 头或仅 dbcl2=xxx；CookieCloud 拉不到登录态时的回退"
+    },
+    {
+      "key": "observe_period_hours",
+      "label": "观察期（小时）",
+      "type": "number",
+      "default": 24,
+      "help": "榜单条目入队后到订阅前的观察时长；0 按 24 小时"
+    },
+    {
+      "key": "auto_subscribe",
+      "label": "到期自动订阅",
+      "type": "boolean",
+      "default": true,
+      "help": "观察期到点 / 想看新条目按此开关决定直接订阅还是等后台处理"
+    },
+    {
+      "key": "notify_on_subscribe",
+      "label": "订阅成功发通知",
+      "type": "boolean",
+      "default": true,
+      "help": "经宿主通知渠道推送订阅结果"
+    },
+    {
+      "key": "min_rating",
+      "label": "最低豆瓣评分",
+      "type": "number",
+      "default": 0,
+      "help": "0 = 不限；无评分的条目按「低于阈值」处理，会被过滤"
+    },
+    {
+      "key": "min_year",
+      "label": "最低年份",
+      "type": "number",
+      "default": 0,
+      "help": "0 = 不限；豆瓣口碑榜/即将上映榜多数条目没有年份"
+    },
+    {
+      "key": "regions",
+      "label": "地区白名单",
+      "type": "text",
+      "default": "",
+      "help": "逗号分隔，留空 = 不限；只在已取到豆瓣条目详情（countries）时生效"
+    },
+    {
+      "key": "subscribe_source_filter",
+      "label": "订阅来源过滤",
+      "type": "text",
+      "default": "",
+      "help": "逗号分隔，写入聚合订阅的 enabled_sources；留空 = 宿主默认来源"
+    },
+    {
+      "key": "max_history",
+      "label": "历史保留条数",
+      "type": "number",
+      "default": 200
+    },
+    {
+      "key": "max_logs",
+      "label": "日志保留条数",
+      "type": "number",
+      "default": 200
+    }
   ],
   "jobs": [
     {
@@ -97,15 +158,6 @@
       "title": "获取海报",
       "queue": false,
       "timeout_seconds": 120
-    },
-    {
-      "id": "cookiecloud-test",
-      "entry": "jobs/cookiecloud-test.js",
-      "handler": "run",
-      "recover": "recover",
-      "title": "CookieCloud 连接测试",
-      "queue": false,
-      "timeout_seconds": 60
     },
     {
       "id": "send-test",
@@ -185,7 +237,6 @@
       "GET/PUT/DELETE /api/extensions/v3/{id}/storage*",
       "GET /api/extensions/v3/{id}/settings",
       "POST /api/extensions/v3/{id}/notify",
-      "POST /api/extensions/v3/{id}/cookiecloud/read",
       "POST /api/extensions/v3/{id}/http",
       "POST /api/extensions/v3/{id}/jobs/{job}",
       "GET /api/tmdb/search",
@@ -198,6 +249,6 @@
       "*.doubanio.com（豆瓣海报 CDN，需带豆瓣 Referer 防盗链）"
     ],
     "notifications": true,
-    "risk": "定期抓取豆瓣榜单与想看列表，按黑名单/过滤器入观察队列；到期条目经 TMDB 匹配（失配时回查豆瓣详情重搜）后创建宿主聚合订阅（宿主负责检索并投递 115 离线）；从宿主 CookieCloud 或用户自建 CookieCloud / 手动粘贴的 cookie 读取豆瓣登录态；订阅结果发送通知。不写宿主文件，不触碰 115 账号。"
+    "risk": "定期抓取豆瓣榜单与想看列表，按黑名单/过滤器入观察队列；到期条目经 TMDB 匹配（失配时回查豆瓣详情重搜）后创建宿主聚合订阅（宿主负责检索并投递 115 离线）；登录态只来自用户手动粘贴的豆瓣 Cookie（不读取 CookieCloud）；订阅结果发送通知。不写宿主文件，不触碰 115 账号。"
   }
 }

@@ -10,7 +10,7 @@
 
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { NButton, NInput, NTag } from 'naive-ui'
-import { Cloud as CloudIcon, ClipboardPaste as ClipboardIcon, QrCode as QrCodeIcon } from '@lucide/vue'
+import { ClipboardPaste as ClipboardIcon, QrCode as QrCodeIcon } from '@lucide/vue'
 import { ALL_QUALITIES, SOURCES, useMusicStore } from '../store'
 import { encodeQr, qrSvgPath } from '../plugin-api'
 
@@ -171,10 +171,6 @@ const cookiePlaceholder = computed(
 
       <div class="mini-title">其他登录方式</div>
       <div class="row">
-        <NButton size="small" secondary :disabled="!!busy" @click="store.syncFromCookieCloud()">
-          <template #icon><CloudIcon :size="14" /></template>
-          CookieCloud 同步
-        </NButton>
         <NButton size="small" secondary @click="store.toggleCookiePanel()">
           <template #icon><ClipboardIcon :size="14" /></template>
           粘贴整行 Cookie

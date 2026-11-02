@@ -2,7 +2,7 @@
 //
 // 只声明页面真正会用到的那部分，字段形状以 v3-kit/docs/api-reference.md 第 2 节
 // 「页面 ctx」为准：api / storage / settings / tasks / http / files / cd2 / watch /
-// notifications / cookiecloud / theme / signal。宿主把同一个 ctx 对象交给 mount(el, ctx)，
+// notifications / theme / signal。宿主把同一个 ctx 对象交给 mount(el, ctx)，
 // 页面所有数据与能力都只能从这里走（不要直接 fetch 宿主业务接口）。
 //
 // 完整 SDK 类型在 v3-kit/docs/sdk/index.d.ts（官方开发套件镜像，不随本仓库入库），
@@ -67,7 +67,6 @@ export interface HostContext {
     channels(): Promise<Array<{ id: string; [k: string]: unknown }>>
   }
   notify?(options: Record<string, unknown>): Promise<unknown>
-  cookiecloud(operation: string, options?: Record<string, unknown>): Promise<unknown>
   events?: { catalog(): Promise<Array<{ type: string; [k: string]: unknown }>> }
   usage?(): Promise<Record<string, number>>
   /** 页面关闭/卸载时中止的信号；长请求都要带上它。 */

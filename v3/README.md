@@ -21,7 +21,8 @@ JavaScript（无 `require`、无 Node 内置模块、无子进程），页面是
 ## 目录与产物
 
 ```
-v3/chase-rs/            v3 插件源码（plugin.json + jobs/ + lib/ + ui/ + tests/）
+v3/chase-rs/            v3 插件源码（plugin.json + jobs/ + lib/ + ui/；**测试不进插件目录**）
+v3/tests/<plugin>/      各插件的离线单测与夹具（在插件目录之外，不进 .dian115p 包）
 v3/music-rs/
 v3/douban-rs/
 v3-ui/                  三个插件的 Vue 3 界面源码 + 共享构建底座（依赖在 v3-ui/node_modules，不入库）
@@ -46,14 +47,14 @@ dist/                   构建产物 .dian115p（本地生成，不提交；现�
 | 任务与调度 | 清单 `jobs[]` 只写 `id` + Rust `handler` 名（如 `alignHourly`）+ `default_schedule`；WASM 内自行分发 | 清单 `jobs[]` 写 `entry` / `handler` / `recover` / `default_schedule`（cron）或 `interval_seconds` / `timeout_seconds` / `queue`；页面动作是 `queue:false` 的短任务 |
 | 事件 | `events: ["telegram.callback"]`（music-rs），WASM 内处理回调 | `events: [{event: "callback", job: "tg-callback"}]`：事件触发一个普通任务；music-rs 用它重排失败任务 |
 | 权限声明 | `permissions.apis[]`（method/path/reason）+ `permissions.network[]`（origin/methods/proxy_mode/reason），安装时作为白名单 | **v3 清单没有 `permissions` 段**。代码里实际调用 `ctx.api` / `ctx.http` / `ctx.files` / `ctx.notify` / `ctx.storage`；宿主在安装/更新时静态扫描实际代码、运行时继续做权限检查（`v3-kit/docs/security.md`），拒绝即 403 或拒绝安装。`declared_usage` 如实写明接口、站点、文件、通知与风险，只作告知，不是白名单 |
-| 宿主 API 调用 | WASM `host.rs` 拼 HTTP：`/api/plugin-runtime/storage/:key`、`/api/notifications/plugin`、`/api/plugin-host/files/*`、`/api/local-files/*` 等 | `ctx.api.get/post/patch`（业务接口）、`ctx.storage.get/set/remove`、`ctx.notify(...)`、`ctx.files.call(...)`、`ctx.http.request(...)`、`ctx.cookiecloud('read')`、`ctx.crypto` / `ctx.codec`、`ctx.tasks.run/get`（页面） |
+| 宿主 API 调用 | WASM `host.rs` 拼 HTTP：`/api/plugin-runtime/storage/:key`、`/api/notifications/plugin`、`/api/plugin-host/files/*`、`/api/local-files/*` 等 | `ctx.api.get/post/patch`（业务接口）、`ctx.storage.get/set/remove`、`ctx.notify(...)`、`ctx.files.call(...)`、`ctx.http.request(...)`、`ctx.crypto` / `ctx.codec`、`ctx.tasks.run/get`（页面） |
 | 存储与并发 | `GET/PUT /api/plugin-runtime/storage/:key` + ETag `If-Match` + WASM 内幂等键；状态文档常驻内存 | `ctx.storage` 的 `revision` / `expected_revision` CAS（后台 `set` 返回版本数字，页面返回 `{revision}`）；状态文档每次任务重新读取，不常驻。幂等键头不再发送（`ctx.api` 不暴露自定义头） |
 | 下载与文件 | 宿主代下载 `/api/plugin-host/files/downloads` + 轮询 job；`/api/local-files/rename`、`/api/local-files/copy`；music-rs 另有 CD2 gRPC-Web 直送 | `ctx.http.request({save_to})` 流式下载到插件自有目录；`ctx.files.call({operation: 'rename' 或 'move' ...})` 由宿主带进度执行并自动分流 CD2 挂载路径；不再有插件内 CD2 客户端 |
 | 通知 | `POST /api/notifications/plugin`（music-rs 的 `callback_data` 会被 400 拒） | `ctx.notify({title, body, buttons, dedupe_key, ...})`，原生支持按钮回调；返回逐渠道结果 |
 | UI 入口 | `ui.mode: "federation"` + `ui.federation.entry: "frontend/dist/assets/remoteEntry.js"` + `module: "./AppPage"`（Vue 远程模块） | `ui.entry: "ui/page.js"`，`export async function mount(el, ctx)`；`menu` / `icon` 也在清单里 |
 | UI ↔ 后台桥 | 旧前端通过 WASM 的 `state` / `action` op 回调（`invokeAction` → `RuntimeCallback`）取状态、发动作 | 页面直接 `ctx.storage.get('state')` / `ctx.settings.get()` 读，`ctx.tasks.run(job, business_key, input)` + `ctx.tasks.get(id)` 发动作并轮询；`ctx.http` 可在页面直接取图 |
 | 设置 | 设置嵌在状态文档里，WASM 侧白名单合并 | 清单 `settings[]` 由宿主渲染表单并保存到 `settings` KV；`ctx.settings.get/set` 与后台共用；复杂配置仍留在状态文档 |
-| CookieCloud | 插件自己配置地址/UUID/口令 + 插件内 AES-CBC 解密（`cookiecloud.rs`） | 主路径 `ctx.cookiecloud('read')`（宿主统一配置并解密）；douban.rs 保留用户显式填写自建服务时的旧协议链 |
+| CookieCloud | 插件自己配置地址/UUID/口令 + 插件内 AES-CBC 解密（`cookiecloud.rs`） | **已下线**：宿主新规约禁止插件读 CookieCloud；douban.rs / music.rs 的登录态只来自扫码或用户手动粘贴 |
 | 交付 | schema 1 签名包（Ed25519，`publisher.key_id`，`*.d115p`） | `.dian115p` 源码 ZIP（`v3-kit/conformance/pack.mjs`），`delivery: "source"`；宿主安装时静态分析实际代码并让用户确认 token，加密交付是可选项，本仓库三个插件都没有用 |
 
 更完整的平台规则见 `v3-kit/docs/developer-guide.md`（清单/任务/发布）、`package-format.md`
@@ -94,7 +95,7 @@ dist/                   构建产物 .dian115p（本地生成，不提交；现�
   （`xui.ptlogin2.qq.com` 官方 PNG 二维码 → `ptqrlogin` 轮询 → `check_sig` / `login_jump` / `authorize` →
   musicu `QQLogin` 换 `musicid`/`musickey`，重定向目标按 host+path 白名单校验）；登录链路的临时 Cookie
   只留在宿主 session（`network.md:15`），凭据只落插件 KV；另有手动粘贴 Cookie（白名单清洗 + 合并）与
-  CookieCloud 一键同步（宿主内置服务）作回退。
+  手动粘贴 Cookie 作回退（不读 CookieCloud）。
 - 取链：网易云 eapi（AES-128-ECB + MD5，走 `ctx.crypto`）8 档音质阶梯；QQ `master/flac/320/128`
   7 档阶梯。
 - 歌单：全量索引 + 分页详情，整单分批入队（每批 5 页 × 100 首，`next_page` 续批）。
@@ -109,7 +110,7 @@ dist/                   构建产物 .dian115p（本地生成，不提交；现�
   复制进目标目录（CD2 挂载由宿主分流）。
 - Telegram 失败通知带 `callback_data: retry:<短id>` 按钮；点击触发 `tg-callback` 事件任务重新排队。
 - 页面四个分页 + 登录卡 + 最近动作；`ui/qr.js` 为旧 `frontend/src/qr.ts` 的移植。
-- 173 个 `node --test` 用例；正常全过，但 `tests/pump.test.js:287` 的队首断言偶发失败（约 10%，见 Gaps；
+- 170 个 `node --test` 用例；正常全过，但 `v3/tests/music-rs/pump.test.js:287` 的队首断言偶发失败（约 10%，见 Gaps；
   本轮连跑 10 次未复现，断言前提未变）。
 
 **Gaps**
@@ -123,10 +124,10 @@ dist/                   构建产物 .dian115p（本地生成，不提交；现�
 - `staging_dir` 设置移除，暂存固定为插件自有 `downloads/`。
 - 旧 `tasks` KV 数据不迁移：v3 安装与旧安装数据不通用（平台发布语义），升级视为新安装。
 - 队列页没有「取消单条任务」入口（旧版也没有独立取消动作，只有重试/清空已完成/对账）。
-- **单测偶发失败（未修复）**：`tests/pump.test.js:287`「pump respects max_active and the one-finalization
-  gate」在 `tests/pump.test.js:297` 用「id 字典序最大」猜队首，前提是三条任务同一毫秒入队；跨毫秒时
+- **单测偶发失败（未修复）**：`v3/tests/music-rs/pump.test.js:287`「pump respects max_active and the one-finalization
+  gate」在 `v3/tests/music-rs/pump.test.js:297` 用「id 字典序最大」猜队首，前提是三条任务同一毫秒入队；跨毫秒时
   `sortIndex` 按 `updated_ms` 倒序，队首并不是 max(id)，断言 `summary.completed` 就会不符
-  （实测 10 次运行失败 1 次，断言在 `tests/pump.test.js:302`）。这是测试假设问题，本轮没有改测试或
+  （实测 10 次运行失败 1 次，断言在 `v3/tests/music-rs/pump.test.js:302`）。这是测试假设问题，本轮没有改测试或
   实现，交给 music-rs 负责人决定是改成索引首条还是注入固定时钟。
 - 真机上的扫码、eapi 取链、下载落盘、CD2 move 与通知按钮回调均未验证。
 
@@ -143,8 +144,8 @@ dist/                   构建产物 .dian115p（本地生成，不提交；现�
 - 过滤：`min_rating` / `min_year` / `regions`，无评分按低于阈值处理，地区只在详情已取到时生效。
 - 海报：豆瓣 CDN 带 Referer 取图（页面 `ctx.http` base64）、img1~img9 镜像回退、`s_ratio → m_ratio` 降级、
   `get-poster` 任务与 64 张内存缓存。
-- CookieCloud：宿主内置服务为主，自建服务（地址/UUID/口令 + 旧解密链）与手动 Cookie 回退；45 分钟缓存。
-- 16 个任务（定时刷新、想看同步、刷新、同步、订阅、海报、CookieCloud/通知自检、维护动作），
+- 登录态：只用手工粘贴的豆瓣 Cookie（需含 dbcl2），45 分钟缓存；不再读 CookieCloud。
+- 15 个任务（定时刷新、想看同步、刷新、同步、订阅、海报、通知自检、维护动作），
   均带 `recover`；页面用 Vue 3 重写（源码 `v3-ui/src/douban-rs/`）：榜单/海报墙、观察队列/想看、
   历史日志、设置表单四个面板。
 - 112 个 `node --test` 用例通过（fixtures 复用旧仓库脱敏样本）。
@@ -157,7 +158,7 @@ dist/                   构建产物 .dian115p（本地生成，不提交；现�
 - 没有「一键处理全部到期订阅」：后端没有独立 process-due 任务，页面只提供逐条 `subscribe-now`，
   批量到期由定时 `wish-sync` 处理。
 - 通知按钮回调（旧版本就没有可用回调）未在页面阶段补上；`send-test` 只做通知自检。
-- 自建 CookieCloud 的 AES 解密依赖 `ctx.crypto`，没有插件内 AES 兜底（刻意不做未经真机验证的密码学）；
+- 插件不再做任何 CookieCloud 解密（宿主新规约）：登录态只来自扫码或用户手动粘贴；
   MD5/base64 的纯 JS 兜底有向量对拍。
 - 幂等键头不再携带（`ctx.api` 限制），由宿主任务队列 + 订阅去重 + storage CAS 保底。
 - 真机上的榜单抓取、豆瓣登录态、TMDB 匹配、订阅创建、海报 Referer 与通知均未验证。
@@ -326,9 +327,9 @@ node v3-kit/conformance/pack.mjs v3/douban-rs dist/douban-rs.dian115p
 node scripts/v3-pack-check.mjs dist/chase-rs-0.1.11.dian115p v3/chase-rs   # 查包
 
 # 4) 纯逻辑单测（Node 24 下要传文件 glob，不能只传目录）
-(cd v3/chase-rs  && node --test tests/*.test.mjs)   # 119 pass
-(cd v3/music-rs  && node --test tests/*.test.js)    # 173 用例
-(cd v3/douban-rs && node --test tests/*.test.mjs)   # 113 pass
+(cd v3/tests/chase-rs  && node --test *.test.mjs)   # 119 pass
+(cd v3/tests/music-rs  && node --test *.test.js)    # 170 用例
+(cd v3/tests/douban-rs && node --test *.test.mjs)   # 100 pass
 
 # 5) 语法检查
 find v3/chase-rs v3/music-rs v3/douban-rs -name '*.js' -exec node --check {} +
@@ -342,6 +343,8 @@ bash scripts/v3-verify-ui-artifacts.sh
 ```
 
 注意：`node --test tests/`（只给目录）在 Node 24.18 会报 `Cannot find module .../tests`，不要用；
+单测与夹具放在 `v3/tests/<plugin>/`（插件目录之外）：官方 `starter` 模板的插件目录也不含测试，
+测试不进 `.dian115p` 包（避免审计把夹具里的向量当成可疑编码数据）；
 必须传文件 glob。
 
 ## 安装到 DIAN115（手动上传 .dian115p）
@@ -400,7 +403,7 @@ v3 索引 schema。仓库内旧 `plugin-market/index.json` 是 v1 格式，v3 �
 | --- | --- | --- |
 | 三个插件结构检查 | `node v3-kit/conformance/project-check.mjs v3/<plugin>` | 3/3 通过：`chase.rs 0.1.11`、`music.rs 1.1.0`、`douban.rs 1.1.1` |
 | 全部 JS 语法 | `find v3/... -name '*.js' -exec node --check {} +` | 通过：chase 16 / music 30 / douban 38 个文件 |
-| 纯逻辑单测 | `(cd v3/<plugin> && node --test tests/*.test.*)` | chase 119 pass / music 173 pass / douban 113 pass，0 fail |
+| 纯逻辑单测 | `(cd v3/tests/<plugin> && node --test *.test.*)` | chase 119 pass / music 170 pass / douban 100 pass，0 fail |
 | 打包 | `bash scripts/v3-build.sh`（连跑两次） | 两次 sha256 完全一致；产物 193844 / 284582 / 263162 字节（界面换成 Vue 3 自打包后比原生 JS 版大；sha256 见表下） |
 | 索引 JSON | `node -e 'JSON.parse(...)'` | 通过 |
 | 索引字段与摘要 | 本地校验脚本（必填/id/sha256/delivery/homepage，sha256 对 dist 实算） | 通过；仅 `source_url` 相对路径为已知偏差 |

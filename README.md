@@ -13,7 +13,7 @@ https://github.com/congyoubanmian/dian115-plugins
 | 插件 ID | 名称 | 干什么 | 备注 |
 | --- | --- | --- | --- |
 | `chase.rs` | 追剧管家 | 小时级对齐「订阅池剧集订阅」与「Emby 已有集数」：只增 PATCH `total_episodes`，产出追剧日历与每日一次的 Telegram 日报；已核实无缺口的条目 5 小时窗口内复用缓存，Emby 查询量压一个数量级 | 减方向只给建议，从不写 |
-| `douban.rs` | 豆瓣中心 | 豆瓣榜单抓取 → 黑名单过滤 → 观察队列 → 聚合订阅；CookieCloud 同步浏览器登录态，自动追订「我的想看」 | 前端与 `plugins/douban-center` 共享 |
+| `douban.rs` | 豆瓣中心 | 豆瓣榜单抓取 → 黑名单过滤 → 观察队列 → 聚合订阅；登录态用扫码或手动粘贴的浏览器 Cookie，自动追订「我的想看」 | v3 按宿主新规约**不读 CookieCloud** |
 | `music.rs` | 音乐下载（Rust 版） | 网易云/QQ 扫码登录、搜索与音质自选取链；宿主代理下载（本地暂存 → CloudDrive2 入库），任务队列落 KV，支持 Telegram 按钮重试 | **无 sidecar**，宿主 broker 代下载 + CD2 入库 |
 
 全部插件兼容 `dian115 >=3.8.51 <6.0.0`，界面遵循 [UI Federation v1](https://github.com/madbrolab/dian115/tree/main/docs/plugin-platform)：Vue3 + naive-ui + lucide 由宿主以 singleton 提供，配色全部走宿主 `--dian-*` 主题变量（深浅色自动跟随），1280 / 960 / 390 三档响应式。
@@ -42,14 +42,17 @@ v3-ui/                          三个 v3 插件的 Vue 3 界面源码与构建�
 
 ### 豆瓣「我的想看」同步（可选，douban.rs）
 
-1. 部署本机 CookieCloud：`docker run -d --name cookiecloud --restart unless-stopped -m 128m -p 8088:8088 -v "$(pwd)/cookiecloud-data:/data/api/data" easychen/cookiecloud`（`-v` 左侧的数据目录按你的环境替换）
-2. 浏览器装 CookieCloud 扩展，服务器填 `http://<NAS内网IP>:8088`，随机生成 UUID 和密钥，「需要同步的域名」强烈建议只填 `douban.com`
-3. 豆瓣中心设置里填 UUID/密钥并开启同步；也可手填豆瓣 `dbcl2` cookie 兜底
-4. 每轮榜单刷新顺带同步想看列表，新条目自动进聚合订阅
+v3 插件按宿主新规约**不读取 CookieCloud**，登录态只有一条来源：
+
+1. 打开豆瓣中心 → 设置 → 「登录态」→ 粘贴浏览器里的豆瓣 Cookie（整段 cookie 头，或仅 `dbcl2=xxx`）
+2. 保存后点「刷新榜单」；想看同步需要 Cookie 里有 `dbcl2`
+3. 每轮榜单刷新顺带同步想看列表，新条目自动进聚合订阅
+
+（旧 schema 1 的 `plugins/douban-center` 仍走 CookieCloud，那条链路只对老插件有效。）
 
 ### 音乐下载（music.rs）
 
-新版无需任何 sidecar：扫码（或粘贴 Cookie / CookieCloud）登录 → 搜索/选歌单 → 按音质档位入队 → 宿主代下载到暂存目录 → 复制进 CloudDrive2 音乐目录由 CD2 入库。下载目录与命名规则在插件设置里改。
+新版无需任何 sidecar：扫码（或粘贴 Cookie）登录 → 搜索/选歌单 → 按音质档位入队 → 宿主代下载到暂存目录 → 复制进 CloudDrive2 音乐目录由 CD2 入库。下载目录与命名规则在插件设置里改。
 
 ## 插件开发
 

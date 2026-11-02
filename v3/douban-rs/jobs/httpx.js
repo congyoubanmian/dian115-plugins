@@ -8,7 +8,7 @@
 // 都依赖这里的 status/err 形态）。
 
 import { goLossy } from '../lib/text.js'
-import { base64Decode } from './crypto.js'
+import { base64Decode } from '../lib/base64.js'
 import { WISH_USER_AGENT, WISH_REFERER } from '../lib/wish-core.js'
 
 /** 豆瓣网页抓取的桌面 UA（runtime.rs BROWSER_USER_AGENT）。 */

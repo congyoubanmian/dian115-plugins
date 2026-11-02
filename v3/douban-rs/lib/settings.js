@@ -11,9 +11,6 @@ import { defaultSettings } from './model.js'
 export const FLAT_DEFAULTS = {
   wish_sync_enabled: true,
   manual_cookie: '',
-  cookiecloud_url: '',
-  cookiecloud_uuid: '',
-  cookiecloud_key: '',
   observe_period_hours: 24,
   auto_subscribe: true,
   notify_on_subscribe: true,
@@ -69,9 +66,6 @@ export function normalizeFlat(raw) {
   return {
     wish_sync_enabled: toBool(merged.wish_sync_enabled, FLAT_DEFAULTS.wish_sync_enabled),
     manual_cookie: toStringOrEmpty(merged.manual_cookie).trim(),
-    cookiecloud_url: toStringOrEmpty(merged.cookiecloud_url).trim(),
-    cookiecloud_uuid: toStringOrEmpty(merged.cookiecloud_uuid).trim(),
-    cookiecloud_key: toStringOrEmpty(merged.cookiecloud_key).trim(),
     observe_period_hours: observe > 0 ? observe : 0,
     auto_subscribe: toBool(merged.auto_subscribe, FLAT_DEFAULTS.auto_subscribe),
     notify_on_subscribe: toBool(merged.notify_on_subscribe, FLAT_DEFAULTS.notify_on_subscribe),

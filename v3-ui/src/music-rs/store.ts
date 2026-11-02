@@ -1,7 +1,7 @@
 // 音乐下载页面的状态与动作层。
 //
 // 行为基准是改写前的原生 JS 版页面（v3-ui/legacy/music-rs/page.js）：搜索/我的歌单/任务/设置
-// 四个分页、网易云与 QQ 音乐扫码登录（二维码 + 2 秒轮询）、手动粘贴 Cookie、CookieCloud 同步、
+// 四个分页、网易云与 QQ 音乐扫码登录（二维码 + 2 秒轮询）、手动粘贴 Cookie、
 // 单曲入队、歌单整单入队、任务重试/清理/索引对账/推进队列、设置保存、通知自检、最近动作日志，
 // 逐项对应（功能零变动，只是从原生 DOM 换成 Vue 3 组件）。
 //
@@ -10,7 +10,6 @@
 // - 设置：ctx.settings.get() / set()（与宿主「管理」页同一份设置）；
 // - 动作：ctx.tasks.run('queue-pump', …) 推进队列，ctx.tasks.get(id) 轮询到终态；
 // - 网络：ctx.http（搜索/扫码/歌单走插件 lib/ 的网络层，lib 用 deps.http = ctx.http）；
-// - CookieCloud：ctx.cookiecloud('read')；
 // - 通知：ctx.notify。
 // 不直接 fetch 宿主业务接口，不自建 WebSocket。
 
@@ -77,16 +76,6 @@ export const SOURCES = [
 export const ALL_QUALITIES: string[] = [...(api.LEVELS as string[]), ...QQ_QUALITIES].filter(
   (value, index, all) => all.indexOf(value) === index,
 )
-
-/** CookieCloud 白名单（原生版同表）。 */
-const NETEASE_WHITELIST = [
-  'MUSIC_U', 'MUSIC_A', 'MUSIC_A_T', 'MUSIC_R_T', 'MUSIC_SNS', 'NMTID',
-  '__csrf', '__csrf_token', '_ntes_nuid', '_ntes_nnid',
-]
-const QQ_WHITELIST = [
-  'qrsig', 'uin', 'skey', 'p_skey', 'ptui_loginuin', 'luin', 'qqmusic_key',
-  'musickey', 'wxuin', 'wxunionid', 'euin', 'tmeLoginType', 'qqmusic_u',
-]
 
 /** 来源 id → 显示名。 */
 export function sourceName(id: string): string {
@@ -657,31 +646,6 @@ export function createMusicStore(ctx: HostContext) {
     })
   }
 
-  // ── CookieCloud 同步（宿主内置服务）────────────────────
-  async function syncFromCookieCloud(): Promise<void> {
-    await withBusy('cc', 'CookieCloud 同步失败', async () => {
-      const snapshot = await ctx.cookiecloud('read', { domains: ['music.163.com', 'qq.com'] })
-      const neteaseJar = api.extractCookiesFromSnapshot(snapshot, api.isNeteaseCloudDomain, NETEASE_WHITELIST)
-      const qqRaw = api.extractCookiesFromSnapshot(snapshot, api.isQqCloudDomain, QQ_WHITELIST)
-      const qqJar = api.normalizeCookies({ ...qqRaw }, 'qq')
-      const neteaseMerged = await api.saveCookies(deps.kv, 'netease', neteaseJar)
-      const qqMerged = await api.saveCookies(deps.kv, 'qq', qqJar)
-      const neteaseInfo = api.neteaseLoginInfo(neteaseMerged)
-      const qqInfo = api.qqLoginInfo(qqMerged)
-      toast(
-        'success',
-        `CookieCloud 同步完成 —— 网易云: 保存 ${Object.keys(neteaseJar).length} 条, ${neteaseInfo.logged_in ? '已登录' : '未登录'}; ` +
-          `QQ: 保存 ${Object.keys(qqJar).length} 条, ${qqInfo.logged_in ? '已登录' : '未登录'}`,
-      )
-      await api.addLog(
-        deps.kv,
-        'info',
-        `CookieCloud 同步: 网易云 ${Object.keys(neteaseJar).length} 条(${neteaseInfo.logged_in ? '已登录' : '未登录'}), ` +
-          `QQ ${Object.keys(qqJar).length} 条(${qqInfo.logged_in ? '已登录' : '未登录'})`,
-      )
-    })
-  }
-
   // ── 歌单 ──────────────────────────────────────────────
   /**
    * 我的歌单：按当前来源分派（网易云走原逻辑，QQ 走 qqPlaylists）。
@@ -1097,8 +1061,7 @@ export function createMusicStore(ctx: HostContext) {
     switchLoginSource,
     toggleCookiePanel,
     pasteCookie,
-    syncFromCookieCloud,
-    loadPlaylists,
+      loadPlaylists,
     openPlaylist,
     closePlaylist,
     fetchPlaylistSongs,

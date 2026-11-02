@@ -16,9 +16,6 @@ const { settings, busy, notifyResult } = store
 // 长文案放脚本常量：一整段连续静态元素会被 Vue 编译成 static vnode，走
 // insertStaticContent（需要 DOM 的 template.content），离线冒烟用的最小 DOM 垫片没有它。
 // 用插值渲染就没有这个问题（文本仍由同一份常量提供）。
-const COOKIE_CLOUD_HINT =
-  'v3 用宿主统一配置的 CookieCloud 服务（不再在插件里填地址/UUID/口令）；点登录卡「CookieCloud 同步」拉取网易云与 ' +
-  'QQ 域的登录 Cookie。115 相关域名按宿主策略不可读写。'
 const STORAGE_HINT =
   '下载先落插件自有暂存目录 downloads/<短id>.part（宿主流式写盘），定名后由宿主 move 进目标目录——「本地暂存目录 ' +
   'staging_dir」与「CD2 直送」设置项随 v3 文件模型移除。'
@@ -150,10 +147,6 @@ async function save(): Promise<void> {
     <span class="hint">{{ NOTIFY_TEST_HINT }}</span>
   </div>
   <p v-if="notifyResult" class="hint">{{ notifyResult }}</p>
-
-  <div class="divider" />
-  <h4 class="sub">CookieCloud（宿主内置）</h4>
-  <p class="hint">{{ COOKIE_CLOUD_HINT }}</p>
 
   <div class="divider" />
   <h4 class="sub">目录与入库（v3）</h4>

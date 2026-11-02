@@ -7,7 +7,7 @@
 
 ```bash
 # 全部纯逻辑用例（判定层 / 解析器 / 日报 / 设置 / 状态文档）
-cd v3/chase-rs && node --test tests/*.test.mjs
+cd v3/tests/chase-rs && node --test *.test.mjs
 
 # 语法检查全部 JS
 find v3/chase-rs -name '*.js' -not -path '*/node_modules/*' -exec node --check {} +
@@ -42,7 +42,7 @@ jobs/
   refresh.js         只读刷新（queue:false）+ recover
   probe-dump.js      探测诊断（queue:false）+ recover
 ui/page.js           原生 JS + DOM 重写的页面（mount(el, ctx)）
-tests/               node --test 用例
+（测试在 v3/tests/chase-rs/，不进插件包）
 ```
 
 ## action/job 的映射

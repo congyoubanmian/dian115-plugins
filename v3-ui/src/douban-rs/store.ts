@@ -345,9 +345,6 @@ export function createDoubanStore(ctx: HostContext): DoubanStore {
     // 状态文档里的旧账号字段仍生效。
     const legacy = stateDoc.value?.settings
     if (legacy) {
-      if (legacy.cookiecloud_url && !flat.value.cookiecloud_url) flat.value.cookiecloud_url = legacy.cookiecloud_url
-      if (legacy.cookiecloud_uuid && !flat.value.cookiecloud_uuid) flat.value.cookiecloud_uuid = legacy.cookiecloud_uuid
-      if (legacy.cookiecloud_key && !flat.value.cookiecloud_key) flat.value.cookiecloud_key = legacy.cookiecloud_key
       if (legacy.manual_cookie && !flat.value.manual_cookie) flat.value.manual_cookie = legacy.manual_cookie
       if (legacy.wish_sync_enabled && !flat.value.wish_sync_enabled) flat.value.wish_sync_enabled = true
     }
