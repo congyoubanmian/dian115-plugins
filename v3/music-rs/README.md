@@ -11,8 +11,8 @@
 - **取链**：网易云 eapi（AES-128-ECB + MD5，宿主 `ctx.crypto`）按 8 档音质阶梯逐级回退；QQ 按参考客户端 Lilt 的流程：先读歌曲详情拿 `media_mid`，登录态请求 `F000(flac) → M800(320k) → M500(128k)`，匿名只请求 `M500`；每档单独请求 vkey，相对 purl 用响应里的 `sip` 域名拼接（详见 `lib/qq.js` 注释）。
 - **歌单**：**网易云与 QQ 音乐都支持「我的歌单」**（我创建的 + 收藏的）；歌单内分页浏览（每页 100 首）；整单分批入队（每批 5 页 × 100 首，`next_page` 续批游标，页面级失败不回滚已入队）。**QQ 另有两个特殊入口：「每日推荐」「我喜欢」**。详见「歌单」一节。
 - **下载队列**（API 3.9：`save_to` 可直写用户目标目录，省一次跨盘拷贝；宿主不开放该能力时自动回落「插件暂存 → 定名 → move」）：KV 分片（`tasks.idx` + `task.<id>`），去重按 `source+song_id+quality`；定时任务（每 5 分钟）与页面手动「推进队列」走同一入口；`queued → downloading → copying → done/failed`，失败重试 ≤3 次后发通知（Telegram 按钮 `callback_data: retry:<短id>`，点击触发回调任务重新排队）。
-- **同名预检与检查点**（1.3.0）：下载前与入库（move）前用 `files.exists` 预检目标目录，已有同名文件直接终态失败（错误写明路径），不进「move overwrite:false 撞墙 → 重试」循环；下载/入库前后各落一次任务检查点（before-download / after-download / before-move / after-move，含目标路径与 size/sha256），中断恢复 `recoverPump` 先用 `exists`/`stat` 核对目标目录里的真实文件再决定 complete / resume / attention——判 complete 时把 KV 队列里的在途任务一并收敛为 done，避免下一轮 pump 误报「目标已存在」。失败通知的 `dedupe_key` 收敛为只含任务 id（`dl-fail-<id>`），重试窗口内同键去重。
-- **TG 命令与日报**（1.3.0）：`/music 队列|状态|帮助`、`/queue`、`/status` 只读查询（不入队、不重试、不删除），回复走来源渠道 `ctx.messaging.reply`，未授权 telegram.bot 时回退 `ctx.notify` 普通通知（dedupe_key 取 chat_id + message_id）；每天 08:30 的 `daily-report` 发一条下载日报（dedupe_key `music:daily-report:<日期>`，按天稳定）。详见下文。
+- **同名预检与检查点**（1.3.0）：下载前与入库（move）前用 `files.exists` 预检目标目录，已有同名文件直接终态失败（错误写明路径），不进「move overwrite:false 撞墙 → 重试」循环；下载/入库前后各落一次任务检查点（before-download / after-download / before-move / after-move，含目标路径与 size/sha256），中断恢复 `recoverPump` 先用 `exists`/`stat` 核对目标目录里的真实文件再决定 complete / resume / attention——判 complete 时把 KV 队列里的在途任务一并收敛为 done，避免下一轮 pump 误报「目标已存在」。失败通知的 `dedupe_key` 为 `dl-fail-<id>-r<retry_round>-a<attempts>`：同一次失败重投同键去重，用户点「重试」后再失败换新键（宿主按键永久记账，同键不同内容判冲突、发送失败的键须换新键）。下载失败绝不删除目标目录里原有的文件；暂存回落只在宿主明确不支持直写（403/405/501 或 unsupported）时触发，网络错误照常计失败重试。
+- **TG 命令与日报**（1.3.0）：`/music 队列|状态|帮助`、`/queue`、`/status` 只读查询（不入队、不重试、不删除），回复走来源渠道 `ctx.messaging.reply`，未授权 telegram.bot 时回退 `ctx.notify` 普通通知（dedupe_key 取 chat_id + message_id）；每天 08:30 的 `daily-report` 发一条下载日报（dedupe_key `music:daily-report:<日期>`；当天送达后不再重发，发送失败换 `…:r<n>` 新键，发送状态 CAS 写进 KV `daily_report`）。详见下文。
 - **任务运维**：重试、清空已完成、索引对账（孤儿分片挂回）。
 
 ## 登录
@@ -180,14 +180,14 @@ QQ 走 `qqPlaylistSongsPage`（游标 `begin = (page-1) × 100`），
 
 ```sh
 node --check lib/*.js jobs/*.js ui/*.js   # 语法
-cd v3/tests/music-rs && node --test *.test.js   # 199 项单测（eapi/cookie/qq/queue/pump/QR 向量/recover/TG 命令/日报）
+cd v3/tests/music-rs && node --test *.test.js   # 221 项单测（eapi/cookie/qq/queue/pump/QR 向量/recover/TG 命令/日报）
 node v3-kit/conformance/project-check.mjs v3/music-rs
 node v3-kit/conformance/pack.mjs v3/music-rs dist/music-rs.dian115p
 ```
 
-199 项的分布（`node --test <file>` 逐个文件跑出来的 `ℹ tests` 数）：
-`music-api` 54 / `qq` 46 / `recover` 15 / `cookies` 12 / `settings-queue` 12 / `encoding` 10 /
-`pump` 10 / `tg-command` 10 / `netease` 8 / `eapi` 6 / `qr` 4 / `jobs` 2 / `kv-path` 1。
+221 项的分布（`node --test <file>` 逐个文件跑出来的 `ℹ tests` 数）：
+`music-api` 54 / `qq` 46 / `pump` 22 / `recover` 16 / `settings-queue` 16 / `tg-command` 13 / `cookies` 12 /
+`encoding` 10 / `tasks-core` 10 / `netease` 8 / `eapi` 6 / `qr` 4 / `jobs` 2 / `kv-path` 2。
 
 注意：本机没有可用的 dian115 宿主（授权锁定），以上为离线验证；真机安装行为（两条扫码链路、取链、下载、通知投递）未验证。
 
@@ -212,11 +212,11 @@ lib/logs.js          运行日志（滚动 40 条）
 jobs/queue-pump.js   定时任务（*/5 * * * *）+ 手动快进入口 + recover（attention 收敛为 resume）
 jobs/tg-callback.js  Telegram 重试回调（event=callback）
 jobs/tg-command.js   Telegram 只读查询命令（/music /queue /status；回复走来源渠道，未授权回退 notify）
-jobs/daily-report.js 每日下载日报（08:30；dedupe_key 按天；notify 抛错不拖垮任务）
+jobs/daily-report.js 每日下载日报（08:30；当天送达不重发、失败换键；notify 抛错不拖垮任务）
 jobs/runtime.js      ctx → deps 装配（crypto 适配、状态文档组装）
 ui/page.js           插件页面（Vue 3 构建产物 ESM：搜索 / 我的歌单 / 任务 / 设置四分页 + 登录卡 + 最近动作）
 ui/qr.js             QR Model 2 编码器（Nayuki MIT 移植，供网易云扫码）
-（测试在 v3/tests/music-rs/，不进插件包）node:test 单测 ×199（向量来自旧 Rust 测试）
+（测试在 v3/tests/music-rs/，不进插件包）node:test 单测 ×221（向量来自旧 Rust 测试）
 ```
 
 ## 版本记录
@@ -236,6 +236,14 @@ ui/qr.js             QR Model 2 编码器（Nayuki MIT 移植，供网易云扫�
   回复走 `ctx.messaging.reply`（需授权 telegram.bot），未授权/失败回退 `ctx.notify`（dedupe_key =
   chat_id + message_id）。命令只读，不触发下载/删除。
 - **每日下载日报**（jobs/daily-report.js，08:30）：各状态计数 + 今日完成/失败清单；dedupe_key
-  `music:daily-report:<日期>` 按天稳定；notify 抛错不拖垮任务。
-- 失败通知 `dedupe_key` 收敛为 `dl-fail-<任务id>`（旧键带 retry_round/attempts，每轮失败换新键导致去重永不生效）。
-- 新增测试：`recover.test.js`（15 项，检查点三态与 `settleTaskDone`）、`tg-command.test.js`（10 项）、`pump` +3 项（同名预检/检查点/直写 size/sha256）；171 → 199 项全过。
+  `music:daily-report:<日期>`；当天已送达（accepted/deduplicated）不再重发（正文随统计变化，同键不同内容会被宿主判冲突），
+  发送抛错换 `…:r<n>` 新键，suppressed 不占键原样重试；状态 CAS 写进 KV `daily_report`；notify 抛错不拖垮任务。
+- 失败通知 `dedupe_key` 保持 `dl-fail-<任务id>-r<retry_round>-a<attempts>`：宿主按键永久记账，「重试」后再失败
+  若沿用 `dl-fail-<id>` 会被判同键去重/冲突而丢通知；同一次失败重投仍是同键。
+- 合并修复（找回 1.2.2 的改动）：下载失败绝不删除目标目录里原有文件（宿主 save_to 非 2xx 不落盘、失败自清临时文件）；
+  直写只在同名预检读得到目标目录时使用，否则走暂存 + move overwrite:false；暂存回落只认 403/405/501/unsupported，
+  网络错误照常计失败；暂存重命名后立即持久化 staged_path；去掉「一轮只定稿一首」，改为每轮时间预算 + 每任务
+  每轮至多一次，并响应 `ctx.signal` 停止开新活；后台进度上报 total/done/failed；运行日志一次 CAS 批量写入。
+- TG 命令：群聊 `/music@机器人名` 去掉 @ 后缀再匹配；事件缺 chat_id/message_id 时回退通知改用任务 id 作键（不再共享
+  `unknown:unknown` 常量键）；回复后的日志写失败不让任务失败（避免宿主重跑重复回复）。
+- 新增测试：`recover.test.js`（15 项，检查点三态与 `settleTaskDone`）、`tg-command.test.js`（10 项）、`pump` +3 项（同名预检/检查点/直写 size/sha256）；171 → 221 项全过（含合并修复补回的用例）。

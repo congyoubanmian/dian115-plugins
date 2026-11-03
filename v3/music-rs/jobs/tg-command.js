@@ -64,7 +64,8 @@ export function parseCommand(text) {
   const trimmed = String(text ?? '').trim()
   if (!trimmed.startsWith('/')) return { action: 'help', sub: '' }
   const tokens = trimmed.slice(1).trim().split(/\s+/).filter(Boolean)
-  const head = tokens.shift() ?? ''
+  // 群聊里 Telegram 会把命令写成 `/music@机器人名`：去掉 @ 后缀再匹配。
+  const head = (tokens.shift() ?? '').replace(/@[\w.-]*$/, '')
   const action = COMMAND_ALIASES.get(head) ?? COMMAND_ALIASES.get(head.toLowerCase())
   if (!action) return { action: 'help', sub: '' }
   if (action !== 'music') return { action, sub: '' }
@@ -158,22 +159,36 @@ function helpText() {
   ].join('\n')
 }
 
+/** 事件里的 id 字段（字符串或数字）→ 字符串；缺失/空 → ''。 */
+function idOf(value) {
+  return (typeof value === 'string' || typeof value === 'number') && String(value) !== '' ? String(value) : ''
+}
+
+/** 回退通知的 dedupe_key：同一条消息（chat_id + message_id）重投同键。
+ *  事件缺 id 时不能退化成共享的常量键（不同消息、不同正文撞同键会被宿主判冲突），
+ *  改用本次任务 id，保证一条消息一个键。 */
+export function replyDedupeKey(input, taskId = '') {
+  const chatId = idOf(input?.chat_id)
+  const messageId = idOf(input?.message_id)
+  if (chatId && messageId) return `music:tg-reply:${chatId}:${messageId}`
+  return `music:tg-reply:task:${idOf(taskId) || Date.now()}`
+}
+
 /** 发回复：先走来源渠道（messaging.reply），失败回退普通通知。 */
 async function replyOutcome(deps, input, text) {
   const body = truncate(text, REPLY_TEXT_LIMIT)
   try {
+    if (typeof deps.messaging?.reply !== 'function') throw new Error('宿主未提供 ctx.messaging（需要 API 3.6）')
     await deps.messaging.reply(input, { text: body })
     return { via: 'messaging' }
   } catch (error) {
     // 未授权 / 限流 / 渠道异常 → 回退 ctx.notify（dedupe_key 用事件自带的不变事实）。
-    const chatId = typeof input?.chat_id === 'string' || typeof input?.chat_id === 'number' ? String(input.chat_id) : 'unknown'
-    const messageId = typeof input?.message_id === 'string' || typeof input?.message_id === 'number' ? String(input.message_id) : 'unknown'
     try {
       await deps.notify({
         level: 'info',
         title: '音乐下载命令回复',
         body,
-        dedupe_key: `music:tg-reply:${chatId}:${messageId}`,
+        dedupe_key: replyDedupeKey(input, deps.ctx?.task?.id),
       })
       return { via: 'notify', reply_error: String(error?.message ?? error) }
     } catch (notifyError) {
@@ -196,7 +211,12 @@ export async function run(ctx, input) {
   else text = helpText()
 
   const outcome = await replyOutcome(deps, message, text)
-  await addLog(deps.kv, 'info', `TG 命令 ${effective} · 回复渠道: ${outcome.via}`)
+  // 回复已发出：日志写失败（KV 冲突/限流）不能让任务失败，否则宿主重跑会重复回复。
+  try {
+    await addLog(deps.kv, 'info', `TG 命令 ${effective} · 回复渠道: ${outcome.via}`)
+  } catch {
+    /* 日志只是留档 */
+  }
   return {
     handled: true,
     action: effective,
