@@ -3,16 +3,16 @@
 // - ctx.messaging.reply 按来源渠道回复（input 原样透传），未授权抛错时回退 ctx.notify
 //   （dedupe_key = chat_id + message_id 两个事件自带的不变事实）；
 // - 只读约束：不发 HTTP、不改任务索引；
-// - daily-report：索引统计（done/failed/queued、今日完成/失败）、稳定 dedupe_key、
-//   写操作前后检查点。
+// - daily-report：索引统计（done/failed/queued、今日完成/失败）、按天的 dedupe_key
+//   （当天送达后不再发、发送失败换新键）、写操作前后检查点。
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { run as runTgCommand, parseCommand } from '../../music-rs/jobs/tg-command.js'
-import { run as runDailyReport, dailyReportKey } from '../../music-rs/jobs/daily-report.js'
+import { run as runTgCommand, parseCommand, replyDedupeKey } from '../../music-rs/jobs/tg-command.js'
+import { run as runDailyReport, dailyReportKey, DAILY_REPORT_STATE_KEY } from '../../music-rs/jobs/daily-report.js'
 
 // ─────────────────────────── 假宿主 ───────────────────────────
 
-function makeHost({ replyError = null, notifyError = null } = {}) {
+function makeHost({ replyError = null, notifyError = null, notifyResult = null } = {}) {
   const kvStore = new Map()
   const calls = { reply: [], notify: [], http: [], checkpoints: [] }
 
@@ -67,6 +67,7 @@ function makeHost({ replyError = null, notifyError = null } = {}) {
     notify: async (options) => {
       calls.notify.push(options)
       if (notifyError) throw new Error(notifyError)
+      if (notifyResult) return notifyResult
       return { accepted: true, deliveries: [{ channel: 'telegram', status: 'sent' }] }
     },
     task: {
@@ -117,6 +118,14 @@ test('parseCommand: 入口命令 + 子命令 / 直连命令 / 未知与噪声都
   assert.deepEqual(parseCommand('/队列'), { action: 'queue', sub: '' })
   assert.deepEqual(parseCommand('/别的东西'), { action: 'help', sub: '' })
   assert.deepEqual(parseCommand('早上好'), { action: 'help', sub: '' }, '非命令文本不解析')
+  assert.deepEqual(parseCommand('/music@my_bot 队列'), { action: 'music', sub: 'queue' }, '群聊 /cmd@bot 去掉 @ 后缀')
+  assert.deepEqual(parseCommand('/status@my_bot'), { action: 'status', sub: '' })
+})
+
+test('replyDedupeKey: 事件缺 chat_id/message_id 时不退化成共享常量键', () => {
+  assert.equal(replyDedupeKey({ chat_id: 42, message_id: 7 }), 'music:tg-reply:42:7')
+  assert.equal(replyDedupeKey({ chat_id: 'abc' }, 'task-1'), 'music:tg-reply:task:task-1')
+  assert.notEqual(replyDedupeKey({}, 'task-1'), replyDedupeKey({}, 'task-2'))
 })
 
 // ─────────────────────────── 回复与只读 ───────────────────────────
@@ -246,16 +255,43 @@ test('daily-report: 统计任务索引并发 TG 日报, dedupe_key 按天稳定'
   assert.equal(host.calls.checkpoints[1].accepted, true)
 })
 
-test('daily-report: 同一天重跑 dedupe_key 不变（同键同内容去重, 不会重复打扰）', async () => {
+test('daily-report: 当天已送达 → 同日重跑不再发送（正文已变时同键会被判冲突）', async () => {
   const host = makeHost()
   await host.ctx.storage.set('tasks.idx', [])
   const first = await runDailyReport(host.ctx)
-  const second = await runDailyReport(host.ctx)
-  assert.equal(first.dedupe_key, second.dedupe_key)
+  assert.match(host.calls.notify[0].body, /暂无下载任务/, '空索引也有日报（全部为 0）')
   assert.equal(first.dedupe_key, dailyReportKey())
-  assert.match(host.calls.notify[1].body, /暂无下载任务/, '空索引也有日报（全部为 0）')
+  assert.equal(first.already_sent, false)
+  const second = await runDailyReport(host.ctx)
+  assert.equal(second.already_sent, true)
+  assert.equal(second.dedupe_key, first.dedupe_key)
+  assert.equal(host.calls.notify.length, 1, '同日不重复打扰')
+  assert.equal(host.kvStore.get(DAILY_REPORT_STATE_KEY).value.sent, true)
+})
+
+test('daily-report: 发送抛错 → 下次重跑换新键（失败的键已记为待核对）', async () => {
+  const host = makeHost({ notifyError: '所有渠道都发送失败' })
+  await host.ctx.storage.set('tasks.idx', [])
+  const first = await runDailyReport(host.ctx)
+  assert.equal(first.dedupe_key, dailyReportKey())
+  const second = await runDailyReport(host.ctx)
+  assert.equal(second.dedupe_key, dailyReportKey(new Date(), 1))
+  assert.match(second.dedupe_key, /:r1$/)
+  const state = host.kvStore.get(DAILY_REPORT_STATE_KEY).value
+  assert.equal(state.round, 2)
+  assert.equal(state.sent, false)
+  assert.match(state.last_error, /所有渠道都发送失败/)
+})
+
+test('daily-report: suppressed（没送到任何渠道, 键不占用）→ 不算送达、不换键', async () => {
+  const host = makeHost({ notifyResult: { accepted: false, suppressed: true, deliveries: [] } })
+  await host.ctx.storage.set('tasks.idx', [])
+  const first = await runDailyReport(host.ctx)
+  const second = await runDailyReport(host.ctx)
+  assert.equal(first.suppressed, true)
+  assert.equal(second.already_sent, false)
+  assert.equal(second.dedupe_key, first.dedupe_key)
   assert.equal(host.calls.notify.length, 2)
-  assert.equal(host.calls.notify[0].dedupe_key, host.calls.notify[1].dedupe_key)
 })
 
 test('daily-report: notify 抛错不拖垮任务, notify_error 记进检查点与返回值', async () => {

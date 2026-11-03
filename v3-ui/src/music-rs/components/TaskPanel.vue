@@ -191,7 +191,7 @@ async function adopt(): Promise<void> {
     把它的 id 填进输入框点「索引对账」挂回。
   </p>
   <p class="hint">
-    下载目录: {{ settings.target_dir }} · 命名: {歌手} - {歌名}.{格式}（目录里已有同名文件时加「 (2)」等后缀，不覆盖）· 鼠标悬停可看完整错误
+    下载目录: {{ settings.target_dir }} · 命名: {歌手} - {歌名}.{格式}（目录里已有同名文件时任务直接失败，不覆盖也不改名）· 鼠标悬停可看完整错误
   </p>
 </template>
 

@@ -117,13 +117,13 @@ dist/                   构建产物 .dian115p（本地生成，不提交；现�
 - **外部写检查点**（1.3.0）：下载/入库前后各落任务检查点；`recoverPump` 先用 `exists`/`stat` 核对目标
   目录真实文件再决定 complete / resume / attention，判 complete 时把 KV 在途任务收敛为 done（`queue-pump`
   入口把 attention 收敛为 resume，交给下一轮兜底）。
-- **Telegram 命令与日报**（1.3.0）：失败通知带 `callback_data: retry:<短id>` 按钮（dedupe_key 收敛为
-  `dl-fail-<任务id>`），点击触发 `tg-callback` 事件任务重新排队；`event=message` 的 `tg-command` 提供
+- **Telegram 命令与日报**（1.3.0）：失败通知带 `callback_data: retry:<短id>` 按钮（dedupe_key
+  `dl-fail-<任务id>-r<轮次>-a<次数>`，重试后再失败换新键），点击触发 `tg-callback` 事件任务重新排队；`event=message` 的 `tg-command` 提供
   只读查询命令 `/music 队列|状态|帮助`、`/queue`、`/status`（回复走来源渠道，需授权 telegram.bot，
   未授权回退 `ctx.notify`，dedupe_key 用 chat_id + message_id）；`daily-report` 每天 08:30 发一条
-  下载日报（dedupe_key 按天，notify 抛错不拖垮任务）。
+  下载日报（dedupe_key 按天，当天送达不重发、发送失败换新键，notify 抛错不拖垮任务）。
 - 页面四个分页 + 登录卡 + 最近动作；`ui/qr.js` 为旧 `frontend/src/qr.ts` 的移植。
-- 199 个 `node --test` 用例；全过（新增 `recover` 15 项、`tg-command` 10 项，`pump` +3 项）。
+- 221 个 `node --test` 用例；全过（新增 `recover` 16 项、`tg-command` 13 项，`pump` 22 项）。
 
 **Gaps**
 
@@ -344,7 +344,7 @@ node scripts/v3-pack-check.mjs dist/chase-rs-0.1.14.dian115p v3/chase-rs   # 查
 
 # 4) 纯逻辑单测（Node 24 下要传文件 glob，不能只传目录）
 (cd v3/tests/chase-rs  && node --test *.test.mjs)   # 129 pass
-(cd v3/tests/music-rs  && node --test *.test.js)    # 199 用例
+(cd v3/tests/music-rs  && node --test *.test.js)    # 221 用例
 (cd v3/tests/douban-rs && node --test *.test.mjs)   # 130 pass
 
 # 5) 语法检查
@@ -458,7 +458,7 @@ v3 索引 schema。仓库内旧 `plugin-market/index.json` 是 v1 格式，v3 �
 | --- | --- | --- |
 | 三个插件结构检查 | `node v3-kit/conformance/project-check.mjs v3/<plugin>` | 3/3 通过：`chase.rs 0.1.14`、`music.rs 1.3.0`、`douban.rs 1.2.0`（本轮复跑） |
 | 全部 JS 语法 | `find v3/... -name '*.js' -exec node --check {} +` | 通过：chase 16 / music 22 / douban 38 个文件（本轮复跑） |
-| 纯逻辑单测 | `(cd v3/tests/<plugin> && node --test *.test.*)` | chase 129 pass / music 199 pass / douban 130 pass，0 fail（本轮复跑） |
+| 纯逻辑单测 | `(cd v3/tests/<plugin> && node --test *.test.*)` | chase 129 pass / music 221 pass / douban 130 pass，0 fail（本轮复跑） |
 | 打包 | `bash scripts/v3-build.sh`（连跑两次） | 上一轮实跑：两次 sha256 完全一致；产物 193844 / 284582 / 263162 字节（本轮改版后**未重跑**，发布时由发版脚本执行） |
 | 索引 JSON | `node -e 'JSON.parse(...)'` | 通过（本轮复跑；索引内容本身按约定不由文档轮次修改） |
 | 索引字段与摘要 | 本地校验脚本（必填/id/sha256/delivery/homepage，sha256 对 dist 实算） | 上一轮实跑通过；仅 `source_url` 相对路径为已知偏差（本轮**未重跑**） |

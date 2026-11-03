@@ -12,9 +12,9 @@
 
 import { buildDeps, readSettings } from './runtime.js'
 import { pump, TASKS_IDX_KEY, recoverPump } from '../lib/pump.js'
-import { addLog } from '../lib/logs.js'
+import { addLogs } from '../lib/logs.js'
 import { nowRfc3339 } from '../lib/encoding.js'
-import { taskCheckpoint } from '../lib/task.js'
+import { taskCheckpoint, taskUpdate } from '../lib/task.js'
 
 /** 状态摘要键（UI 展示最近一轮 pump 的结果）。 */
 const PUMP_STATE_KEY = 'state'
@@ -23,7 +23,7 @@ export async function run(ctx) {
   const deps = buildDeps(ctx)
   const settings = await readSettings(ctx)
   deps.settings = settings
-  await ctx.task.update({ stage: 'pump', message: '推进下载队列…' })
+  await taskUpdate(ctx, { stage: 'pump', message: '推进下载队列…' })
   const summary = await pump(ctx, deps)
   const lines = summary.messages.filter((message) => message.trim())
   const message = lines.length > 0
@@ -33,7 +33,8 @@ export async function run(ctx) {
   await ctx.storage.set(PUMP_STATE_KEY, {
     last_pump: { ...summary, at: nowRfc3339() },
   })
-  for (const line of lines.slice(-10)) await addLog(deps.kv, 'info', line)
+  // 一次 CAS 读改写追加整批日志（与页面同时追加时不互相覆盖，也不逐条往返）。
+  if (lines.length > 0) await addLogs(deps.kv, 'info', lines.slice(-10))
   // 整轮结束的检查点：单任务的检查点会被下一首覆盖，run 级 completed 必须最后写。
   await taskCheckpoint(ctx, {
     stage: 'completed',
@@ -41,7 +42,7 @@ export async function run(ctx) {
     result: summary,
     updated_at: nowRfc3339(),
   })
-  await ctx.task.update({ stage: 'done', message, progress: 100 })
+  await taskUpdate(ctx, { stage: 'done', message, progress: 100 })
   return summary
 }
 
