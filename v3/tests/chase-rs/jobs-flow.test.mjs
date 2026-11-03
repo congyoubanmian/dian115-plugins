@@ -517,3 +517,22 @@ test('只读刷新：不改写上一轮对齐的「已判定」计数', async ()
   assert.equal(result.matched, before)
   assert.equal(storedDoc(ctx).stats.matched, before)
 })
+
+test('日报：同键不同内容冲突（上一轮已送达但没落账）→ 记为已发，不换新键再发一份', async () => {
+  const ctx = baseCtx({ settings: { report_enabled: true, report_hour: 0 } })
+  ctx.notify = async (options) => {
+    ctx.notifies.push(options)
+    const error = new Error('dedupe_key 冲突：相同键已用于不同内容')
+    error.status = 409
+    throw error
+  }
+  const first = await runHourlyAlign(ctx)
+  assert.equal(first.report.status, 'deduplicated', JSON.stringify(first.report))
+  const daily = storedDoc(ctx).daily
+  assert.equal(daily.last_sent_date, TODAY)
+  assert.equal(daily.last_result, 'deduplicated')
+  assert.equal(daily.retry_seq ?? 0, 0, '冲突不能换新键重试')
+
+  await runHourlyAlign(ctx)
+  assert.equal(ctx.notifies.length, 1, '当天不再重发')
+})

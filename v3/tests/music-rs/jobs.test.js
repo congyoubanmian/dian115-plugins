@@ -101,12 +101,16 @@ test('queue-pump run completes a queued task and stores the summary', async () =
   const state = host.kvStore.get('state').value
   assert.equal(state.last_pump.completed.length, 1)
   assert.ok(state.last_pump.at)
-  // 收尾写 done 检查点（recover 的 complete 分支才有机会命中），日志一次性追加。
-  assert.deepEqual(checkpoints, [{ stage: 'done', result: summary }])
+  // 单任务检查点（before-download / after-download …）之后，整轮 completed 检查点最后写
+  // （recover 的 complete 分支才有机会命中）；日志一次性追加。
+  const last = checkpoints.at(-1)
+  assert.equal(last.stage, 'completed')
+  assert.deepEqual(last.result, summary)
+  assert.equal(last.task_ref, 't')
   const logs = host.kvStore.get('logs').value
   assert.ok(logs.some((entry) => entry.message.includes('完成')), JSON.stringify(logs))
   // recover：completed 检查点 → complete。
-  const decision = await recoverPump(host.ctx, { stage: 'done', result: summary })
+  const decision = await recoverPump(host.ctx, last)
   assert.equal(decision.action, 'complete')
   // 未到 done 的中断 → resume（pump 幂等）。
   const resume = await recoverPump(host.ctx, { stage: 'pump' })

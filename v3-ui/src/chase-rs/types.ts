@@ -192,6 +192,26 @@ export interface FormField {
 /** 页面上可触发的前台动作（对应 plugin.json 里的 queue:false 任务）。 */
 export type ActionName = 'refresh' | 'align-now' | 'probe-dump'
 
+/** 忙碌态：前台动作，或「核对并恢复」一条中断任务（ctx.tasks.retry）。 */
+export type BusyName = ActionName | 'retry'
+
+/**
+ * 一条「需要核对」的中断任务（宿主 Run.status = attention_required）。
+ * 由 ctx.tasks.list 取得；checkpoint 是后台 sendPatch 写下的写前/写后检查点。
+ */
+export interface AttentionRun {
+  id: string
+  jobId: string
+  jobLabel: string
+  /** 检查点阶段：before-patch-episodes / after-patch-episodes / completed / ''。 */
+  stage: string
+  /** 一行人话：中断在哪一步、恢复时会怎么核对。 */
+  detail: string
+  /** 宿主给的错误 / 消息。 */
+  message: string
+  updatedAt: string
+}
+
 /** 徽章类别（对齐结果行）。 */
 export type ReasonKind =
   | 'patched'

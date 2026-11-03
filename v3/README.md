@@ -74,6 +74,7 @@ dist/                   构建产物 .dian115p（本地生成，不提交；现�
   减方向只出建议，从不写。
 - **外部写检查点**（0.1.14）：PATCH 前后各落一次任务检查点；`recover` 先查订阅池里该 intent 的真实
   `total_known` 再决定 complete / resume / attention（整点入口把 attention 收敛为 resume，靠只增守卫兜底）。
+  写前检查点落不下就不写；无检查点 ⇒ resume。页面「需要核对」卡列出 attention_required 任务并提供 `ctx.tasks.retry` 入口。
 - Emby 覆盖探测：实例选择、参数矩阵与指纹缓存、探测预算；TMDB 只取该季集数，不用整剧集数顶替。
 - 订阅池读取（`media_type=tv`，≤4 页 × 500）、追剧日历、每日日报（`ctx.notify` + `dedupe_key`）。
 - 状态文档：默认值/上限裁剪/256KB 逐级降级，`expected_revision` CAS；404 两次确认视为全新安装，
@@ -81,7 +82,7 @@ dist/                   构建产物 .dian115p（本地生成，不提交；现�
 - 旧页面 12 个用户配置项现在都在页面设置抽屉里（清单不再声明 `settings[]`）；页面用 Vue 3 重写（源码 `v3-ui/src/chase-rs/`），
   保留指标瓦片（`StatTile.vue`）、看板（`AlignCard.vue`）与移动端单栏（`styles.css` 里
   `@media (max-width: 1000px)` 收成单列）。
-- 129 个 `node --test` 用例通过（新增 `recover.test.mjs` 10 项）。
+- 142 个 `node --test` 用例通过（`recover.test.mjs` 13 项；含无检查点 resume、写前检查点失败不写、日报去重键冲突视为已发）。
 
 **Gaps**
 
@@ -117,13 +118,13 @@ dist/                   构建产物 .dian115p（本地生成，不提交；现�
 - **外部写检查点**（1.3.0）：下载/入库前后各落任务检查点；`recoverPump` 先用 `exists`/`stat` 核对目标
   目录真实文件再决定 complete / resume / attention，判 complete 时把 KV 在途任务收敛为 done（`queue-pump`
   入口把 attention 收敛为 resume，交给下一轮兜底）。
-- **Telegram 命令与日报**（1.3.0）：失败通知带 `callback_data: retry:<短id>` 按钮（dedupe_key 收敛为
-  `dl-fail-<任务id>`），点击触发 `tg-callback` 事件任务重新排队；`event=message` 的 `tg-command` 提供
+- **Telegram 命令与日报**（1.3.0）：失败通知带 `callback_data: retry:<短id>` 按钮（dedupe_key
+  `dl-fail-<任务id>-r<轮次>-a<次数>`，重试后再失败换新键），点击触发 `tg-callback` 事件任务重新排队；`event=message` 的 `tg-command` 提供
   只读查询命令 `/music 队列|状态|帮助`、`/queue`、`/status`（回复走来源渠道，需授权 telegram.bot，
   未授权回退 `ctx.notify`，dedupe_key 用 chat_id + message_id）；`daily-report` 每天 08:30 发一条
-  下载日报（dedupe_key 按天，notify 抛错不拖垮任务）。
+  下载日报（dedupe_key 按天，当天送达不重发、发送失败换新键，notify 抛错不拖垮任务）。
 - 页面四个分页 + 登录卡 + 最近动作；`ui/qr.js` 为旧 `frontend/src/qr.ts` 的移植。
-- 199 个 `node --test` 用例；全过（新增 `recover` 15 项、`tg-command` 10 项，`pump` +3 项）。
+- 221 个 `node --test` 用例；全过（新增 `recover` 16 项、`tg-command` 13 项，`pump` 22 项）。
 
 **Gaps**
 
@@ -163,8 +164,8 @@ dist/                   构建产物 .dian115p（本地生成，不提交；现�
 - 16 个任务（定时刷新、想看同步、刷新、同步、订阅、海报、通知自检、维护动作、TG 指令），
   均带 `recover`；页面用 Vue 3 重写（源码 `v3-ui/src/douban-rs/`）：榜单/海报墙、观察队列/想看、
   历史日志、设置表单四个面板。
-- 130 个 `node --test` 用例通过（新增 `recover` 11 / `manifest` 2 / `poster-chain` 5 项，`jobs-flow` +10、
-  `poster-core` +2；fixtures 复用旧仓库脱敏样本）。
+- 150 个 `node --test` 用例通过（1.1.5 的 117 项基础上新增 `recover` 12 / `manifest` 2 / `poster-chain` 6 项，
+  `jobs-flow` +11、`poster-core` +2；fixtures 复用旧仓库脱敏样本）。
 
 **Gaps**
 
@@ -343,9 +344,9 @@ node v3-kit/conformance/pack.mjs v3/douban-rs dist/douban-rs.dian115p
 node scripts/v3-pack-check.mjs dist/chase-rs-0.1.14.dian115p v3/chase-rs   # 查包
 
 # 4) 纯逻辑单测（Node 24 下要传文件 glob，不能只传目录）
-(cd v3/tests/chase-rs  && node --test *.test.mjs)   # 129 pass
-(cd v3/tests/music-rs  && node --test *.test.js)    # 199 用例
-(cd v3/tests/douban-rs && node --test *.test.mjs)   # 130 pass
+(cd v3/tests/chase-rs  && node --test *.test.mjs)   # 142 pass
+(cd v3/tests/music-rs  && node --test *.test.js)    # 221 用例
+(cd v3/tests/douban-rs && node --test *.test.mjs)   # 150 pass
 
 # 5) 语法检查
 find v3/chase-rs v3/music-rs v3/douban-rs -name '*.js' -exec node --check {} +
@@ -458,7 +459,7 @@ v3 索引 schema。仓库内旧 `plugin-market/index.json` 是 v1 格式，v3 �
 | --- | --- | --- |
 | 三个插件结构检查 | `node v3-kit/conformance/project-check.mjs v3/<plugin>` | 3/3 通过：`chase.rs 0.1.14`、`music.rs 1.3.0`、`douban.rs 1.2.0`（本轮复跑） |
 | 全部 JS 语法 | `find v3/... -name '*.js' -exec node --check {} +` | 通过：chase 16 / music 22 / douban 38 个文件（本轮复跑） |
-| 纯逻辑单测 | `(cd v3/tests/<plugin> && node --test *.test.*)` | chase 129 pass / music 199 pass / douban 130 pass，0 fail（本轮复跑） |
+| 纯逻辑单测 | `(cd v3/tests/<plugin> && node --test *.test.*)` | chase 142 pass / music 221 pass / douban 150 pass，0 fail（本轮复跑） |
 | 打包 | `bash scripts/v3-build.sh`（连跑两次） | 上一轮实跑：两次 sha256 完全一致；产物 193844 / 284582 / 263162 字节（本轮改版后**未重跑**，发布时由发版脚本执行） |
 | 索引 JSON | `node -e 'JSON.parse(...)'` | 通过（本轮复跑；索引内容本身按约定不由文档轮次修改） |
 | 索引字段与摘要 | 本地校验脚本（必填/id/sha256/delivery/homepage，sha256 对 dist 实算） | 上一轮实跑通过；仅 `source_url` 相对路径为已知偏差（本轮**未重跑**） |

@@ -41,6 +41,27 @@ export function bumpRetry(daily, today) {
   daily.retry_date = today
 }
 
+/**
+ * 宿主对 dedupe_key 的「相同键、不同内容」冲突。
+ * 当天的键已被用掉（上一轮发出去了，但落账前中断或落盘失败，last_sent_date 没记上），
+ * 内容不同是因为每小时的补订列表变了。这时报告其实已送达过，不能换新键再发一遍。
+ */
+export function isDedupeConflict(error) {
+  if (Number(error?.status ?? 0) === 409) return true
+  if (String(error?.code ?? '').toLowerCase() === 'conflict') return true
+  const message = String(error?.message ?? '')
+  return /conflict|冲突/i.test(message)
+}
+
+/** 键冲突 ⇒ 当天已发过：记日期，不换键重发。 */
+export function markAlreadySent(daily, date, at, note = '') {
+  daily.last_at = at
+  daily.last_sent_date = date
+  daily.sent_total = Math.max(0, daily.sent_total ?? 0) + 1
+  daily.last_result = 'deduplicated'
+  daily.last_error = truncateUtf8(note, 200)
+}
+
 /** 是否到了该发日报的时刻：开关打开、本地日期与上次成功日不同、本地小时 >= 配置小时。 */
 export function shouldSend(report, lastSentDate, today, hour) {
   return report.enabled && today !== '' && lastSentDate !== today && hour >= report.hour

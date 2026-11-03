@@ -315,3 +315,34 @@ test('端到端：真实 getPoster 写文件 + state 回填 → 页面回退拿 
   assert.equal(fastSrc, `https://host.test/api/extensions/v3/douban.rs/files/download?path=${encodeURIComponent(expectedPath)}&inline=1`)
   assert.equal(fastCtx.httpCalls.length, 0, '快路径不发直连请求')
 })
+
+test('页面已关闭（signal.aborted）→ 不再发起探测 / 直连 / 回退任务', async () => {
+  const ctx = makePageCtx()
+  const controller = new AbortController()
+  controller.abort()
+  let jobs = 0
+  let probes = 0
+  const fetcher = createPosterFetcher({
+    http: ctx.http,
+    files: ctx.files,
+    invokeJob: async () => {
+      jobs += 1
+      throw new Error('x')
+    },
+    findPosterFile: () => 'posters/abc.jpg',
+    fetchImpl: async () => {
+      probes += 1
+      return { ok: true }
+    },
+    signal: controller.signal,
+  })
+  assert.equal(await fetcher.load('https://img1.doubanio.com/closed.jpg'), '')
+  assert.deepEqual([probes, ctx.httpCalls.length, jobs], [0, 0, 0])
+
+  let seen = null
+  await probeDownloadURL(async (_url, init) => {
+    seen = init.signal
+    return { ok: true }
+  }, 'https://h/x', controller.signal)
+  assert.equal(seen, controller.signal, '探测请求带上页面 signal')
+})

@@ -55,14 +55,12 @@ export function posterDownloadURL(files, path) {
  * Range 探测 downloadURL 是否可用（文件被淘汰/卸载后会 404）。
  * 用同源 fetch 带 Cookie；环境没有 fetch（测试桩/老 WebView）时乐观采用。
  */
-export async function probeDownloadURL(fetchImpl, url) {
+export async function probeDownloadURL(fetchImpl, url, signal) {
   if (typeof fetchImpl !== 'function') return true
   try {
-    const response = await fetchImpl(url, {
-      method: 'GET',
-      headers: { Range: 'bytes=0-0' },
-      credentials: 'include',
-    })
+    const init = { method: 'GET', headers: { Range: 'bytes=0-0' }, credentials: 'include' }
+    if (signal) init.signal = signal
+    const response = await fetchImpl(url, init)
     return response.ok === true
   } catch {
     return false
@@ -77,15 +75,18 @@ export async function probeDownloadURL(fetchImpl, url) {
  * @param options.invokeJob 提交 get-poster 任务并等终态。
  * @param options.findPosterFile 从 state 里查 poster_url → poster_file 相对路径（可缺省）。
  * @param options.fetchImpl 全局 fetch（探测用；测试注入假实现）。
+ * @param options.signal 页面 ctx.signal：页面关闭后不再发起新的探测 / 直连 / 回退任务。
  */
-export function createPosterFetcher({ http, files, invokeJob, findPosterFile, fetchImpl } = {}) {
+export function createPosterFetcher({ http, files, invokeJob, findPosterFile, fetchImpl, signal } = {}) {
+  const aborted = () => signal?.aborted === true
+
   /** ① 文件缓存快路径：poster_file 可用则返回 downloadURL，否则空串。 */
   async function loadFromFiles(url) {
     const file = typeof findPosterFile === 'function' ? findPosterFile(url) : ''
     if (file === '') return ''
     const remote = posterDownloadURL(files, file)
     if (remote === '') return ''
-    return (await probeDownloadURL(fetchImpl, remote)) ? remote : ''
+    return (await probeDownloadURL(fetchImpl, remote, signal)) ? remote : ''
   }
 
   /** ② 页面直连：带豆瓣 Referer 取 base64。 */
@@ -129,12 +130,14 @@ export function createPosterFetcher({ http, files, invokeJob, findPosterFile, fe
   return {
     async load(url) {
       const clean = typeof url === 'string' ? url.trim() : ''
-      if (!/^https?:\/\//i.test(clean)) return ''
+      if (!/^https?:\/\//i.test(clean) || aborted()) return ''
       const fromFiles = await loadFromFiles(clean)
       if (fromFiles !== '') return fromFiles
+      if (aborted()) return ''
       try {
         return await fetchPosterDirect(clean)
       } catch {
+        if (aborted()) return ''
         try {
           return await fetchPosterViaJob(clean)
         } catch {

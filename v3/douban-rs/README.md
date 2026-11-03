@@ -37,7 +37,7 @@ subject_detail{,_tv} / chart_listcont2 / coming_showing_soon / search_subjects�
 ## 运行方式
 
 ```bash
-node --test *.test.mjs               # 130 个用例（在 v3/tests/douban-rs/）
+node --test *.test.mjs               # 150 个用例（在 v3/tests/douban-rs/）
 node --check <每个 .js>             # 语法
 node v3-kit/conformance/project-check.mjs v3/douban-rs
 node v3-kit/conformance/pack.mjs v3/douban-rs dist/douban-rs.dian115p
@@ -130,5 +130,12 @@ node v3-kit/conformance/pack.mjs v3/douban-rs dist/douban-rs.dian115p
   永远同路径，重写幂等），超 64 张按 modified 淘汰最旧（只删 posters/ 内），路径回填 state 的
   `poster_file` 字段（绝不存 base64）；页面取图链改为「文件缓存快路径 → 页面直连 → get-poster 回退」
   （`v3-ui/src/douban-rs/poster-chain.js`，页面与测试同一份实现），内存只存 URL 字符串。
-- 测试 100 → 130 项：新增 `recover.test.mjs`（11）、`manifest.test.mjs`（2）、`poster-chain.test.mjs`（5）、
-  `jobs-flow` +10、`poster-core` +2（清单/检查点/海报链覆盖），全过。
+- 测试 117 → 150 项：新增 `recover.test.mjs`（12）、`manifest.test.mjs`（2）、`poster-chain.test.mjs`（6）、
+  `jobs-flow` +11、`poster-core` +2（清单/检查点/海报链/TG 回执覆盖），全过。
+- 合并修正：1.2.0 的 subscribe-engine 改动曾基于 1.1.5 之前的版本，丢了 1.1.5 的查重分页失败即放弃、
+  TMDB 排除 person 偏向豆瓣类型、待确认留队 + 失败退避重试（`settleUnsubscribed`）、按条目+结果+订阅 ID 的
+  通知去重键，并导致 `jobs-flow` / `recover` 两个测试文件整份加载失败；已按 1.1.5 口径恢复，检查点与恢复逻辑保留。
+  恢复判定 `queryPoolIntent` 也改为按 media_type 分页读完订阅池（截断且未命中按读不到 → attention）。
+- 页面海报内存缓存改为 LRU，并与响应式状态表一起封顶 160 条（之前状态表无上限、会一直攥着 data: 字符串）；
+  `<img>` 出错先丢缓存重取一次；页面关闭（ctx.signal）后不再发起新的取图请求；设置页新增「Telegram 指令」说明卡片。
+- TG 回执按 Telegram 4096 字上限截断。

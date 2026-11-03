@@ -18,9 +18,23 @@ const { settings, busy, notifyResult } = store
 // 用插值渲染就没有这个问题（文本仍由同一份常量提供）。
 const STORAGE_HINT =
   '宿主支持直写（新版宿主）时直接流式写进目标目录；否则先落插件自有暂存目录 downloads/<短id>.part，定名后由宿主 ' +
-  'move 进目标目录。目标目录已有同名文件时自动加「 (2)」等后缀，不覆盖。'
+  'move 进目标目录（不覆盖）。入库前做同名预检：目标目录已有同名文件时任务直接终态失败，不覆盖、不改名、' +
+  '不进重试循环；下载失败也绝不删除目录里原有的文件。下载与入库前后都落任务检查点，中断后先核对目标目录里的真实文件再续跑。'
 const NOTIFY_TEST_HINT =
   '主动发一条 info 通知；v3 宿主支持 callback_data 按钮，失败通知的「重试」按钮直达 Telegram 回调。'
+
+/** Telegram 只读命令（清单 triggers → tg-command job）。 */
+const TG_COMMANDS: ReadonlyArray<{ cmd: string; desc: string }> = [
+  { cmd: '/music 队列', desc: '排队 / 下载中 / 最近失败' },
+  { cmd: '/music 状态', desc: '统计、今日完成 / 失败与设置摘要' },
+  { cmd: '/music 帮助', desc: '命令列表' },
+  { cmd: '/queue · /status', desc: '直达队列 / 状态' },
+]
+const TG_HINT =
+  '只读查询，不触发下载与删除。回复走消息来源渠道（需要授权 telegram.bot）；未授权时回退为普通通知。'
+const REPORT_HINT =
+  '每天 08:30 发一条 TG 日报：完成 / 失败 / 排队 / 进行中，以及今日完成与失败清单。当天送达后不再重复发送；' +
+  '发送失败会换新的去重键重试；可在宿主「任务」页调整计划。'
 
 const targetDir = ref('')
 const quality = ref('')
@@ -151,6 +165,29 @@ async function save(): Promise<void> {
   <p v-if="notifyResult" class="hint">{{ notifyResult }}</p>
 
   <div class="divider" />
+  <h4 class="sub">Telegram 与日报</h4>
+  <div class="grid">
+    <div class="field">
+      <span class="label">机器人命令（tg-command）</span>
+      <ul class="cmds">
+        <li v-for="item in TG_COMMANDS" :key="item.cmd" class="cmd">
+          <code class="cmd-code">{{ item.cmd }}</code>
+          <span class="cmd-desc">{{ item.desc }}</span>
+        </li>
+      </ul>
+      <span class="hint">{{ TG_HINT }}</span>
+    </div>
+    <div class="field">
+      <span class="label">每日日报（daily-report）</span>
+      <div class="report">
+        <span class="report-time">08:30</span>
+        <span class="report-tag">每天 · 仅 Telegram</span>
+      </div>
+      <span class="hint">{{ REPORT_HINT }}</span>
+    </div>
+  </div>
+
+  <div class="divider" />
   <h4 class="sub">目录与入库（v3）</h4>
   <p class="hint">{{ STORAGE_HINT }}</p>
 </template>
@@ -246,6 +283,58 @@ async function save(): Promise<void> {
     var(--app-border, #e0e4ea) 85%,
     transparent
   );
+}
+
+.cmds {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 6px;
+}
+
+.cmd {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  flex-wrap: wrap;
+}
+
+.cmd-code {
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--mx-accent, #2080f0);
+  background: color-mix(in srgb, var(--mx-accent, #2080f0) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--mx-accent, #2080f0) 28%, transparent);
+}
+
+.cmd-desc {
+  font-size: 12px;
+  color: var(--app-text, inherit);
+}
+
+.report {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+}
+
+.report-time {
+  font-size: 26px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  font-variant-numeric: tabular-nums;
+  color: var(--app-text, inherit);
+}
+
+.report-tag {
+  font-size: 12px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  color: var(--app-text-secondary, rgba(0, 0, 0, 0.45));
+  background: color-mix(in srgb, var(--app-border, #e0e4ea) 45%, transparent);
 }
 
 @media (prefers-reduced-motion: reduce) {

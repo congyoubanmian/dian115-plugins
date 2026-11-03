@@ -2,7 +2,18 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
-import { applyOutcome, bumpRetry, compose, dedupeKey, retrySeqFor, shouldSend, BODY_MAX, TITLE_MAX } from '../../chase-rs/lib/notify.js'
+import {
+  applyOutcome,
+  bumpRetry,
+  compose,
+  dedupeKey,
+  isDedupeConflict,
+  markAlreadySent,
+  retrySeqFor,
+  shouldSend,
+  BODY_MAX,
+  TITLE_MAX,
+} from '../../chase-rs/lib/notify.js'
 import { FLAT_DEFAULTS, toNested } from '../../chase-rs/lib/settings.js'
 
 function calendarItem(season, episode, title, time) {
@@ -134,4 +145,23 @@ test('落账：通道能力原地更新，不残留旧通道', () => {
   // 下一次上报没有 channels（老宿主回滚）→ 原地清空
   applyOutcome(daily, '2026-10-02', { accepted: true }, 'at')
   assert.equal(daily.notify_channels.length, 0)
+})
+
+test('去重键冲突识别：409 / code=conflict / 文案含冲突；其他错误不算', () => {
+  assert.equal(isDedupeConflict(Object.assign(new Error('x'), { status: 409 })), true)
+  assert.equal(isDedupeConflict({ code: 'CONFLICT', message: '' }), true)
+  assert.equal(isDedupeConflict(new Error('dedupe_key conflict')), true)
+  assert.equal(isDedupeConflict(new Error('相同键不同内容冲突')), true)
+  assert.equal(isDedupeConflict(new Error('所有渠道发送失败')), false)
+  assert.equal(isDedupeConflict(Object.assign(new Error('rate limited'), { status: 429 })), false)
+  assert.equal(isDedupeConflict(null), false)
+})
+
+test('markAlreadySent：记当天日期、累计 +1、结论 deduplicated', () => {
+  const daily = { last_sent_date: '', sent_total: 2, last_result: 'failed', last_error: 'boom' }
+  markAlreadySent(daily, '2026-11-03', '2026-11-03T10:00:00Z', 'note')
+  assert.equal(daily.last_sent_date, '2026-11-03')
+  assert.equal(daily.sent_total, 3)
+  assert.equal(daily.last_result, 'deduplicated')
+  assert.equal(daily.last_error, 'note')
 })

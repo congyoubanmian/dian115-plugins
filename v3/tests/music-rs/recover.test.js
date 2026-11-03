@@ -28,7 +28,7 @@ function makeHost({ hostApi = '3.9', failMoveFor = new Set(), filesBroken = fals
     async set(key, value, expectedRevision) {
       const hit = kvStore.get(key)
       if (expectedRevision !== undefined) {
-        const current = hit ? hit.revision : undefined
+        const current = hit ? hit.revision : 0
         if (current !== expectedRevision) throw Object.assign(new Error('conflict'), { status: 412 })
       }
       kvStore.set(key, { value: JSON.parse(JSON.stringify(value)), revision: (hit?.revision ?? 0) + 1 })
@@ -225,6 +225,19 @@ test('中断在下载之前（明确没写）→ resume；目标已存在 → co
     stage: 'before-download', task_ref: 't', song_id: task.id, out_name: '周杰伦 - 晴天.flac', target_path: target,
   })
   assert.equal(landed.action, 'complete')
+})
+
+test('写前预检没读到目标目录（target_checked=false）：目标在也不认作本任务落地 → attention', async () => {
+  const host = makeHost()
+  const target = `${host.targetDir}/周杰伦 - 晴天.flac`
+  host.files.set(target, 999)
+  const checkpoint = {
+    stage: 'before-download', task_ref: 't', song_id: 'a1', out_name: '周杰伦 - 晴天.flac',
+    target_path: target, target_checked: false,
+  }
+  assert.equal((await recoverPump(host.ctx, checkpoint)).action, 'attention')
+  host.files.delete(target)
+  assert.equal((await recoverPump(host.ctx, checkpoint)).action, 'resume')
 })
 
 test('中断在入库之前：暂存还在 → resume（重跑只入库、零网络）；都没了 → attention', async () => {

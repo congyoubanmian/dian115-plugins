@@ -383,6 +383,27 @@ function onKeywordInput(event: Event): void {
       </p>
     </BlockCard>
 
+    <!-- Telegram 指令（清单 events[]：message / commands / channels:["telegram"]） -->
+    <BlockCard title="Telegram 指令" subtitle="向宿主 Telegram 机器人发送指令即可触发；只响应 Telegram，企业微信不触发。">
+      <div class="db-kv-grid">
+        <div class="db-kv">
+          <span class="db-kv__label"><code class="db-mono">/refresh</code></span>
+          <span class="db-kv__value">刷新榜单：抓榜 → 黑名单入队 → 到期订阅 → 想看同步，完成后回执摘要</span>
+        </div>
+        <div class="db-kv">
+          <span class="db-kv__label"><code class="db-mono">/wish</code></span>
+          <span class="db-kv__value">同步「我的想看」并处理到期条目，回执同步条数与结果</span>
+        </div>
+        <div class="db-kv">
+          <span class="db-kv__label">海报缓存</span>
+          <span class="db-kv__value">插件文件 posters/（最多 64 张，按修改时间淘汰最旧；卸载即清空）</span>
+        </div>
+      </div>
+      <p class="db-note">
+        指令触发无需授权；回执需在插件卡片上开启「telegram.bot」权限，未开启时任务照常执行、结果见任务记录。
+      </p>
+    </BlockCard>
+
     <!-- 榜单配置 -->
     <BlockCard title="榜单配置" subtitle="嵌套配置留在状态文档；enabled=false 的榜单下一轮刷新会跳过。">
       <div class="db-scroll">

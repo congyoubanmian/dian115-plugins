@@ -61,7 +61,8 @@ ui/page.js           Vue 3 构建产物页面（源码 v3-ui/src/chase-rs/；mou
 各落一次任务检查点（before/after-patch-episodes，含 intent id 与 from/to 集数）；`align` 与
 `align-now` 的 `recover`（`runtime.recoverAlign`）按检查点先**查订阅池里该条目的真实 `total_known`**
 再判定——已到目标值 ⇒ `complete`（不再重写）、仍是旧值（写前阶段）⇒ `resume`（重跑受只增守卫
-保护，不会写同一个值）、写后阶段却查不到或池读不到 ⇒ `attention`（不猜、不重写）。`align` 是
+保护，不会写同一个值）、写后阶段却查不到或池读不到 ⇒ `attention`（不猜、不重写）。写前检查点是 PATCH
+的前置条件（落不下就不写），所以没有检查点 ⇒ 还没写过订阅池 ⇒ `resume`。`align` 是
 整点周期任务且不允许重叠，attention 会卡住无人值守调度，该入口把 attention 收敛为 `resume`
 交给下一轮兜底；`align-now` 保留三态原样返回。只读的 `refresh` / `probe-dump` 仍是最简语义：
 检查点 `completed` ⇒ complete，否则 resume（重跑零写入，天然幂等）。
@@ -123,3 +124,10 @@ ui/page.js           Vue 3 构建产物页面（源码 v3-ui/src/chase-rs/；mou
 - 新增 `v3/tests/chase-rs/recover.test.mjs`（10 项；内存宿主模拟 PATCH 落账，覆盖三态判定与不重复写，
   119 → 129 项全过）。
 - 清单 `description` 同步上述能力。
+- **恢复与日报收口**：写前检查点改为 PATCH 的前置条件（`taskCheckpointRequired`：落不下就不写、记失败），
+  因而「无检查点」可以确定还没写订阅池，`recoverAlign` 对它返回 `resume`（此前是 attention，`align-now`
+  会每次核对都卡在 attention）；`complete` 结果带 `recovered:true` 与说明。日报遇到去重键「同键不同内容」
+  冲突（上一轮已送达但落账前中断/落盘失败）记为当天已发，不再换 `-r<n>` 新键重发第二份。
+- 页面新增「需要核对」卡：列出本插件 `attention_required` 任务与检查点位置（写前/写后/无检查点），
+  「核对并恢复」走 `ctx.tasks.retry`；运行胶囊显示「待核对 N 条」。
+- 测试 136 → 142 项全过。
