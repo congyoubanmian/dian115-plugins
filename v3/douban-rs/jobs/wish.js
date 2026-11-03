@@ -7,27 +7,35 @@
 // - false（前台动作，~10s 硬预算）：只拉列表 + 入队，订阅交给后台任务；
 // - true（后台 job）：立刻订阅（auto_subscribe 为真时）。
 
-import { wishItemsFromInterests, parseInterestsResponse, wishInterestsUrl, WISH_PAGE_SIZE, WISH_MAX_PAGES } from '../lib/wish-core.js'
+import { wishItemsFromInterests, parseInterestsResponse, wishInterestsUrl, WISH_PAGE_SIZE, WISH_MAX_PAGES, WISH_LOGIN_EXPIRED, isDoubanLoginUrl, rexxarErrorMessage, wishHttpErrorMessage } from '../lib/wish-core.js'
 import { candidateFromWishItem, regionDegradedLog } from '../lib/filter-core.js'
 import { newQueueItem } from '../lib/model.js'
 import { nowRfc3339, nowUnixNanos, rfc3339 } from '../lib/clock.js'
 import { doubanGetWithCookie } from './httpx.js'
 import { doubanCookie } from './cookie.js'
-import { subscribeQueueItem, processDue } from './subscribe-engine.js'
+import { subscribeQueueItem, processDue, settleUnsubscribed } from './subscribe-engine.js'
+
+/** 翻页间隔：豆瓣对连续请求很敏感，同一轮翻页之间稍等一下。 */
+export const WISH_PAGE_DELAY_MS = 800
 
 /** 拉取单类型想看列表（分页，上限 WISH_MAX_PAGES 页；终止条件与 Go 一致）。 */
 export async function fetchWish(session, ctx, header, uid, wantType) {
   const items = []
   for (let page = 0; page < WISH_MAX_PAGES; page += 1) {
+    if (page > 0 && typeof ctx?.sleep === 'function') await ctx.sleep(WISH_PAGE_DELAY_MS)
     const url = wishInterestsUrl(uid, wantType, page * WISH_PAGE_SIZE)
     const got = await doubanGetWithCookie(ctx, url, header)
-    if (got.error) throw new Error(`HTTP ${got.status}: ${got.error}`)
+    // HTTP 200 不能证明已登录：被重定向到登录页 / 返回 rexxar 错误体都算登录态失效
+    if (isDoubanLoginUrl(got.url)) throw new Error(WISH_LOGIN_EXPIRED)
+    if (got.error) throw new Error(wishHttpErrorMessage(got.status, got.error))
     let parsed
     try {
       parsed = JSON.parse(got.text)
     } catch {
       throw new Error('响应解析失败: 语法错误')
     }
+    const apiError = rexxarErrorMessage(parsed)
+    if (apiError !== null) throw new Error(apiError)
     const response = parseInterestsResponse(parsed)
     if (response === null) throw new Error('响应解析失败: 类型不符')
     items.push(...wishItemsFromInterests(response.interests))
@@ -69,6 +77,10 @@ export async function syncWishList(session, ctx, invocationId, { deep } = {}) {
 
   const all = []
   const merged = new Set()
+  const previous = Array.isArray(session.doc.wish) ? session.doc.wish : []
+  // 首次出现时间：已在列表里的条目沿用旧的 added_at（不要每轮同步都刷成"刚加入"）
+  const firstSeen = new Map(previous.filter((item) => item?.douban_ref).map((item) => [item.douban_ref, item.added_at]))
+  const failedTypes = []
   for (const wantType of ['movie', 'tv']) {
     try {
       const items = await fetchWish(session, ctx, header, uid, wantType)
@@ -76,9 +88,10 @@ export async function syncWishList(session, ctx, invocationId, { deep } = {}) {
       for (const item of items) {
         if (merged.has(item.douban_ref)) continue
         merged.add(item.douban_ref)
-        all.push({ ...item, added_at: nowRfc3339() })
+        all.push({ ...item, added_at: firstSeen.get(item.douban_ref) || nowRfc3339() })
       }
     } catch (error) {
+      failedTypes.push(wantType)
       info.last_status = 'failed'
       info.last_error = `${wantType} 拉取失败: ${error.message}`
       session.log('warning', `想看(${wantType})拉取失败: ${error.message}`)
@@ -128,7 +141,15 @@ export async function syncWishList(session, ctx, invocationId, { deep } = {}) {
     })
     if (deep && flat.auto_subscribe) {
       const queued = { ...buildQueueItem(), due_at: '' }
-      await subscribeQueueItem(session, ctx, invocationId, queued, flat)
+      const outcome = await subscribeQueueItem(session, ctx, invocationId, queued, flat)
+      if (outcome.status !== 'succeeded') {
+        // 没订上的条目已记入 wish_seen，必须留队（待确认 / 稍后重试），否则就永远丢了
+        const settled = settleUnsubscribed(session, queued, outcome)
+        if (!Array.isArray(session.doc.queue.items)) session.doc.queue.items = []
+        const existing = session.doc.queue.items.findIndex((entry) => entry.douban_ref === item.douban_ref)
+        if (existing >= 0) session.doc.queue.items[existing] = settled
+        else session.doc.queue.items.push(settled)
+      }
     } else {
       // 前台（或未开自动订阅）：只入观察队列；自动订阅开着 → due_at=现在，后台接手立即订
       const duplicate = (session.doc.queue.items ?? []).some((entry) => entry.douban_ref === item.douban_ref)
@@ -144,10 +165,20 @@ export async function syncWishList(session, ctx, invocationId, { deep } = {}) {
     }
   }
 
+  // 部分类型拉取失败：保留该类型上一轮的条目（只是本轮没拿到，不代表用户删了想看）
+  if (failedTypes.length > 0) {
+    for (const item of previous) {
+      if (failedTypes.includes(item?.type) && item?.douban_ref && !merged.has(item.douban_ref)) {
+        merged.add(item.douban_ref)
+        all.push(item)
+      }
+    }
+  }
+
   info.last_sync = nowRfc3339()
   info.last_count = all.length
   info.last_new = newCount
-  info.last_status = 'succeeded'
+  info.last_status = failedTypes.length > 0 ? 'partial' : 'succeeded'
   session.doc.wish = all
   session.doc.wish_seen = seen
   session.doc.wish_info = info
@@ -166,8 +197,12 @@ export async function actionWishSync(session, ctx, invocationId, { deep } = {}) 
   }
   await syncWishList(session, ctx, invocationId, { deep })
   const info = session.doc.wish_info
-  if (info.last_status !== 'succeeded') {
+  if (info.last_status !== 'succeeded' && info.last_status !== 'partial') {
     return { status: 'failed', message: info.last_error }
+  }
+  const partial = info.last_status === 'partial' ? `（部分失败：${info.last_error}）` : ''
+  if (partial !== '') {
+    return { status: 'failed', message: `想看同步部分完成：共 ${info.last_count} 条，新增 ${info.last_new}${partial}` }
   }
   if (deep) {
     return { status: 'succeeded', message: `想看同步完成：共 ${info.last_count} 条，新增 ${info.last_new}` }

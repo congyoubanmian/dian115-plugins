@@ -104,8 +104,11 @@ function onZoom(item: ChartItem, payload: { url: string; title: string }): void 
             >{{ text(item.title) || '(无标题)' }}</a>
             <span v-else class="db-item__title">{{ text(item.title) || '(无标题)' }}</span>
 
-            <div v-if="item.rate && item.rate !== '0'" class="db-item__meta">
-              <span class="db-rate">★ {{ item.rate }}</span>
+            <div
+              v-if="(item.rate && item.rate !== '0') || item.year || item.rank || num(item.hotness) > 0"
+              class="db-item__meta"
+            >
+              <span v-if="item.rate && item.rate !== '0'" class="db-rate">★ {{ item.rate }}</span>
               <span v-if="item.year">{{ item.year }}</span>
               <span v-if="item.rank">第 {{ item.rank }} 名</span>
               <span v-if="num(item.hotness) > 0">热度 {{ item.hotness }}</span>

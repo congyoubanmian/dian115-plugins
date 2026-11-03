@@ -205,6 +205,9 @@ export function filterAndEnqueue({ snapshot, docSettings, queueItems, blackState
     nextBlackState.hits = (nextBlackState.hits ?? 0) + hits.size
     const recent = Array.isArray(nextBlackState.recent) ? [...nextBlackState.recent] : []
     for (const [title, keyword] of hits) {
+      // 同一条目每轮刷新都会命中：只保留最新一条，别让一个标题刷满"最近命中"
+      const dup = recent.findIndex((entry) => entry?.title === title)
+      if (dup >= 0) recent.splice(dup, 1)
       recent.unshift({ title, keyword, at: nowRfc3339 })
       if (recent.length > 20) recent.length = 20
     }

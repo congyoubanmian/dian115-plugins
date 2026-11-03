@@ -35,20 +35,22 @@ export async function httpGet(ctx, url, { accept, userAgent = BROWSER_USER_AGENT
     return { body: new Uint8Array(0), text: '', status: 0, error: error?.message || String(error) }
   }
   const status = typeof result?.status === 'number' ? result.status : 0
+  // 宿主返回的是重定向后的最终 url：登录态失效时豆瓣会跳到 accounts/passport 登录页
+  const finalUrl = typeof result?.url === 'string' ? result.url : ''
   if (status >= 400) {
-    return { body: new Uint8Array(0), text: '', status, error: `HTTP ${status}` }
+    return { body: new Uint8Array(0), text: '', status, error: `HTTP ${status}`, url: finalUrl }
   }
   let bytes = new Uint8Array(0)
   if (result?.body_base64) {
     try {
       bytes = base64Decode(result.body_base64)
     } catch {
-      return { body: new Uint8Array(0), text: '', status, error: 'base64 解码失败' }
+      return { body: new Uint8Array(0), text: '', status, error: 'base64 解码失败', url: finalUrl }
     }
   } else if (typeof result?.body === 'string' && result.body !== '') {
     bytes = new TextEncoder().encode(result.body)
   }
-  return { body: bytes, text: goLossy(bytes), status, error: null }
+  return { body: bytes, text: goLossy(bytes), status, error: null, url: finalUrl }
 }
 
 /** runtime.rs `http_get`：豆瓣网页/接口 GET（桌面 UA + 防盗链 Referer；accept 由调用方给）。 */

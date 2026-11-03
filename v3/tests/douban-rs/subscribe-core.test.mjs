@@ -130,3 +130,25 @@ test('parseIntentList / parseTmdbSearchResult 对脏数据收敛', () => {
   assert.equal(parseTmdbSearchResult(null).length, 0)
   assert.equal(parseTmdbSearchResult({ results: 'nope' }).length, 0)
 })
+
+test('match_tmdb 过滤 person 等非影视条目；preferType 只做同分决胜', () => {
+  const person = tmdbItem(9, '奥德赛', 'person', 9.0)
+  let out = matchTmdb([person], '奥德赛', '')
+  assert.equal(out.best.id, 0, 'person 不能当订阅目标')
+  assert.equal(out.score, 0)
+
+  const movie = tmdbItem(1, '奥德赛', 'movie', 7.5)
+  const tv = tmdbItem(2, '奥德赛', 'tv', 7.5)
+  out = matchTmdb([person, tv, movie], '奥德赛', '')
+  assert.equal(out.best.id, 2, '不传 preferType：同分取先出现的')
+  out = matchTmdb([person, tv, movie], '奥德赛', '', 'movie')
+  assert.equal(out.best.id, 1, '同分时偏向已知类型')
+  assert.ok(Math.abs(out.score - 0.75) < 1e-9, 'preferType 不改置信度')
+  out = matchTmdb([tmdbItem(3, '奥德赛 2', 'movie', 7.5), tv], '奥德赛', '', 'movie')
+  assert.equal(out.best.id, 2, '分数更高的仍然胜出')
+})
+
+test('pool intents 分页路径带 media_type / offset', () => {
+  assert.equal(poolIntentsPath({ mediaType: 'tv', offset: 400 }), '/api/subscribe/pool/intents?limit=200&media_type=tv&offset=400')
+  assert.equal(poolIntentsPath({ mediaType: 'person', offset: 0 }), '/api/subscribe/pool/intents?limit=200')
+})

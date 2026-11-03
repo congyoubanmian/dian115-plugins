@@ -37,6 +37,7 @@ const {
   stateDoc,
   stateError,
   stateInvalid,
+  loaded,
   settingsError,
   docSettings,
   snapshotItems,
@@ -108,7 +109,7 @@ const tiles = computed(() => {
   ]
 })
 
-const showFreshHint = computed(() => !stateDoc.value && !stateError.value)
+const showFreshHint = computed(() => loaded.value && !stateDoc.value && !stateError.value)
 const showNoSnapshotHint = computed(() => Boolean(stateDoc.value) && !stateDoc.value?.snapshot?.fetched_at)
 
 onMounted(() => {
@@ -148,6 +149,11 @@ onBeforeUnmount(() => {
       />
     </section>
 
+    <p v-if="!loaded && !busy" class="db-progress" role="status">
+      <span class="db-spinner" />
+      <span>正在读取插件数据…</span>
+    </p>
+
     <div v-if="stateError || settingsError || stateInvalid || showFreshHint || showNoSnapshotHint" class="db-banners">
       <div v-if="stateError" class="db-banner db-banner--error">
         <span class="db-banner__dot" />
@@ -171,12 +177,14 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
-    <nav class="db-tabs">
+    <nav class="db-tabs" role="tablist" aria-label="豆瓣中心分区">
       <button
         v-for="tab in tabs"
         :key="tab.key"
         type="button"
+        role="tab"
         class="db-tab"
+        :aria-selected="activeTab === tab.key"
         :class="{ 'db-tab--active': activeTab === tab.key }"
         @click="store.showTab(tab.key)"
       >

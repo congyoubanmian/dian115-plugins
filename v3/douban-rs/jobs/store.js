@@ -46,57 +46,50 @@ function delay(ctx, ms) {
  * 其他失败 → {error: message}。
  */
 export async function readKey(ctx, key) {
-  // 值走官方 ctx.storage.get（404 = 没有这个键 = 全新安装）；
-  // 版本号仍从自有存储信封读 —— 后台 ctx.storage.set 不暴露 expected_revision，
-  // 拿不到版本号就没法做乐观锁（信封读每个键只做一次）。
+  // 值与版本号必须来自同一次读取：先 ctx.storage.get 读值、再单独读信封拿版本号，
+  // 中间若有别的任务写入，就会拿"旧值 + 新版本号"去 CAS，覆盖掉对方的改动。
+  // 所以统一走存储信封 GET（{revision, value}，openapi-v3.json 同名路由）。
   const path = storagePath(ctx, key)
-  if (typeof ctx.storage?.get === 'function') {
-    try {
-      const value = await ctx.storage.get(key)
-      return { value: value ?? null, revision: await readRevision(ctx, path), missing: value === null || value === undefined }
-    } catch (error) {
-      const status = Number(error?.status ?? 0)
-      if (status === 404) return { value: null, revision: 0, missing: true }
-      return { error: error?.message ?? String(error) }
-    }
-  }
   const result = await tryApi(ctx, 'GET', path)
   if (result.ok) {
     const data = result.data
     if (data && typeof data === 'object' && 'value' in data) {
-      return { value: data.value ?? null, revision: typeof data.revision === 'number' ? data.revision : 0 }
+      const value = data.value ?? null
+      return { value, revision: typeof data.revision === 'number' ? data.revision : 0, missing: value === null }
     }
-    return { value: data ?? null, revision: 0 }
+    return { value: data ?? null, revision: 0, missing: data === null || data === undefined }
   }
   if (result.status === 404) return { value: null, revision: 0, missing: true }
   return { error: result.message }
 }
 
-/** 读存储信封里的版本号（CAS 用）。 */
-async function readRevision(ctx, path) {
-  const result = await tryApi(ctx, 'GET', path)
-  if (!result.ok) return 0
-  return typeof result.data?.revision === 'number' ? result.data.revision : 0
-}
-
 /**
- * 写入一个存储键（CAS + 412/409 重读重试一次 —— store.rs put 的语义）。
+ * 写入一个存储键（CAS；409/412 冲突时重读一次再写 —— store.rs put 的语义）。
  * expectedRevision 传 null 表示新建（expected_revision: 0）。
+ * onConflict(freshValue) 可选：返回要写的新值（例如把本次改动合并到对方的新版本上）；
+ * 不传时沿用旧语义直接以本次的值重写（只用于单写者的小键）。
+ * 重写仍冲突则放弃，不再覆盖。
  */
-export async function putKey(ctx, key, value, expectedRevision) {
+export async function putKey(ctx, key, value, expectedRevision, onConflict = null) {
   const path = storagePath(ctx, key)
   const expected = expectedRevision === null ? 0 : expectedRevision
   let result = await tryApi(ctx, 'PUT', path, { value, expected_revision: expected })
   if (result.ok) {
-    return { ok: true, revision: typeof result.data?.revision === 'number' ? result.data.revision : expected + 1 }
+    return { ok: true, revision: typeof result.data?.revision === 'number' ? result.data.revision : expected + 1, value }
   }
   if (result.status === 409 || result.status === 412) {
     const fresh = await readKey(ctx, key)
     if (!fresh.error) {
       const retryExpected = fresh.missing ? 0 : fresh.revision
-      result = await tryApi(ctx, 'PUT', path, { value, expected_revision: retryExpected })
+      const retryValue = typeof onConflict === 'function' ? onConflict(fresh.missing ? null : fresh.value) : value
+      result = await tryApi(ctx, 'PUT', path, { value: retryValue, expected_revision: retryExpected })
       if (result.ok) {
-        return { ok: true, revision: typeof result.data?.revision === 'number' ? result.data.revision : retryExpected + 1 }
+        return {
+          ok: true,
+          revision: typeof result.data?.revision === 'number' ? result.data.revision : retryExpected + 1,
+          value: retryValue,
+          merged: typeof onConflict === 'function',
+        }
       }
     }
   }
@@ -149,8 +142,8 @@ function classifyValue(value, revision) {
 }
 
 /** 落盘整份状态（runtime.rs persist_all 的写入段；4MiB 预算与日志裁剪在 Session 层）。 */
-export async function persistState(ctx, doc, revision) {
-  const result = await putKey(ctx, STATE_KEY, doc, revision)
+export async function persistState(ctx, doc, revision, onConflict = null) {
+  const result = await putKey(ctx, STATE_KEY, doc, revision, onConflict)
   return result
 }
 

@@ -16,12 +16,15 @@ import {
   STATE_LOGS_LIMIT,
   LOG_MESSAGE_LIMIT,
   PERSIST_LOG_LIMIT,
+  parseStateDoc,
+  isRecognizable,
 } from '../lib/model.js'
 import { normalizeFlat, applyFlatPatch, normalizeDocSettings } from '../lib/settings.js'
 import { truncateUtf8Boundary } from '../lib/text.js'
 import { nowRfc3339, nowUnixNanos, parseRfc3339, currentMonth } from '../lib/clock.js'
 import { canSubscribe, FILTERED_QUEUE_STATE, NO_RESUB_REASON, NO_RESUB_CONFIRM_TEXT, NO_RESUB_SCAN_MIN_INTERVAL_NANOS, noResubGuardMessage, parseTmdbRef, historyEntryQualifies, intentIsCompleted } from '../lib/filter-core.js'
-import { HOST_POOL_INTENTS_LIMIT, poolIntentsPath, parseIntentList } from '../lib/subscribe-core.js'
+import { HOST_POOL_INTENTS_LIMIT, HOST_POOL_INTENTS_MAX_PAGES, poolIntentsPath, parseIntentList } from '../lib/subscribe-core.js'
+import { mergeStateDocs } from '../lib/merge.js'
 import { loadStateWithRetry, persistState, loadAccount, saveAccount, writeDiag, serializeStateBudgeted, tryApi } from './store.js'
 
 /** 诊断面包屑 + 落盘 + 守卫 + 历史统计的一次性会话（runtime.rs `Runtime`）。 */
@@ -35,6 +38,8 @@ export class Session {
     this.persistAllowed = loaded.kind === 'loaded' || loaded.kind === 'fresh'
     this.loadedKind = loaded.kind
     this.revision = loaded.revision ?? 0
+    // 读盘时的文档快照：CAS 冲突时用它做三方合并的基线（见 lib/merge.js）
+    this.baseDoc = loaded.kind === 'loaded' && loaded.doc ? JSON.parse(JSON.stringify(loaded.doc)) : null
     this.flat = null // 惰性：settings() 首次调用时取
     this.accountDirty = false
   }
@@ -165,9 +170,23 @@ export class Session {
       this.log('warning', budget.message)
       return { ok: false, message: budget.message }
     }
-    const result = await persistState(this.ctx, budget.value, this.revision)
+    const base = this.baseDoc
+    const result = await persistState(this.ctx, budget.value, this.revision, (fresh) => {
+      // 别的任务在本会话读盘后写过 state：把本次改动合并到对方的新版本上，而不是整份覆盖
+      const theirs = fresh === null ? null : parseStateDoc(fresh)
+      if (theirs === null || base === null || !isRecognizable(theirs)) return budget.value
+      return mergeStateDocs(base, budget.value, theirs)
+    })
     if (result.ok) {
       this.revision = result.revision
+      this.baseDoc = JSON.parse(JSON.stringify(result.value ?? budget.value))
+      if (result.merged && result.value) {
+        // 合并结果回灌内存文档，后续再次 persist 以合并后的内容为准
+        this.doc = JSON.parse(JSON.stringify(result.value))
+        this.doc.settings = normalizeDocSettings(this.doc.settings)
+        if (!this.doc.stats) this.doc.stats = { by_list: {} }
+        if (!this.doc.stats.by_list) this.doc.stats.by_list = {}
+      }
       if (this.accountDirty) {
         this.accountDirty = false
         await saveAccount(this.ctx, this.accountFields())
@@ -295,12 +314,13 @@ export class Session {
    * 宿主失败 / 池条数达到查询上限（可能被截断）→ 不写（宁可漏判不可误判）。
    */
   async resolveNoResubFromHistory() {
-    const entries = await fetchPoolIntents(this.ctx)
-    if (entries === null) {
+    const listing = await listPoolIntents(this.ctx)
+    if (listing === null) {
       this.log('warning', '宿主订阅池查询失败，跳过「已删除不重订」判定')
       return 0
     }
-    if (entries.length >= HOST_POOL_INTENTS_LIMIT) {
+    const entries = listing.entries
+    if (listing.truncated) {
       this.log('warning', `宿主订阅池返回条数达查询上限（${entries.length} 条），可能被截断，跳过「已删除不重订」判定`)
       return 0
     }
@@ -367,11 +387,28 @@ export class Session {
   }
 }
 
+/**
+ * 宿主订阅池条目列表：按 limit/offset 分页读完（宿主契约的 limit/offset/media_type 查询参数）。
+ * 返回 {entries, truncated}；任何一页失败/解析失败返回 null（调用方不得把它当"没有订阅"）。
+ * truncated=true 表示翻到页数上限仍可能有剩余。
+ */
+export async function listPoolIntents(ctx, { mediaType = '' } = {}) {
+  const entries = []
+  for (let page = 0; page < HOST_POOL_INTENTS_MAX_PAGES; page += 1) {
+    const result = await tryApi(ctx, 'GET', poolIntentsPath({ offset: page * HOST_POOL_INTENTS_LIMIT, mediaType }))
+    if (!result.ok) return null
+    const batch = parseIntentList(result.data)
+    if (batch === null) return null
+    entries.push(...batch)
+    if (batch.length < HOST_POOL_INTENTS_LIMIT) return { entries, truncated: false }
+  }
+  return { entries, truncated: true }
+}
+
 /** 宿主订阅池条目列表（filter.rs host_pool_intents：任何失败返回 null，不区分原因）。 */
 export async function fetchPoolIntents(ctx) {
-  const result = await tryApi(ctx, 'GET', poolIntentsPath())
-  if (!result.ok) return null
-  return parseIntentList(result.data)
+  const listing = await listPoolIntents(ctx)
+  return listing === null ? null : listing.entries
 }
 
 /** action observe-remove：原地过滤，nil 队列保持 nil。 */
@@ -558,7 +595,8 @@ export async function sendTest(session, ctx) {
       title: '豆瓣中心通知自检',
       body: '这是一条测试通知：如果你看到了它，说明通知渠道配置正常。',
       level: 'info',
-      dedupe_key: 'douban.rs:send-test',
+      // 自检每次都要真发：宿主会永久记住 dedupe_key，固定键第二次起只会返回上次结果
+      dedupe_key: `douban.rs:send-test:${ctx.task?.id || nowRfc3339()}`,
     })
     const accepted = result?.accepted === true
     const delivered = Array.isArray(result?.deliveries)
