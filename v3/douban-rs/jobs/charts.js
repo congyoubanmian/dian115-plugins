@@ -139,22 +139,34 @@ export async function refreshNow(session, ctx, invocationId, { deep } = {}) {
     session.doc.queue.items = outcome.queueItems
     session.doc.blackstate = outcome.blackState
     session.doc.last_run = fetchedAt
-    session.doc.snapshot = snapshot
+    // 抓取失败 / 超预算跳过的启用榜单沿用上一轮的条目（只用于展示，已在上一轮入过队）：
+    // 否则一次豆瓣抖动就会让榜单墙整栏消失，直到下轮刷新成功
+    const previousLists = session.doc.snapshot?.lists ?? {}
+    const shownLists = { ...lists }
+    for (const key of orderedEnabledKeys(docSettings)) {
+      if (!(key in shownLists) && Array.isArray(previousLists[key]) && previousLists[key].length > 0) {
+        shownLists[key] = previousLists[key]
+      }
+    }
+    session.doc.snapshot = { fetched_at: fetchedAt, lists: shownLists }
 
     // 4. 到期条目订阅（仅后台预算塞得下）
     let subscribed = 0
     let needsReview = 0
+    let retrying = 0
     let errMsg = ''
     if (deep) {
       const due = await processDue(session, ctx, invocationId, flat)
       subscribed = due.subscribed
       needsReview = due.needs_review
+      retrying = due.retrying ?? 0
       errMsg = due.message ?? ''
     }
 
     // 5. 摘要
     const listCount = Object.keys(lists).length
     let summary = `榜单刷新完成：${listCount} 榜，新增订阅 ${subscribed}，待人工确认 ${needsReview}`
+    if (retrying > 0) summary += `，稍后重试 ${retrying}`
     if (!deep) summary += '；订阅由后台任务处理'
     if (failures.length > 0) summary += `；失败榜：${failures.join('；')}`
     if (errMsg !== '') summary += `；${errMsg}`

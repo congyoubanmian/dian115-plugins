@@ -11,7 +11,9 @@ import type { HostContext } from '../shared/types'
 import { ACTION_LABELS, BATCH_SUBSCRIBE_LIMIT, BUSY_TEXT, POLL_INTERVAL_MS, POLL_TIMEOUT_MS } from './constants'
 import { text } from './format'
 import {
+  FILTERED_QUEUE_STATE,
   FLAT_DEFAULTS,
+  NO_RESUB_QUEUE_STATE,
   NO_RESUB_CONFIRM_TEXT,
   defaultSettings,
   isRecognizable,
@@ -73,6 +75,8 @@ export interface DoubanStore {
   settingsView: Ref<SettingsView | null>
   stateError: Ref<string>
   stateInvalid: Ref<boolean>
+  /** 首次读盘是否已完成（之前不要把空状态当成「全新安装」展示）。 */
+  loaded: Ref<boolean>
   settingsError: Ref<string>
   busy: Ref<string>
   activeTab: Ref<TabKey>
@@ -138,6 +142,7 @@ export function createDoubanStore(ctx: HostContext): DoubanStore {
   const settingsView = ref<SettingsView | null>(null)
   const stateError = ref('')
   const stateInvalid = ref(false)
+  const loaded = ref(false)
   const settingsError = ref('')
   const busy = ref('')
   const activeTab = ref<TabKey>('charts')
@@ -176,6 +181,9 @@ export function createDoubanStore(ctx: HostContext): DoubanStore {
   const busyText = computed(() => (busy.value === '' ? '' : BUSY_TEXT[busy.value] || '正在执行…'))
 
   function isDueItem(item: QueueItem): boolean {
+    // 已订阅 / 被过滤 / 墓碑拦下的是终态，不算「到期待订阅」（批量订阅也不能把它们捞回来）
+    const state = item?.state ?? ''
+    if (state === 'subscribed' || state === FILTERED_QUEUE_STATE || state === NO_RESUB_QUEUE_STATE) return false
     if (typeof item?.due_at !== 'string' || item.due_at === '') return false
     const parsed = Date.parse(item.due_at)
     return Number.isFinite(parsed) && parsed <= Date.now()
@@ -264,6 +272,8 @@ export function createDoubanStore(ctx: HostContext): DoubanStore {
       toast('error', message || `${label}失败`)
     } else if (run?.status === 'cancelled') {
       toast('warning', `${label}已取消`)
+    } else if (result.status === 'skipped') {
+      toast('warning', message || `${label}已跳过`)
     } else {
       toast('success', message || `${label}完成`)
     }
@@ -349,6 +359,7 @@ export function createDoubanStore(ctx: HostContext): DoubanStore {
       if (legacy.wish_sync_enabled && !flat.value.wish_sync_enabled) flat.value.wish_sync_enabled = true
     }
     settingsView.value = stateDoc.value ? sanitizeSettingsView(stateDoc.value.settings) : null
+    loaded.value = true
   }
 
   async function refreshUi(): Promise<void> {
@@ -393,7 +404,7 @@ export function createDoubanStore(ctx: HostContext): DoubanStore {
 
   async function subscribeDueBatch(): Promise<void> {
     if (busy.value !== '' || disposed) return
-    const due = dueItems.value.filter((item) => item.state !== 'subscribed')
+    const due = dueItems.value
     if (due.length === 0) {
       toast('info', '没有到期的队列条目')
       return
@@ -463,6 +474,7 @@ export function createDoubanStore(ctx: HostContext): DoubanStore {
     settingsView,
     stateError,
     stateInvalid,
+    loaded,
     settingsError,
     busy,
     activeTab,

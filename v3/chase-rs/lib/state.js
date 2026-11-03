@@ -77,6 +77,9 @@ export function newStateDoc() {
       last_error: '',
       sent_total: 0,
       notify_channels: [],
+      // 当天发送失败后的重试序号：宿主要求"投递未确认的去重键换新键再发"。
+      retry_date: '',
+      retry_seq: 0,
     },
     debug: {
       updated_at: '',
@@ -201,6 +204,8 @@ export function normalizeStateDoc(raw) {
     last_result: asText(daily.last_result),
     last_error: asText(daily.last_error),
     sent_total: asNumber(daily.sent_total),
+    retry_date: asText(daily.retry_date),
+    retry_seq: Math.max(0, asNumber(daily.retry_seq)),
     notify_channels: asArray(daily.notify_channels).map((item) => {
       const channel = asObject(item)
       return {
@@ -402,6 +407,73 @@ export function sanitizeForPersist(doc) {
   if (containsForbiddenKey(doc) === null) return false
   sanitize(doc)
   return true
+}
+
+function sameJson(left, right) {
+  return JSON.stringify(left) === JSON.stringify(right)
+}
+
+function cloneJson(value) {
+  return value === undefined ? undefined : JSON.parse(JSON.stringify(value))
+}
+
+function isPlainObject(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+}
+
+/** 追加型列表的合并：对方的全部 + 本会话新增（基线里没有的）条目，按上限保留最新。 */
+function unionAppended(base, ours, theirs, max) {
+  const seen = new Set(asArray(base).map((entry) => JSON.stringify(entry)))
+  const merged = asArray(theirs).map(cloneJson)
+  const present = new Set(merged.map((entry) => JSON.stringify(entry)))
+  for (const entry of asArray(ours)) {
+    const key = JSON.stringify(entry)
+    if (seen.has(key) || present.has(key)) continue
+    merged.push(cloneJson(entry))
+    present.add(key)
+  }
+  trimTail(merged, max)
+  return merged
+}
+
+/** 追加型列表（日志/诊断）：两边的新条目都保留，不互相覆盖。 */
+const APPEND_LISTS = {
+  logs: LOGS_MAX,
+  'debug.attempts': DEBUG_ATTEMPTS_MAX,
+  'debug.last_errors': DEBUG_ERRORS_MAX,
+}
+
+/**
+ * 存储 CAS 冲突时的三方合并：以对方（存储里最新的文档）为底，本会话相对基线改过的
+ * 字段（顶层键，及其下一层子键）用本会话的值；日志与诊断列表两边的新条目都保留。
+ * 这样并发的两个任务各自只覆盖自己真正写过的部分。
+ */
+export function mergeStateDocs(base, ours, theirs) {
+  const baseDoc = isPlainObject(base) ? base : newStateDoc()
+  const merged = cloneJson(theirs)
+  for (const key of Object.keys(ours)) {
+    if (key === 'revision' || key === 'schema_version') continue
+    if (APPEND_LISTS[key] !== undefined) {
+      merged[key] = unionAppended(baseDoc[key], ours[key], theirs[key], APPEND_LISTS[key])
+      continue
+    }
+    const mine = ours[key]
+    const before = baseDoc[key]
+    if (isPlainObject(mine) && isPlainObject(before) && isPlainObject(merged[key])) {
+      for (const sub of Object.keys(mine)) {
+        const listKey = `${key}.${sub}`
+        if (APPEND_LISTS[listKey] !== undefined) {
+          merged[key][sub] = unionAppended(before[sub], mine[sub], theirs[key]?.[sub], APPEND_LISTS[listKey])
+        } else if (!sameJson(mine[sub], before[sub])) {
+          merged[key][sub] = cloneJson(mine[sub])
+        }
+      }
+    } else if (!sameJson(mine, before)) {
+      merged[key] = cloneJson(mine)
+    }
+  }
+  merged.revision = Math.max(asNumber(ours.revision), asNumber(theirs.revision) + 1)
+  return merged
 }
 
 /** 追加一行对齐结果；满 ALIGN_ITEMS_MAX 时优先丢掉最旧的 `skipped`。 */

@@ -47,9 +47,10 @@ export {
   qqLoginInfo,
   normalizeCookies,
 } from '../../../v3/music-rs/lib/cookies.js'
-export { enqueue, retry, adopt, clearFinished, loadIndex } from '../../../v3/music-rs/lib/queue-store.js'
+export { enqueue, retry, retryAllFailed, adopt, clearFinished, loadIndex } from '../../../v3/music-rs/lib/queue-store.js'
 export { queuePlaylistPages, PLAYLIST_QUEUE_DEFAULT_PAGES } from '../../../v3/music-rs/lib/queue-pages.js'
 export { PLAYLIST_PAGE_SIZE } from '../../../v3/music-rs/lib/constants.js'
 export { addLog, loadLogs } from '../../../v3/music-rs/lib/logs.js'
-export { stateView, STATUS_QUEUED, MAX_ATTEMPTS } from '../../../v3/music-rs/lib/tasks-core.js'
+export { stateView, sortIndex, STATUS_QUEUED, MAX_ATTEMPTS } from '../../../v3/music-rs/lib/tasks-core.js'
+export { channelSummary } from '../../../v3/music-rs/lib/notify-summary.js'
 export { encodeQr, qrSvgPath } from '../../../v3/music-rs/ui/qr.js'

@@ -70,3 +70,35 @@ export function parseInterestsResponse(data) {
 export function wishInterestsUrl(uid, wantType, start) {
   return `https://m.douban.com/rexxar/api/v2/user/${uid}/interests?kind=mark&type=${wantType}&start=${start}&limit=${WISH_PAGE_SIZE}`
 }
+
+/** 登录态失效的统一提示（Cookie 过期/被登出/粘贴不完整都会落到这里）。 */
+export const WISH_LOGIN_EXPIRED = '豆瓣登录态已失效，请在设置里重新粘贴浏览器里的豆瓣 Cookie（需含 dbcl2）'
+
+/** 最终地址是否是豆瓣登录页（未登录的请求会被重定向到 accounts/passport）。 */
+export function isDoubanLoginUrl(url) {
+  const text = String(url ?? '')
+  return /^https?:\/\/(accounts|passport)\.douban\.com\//i.test(text) || /^https?:\/\/[^/]*douban\.com\/(accounts\/)?(passport\/)?login/i.test(text)
+}
+
+/**
+ * rexxar 错误体（{code, msg, localized_message}）→ 文案；不是错误体返回 null。
+ * 豆瓣对过期/无效凭据回 code 103/106 或 msg 含 need_login / invalid_credencial。
+ */
+export function rexxarErrorMessage(data) {
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return null
+  if (Array.isArray(data.interests)) return null
+  if (data.code === undefined && data.msg === undefined) return null
+  const msg = String(data.msg ?? '')
+  const code = Number(data.code ?? 0)
+  if (code === 103 || code === 106 || /login|credencial|credential|token/i.test(msg)) return WISH_LOGIN_EXPIRED
+  const localized = String(data.localized_message ?? '').trim()
+  return `豆瓣返回错误 code=${code}${msg ? ` ${msg}` : ''}${localized ? `（${localized}）` : ''}`
+}
+
+/** 想看接口的 HTTP 失败 → 文案（401/403 视为登录态失效）。 */
+export function wishHttpErrorMessage(status, error) {
+  if (status === 401 || status === 403) {
+    return `豆瓣拒绝访问（HTTP ${status}）：多半是登录态已失效，请在设置里重新粘贴豆瓣 Cookie；刚频繁请求过也可能是临时风控`
+  }
+  return `HTTP ${status}: ${error}`
+}

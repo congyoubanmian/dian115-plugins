@@ -13,6 +13,7 @@ import { NButton, NInput, NTag } from 'naive-ui'
 import { ClipboardPaste as ClipboardIcon, QrCode as QrCodeIcon } from '@lucide/vue'
 import { ALL_QUALITIES, SOURCES, useMusicStore } from '../store'
 import { encodeQr, qrSvgPath } from '../plugin-api'
+import QualityTag from './QualityTag.vue'
 
 const store = useMusicStore()
 const { login, loginSource, qr, qrStatus, qrBusy, qrMessage, qrTitle, qrSub, settings, busy, cookieText, cookiePanelOpen } =
@@ -97,28 +98,36 @@ const cookiePlaceholder = computed(
   <div class="login-grid">
     <!-- 左：二维码（QQ 官方 PNG 图 / 网易云本地编码 SVG） -->
     <div class="qr-pane">
-      <div class="qr-box">
-        <img v-if="qrImage" class="qr-img" :src="qrImage" alt="扫码登录二维码" />
-        <svg
-          v-else-if="qrSvg.path"
-          class="qr-svg"
-          :viewBox="qrSvg.viewBox"
-          shape-rendering="crispEdges"
-          role="img"
-          aria-label="扫码登录二维码"
-        >
-          <rect width="100%" height="100%" fill="#ffffff" />
-          <g transform="translate(4 4)">
-            <path :d="qrSvg.path" fill="#000000" />
-          </g>
-        </svg>
-        <div v-else-if="qrSvg.error" class="qr-fallback qr-fallback--error">{{ qrSvg.error }}</div>
-        <div v-else class="qr-fallback">
-          <QrCodeIcon :size="28" aria-hidden="true" />
-          <span>{{ qrBusy ? '生成中…' : '未生成' }}</span>
+      <div class="qr-frame" :class="`qr-frame--${qrStatus || 'idle'}`">
+        <span v-for="corner in 4" :key="corner" class="qr-corner" aria-hidden="true" />
+        <span v-if="qrStatus === 'waiting'" class="qr-pulse" aria-hidden="true" />
+        <div class="qr-box">
+          <img v-if="qrImage" class="qr-img" :src="qrImage" alt="扫码登录二维码" />
+          <svg
+            v-else-if="qrSvg.path"
+            class="qr-svg"
+            :viewBox="qrSvg.viewBox"
+            shape-rendering="crispEdges"
+            role="img"
+            aria-label="扫码登录二维码"
+          >
+            <rect width="100%" height="100%" fill="#ffffff" />
+            <g transform="translate(4 4)">
+              <path :d="qrSvg.path" fill="#000000" />
+            </g>
+          </svg>
+          <div v-else-if="qrSvg.error" class="qr-fallback qr-fallback--error">{{ qrSvg.error }}</div>
+          <div v-else class="qr-fallback">
+            <QrCodeIcon :size="28" aria-hidden="true" />
+            <span>{{ qrBusy ? '生成中…' : '未生成' }}</span>
+          </div>
+          <span v-if="qrStatus === 'waiting'" class="qr-scan" aria-hidden="true" />
+          <span v-if="qrStatus === 'scanned' || qrStatus === 'success'" class="qr-veil" aria-hidden="true">
+            {{ qrStatus === 'success' ? '✓' : '✓ 已扫码' }}
+          </span>
         </div>
       </div>
-      <div class="qr-title">{{ qrTitle }}</div>
+      <div class="qr-title" aria-live="polite">{{ qrTitle }}</div>
       <div class="qr-sub">{{ qrSub }}</div>
       <p v-if="qrMessage" class="hint">{{ qrMessage }}</p>
       <p v-if="qr" class="hint qr-meta">
@@ -140,7 +149,7 @@ const cookiePlaceholder = computed(
             {{ item.name }}
           </button>
         </span>
-        <NButton size="small" type="primary" :loading="qrBusy" @click="store.createQr(loginSource)">
+        <NButton size="small" type="primary" round :loading="qrBusy" @click="store.createQr(loginSource)">
           获取二维码
         </NButton>
         <NButton v-if="qr" size="small" secondary @click="store.resetQr()">关闭</NButton>
@@ -160,10 +169,11 @@ const cookiePlaceholder = computed(
 
       <!-- 四步 stepper：按扫码状态机真实点亮 -->
       <div class="stepper">
-        <div v-for="step in steps" :key="step.label" class="step" :class="step.state">
+        <div v-for="(step, index) in steps" :key="step.label" class="step" :class="step.state">
           <span class="step-dot">
             <template v-if="step.state === 'done'">✓</template>
             <template v-else-if="step.state === 'error'">!</template>
+            <template v-else>{{ index + 1 }}</template>
           </span>
           <span class="step-label">{{ step.label }}</span>
         </div>
@@ -184,6 +194,7 @@ const cookiePlaceholder = computed(
           type="textarea"
           :rows="3"
           :placeholder="cookiePlaceholder"
+          :input-props="{ 'aria-label': '粘贴整行 Cookie' }"
           class="cookie-input"
         />
         <div class="row">
@@ -196,9 +207,7 @@ const cookiePlaceholder = computed(
 
       <div class="mini-title">音质档位</div>
       <div class="chips">
-        <span v-for="value in ALL_QUALITIES" :key="value" class="chip" :class="{ on: value === settings.quality }">
-          {{ store.qualityLabel(value) }}
-        </span>
+        <QualityTag v-for="value in ALL_QUALITIES" :key="value" :quality="value" :selected="value === settings.quality" />
       </div>
       <p class="hint">
         默认: {{ store.qualityLabel(settings.quality) }} · 可选档位随来源不同 · 未登录仅可浏览，登录后可入队下载
@@ -211,11 +220,11 @@ const cookiePlaceholder = computed(
 <style scoped>
 .login-grid {
   display: grid;
-  grid-template-columns: 260px 1fr;
+  grid-template-columns: 270px minmax(0, 1fr);
   gap: 24px;
 }
 
-@media (max-width: 760px) {
+@container music-page (max-width: 720px) {
   .login-grid {
     grid-template-columns: 1fr;
   }
@@ -226,9 +235,84 @@ const cookiePlaceholder = computed(
   gap: 8px;
   justify-items: center;
   align-content: start;
+  padding: 18px 12px 14px;
+  border-radius: 16px;
+  text-align: center;
+  background:
+    radial-gradient(90% 70% at 50% 0%, color-mix(in srgb, var(--mx-accent, #2080f0) 16%, transparent), transparent 70%),
+    color-mix(in srgb, var(--app-bg, transparent) 60%, transparent);
+  border: 1px solid color-mix(in srgb, var(--app-border, #e0e4ea) 70%, transparent);
+}
+
+/* 二维码外框：四角取景框 + 等待扫码时的呼吸光圈 */
+.qr-frame {
+  --tone: var(--mx-accent, var(--app-accent, #2080f0));
+  position: relative;
+  padding: 10px;
+}
+
+.qr-frame--success,
+.qr-frame--scanned {
+  --tone: var(--mx-ok, #18a058);
+}
+
+.qr-frame--expired,
+.qr-frame--failed,
+.qr-frame--no-login {
+  --tone: var(--mx-err, #d03050);
+}
+
+.qr-corner {
+  position: absolute;
+  width: 22px;
+  height: 22px;
+  border: 3px solid var(--tone);
+  opacity: 0.85;
+  transition: border-color 0.3s ease;
+}
+
+.qr-corner:nth-child(1) {
+  top: 0;
+  left: 0;
+  border-right: none;
+  border-bottom: none;
+  border-radius: 10px 0 0 0;
+}
+
+.qr-corner:nth-child(2) {
+  top: 0;
+  right: 0;
+  border-left: none;
+  border-bottom: none;
+  border-radius: 0 10px 0 0;
+}
+
+.qr-corner:nth-child(3) {
+  bottom: 0;
+  left: 0;
+  border-right: none;
+  border-top: none;
+  border-radius: 0 0 0 10px;
+}
+
+.qr-corner:nth-child(4) {
+  bottom: 0;
+  right: 0;
+  border-left: none;
+  border-top: none;
+  border-radius: 0 0 10px 0;
+}
+
+.qr-pulse {
+  position: absolute;
+  inset: 10px;
+  border-radius: 12px;
+  pointer-events: none;
+  animation: qr-pulse 2s ease-out infinite;
 }
 
 .qr-box {
+  position: relative;
   width: 220px;
   height: 220px;
   border-radius: 12px;
@@ -238,6 +322,12 @@ const cookiePlaceholder = computed(
   align-items: center;
   justify-content: center;
   overflow: hidden;
+  box-shadow: 0 10px 30px -18px color-mix(in srgb, var(--app-text, #000) 60%, transparent);
+}
+
+.qr-frame--expired .qr-box > :not(.qr-veil) {
+  opacity: 0.25;
+  filter: grayscale(1);
 }
 
 .qr-svg {
@@ -253,23 +343,52 @@ const cookiePlaceholder = computed(
   image-rendering: pixelated;
 }
 
+/* 扫描线：细而半透明，不挡二维码识别 */
+.qr-scan {
+  position: absolute;
+  left: 6%;
+  right: 6%;
+  top: 0;
+  height: 2px;
+  border-radius: 2px;
+  pointer-events: none;
+  background: linear-gradient(90deg, transparent, var(--tone), transparent);
+  box-shadow: 0 0 12px 2px color-mix(in srgb, var(--tone) 45%, transparent);
+  opacity: 0.55;
+  animation: qr-scan 2.4s ease-in-out infinite;
+}
+
+.qr-veil {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--mx-ok, #18a058);
+  background: color-mix(in srgb, #fff 78%, transparent);
+  backdrop-filter: blur(2px);
+  animation: qr-veil 0.3s ease-out;
+}
+
 .qr-fallback {
   display: grid;
   justify-items: center;
   gap: 6px;
-  color: var(--app-text-secondary, rgba(0, 0, 0, 0.45));
+  /* 二维码底板固定白色，这里的字也固定深色才看得清 */
+  color: #5f6670;
   font-size: 12px;
   padding: 12px;
   text-align: center;
 }
 
 .qr-fallback--error {
-  color: #d03050;
+  color: #c02848;
 }
 
 .qr-title {
   font-size: 15px;
-  font-weight: 600;
+  font-weight: 700;
 }
 
 .qr-sub {
@@ -283,7 +402,7 @@ const cookiePlaceholder = computed(
 
 .login-side {
   display: grid;
-  gap: 12px;
+  gap: 14px;
   align-content: start;
   min-width: 0;
 }
@@ -313,80 +432,126 @@ const cookiePlaceholder = computed(
 
 .seg {
   display: inline-flex;
+  gap: 2px;
+  padding: 3px;
   border: 1px solid var(--app-border, #e0e4ea);
-  border-radius: 9px;
-  overflow: hidden;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--app-bg, transparent) 60%, transparent);
 }
 
 .seg button {
   border: none;
+  border-radius: 999px;
   background: transparent;
-  color: inherit;
-  padding: 6px 14px;
+  color: var(--app-text-secondary, inherit);
+  padding: 4px 14px;
   font-size: 13px;
   cursor: pointer;
+  transition:
+    background-color 0.2s ease,
+    color 0.2s ease;
 }
 
 .seg button.on {
-  background: var(--app-accent, #2080f0);
+  background: var(--mx-accent, var(--app-accent, #2080f0));
   color: #fff;
+  box-shadow: 0 4px 12px -6px var(--mx-accent, #2080f0);
 }
 
+.seg button:focus-visible {
+  outline: 2px solid var(--mx-accent, #2080f0);
+  outline-offset: 1px;
+}
+
+/* 四步 stepper：圆点 + 连接线，按状态着色 */
 .stepper {
-  display: flex;
-  gap: 4px;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0;
+  padding: 4px 0;
+}
+
+@container music-page (max-width: 480px) {
+  .stepper {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    row-gap: 10px;
+  }
+
+  .step:nth-child(2)::after {
+    display: none;
+  }
 }
 
 .step {
-  display: flex;
-  align-items: center;
+  --tone: var(--app-text-secondary, #8a919c);
+  position: relative;
+  display: grid;
+  justify-items: center;
   gap: 6px;
   font-size: 12px;
   color: var(--app-text-secondary, rgba(0, 0, 0, 0.45));
-  padding: 4px 8px;
-  border-radius: 8px;
+}
+
+.step:not(:last-child)::after {
+  content: '';
+  position: absolute;
+  top: 11px;
+  left: calc(50% + 16px);
+  right: calc(-50% + 16px);
+  height: 2px;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--tone) 35%, var(--app-border, #e0e4ea));
 }
 
 .step-dot {
-  width: 18px;
-  height: 18px;
+  width: 24px;
+  height: 24px;
   border-radius: 50%;
-  border: 1.5px solid currentColor;
+  border: 2px solid color-mix(in srgb, var(--tone) 60%, transparent);
   display: inline-flex;
   align-items: center;
   justify-content: center;
   font-size: 11px;
+  font-weight: 700;
+  color: var(--tone);
+  background: var(--app-surface, #fff);
+  transition:
+    background-color 0.3s ease,
+    border-color 0.3s ease;
 }
 
 .step.active {
-  color: var(--app-accent, #2080f0);
-  border: 1px dashed color-mix(in srgb, var(--app-accent, #2080f0) 45%, transparent);
+  --tone: var(--mx-accent, #2080f0);
+  color: var(--tone);
+  font-weight: 600;
+}
+
+.step.active .step-dot {
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--tone) 18%, transparent);
+  animation: step-ping 1.8s ease-in-out infinite;
 }
 
 .step.done {
-  color: #18a058;
-}
-
-.step.done .step-dot {
-  background: #18a058;
-  border-color: #18a058;
-  color: #fff;
+  --tone: var(--mx-ok, #18a058);
+  color: var(--tone);
 }
 
 .step.error {
-  color: #d03050;
+  --tone: var(--mx-err, #d03050);
+  color: var(--tone);
 }
 
+.step.done .step-dot,
 .step.error .step-dot {
-  background: #d03050;
-  border-color: #d03050;
+  background: var(--tone);
+  border-color: var(--tone);
   color: #fff;
 }
 
 .mini-title {
   font-size: 12px;
-  font-weight: 600;
+  font-weight: 700;
+  letter-spacing: 0.04em;
   color: var(--app-text-secondary, rgba(0, 0, 0, 0.6));
 }
 
@@ -394,8 +559,9 @@ const cookiePlaceholder = computed(
   display: grid;
   gap: 8px;
   padding: 12px;
-  border: 1px dashed var(--app-border, #e0e4ea);
-  border-radius: 10px;
+  border: 1px dashed color-mix(in srgb, var(--mx-accent, #2080f0) 40%, var(--app-border, #e0e4ea));
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--mx-accent, #2080f0) 4%, transparent);
 }
 
 .cookie-input {
@@ -409,16 +575,53 @@ const cookiePlaceholder = computed(
   flex-wrap: wrap;
 }
 
-.chip {
-  padding: 4px 12px;
-  border-radius: 999px;
-  font-size: 12px;
-  border: 1px solid var(--app-border, #e0e4ea);
+@keyframes qr-scan {
+  0%,
+  100% {
+    transform: translateY(8px);
+  }
+  50% {
+    transform: translateY(210px);
+  }
 }
 
-.chip.on {
-  background: var(--app-accent, #2080f0);
-  border-color: var(--app-accent, #2080f0);
-  color: #fff;
+@keyframes qr-pulse {
+  0% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--tone) 45%, transparent);
+  }
+  100% {
+    box-shadow: 0 0 0 14px transparent;
+  }
+}
+
+@keyframes qr-veil {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes step-ping {
+  50% {
+    box-shadow: 0 0 0 7px color-mix(in srgb, var(--tone) 8%, transparent);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .qr-scan,
+  .qr-pulse,
+  .qr-veil,
+  .step.active .step-dot {
+    animation: none;
+  }
+
+  .qr-scan {
+    top: 50%;
+  }
+
+  .qr-corner,
+  .seg button,
+  .step-dot {
+    transition: none;
+  }
 }
 </style>

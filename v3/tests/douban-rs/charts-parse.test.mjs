@@ -256,3 +256,21 @@ test('入队条目字段集合与旧 QueueItem 对齐', () => {
   const doc = newStateDoc()
   assert.equal(doc.queue.items, null)
 })
+
+test('filterAndEnqueue：同一标题反复命中黑名单，最近命中只留最新一条', () => {
+  const docSettings = { ...defaultSettings(), blacklist: ['恐怖'] }
+  const blackState = { keywords: null, hits: 1, recent: [{ title: '恐怖片A', keyword: '恐怖', at: '2026-09-01T00:00:00Z' }, { title: '别的', keyword: 'x', at: '2026-08-01T00:00:00Z' }] }
+  const outcome = filterAndEnqueue({
+    snapshot: { lists: { hot: [{ douban_ref: '1', title: '恐怖片A', rate: '7', url: '', poster_url: '', year: '' }] } },
+    docSettings,
+    queueItems: null,
+    blackState,
+    history: null,
+    nowNanos: 0,
+    nowRfc3339: '2026-09-29T10:00:09Z',
+    observePeriodHours: 24,
+    mediaTypeOf: () => 'movie',
+  })
+  assert.deepEqual(outcome.blackState.recent.map((entry) => [entry.title, entry.at]), [['恐怖片A', '2026-09-29T10:00:09Z'], ['别的', '2026-08-01T00:00:00Z']])
+  assert.equal(outcome.blackState.hits, 2)
+})

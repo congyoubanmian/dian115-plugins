@@ -16,11 +16,16 @@ export const MAX_ACTIVE_CAP = 16
 /** 设置白名单（settings_update 接受的键；KV 里多出的未知键原样保留）。 */
 const PATCH_KEYS = ['target_dir', 'quality', 'max_active', 'notify_on_fail']
 
+/** 目录去掉结尾的 `/`（根目录保留），避免拼出 `dir//name`。 */
+function trimTrailingSlash(dir) {
+  return dir.replace(/\/+$/, '') || '/'
+}
+
 /** 读取设置（ctx.settings.get() 的结果叠加默认值；缺失/类型不符回默认）。 */
 export function normalizeSettings(saved) {
   const raw = saved && typeof saved === 'object' ? saved : {}
   const targetDir = typeof raw.target_dir === 'string' && raw.target_dir.trim() !== ''
-    ? raw.target_dir.trim()
+    ? trimTrailingSlash(raw.target_dir.trim())
     : DEFAULT_TARGET_DIR
   const quality = typeof raw.quality === 'string' && raw.quality.trim() !== ''
     ? raw.quality.trim()
@@ -54,7 +59,7 @@ export function applySettingsPatch(current, patch) {
   const input = patch && typeof patch === 'object' ? patch : {}
   const next = { ...settings }
   if (typeof input.target_dir === 'string' && input.target_dir.trim() !== '') {
-    next.target_dir = input.target_dir.trim()
+    next.target_dir = trimTrailingSlash(input.target_dir.trim())
   }
   if (typeof input.quality === 'string' && input.quality.trim() !== '') {
     next.quality = input.quality.trim()

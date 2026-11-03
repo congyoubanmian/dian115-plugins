@@ -13,9 +13,18 @@ export const MAX_ATTEMPT = 3
 /** 宿主订阅池列表查询的单次条数上限（main.go:960 同款 ?limit=200）。 */
 export const HOST_POOL_INTENTS_LIMIT = 200
 
-/** GET /api/subscribe/pool/intents?limit=<上限>（两处调用共用，防 drift）。 */
-export function poolIntentsPath() {
-  return `/api/subscribe/pool/intents?limit=${HOST_POOL_INTENTS_LIMIT}`
+/** 分页读取宿主订阅池最多翻几页（200 × 25 = 5000 条，超出视为可能截断）。 */
+export const HOST_POOL_INTENTS_MAX_PAGES = 25
+
+/**
+ * GET /api/subscribe/pool/intents?limit=<上限>[&offset=][&media_type=]（各调用共用，防 drift）。
+ * media_type 只接受 movie/tv（宿主契约的枚举），其余值不带。
+ */
+export function poolIntentsPath({ offset = 0, mediaType = '' } = {}) {
+  let path = `/api/subscribe/pool/intents?limit=${HOST_POOL_INTENTS_LIMIT}`
+  if (mediaType === 'movie' || mediaType === 'tv') path += `&media_type=${mediaType}`
+  if (offset > 0) path += `&offset=${offset}`
+  return path
 }
 
 /** TMDB 搜索条目（main.go:822 TmdbItem；字段与 v3 openapi TmdbItem 一致）。 */
@@ -50,12 +59,14 @@ export function parseTmdbSearchResult(data) {
  * main.go:867 matchTMDB：返回最佳候选与置信度(0..1)。
  * results 为空 → 零值 + 0；一个候选都没有标题命中 → 第一个候选 + 0 分。
  */
-export function matchTmdb(results, query, wantType) {
-  if (!Array.isArray(results) || results.length === 0) return { best: newTmdbItem(), score: 0 }
+export function matchTmdb(results, query, wantType, preferType = '') {
+  // 多类型搜索可能混入 person 等非影视条目：只留 movie/tv（缺省 media_type 的旧响应照常放行）
+  const pool = Array.isArray(results) ? results.filter((item) => isMediaCandidate(item)) : []
+  if (pool.length === 0) return { best: newTmdbItem(), score: 0 }
   const q = normalizeTitle(query)
-  let best = results[0]
+  let best = pool[0]
   let bestScore = -1
-  for (const candidate of results) {
+  for (const candidate of pool) {
     let score = 0
     let matched = false
     for (const raw of [candidate.title, candidate.name, candidate.original_title, candidate.original_name]) {
@@ -71,13 +82,20 @@ export function matchTmdb(results, query, wantType) {
     if (!matched) continue
     if (wantType !== '' && candidate.media_type === wantType) score += 0.25
     if (candidate.vote_average >= 6.0) score += 0.05
-    if (score > bestScore) {
+    // preferType 只做同分决胜（豆瓣条目已知是电影/剧集时，同名的另一类型不抢先），不改置信度
+    const preferred = preferType !== '' && candidate.media_type === preferType && best.media_type !== preferType
+    if (score > bestScore || (score === bestScore && preferred)) {
       bestScore = score
       best = candidate
     }
   }
   if (bestScore < 0) bestScore = 0
   return { best, score: bestScore }
+}
+
+function isMediaCandidate(item) {
+  const type = String(item?.media_type ?? '')
+  return type === '' || type === 'movie' || type === 'tv'
 }
 
 /** main.go:908 tmdbTitle：title 为空时退回 name。 */

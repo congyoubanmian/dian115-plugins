@@ -47,8 +47,10 @@ export function timeLongAt(value: unknown): string {
 }
 
 /** 本地日期 `YYYY-MM-DD`（按设置的时区偏移换算，与运行时 clock::local_date 同义）。 */
-export function localDateOf(offsetMinutes: number): string {
-  const shifted = new Date(Date.now() + offsetMinutes * 60_000)
+export function localDateOf(offsetMinutes: number, at?: unknown): string {
+  const base = at === undefined ? Date.now() : typeof at === 'string' && at !== '' ? Date.parse(at) : NaN
+  if (!Number.isFinite(base)) return ''
+  const shifted = new Date(base + offsetMinutes * 60_000)
   return shifted.toISOString().slice(0, 10)
 }
 

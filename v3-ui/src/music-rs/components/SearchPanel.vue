@@ -9,6 +9,7 @@ import { NButton, NInput } from 'naive-ui'
 import { Search as SearchIcon } from '@lucide/vue'
 import { SOURCES, useMusicStore } from '../store'
 import SongTable from './SongTable.vue'
+import Skeleton from './Skeleton.vue'
 
 const store = useMusicStore()
 const { source, query, searchResults, searchPage, searchTotal, busy } = store
@@ -47,20 +48,31 @@ const summary = computed(() => {
       class="grow"
       size="small"
       placeholder="歌名 歌手"
+      :input-props="{ 'aria-label': '搜索歌名或歌手' }"
       @keyup.enter="store.runSearch(1)"
     />
-    <NButton size="small" type="primary" :loading="busy === 'search'" @click="store.runSearch(1)">
+    <NButton size="small" type="primary" round :loading="busy === 'search'" @click="store.runSearch(1)">
       <template #icon><SearchIcon :size="14" /></template>
       搜索
     </NButton>
   </div>
 
-  <SongTable v-if="searchResults.length" :songs="searchResults" @download="store.downloadSong" />
-  <p v-else class="hint">输入歌名或「歌名 歌手」后回车/点搜索。</p>
+  <SongTable
+    v-if="searchResults.length"
+    :songs="searchResults"
+    with-covers
+    :class="{ 'is-busy': busy === 'search' }"
+    @download="store.downloadSong"
+  />
+  <Skeleton v-else-if="busy === 'search'" :count="4" />
+  <div v-else class="search-empty">
+    <span class="search-empty__icon" aria-hidden="true"><SearchIcon :size="22" /></span>
+    <p class="hint">输入歌名或「歌名 歌手」后回车/点搜索。</p>
+  </div>
 
   <div v-if="searchResults.length" class="row">
     <span class="hint-inline">{{ summary }}</span>
-    <NButton v-if="hasMore" size="small" secondary :loading="busy === 'search'" @click="store.runSearch(searchPage + 1)">
+    <NButton v-if="hasMore" size="small" secondary round :loading="busy === 'search'" @click="store.runSearch(searchPage + 1)">
       加载更多
     </NButton>
   </div>
@@ -80,8 +92,8 @@ const summary = computed(() => {
 
 .card-title {
   margin: 0;
-  font-size: 16px;
-  font-weight: 600;
+  font-size: 17px;
+  font-weight: 700;
 }
 
 .grow {
@@ -91,23 +103,64 @@ const summary = computed(() => {
 
 .seg {
   display: inline-flex;
+  gap: 2px;
+  padding: 3px;
   border: 1px solid var(--app-border, #e0e4ea);
-  border-radius: 9px;
-  overflow: hidden;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--app-bg, transparent) 60%, transparent);
 }
 
 .seg button {
   border: none;
+  border-radius: 999px;
   background: transparent;
-  color: inherit;
-  padding: 6px 14px;
+  color: var(--app-text-secondary, inherit);
+  padding: 4px 14px;
   font-size: 13px;
   cursor: pointer;
+  transition:
+    background-color 0.2s ease,
+    color 0.2s ease;
 }
 
 .seg button.on {
-  background: var(--app-accent, #2080f0);
+  background: var(--mx-accent, var(--app-accent, #2080f0));
   color: #fff;
+  box-shadow: 0 4px 12px -6px var(--mx-accent, #2080f0);
+}
+
+.seg button:focus-visible {
+  outline: 2px solid var(--mx-accent, #2080f0);
+  outline-offset: 1px;
+}
+
+.is-busy {
+  opacity: 0.55;
+  transition: opacity 0.2s ease;
+}
+
+.search-empty {
+  display: grid;
+  justify-items: center;
+  gap: 8px;
+  padding: 26px 12px;
+  border-radius: 14px;
+  border: 1px dashed var(--app-border, #e0e4ea);
+  background: radial-gradient(
+    60% 90% at 50% 0%,
+    color-mix(in srgb, var(--mx-accent, #2080f0) 8%, transparent),
+    transparent
+  );
+}
+
+.search-empty__icon {
+  width: 44px;
+  height: 44px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  color: var(--mx-accent, #2080f0);
+  background: color-mix(in srgb, var(--mx-accent, #2080f0) 12%, transparent);
 }
 
 .hint {
@@ -120,5 +173,12 @@ const summary = computed(() => {
 .hint-inline {
   color: var(--app-text-secondary, rgba(0, 0, 0, 0.45));
   font-size: 12px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .seg button,
+  .is-busy {
+    transition: none;
+  }
 }
 </style>

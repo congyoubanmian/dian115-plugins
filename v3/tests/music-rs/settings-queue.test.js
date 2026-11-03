@@ -7,7 +7,7 @@ import {
 } from '../../music-rs/lib/settings.js'
 import { queuePlaylistPages, queueAllSkipped, PLAYLIST_QUEUE_MAX_PAGES } from '../../music-rs/lib/queue-pages.js'
 import { PLAYLIST_PAGE_SIZE } from '../../music-rs/lib/constants.js'
-import { enqueue, retry, adopt, clearFinished, persistTask, loadIndex, loadTask } from '../../music-rs/lib/queue-store.js'
+import { enqueue, retry, retryAllFailed, adopt, clearFinished, persistTask, loadIndex, loadTask } from '../../music-rs/lib/queue-store.js'
 import { createKv } from '../../music-rs/lib/kv.js'
 import { appendEntry, LOG_LIMIT, LOG_MESSAGE_LIMIT } from '../../music-rs/lib/logs.js'
 import { taskKey, TASKS_IDX_KEY } from '../../music-rs/lib/tasks-core.js'
@@ -26,12 +26,12 @@ function fakeKv() {
     },
     async getMeta(key) {
       const hit = api.store.get(key)
-      return hit ? { value: JSON.parse(JSON.stringify(hit.value)), revision: hit.revision } : { value: null, revision: undefined }
+      return hit ? { value: JSON.parse(JSON.stringify(hit.value)), revision: hit.revision } : { value: null, revision: 0 }
     },
     async set(key, value, expectedRevision) {
       const hit = api.store.get(key)
       if (expectedRevision !== undefined) {
-        const current = hit ? hit.revision : undefined
+        const current = hit ? hit.revision : 0
         if (current !== expectedRevision) {
           const error = new Error('conflict')
           error.status = 412
@@ -84,6 +84,12 @@ test('settings patch merges only known keys and drops legacy ones', () => {
   assert.equal(flipped.notify_on_fail, true)
   assert.equal(flipped.max_active, 16)
   assert.equal(settingsView(next).target_dir, '/b', 'v3 无宿主路径过滤，路径原样展示')
+})
+
+test('target_dir 去掉结尾的 /（根目录保留）', () => {
+  assert.equal(normalizeSettings({ target_dir: '/a/b/' }).target_dir, '/a/b')
+  assert.equal(normalizeSettings({ target_dir: '/' }).target_dir, '/')
+  assert.equal(applySettingsPatch({}, { target_dir: ' /x// ' }).target_dir, '/x')
 })
 
 // ─────────────────────────── queue-pages ───────────────────────────
@@ -257,6 +263,64 @@ test('clearFinished removes done/failed and keeps entries whose shard delete fai
   const removed = await clearFinished(kv)
   assert.equal(removed, 1)
   assert.equal((await loadIndex(kv)).length, 1)
+})
+
+test('clearFinished 不删快照后被重试回队的任务，也不覆盖期间的索引写入', async () => {
+  const kv = fakeKv()
+  const a = (await enqueue(kv, { source: 'netease', song_id: '1', name: 'A', singers: 'S', album: '', quality: 'q' })).task
+  const b = (await enqueue(kv, { source: 'netease', song_id: '2', name: 'B', singers: 'S', album: '', quality: 'q' })).task
+  a.status = 'failed'; b.status = 'done'
+  await persistTask(kv, a); await persistTask(kv, b)
+  // 清理读完索引快照后：a 被重试回队（只改了分片），同时又有新任务入队。
+  let injected = false
+  const originalGet = kv.get
+  kv.get = async (key) => {
+    const value = await originalGet(key)
+    if (key === TASKS_IDX_KEY && !injected) {
+      injected = true
+      await retry(kv, a.id)
+      await enqueue(kv, { source: 'netease', song_id: '9', name: 'N', singers: 'S', album: '', quality: 'q' })
+    }
+    return value
+  }
+  const removed = await clearFinished(kv)
+  assert.equal(removed, 1, '只删 b')
+  const index = await loadIndex(kv)
+  assert.equal(index.length, 2)
+  assert.equal(index.find((e) => e.id === a.id)?.status, 'queued')
+  assert.ok(index.some((e) => e.name === 'N'), '清理期间入队的任务保留')
+  assert.ok(await loadTask(kv, a.id))
+})
+
+test('adopt 不用旧快照覆盖索引', async () => {
+  const kv = fakeKv()
+  const { task } = await enqueue(kv, { source: 'qq', song_id: '2', name: '歌', singers: '歌手', album: '', quality: 'flac' })
+  await kv.set(TASKS_IDX_KEY, [])
+  let writes = 0
+  const originalSet = kv.set
+  kv.set = async (key, value, expected) => {
+    if (key === TASKS_IDX_KEY) {
+      writes += 1
+      assert.notEqual(expected, undefined, '索引写入必须带 expected_revision')
+    }
+    return originalSet(key, value, expected)
+  }
+  await adopt(kv, task.id)
+  assert.equal(writes, 1)
+})
+
+test('retryAllFailed 只把失败任务回队', async () => {
+  const kv = fakeKv()
+  const a = (await enqueue(kv, { source: 'netease', song_id: '1', name: 'A', singers: 'S', album: '', quality: 'q' })).task
+  const b = (await enqueue(kv, { source: 'netease', song_id: '2', name: 'B', singers: 'S', album: '', quality: 'q' })).task
+  const c = (await enqueue(kv, { source: 'netease', song_id: '3', name: 'C', singers: 'S', album: '', quality: 'q' })).task
+  a.status = 'failed'; a.attempts = 3; b.status = 'failed'; c.status = 'done'
+  await persistTask(kv, a); await persistTask(kv, b); await persistTask(kv, c)
+  const outcome = await retryAllFailed(kv)
+  assert.deepEqual(outcome, { retried: 2, errors: [] })
+  assert.equal((await loadTask(kv, a.id)).status, 'queued')
+  assert.equal((await loadTask(kv, a.id)).attempts, 0)
+  assert.equal((await loadTask(kv, c.id)).status, 'done')
 })
 
 // ─────────────────────────── logs ───────────────────────────

@@ -469,3 +469,51 @@ test('只读刷新：订阅池失败但日历成功，仍返回 accepted', async
   assert.equal(result.calendar_days, 1)
   assert.equal(ctx.patches.length, 0)
 })
+
+// ─────────────────────────── 回归：缓存 / 日报重试 / 刷新计数 ───────────────────────────
+
+test('立即对齐：整点任务没探过的行（预算用尽, 无覆盖值）不当缓存，照样补探', async () => {
+  const seeded = newStateDoc()
+  seeded.emby_instances.push({ id: 3, name: '客厅', is_default: true, key_ready: true, at: '2026-10-01T00:00:00Z' })
+  const now = new Date().toISOString().replace(/\.\d{3}Z$/, 'Z')
+  seeded.align.items.push({
+    intent_id: 41, tmdb_id: 1396, season: 5, title: '绝命毒师', total_known: 10,
+    emby_have_max: -1, emby_have_count: -1, gap_max: 0, target_upper: 0, target_known: false,
+    from_total: 10, to_total: 10, action: 'skipped', reason: 'Emby 探测预算用尽(120 次调用): 本轮跳过, 下轮优先', at: now,
+  })
+  const ctx = makeCtx({ routes: baseRoutes(TODAY), storage: { state: { value: seeded, revision: 1 } } })
+  const result = await runAlignNow(ctx)
+  const probes = ctx.calls.filter(([method, path]) => method === 'GET' && path.startsWith('/api/plugin-host/emby/episodes'))
+  assert.ok(probes.length >= 1, '没有覆盖观测的行必须重新探测')
+  assert.ok(ctx.patches.some((patch) => patch.path.includes('/41/')), JSON.stringify(ctx.patches))
+  assert.equal(result.patched, 2)
+})
+
+test('日报：发送抛错后同一天换新去重键重试', async () => {
+  const ctx = baseCtx({ settings: { report_enabled: true, report_hour: 0 } })
+  let fail = true
+  ctx.notify = async (options) => {
+    ctx.notifies.push(options)
+    if (fail) throw new Error('所有渠道发送失败')
+    return { event: 'plugin_notification_message', accepted: true }
+  }
+  const first = await runHourlyAlign(ctx)
+  assert.equal(first.report.status, 'failed')
+  assert.equal(ctx.notifies[0].dedupe_key, `chase-daily-${TODAY}`)
+  assert.equal(storedDoc(ctx).daily.last_sent_date, '')
+
+  fail = false
+  const second = await runHourlyAlign(ctx)
+  assert.equal(second.report.status, 'accepted', JSON.stringify(second.report))
+  assert.equal(ctx.notifies[1].dedupe_key, `chase-daily-${TODAY}-r1`, '投递未确认的键不能复用')
+  assert.equal(storedDoc(ctx).daily.last_sent_date, TODAY)
+})
+
+test('只读刷新：不改写上一轮对齐的「已判定」计数', async () => {
+  const ctx = baseCtx()
+  await runHourlyAlign(ctx)
+  const before = storedDoc(ctx).stats.matched
+  const result = await runRefresh(ctx)
+  assert.equal(result.matched, before)
+  assert.equal(storedDoc(ctx).stats.matched, before)
+})

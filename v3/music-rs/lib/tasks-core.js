@@ -68,20 +68,51 @@ export function isFinished(status) {
   return status === STATUS_DONE || status === STATUS_FAILED
 }
 
-/** 组件清洗：\/:*?"<>| → _，再 trim（对齐 sidecar 的 safe() 实现）。 */
+/** 文件名主干（不含扩展名与去重后缀）的 UTF-8 字节上限：常见文件系统单个文件名 ≤255 字节，
+ *  留出「 (99)」去重后缀与扩展名的余量。 */
+export const NAME_STEM_BYTE_LIMIT = 200
+
+/** 组件清洗：\/:*?"<>| 与控制字符 → _，再 trim。 */
 export function sanitizeComponent(text) {
   let out = ''
-  for (const ch of String(text ?? '')) out += ILLEGAL_NAME_CHARS.has(ch) ? '_' : ch
+  for (const ch of String(text ?? '')) {
+    const code = ch.codePointAt(0)
+    out += ILLEGAL_NAME_CHARS.has(ch) || code < 0x20 || code === 0x7f ? '_' : ch
+  }
   return out.trim()
 }
 
+/** 按 UTF-8 字节截断（不切开多字节字符 / 代理对）。 */
+export function truncateUtf8(text, limit) {
+  const encoder = new TextEncoder()
+  if (encoder.encode(text).length <= limit) return text
+  let out = ''
+  let bytes = 0
+  for (const ch of text) {
+    const size = encoder.encode(ch).length
+    if (bytes + size > limit) break
+    out += ch
+    bytes += size
+  }
+  return out
+}
+
 /** 目标文件名 `"{singers} - {name}.{ext}"`（sidecar outPathFor 的简化形态）：
- *  歌手/歌名清洗后为空 → 未知；扩展名缺失 → flac。 */
+ *  歌手/歌名清洗后为空 → 未知；扩展名缺失 → flac。主干超长按字节截断；
+ *  首尾的点和空格去掉（隐藏文件 / Windows·SMB 挂载不认结尾的点）。 */
 export function outName(singers, name, ext) {
   const safeSingers = sanitizeComponent(singers) || '未知'
   const safeName = sanitizeComponent(name) || '未知'
-  const safeExt = String(ext ?? '').trim().replace(/^\./, '').toLowerCase() || 'flac'
-  return `${safeSingers} - ${safeName}.${safeExt}`
+  const safeExt = String(ext ?? '').trim().replace(/^\./, '').toLowerCase().replace(/[^a-z0-9]/g, '') || 'flac'
+  const stem = truncateUtf8(`${safeSingers} - ${safeName}`, NAME_STEM_BYTE_LIMIT).replace(/^[.\s]+|[.\s]+$/g, '') || '未知'
+  return `${stem}.${safeExt}`
+}
+
+/** 同名去重：`a.flac` → `a (2).flac`（n ≤ 1 原样返回）。 */
+export function withNameSuffix(fileName, n) {
+  if (!(n > 1)) return fileName
+  const dot = fileName.lastIndexOf('.')
+  return dot > 0 ? `${fileName.slice(0, dot)} (${n})${fileName.slice(dot)}` : `${fileName} (${n})`
 }
 
 /** 展示名（标题/按钮文案用）：`"歌手 - 歌名"`，歌手缺失时只用歌名。 */

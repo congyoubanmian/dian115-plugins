@@ -21,9 +21,24 @@ export const TODAY_MAX = 15
 /** 正文里"本次补订"最多几条。 */
 export const PATCHED_MAX = 15
 
-/** 去重键。 */
-export function dedupeKey(date) {
-  return `${DEDUPE_PREFIX}${date}`
+/**
+ * 去重键。当天首发用 `chase-daily-<date>`；同一天发送失败后的重试带 `-r<n>` 后缀：
+ * 宿主对"投递结果未确认"的键要求换新键，且同键不同内容会返回冲突（每小时重试时
+ * 正文里的补订列表通常已经变了），沿用旧键会让当天剩下的重试全部失败。
+ */
+export function dedupeKey(date, retrySeq = 0) {
+  return retrySeq > 0 ? `${DEDUPE_PREFIX}${date}-r${retrySeq}` : `${DEDUPE_PREFIX}${date}`
+}
+
+/** 当天应使用的重试序号（跨天归零）。 */
+export function retrySeqFor(daily, today) {
+  return daily.retry_date === today ? Math.max(0, daily.retry_seq ?? 0) : 0
+}
+
+/** 发送抛错后记下当天的重试序号，下次换新键。 */
+export function bumpRetry(daily, today) {
+  daily.retry_seq = retrySeqFor(daily, today) + 1
+  daily.retry_date = today
 }
 
 /** 是否到了该发日报的时刻：开关打开、本地日期与上次成功日不同、本地小时 >= 配置小时。 */

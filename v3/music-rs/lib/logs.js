@@ -4,6 +4,7 @@
 // 日志独立放 KV `logs`（数组，尾部截断）。后台 job 与页面的入队/重试动作都追加。
 
 import { nowRfc3339 } from './encoding.js'
+import { casWrite } from './kv.js'
 
 /** 持久化时只保留最近多少条日志（runtime.rs PERSIST_LOG_LIMIT）。 */
 export const LOG_LIMIT = 40
@@ -30,7 +31,15 @@ export async function loadLogs(kv) {
 
 /** 追加一条日志并落盘（kv 由 lib/kv.js 提供）。 */
 export async function addLog(kv, level, message) {
-  const logs = appendEntry(await loadLogs(kv), level, message)
-  await kv.set(LOGS_KEY, logs)
-  return logs
+  return addLogs(kv, level, [message])
+}
+
+/** 一次追加多条日志：一次 CAS 读改写落盘（页面与后台 job 同时追加时不互相覆盖）。 */
+export async function addLogs(kv, level, messages) {
+  const at = nowRfc3339()
+  return casWrite(kv, LOGS_KEY, (current) => {
+    let logs = Array.isArray(current) ? current : []
+    for (const message of messages) logs = appendEntry(logs, level, message, at)
+    return { next: logs, result: logs }
+  })
 }
