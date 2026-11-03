@@ -97,6 +97,8 @@ export interface DoubanStore {
   dueItems: ComputedRef<QueueItem[]>
   loadData(): Promise<void>
   refreshUi(): Promise<void>
+  /** state 里查某条 poster_url 已回填的海报文件相对路径（没有则空串）。 */
+  findPosterFile(url: string): string
   runAction(name: string, input?: Record<string, unknown>, options?: ActionOptions): Promise<void>
   invokeJob(name: string, input?: Record<string, unknown>, timeoutMs?: number): Promise<TaskRun>
   saveSettings(patch: Record<string, unknown>): Promise<void>
@@ -370,6 +372,39 @@ export function createDoubanStore(ctx: HostContext): DoubanStore {
     }
   }
 
+  // ─────────────────────────── 海报文件缓存 ───────────────────────────
+  //
+  // 后端 get-poster 把海报写进插件 data/files（posters/<sha256>.<ext>）后会把相对
+  // 路径回填进 state（poster_file 字段）。页面从 state 里查到路径就能用
+  // ctx.files.downloadURL 直接取本地文件，不必每次都打豆瓣或提交 get-poster 任务。
+  // state 里只有相对路径字符串，永远没有 base64 字节。
+
+  function findPosterFile(url: string): string {
+    const clean = typeof url === 'string' ? url.trim() : ''
+    if (clean === '' || !/^https?:\/\//i.test(clean)) return ''
+    const doc = stateDoc.value
+    if (!doc) return ''
+    for (const items of Object.values(doc.snapshot?.lists ?? {})) {
+      if (!Array.isArray(items)) continue
+      for (const item of items) {
+        if (item?.poster_url === clean && typeof item.poster_file === 'string' && item.poster_file !== '') {
+          return item.poster_file
+        }
+      }
+    }
+    for (const item of doc.queue?.items ?? []) {
+      if (item?.poster_url === clean && typeof item.poster_file === 'string' && item.poster_file !== '') {
+        return item.poster_file
+      }
+    }
+    for (const item of doc.wish ?? []) {
+      if (item?.poster_url === clean && typeof item.poster_file === 'string' && item.poster_file !== '') {
+        return item.poster_file
+      }
+    }
+    return ''
+  }
+
   // ─────────────────────────── 设置保存 ───────────────────────────
 
   async function saveSettings(patch: Record<string, unknown>): Promise<void> {
@@ -495,6 +530,7 @@ export function createDoubanStore(ctx: HostContext): DoubanStore {
     dueItems,
     loadData,
     refreshUi,
+    findPosterFile,
     runAction,
     invokeJob,
     saveSettings,

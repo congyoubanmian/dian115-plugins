@@ -246,12 +246,12 @@ function parseState(raw) {
   return parseStateDoc(raw)
 }
 
-// 队列条目形态回归：入队字段集合与旧 QueueItem 一致
+// 队列条目形态回归：入队字段集合与旧 QueueItem 一致（poster_file 是海报文件缓存的相对路径字段）
 test('入队条目字段集合与旧 QueueItem 对齐', () => {
   const base = newQueueItem()
   assert.deepEqual(
     Object.keys(base).sort(),
-    ['attempt', 'douban_ref', 'due_at', 'entered_at', 'last_error', 'list', 'media_type', 'poster_path', 'poster_url', 'rating', 'state', 'title', 'tmdb_ref', 'url', 'year'].sort(),
+    ['attempt', 'douban_ref', 'due_at', 'entered_at', 'last_error', 'list', 'media_type', 'poster_file', 'poster_path', 'poster_url', 'rating', 'state', 'title', 'tmdb_ref', 'url', 'year'].sort(),
   )
   const doc = newStateDoc()
   assert.equal(doc.queue.items, null)

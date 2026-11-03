@@ -23,16 +23,16 @@ export function newListConfig() {
   return { source: '', type: 'movie', tag: '', sort: '', limit: 0, enabled: false }
 }
 
-/** 榜单条目（model.rs ChartItem）。 */
+/** 榜单条目（model.rs ChartItem；poster_file 是海报文件缓存的插件相对路径，见 jobs/poster.js）。 */
 export function newChartItem() {
-  return { douban_ref: '', title: '', rate: '', rank: '', hotness: 0, poster_url: '', url: '', year: '' }
+  return { douban_ref: '', title: '', rate: '', rank: '', hotness: 0, poster_url: '', poster_file: '', url: '', year: '' }
 }
 
 /** 观察队列条目（model.rs QueueItem；rating 为功能 2 追加字段）。 */
 export function newQueueItem() {
   return {
     douban_ref: '', title: '', list: '', poster_url: '', url: '', tmdb_ref: '', media_type: '',
-    year: '', rating: 0, poster_path: '', entered_at: '', due_at: '', state: '', attempt: 0, last_error: '',
+    year: '', rating: 0, poster_path: '', poster_file: '', entered_at: '', due_at: '', state: '', attempt: 0, last_error: '',
   }
 }
 
@@ -41,9 +41,9 @@ export function newHistoryEntry() {
   return { douban_ref: '', tmdb_ref: '', title: '', list: '', action: '', result: '', message: '', intent_id: 0, created_at: '' }
 }
 
-/** 想看条目（model.rs WishItem）。 */
+/** 想看条目（model.rs WishItem；poster_file 同 ChartItem）。 */
 export function newWishItem() {
-  return { douban_ref: '', title: '', year: '', type: '', poster_url: '', added_at: '', rating: 0 }
+  return { douban_ref: '', title: '', year: '', type: '', poster_url: '', poster_file: '', added_at: '', rating: 0 }
 }
 
 /** 想看同步状态摘要（model.rs WishInfo）。 */
@@ -187,6 +187,7 @@ function parseChartItem(raw) {
     // v3.0.0 的 deep refresh 曾把未 await 的 Promise 写进 poster_url（JSON 落盘为 {}）。
     // 这是本插件自己的历史脏数据，按空串归一，避免整份文档被判为 foreign；下次刷新会补齐。
     poster_url: typeof raw.poster_url === 'string' ? raw.poster_url : '',
+    poster_file: str(raw, 'poster_file'),
     url: str(raw, 'url'),
     year: str(raw, 'year'),
   }
@@ -206,6 +207,7 @@ function parseQueueItem(raw) {
     year: str(raw, 'year'),
     rating: num(raw, 'rating'),
     poster_path: str(raw, 'poster_path'),
+    poster_file: str(raw, 'poster_file'),
     entered_at: str(raw, 'entered_at'),
     due_at: str(raw, 'due_at'),
     state: str(raw, 'state'),
@@ -244,6 +246,7 @@ function parseWishItem(raw) {
     year: str(raw, 'year'),
     type: str(raw, 'type'),
     poster_url: str(raw, 'poster_url'),
+    poster_file: str(raw, 'poster_file'),
     added_at: str(raw, 'added_at'),
     rating: num(raw, 'rating'),
   }

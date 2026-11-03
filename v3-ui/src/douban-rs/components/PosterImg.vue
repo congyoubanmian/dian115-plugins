@@ -1,8 +1,9 @@
 <script setup lang="ts">
 // 海报（对应原生版的 posterNode）。
 //
-// 取图走页面自己的海报加载器（ctx.http 带 Referer 直取 → 失败回退 get-poster job，
-// 那个 job 内部按 img1~img9 镜像回退）。滚动到视口附近才发起请求。
+// 取图走页面自己的海报加载器（state 里已有 poster_file → files.downloadURL 快路径 →
+// ctx.http 带 Referer 直取 → 失败回退 get-poster job，那个 job 内部按 img1~img9
+// 镜像回退并写插件文件缓存）。滚动到视口附近才发起请求。
 // 点击海报放大预览（zoom 事件由页面统一接管）。
 
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'

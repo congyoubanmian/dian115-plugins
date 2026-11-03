@@ -30,7 +30,8 @@ const { isDark } = useHostTheme()
 // 状态中枢 + 海报加载器（页面级单例，卸载时一起销毁）。
 const store = createDoubanStore(ctx)
 provideDoubanStore(store)
-const posters = createPosterLoader(ctx, store.invokeJob)
+// 海报加载器带 state 回查（poster_file → files.downloadURL 快路径）
+const posters = createPosterLoader(ctx, store.invokeJob, store.findPosterFile)
 providePosterLoader(posters)
 
 const {

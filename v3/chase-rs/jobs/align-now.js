@@ -1,8 +1,8 @@
 // 立即对齐（旧 action `align-now` 的 v3 形态）：由页面通过 ctx.tasks.run 触发。
 //
 // 限量对齐：≤1 页订阅池、≤5 次 PATCH、≤3 次 Emby 探测、6 秒墙钟预算。
-// 中断恢复同样按幂等处理：resume 重跑。
-import { runAlignNow } from './runtime.js'
+// 中断恢复：先查订阅池的真实状态再决定 complete / resume / attention。
+import { runAlignNow, recoverAlign } from './runtime.js'
 import { taskCheckpoint, taskUpdate } from './task.js'
 
 export async function run(ctx) {
@@ -24,8 +24,6 @@ export async function run(ctx) {
 }
 
 export async function recover(ctx, checkpoint) {
-  if (checkpoint?.stage === 'completed') {
-    return { action: 'complete', result: checkpoint.result }
-  }
-  return { action: 'resume' }
+  // 恢复语义集中在 runtime.recoverAlign：先查订阅池真实状态，再决定三态。
+  return recoverAlign(ctx, checkpoint)
 }

@@ -63,6 +63,7 @@ import {
 } from '../lib/align.js'
 import { applyOutcome, bumpRetry, compose, dedupeKey, retrySeqFor, shouldSend } from '../lib/notify.js'
 import { sampleText, truncateUtf8 } from '../lib/loose.js'
+import { taskCheckpoint } from './task.js'
 
 // ─────────────────────────── 预算与窗口（与 runtime.rs 一致） ───────────────────────────
 
@@ -592,6 +593,11 @@ export function freshTmdbTarget(session, tmdbId, season) {
 
 // ─────────────────────────── 发送 ───────────────────────────
 
+/** 任务引用：写进检查点，把检查点与某次运行绑定（宿主运行记录里也有 task id）。 */
+function taskRefOf(ctx) {
+  return typeof ctx?.task?.id === 'string' ? ctx.task.id : ''
+}
+
 /** ⑦ 发一次 PATCH（非 200 记 failed，本轮不重试）。双保险：只增 + 幅度上限。 */
 export async function sendPatch(session, intent, decision, settings, runSeq) {
   if (decision.to_total <= intent.total_known ||
@@ -611,9 +617,34 @@ export async function sendPatch(session, intent, decision, settings, runSeq) {
   const body = patchBody(decision.to_total, needed, covered)
   const key = patchIdempotencyKey(intent.id, decision.from_total, decision.to_total, runSeq)
   const path = patchPath(intent.id)
+  // 写前检查点：超时 / 重启 / 调用失败都不能证明这次 PATCH 没发生 —— 落一条
+  // 「准备写哪条 intent、从几集抬到几集」，恢复时拿它去订阅池核对真实状态。
+  await taskCheckpoint(session.ctx, {
+    stage: 'before-patch-episodes',
+    task_ref: taskRefOf(session.ctx),
+    intent_id: intent.id,
+    from_total: decision.from_total,
+    to_total: decision.to_total,
+    media_type: intent.media_type,
+    season: intent.season,
+    run_seq: runSeq,
+    updated_at: nowRfc3339(),
+  })
   const result = await tryApi(session.ctx, 'PATCH', path, body)
   const now = session.now()
   if (result.ok && result.status === 200) {
+    // 写后检查点：写已确认成功（宿主回了 200），恢复时据此判定 complete。
+    await taskCheckpoint(session.ctx, {
+      stage: 'after-patch-episodes',
+      task_ref: taskRefOf(session.ctx),
+      intent_id: intent.id,
+      from_total: decision.from_total,
+      to_total: decision.to_total,
+      media_type: intent.media_type,
+      season: intent.season,
+      run_seq: runSeq,
+      updated_at: nowRfc3339(),
+    })
     recordAttempt(session.doc, 'pool.intents.patch', key, 200, 'patched', now)
     log(session.doc, 'info', `补订 intent=${intent.id} ${intent.title} S${intent.season}: ${decision.from_total} → ${decision.to_total}`, now)
     return new Decision({ ...decision, action: ACTION_PATCHED })
@@ -629,6 +660,66 @@ export async function sendPatch(session, intent, decision, settings, runSeq) {
     to_total: decision.from_total,
     reason: message,
   })
+}
+
+// ─────────────────────────── 中断恢复（recover） ───────────────────────────
+
+/**
+ * 读一条 intent 在订阅池里的真实 total_known（分页查找）。
+ * 返回 {ok, found, total_known}：ok=false 表示读不到（结构认不出 / 请求失败），
+ * found=false 表示这一轮翻完了池子也没找到这条 intent。
+ */
+export async function probeIntentTotalKnown(ctx, intentId) {
+  for (let page = 0; page < PAGES_MAX; page += 1) {
+    const offset = page * LIMIT_MAX
+    const result = await tryApi(ctx, 'GET', listPath(LIMIT_MAX, offset))
+    if (!result.ok || result.status >= 400) return { ok: false, found: false, total_known: 0 }
+    let parsed
+    try {
+      parsed = parseList(result.data)
+    } catch {
+      return { ok: false, found: false, total_known: 0 }
+    }
+    const hit = parsed.items.find((intent) => intent.id === intentId)
+    if (hit) return { ok: true, found: true, total_known: hit.total_known }
+    if (parsed.items.length < LIMIT_MAX) break
+  }
+  return { ok: true, found: false, total_known: 0 }
+}
+
+/**
+ * 对齐任务的中断恢复：先查订阅池的真实状态，再决定 complete / resume / attention。
+ *
+ * 判定口径（外部写只有 PATCH 集数这一条）：
+ * - stage=completed            → 整轮已跑完，complete（带结果）。
+ * - stage=after-patch-episodes → 订阅池的 total_known 已到目标值 → complete；
+ *                                仍是旧值 / 读不到 → 结果矛盾，attention（不猜、不重写）。
+ * - stage=before-patch-episodes→ 订阅池已到目标值 → complete（写其实落地了）；
+ *                                仍是旧值 → 明确没写，resume（只增守卫保证重跑不会写同一个值）；
+ *                                读不到 → attention。
+ * - 其余（无检查点 / 阶段未知）→ 定位不到是哪条 intent，attention。
+ */
+export async function recoverAlign(ctx, checkpoint) {
+  const stage = typeof checkpoint?.stage === 'string' ? checkpoint.stage : ''
+  if (stage === 'completed') return { action: 'complete', result: checkpoint.result }
+  const intentId = Number(checkpoint?.intent_id ?? 0)
+  const fromTotal = Number(checkpoint?.from_total ?? -1)
+  const toTotal = Number(checkpoint?.to_total ?? -1)
+  if (stage !== 'before-patch-episodes' && stage !== 'after-patch-episodes') {
+    return { action: 'attention' }
+  }
+  if (!Number.isFinite(intentId) || intentId <= 0) return { action: 'attention' }
+  if (!Number.isFinite(toTotal) || toTotal <= 0) return { action: 'attention' }
+  const probe = await probeIntentTotalKnown(ctx, intentId)
+  if (!probe.ok || !probe.found) return { action: 'attention' }
+  const known = probe.total_known
+  const result = { status: 'succeeded', intent_id: intentId, total_episodes: known }
+  if (known >= toTotal) return { action: 'complete', result }
+  if (stage === 'after-patch-episodes') return { action: 'attention' }
+  if (Number.isFinite(fromTotal) && fromTotal >= 0 && known === fromTotal) {
+    return { action: 'resume' }
+  }
+  return { action: 'attention' }
 }
 
 /** ⑨⑩ 日报判定与落账；返回给 job 响应的简述。 */

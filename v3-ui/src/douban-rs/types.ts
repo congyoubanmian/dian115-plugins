@@ -8,6 +8,8 @@
 export interface ChartItem {
   title?: string
   poster_url?: string
+  /** 海报文件缓存的插件相对路径（posters/<sha256>.<ext>；后端 get-poster 回填）。 */
+  poster_file?: string
   douban_ref?: string
   url?: string
   rate?: string
@@ -21,6 +23,8 @@ export interface ChartItem {
 export interface QueueItem {
   title?: string
   poster_url?: string
+  /** 海报文件缓存的插件相对路径；与 TMDB 的 poster_path（/xxx.jpg）不是一回事。 */
+  poster_file?: string
   douban_ref?: string
   url?: string
   state?: string
@@ -39,6 +43,8 @@ export interface QueueItem {
 export interface WishItem {
   title?: string
   poster_url?: string
+  /** 海报文件缓存的插件相对路径（posters/<sha256>.<ext>；后端 get-poster 回填）。 */
+  poster_file?: string
   douban_ref?: string
   url?: string
   type?: string

@@ -225,3 +225,16 @@ export function nowNanos() {
 export function nowRfc3339() {
   return new Date().toISOString().replace(/\.\d{3}Z$/, 'Z')
 }
+
+/** 「今日 0 点」的毫秒时间戳（宿主本地时区；TG 状态与每日日报共用的统计口径）。 */
+export function startOfLocalDay(now = new Date()) {
+  const d = new Date(now.getTime())
+  d.setHours(0, 0, 0, 0)
+  return d.getTime()
+}
+
+/** 本地日期键 `YYYY-MM-DD`（日报 dedupe_key 的一天一变粒度；不含时刻，重跑同键）。 */
+export function localDateKey(now = new Date()) {
+  const pad = (n) => String(n).padStart(2, '0')
+  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`
+}

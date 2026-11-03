@@ -8,6 +8,8 @@ export const MAX_POSTER_BYTES = 128 << 10
 export const IMAGE_ACCEPT = 'image/avif,image/webp,image/jpeg,image/*;q=0.8'
 /** deep_refresh 时最多为多少条口碑榜条目补海报（charts.rs POSTER_LOOKUP_LIMIT）。 */
 export const POSTER_LOOKUP_LIMIT = 8
+/** 海报文件缓存的插件相对目录（插件自有 data/files，卸载即清空）。 */
+export const POSTER_DIR = 'posters'
 
 /**
  * main.go:2181 sniffImage：只认海报场景的四种格式。
@@ -57,7 +59,29 @@ export function downscaleUrl(posterUrl) {
   return String(posterUrl ?? '').replace('s_ratio_poster', 'm_ratio_poster')
 }
 
-/** data URL 组装（get-poster 用补 padding 的标准 base64）。 */
+/** data URL 组装（get-poster 的降级返回仍用它：files 写不进去时把 dataURL 直接给页面）。 */
 export function dataUrlOf(mime, bytes, toBase64) {
   return `data:${mime};base64,${toBase64(bytes)}`
+}
+
+/** sniffImage 的 mime → 海报文件扩展名（未知 mime 返回空串）。 */
+export function posterExtOf(mime) {
+  switch (mime) {
+    case 'image/jpeg': return 'jpg'
+    case 'image/png': return 'png'
+    case 'image/gif': return 'gif'
+    case 'image/webp': return 'webp'
+    default: return ''
+  }
+}
+
+/**
+ * 海报文件的插件相对路径：posters/<sha256(poster_url) hex>.<ext>。
+ * 同一 URL 永远落到同一路径 → 重写幂等（job recover=resume 时重复执行安全）。
+ */
+export function posterPathOf(url, mime, sha256Hex) {
+  const ext = posterExtOf(mime)
+  const key = String(sha256Hex ?? '').trim()
+  if (key === '' || ext === '') return ''
+  return `${POSTER_DIR}/${key}.${ext}`
 }

@@ -3,13 +3,16 @@
   "schema_version": 3,
   "id": "douban.rs",
   "name": "豆瓣中心（Rust 版）",
-  "version": "1.1.5",
-  "description": "豆瓣榜单抓取 + 黑名单过滤 + 观察队列 + 聚合订阅；按宿主新规约不再读取 CookieCloud；登录态由用户手动粘贴浏览器里的豆瓣 Cookie 提供，自动追订「我的想看」；TMDB 匹配失败时用豆瓣详情（原名/又名）回退重搜；支持最低评分/年份/地区订阅过滤与「已删除不重订」墓碑集。旧 schema 1 WASM 插件（plugins/douban-rs 0.2.4）的 v3 迁移版；页面提供榜单海报墙、观察队列/我的想看、历史日志与设置。",
+  "version": "1.2.0",
+  "description": "豆瓣榜单抓取 + 黑名单过滤 + 观察队列 + 聚合订阅；按宿主新规约不再读取 CookieCloud；登录态由用户手动粘贴浏览器里的豆瓣 Cookie 提供，自动追订「我的想看」；TMDB 匹配失败时用豆瓣详情（原名/又名）回退重搜；支持最低评分/年份/地区订阅过滤与「已删除不重订」墓碑集。创建聚合订阅前后落任务检查点，中断恢复先查宿主订阅池里该 (tmdb_id, media_type) 的真实状态再决定 complete / resume / attention。海报抓回后落插件文件缓存 posters/<sha256>.<ext>（超 64 张按 modified 淘汰最旧，卸载即清空），页面用 downloadURL 取图，files 不可用时降级 dataURL。Telegram 机器人接收 /refresh、/wish 两条指令并回执执行结果（指令触发不需要授权，回执走 ctx.messaging.reply 需要用户授权 telegram.bot）。旧 schema 1 WASM 插件（plugins/douban-rs 0.2.4）的 v3 迁移版；页面提供榜单海报墙、观察队列/我的想看、历史日志与设置。",
   "author": "congyoubanmian",
   "homepage": "https://github.com/congyoubanmian/dian115-plugins",
   "requires": {
-    "api": "3.5"
+    "api": "3.6"
   },
+  "permissions": [
+    "telegram.bot"
+  ],
   "icon": "icon.svg",
   "ui": {
     "entry": "ui/page.js"
@@ -153,6 +156,27 @@
       "title": "清除重订限制",
       "queue": false,
       "timeout_seconds": 60
+    },
+    {
+      "id": "tg-command",
+      "entry": "jobs/tg-command.js",
+      "handler": "run",
+      "recover": "recover",
+      "title": "TG 指令",
+      "timeout_seconds": 900
+    }
+  ],
+  "events": [
+    {
+      "event": "message",
+      "job": "tg-command",
+      "commands": [
+        "refresh",
+        "wish"
+      ],
+      "channels": [
+        "telegram"
+      ]
     }
   ],
   "declared_usage": {
@@ -162,6 +186,9 @@
       "POST /api/extensions/v3/{id}/notify",
       "POST /api/extensions/v3/{id}/http",
       "POST /api/extensions/v3/{id}/jobs/{job}",
+      "POST /api/extensions/v3/{id}/files*",
+      "GET /api/extensions/v3/{id}/files/download*",
+      "POST /api/extensions/v3/{id}/messaging/*",
       "GET /api/tmdb/search",
       "GET/POST /api/subscribe/pool/intents",
       "GET /api/subscribe/records"
@@ -171,7 +198,8 @@
       "m.douban.com（想看列表与条目详情：rexxar api v2）",
       "*.doubanio.com（豆瓣海报 CDN，需带豆瓣 Referer 防盗链）"
     ],
+    "files": "只读写插件自有相对路径 posters/<sha256>.<ext>（海报缓存，超过 64 张按 modified 淘汰删除最旧；卸载即清空），不写宿主文件",
     "notifications": true,
-    "risk": "定期抓取豆瓣榜单与想看列表，按黑名单/过滤器入观察队列；到期条目经 TMDB 匹配（失配时回查豆瓣详情重搜）后创建宿主聚合订阅（宿主负责检索并投递 115 离线）；登录态只来自用户手动粘贴的豆瓣 Cookie（不读取 CookieCloud）；订阅结果发送通知。不写宿主文件，不触碰 115 账号。"
+    "risk": "定期抓取豆瓣榜单与想看列表，按黑名单/过滤器入观察队列；到期条目经 TMDB 匹配（失配时回查豆瓣详情重搜）后创建宿主聚合订阅（宿主负责检索并投递 115 离线）；登录态只来自用户手动粘贴的豆瓣 Cookie（不读取 CookieCloud）；订阅结果发送通知。Telegram 机器人只接收 /refresh、/wish 两条命令并回执执行结果（需用户授权 telegram.bot）。海报缓存写插件自有 data/files 的 posters/ 目录，超量时删除其中最旧的缓存文件（只限 posters/ 内）。不写宿主文件，不触碰 115 账号。"
   }
 }

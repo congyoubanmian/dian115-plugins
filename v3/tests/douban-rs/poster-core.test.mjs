@@ -4,6 +4,7 @@ import assert from 'node:assert/strict'
 
 import {
   sniffImage, mirrorCandidates, withMirrorHost, downscaleUrl, POSTER_CACHE_LIMIT, MAX_POSTER_BYTES,
+  POSTER_DIR, posterExtOf, posterPathOf,
 } from '../../douban-rs/lib/poster-core.js'
 
 test('sniff_image 对拍 Go sniffImage 的四个分支', () => {
@@ -58,4 +59,23 @@ test('withMirrorHost / downscaleUrl', () => {
 test('预算常量与旧实现一致', () => {
   assert.equal(POSTER_CACHE_LIMIT, 64)
   assert.equal(MAX_POSTER_BYTES, 128 << 10)
+})
+
+test('posterExtOf：sniffImage 的 mime 映射到文件扩展名', () => {
+  assert.equal(posterExtOf('image/jpeg'), 'jpg')
+  assert.equal(posterExtOf('image/png'), 'png')
+  assert.equal(posterExtOf('image/gif'), 'gif')
+  assert.equal(posterExtOf('image/webp'), 'webp')
+  assert.equal(posterExtOf(''), '')
+  assert.equal(posterExtOf('text/html'), '')
+})
+
+test('posterPathOf：posters/<sha256(poster_url) hex>.<ext>；缺哈希或缺扩展名返回空串', () => {
+  const hash = 'a'.repeat(64)
+  assert.equal(posterPathOf('https://img1.doubanio.com/p.jpg', 'image/jpeg', hash), `posters/${hash}.jpg`)
+  assert.equal(posterPathOf('https://img1.doubanio.com/p.png', 'image/png', hash), `posters/${hash}.png`)
+  assert.equal(posterPathOf('https://img1.doubanio.com/p', 'image/webp', hash), `posters/${hash}.webp`)
+  assert.equal(posterPathOf('x', 'image/jpeg', ''), '', '没有哈希不落路径')
+  assert.equal(posterPathOf('x', 'text/html', hash), '', '未知 mime 不落路径')
+  assert.ok(posterPathOf('x', 'image/jpeg', hash).startsWith(`${POSTER_DIR}/`))
 })

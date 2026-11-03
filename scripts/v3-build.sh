@@ -26,9 +26,10 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CONFORMANCE="$ROOT/v3-kit/conformance"
 DIST="$ROOT/dist"
 
-# 插件 ID | 源码目录（相对仓库根） | 交付包名（与 v3-market-index.json 的 source_url 一致）
+# 插件 ID | 源码目录（相对仓库根） | 本地可读包名（正式包由 v3-compile.mjs 出，名为 <id>-<release_id>.dian115p）
+# 本地包名不带版本号：版本写在 plugin.json 里，带版本号的字面量每次升版都会漂移。
 PLUGINS=(
-  "chase.rs|v3/chase-rs|chase-rs-0.1.14.dian115p"
+  "chase.rs|v3/chase-rs|chase-rs.dian115p"
   "music.rs|v3/music-rs|music-rs.dian115p"
   "douban.rs|v3/douban-rs|douban-rs.dian115p"
 )

@@ -23,7 +23,7 @@ v3-ui/
     shared/              三个插件共用的装配代码（ctx 注入、主题桥）
     chase-rs/            追剧管家页面（main.ts + AppPage.vue）
     music-rs/            音乐下载页面（登录卡支持网易云 / QQ 音乐两种扫码来源；歌单支持网易云与 QQ 音乐，QQ 另有「每日推荐」与「我喜欢」）
-    douban-rs/           豆瓣中心页面
+    douban-rs/           豆瓣中心页面（poster-chain.js 是取图决策的框架无关实现，页面与 node --test 共用）
   legacy/                改写前的原生 JS 版页面（行为基准，只读）
 ```
 
@@ -127,11 +127,40 @@ naive-ui 的 `n-config-provider` 传 `darkTheme` / `null`，卸载时退订。
 页面占满内容区并在插件区域内滚动：根元素 `height: 100%; overflow: auto`。
 `position: sticky` 相对插件区域生效。
 
+### 宿主 API 版本边界（requires.api）
+
+三个页面对宿主 API 的最低版本要求来自各自清单（`requires.api`），页面代码不感知版本、只按能力取用：
+
+| 插件 | requires.api | 能力边界（决定版本的那一项） |
+| --- | --- | --- |
+| chase.rs | 3.5 | storage / settings / tasks / notify 等基础能力 |
+| douban.rs | 3.6 | TG 指令回执用 `ctx.messaging.reply`（宿主 API 3.6 起）；页面侧的海报文件缓存读 `ctx.files.downloadURL` |
+| music.rs | 3.9 | 后台队列用 `save_to` 直写用户目标目录（含 CD2 挂载路径，API 3.9 起；宿主不开放时自动回落「暂存 → 定名 → move」，页面无感，只是任务进度里少了 copying 段）；TG 命令回复走 `ctx.messaging.reply` |
+
+宿主不满足版本时安装/更新阶段就会拒绝，页面不需要自己做能力探测。
+
+### douban 海报缓存（1.2.0）
+
+豆瓣 CDN 有防盗链，浏览器直连 `img*.doubanio.com` 返回 418。取图决策抽在
+`src/douban-rs/poster-chain.js`（框架无关纯 JS，页面 `posters.ts` 与 `v3/tests/douban-rs/poster-chain.test.mjs`
+跑同一份实现），优先级：
+
+1. **文件缓存快路径**：state 条目已带 `poster_file`（后端 `get-poster` 写入插件自有
+   `posters/<sha256(poster_url)>.<ext>` 后回填的相对路径，超 64 张按 modified 淘汰最旧）时，
+   用 `ctx.files.downloadURL(path, {inline:true})` 拼同源地址，全局 fetch 发 Range 探测，
+   可用就直接进 `<img src>`——字节不过页面内存；
+2. **页面直连**：`ctx.http.request` 带豆瓣 Referer 取 `response_type:'base64'`（>400KB 交后端）；
+3. **回退 `get-poster` job**：后端做镜像逐个回退 + 128KiB 上限 + 写文件缓存，成功后页面改用 downloadURL；
+   files 不可用的降级返回才带 `data:`。
+
+页面内存缓存最多 160 张、条目只存 URL 字符串（downloadURL 或 data:），不再把 base64 大块头搬进页面；
+被淘汰路径的 404 由回退链兜底（Range 探测失败自动落到 ②③）。
+
 ## 设置
 
-清单 `plugin.json` 的 `settings[]` 保留（宿主在「管理」页渲染表单）。页面里用
-`ctx.settings.get()` / `ctx.settings.set()` 读写同一份设置，不要另存一份，
-免得两处不一致。
+清单 `plugin.json` **不再声明 `settings[]`**（宿主规范：有页面的插件把设置做在页面里）。
+页面里用 `ctx.settings.get()` / `ctx.settings.set()` 读写宿主 KV `settings` 键；后台任务读同一份
+（各自插件的 `lib/settings.js` 负责默认值与归一化），两边看到的内容一致。
 
 ## 类型检查与冒烟
 

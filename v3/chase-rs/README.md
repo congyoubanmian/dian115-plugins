@@ -36,12 +36,13 @@ lib/                 纯逻辑（无 IO，node --test 直接覆盖）
   align.js           判定层：只增 + 幅度上限 + 四类互斥跳过文案（align.rs）
   notify.js          日报文案 / 发送判定 / 宿主结论落账（notify.rs）
 jobs/
-  runtime.js         共享编排（storage 三态 + CAS 落盘 + 两条对齐路径 + refresh/probe-dump）
+  runtime.js         共享编排（storage 三态 + CAS 落盘 + 两条对齐路径 + refresh/probe-dump
+                     + PATCH 前后检查点 + recoverAlign 按订阅池真实状态判定三态）
   align.js           整点对齐（default_schedule "0 * * * *"）+ recover
   align-now.js       立即对齐（queue:false，页面触发）+ recover
   refresh.js         只读刷新（queue:false）+ recover
   probe-dump.js      探测诊断（queue:false）+ recover
-ui/page.js           原生 JS + DOM 重写的页面（mount(el, ctx)）
+ui/page.js           Vue 3 构建产物页面（源码 v3-ui/src/chase-rs/；mount(el, ctx)）
 （测试在 v3/tests/chase-rs/，不进插件包）
 ```
 
@@ -56,8 +57,14 @@ ui/page.js           原生 JS + DOM 重写的页面（mount(el, ctx)）
 | action `probe-dump` | job `probe-dump`（`queue:false`） |
 
 旧运行时没有事件订阅，v3 清单相应不声明 `events[]`（不虚构功能）。
-`recover` 对四个任务统一语义：检查点 `completed` ⇒ complete，否则 resume
-（补订只增、日报按 dedupe_key 去重、状态文档 CAS 落盘，重跑幂等）。
+`recover` 语义（0.1.14 起）：本插件唯一的外部写是 PATCH `total_episodes`，`sendPatch` 在写前/写后
+各落一次任务检查点（before/after-patch-episodes，含 intent id 与 from/to 集数）；`align` 与
+`align-now` 的 `recover`（`runtime.recoverAlign`）按检查点先**查订阅池里该条目的真实 `total_known`**
+再判定——已到目标值 ⇒ `complete`（不再重写）、仍是旧值（写前阶段）⇒ `resume`（重跑受只增守卫
+保护，不会写同一个值）、写后阶段却查不到或池读不到 ⇒ `attention`（不猜、不重写）。`align` 是
+整点周期任务且不允许重叠，attention 会卡住无人值守调度，该入口把 attention 收敛为 `resume`
+交给下一轮兜底；`align-now` 保留三态原样返回。只读的 `refresh` / `probe-dump` 仍是最简语义：
+检查点 `completed` ⇒ complete，否则 resume（重跑零写入，天然幂等）。
 
 ## 迁移差异（如实声明）
 
@@ -104,3 +111,15 @@ ui/page.js           原生 JS + DOM 重写的页面（mount(el, ctx)）
 本机没有可用的 dian115 宿主（授权被锁）：已做的是 `node --check` 全部 JS、
 `node --test` 跑纯逻辑用例、`project-check.mjs` 与 `pack.mjs`。真机安装、
 整点任务与通知投递**未验证**，需要装进真实宿主后确认。
+
+## 版本记录
+
+### 0.1.14
+
+- **外部写检查点与真实状态恢复**：`sendPatch` 在 PATCH `total_episodes` 前后各落一次任务检查点；
+  `align` / `align-now` 的 `recover` 先查订阅池里该 intent 的真实 `total_known`，已确认写到位才
+  `complete`、确认没写才 `resume`、核对不上 `attention`（整点入口把 attention 收敛为 resume，
+  靠只增守卫保证重跑不重复写；`align-now` 三态原样返回）。只读的 `refresh` / `probe-dump` 语义不变。
+- 新增 `v3/tests/chase-rs/recover.test.mjs`（10 项；内存宿主模拟 PATCH 落账，覆盖三态判定与不重复写，
+  119 → 129 项全过）。
+- 清单 `description` 同步上述能力。

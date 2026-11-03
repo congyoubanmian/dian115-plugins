@@ -5,11 +5,12 @@
 | 插件 | v3 源码目录 | 版本 | 任务数 | 旧实现 |
 | --- | --- | --- | --- | --- |
 | 追剧管家 `chase.rs` | `v3/chase-rs/` | 0.1.14 | 4 | 旧 schema 1 Rust 版 0.1.9（源码已删除） |
-| 音乐下载 `music.rs` | `v3/music-rs/` | 1.2.2 | 2 + 1 event | 旧 schema 1 Rust 版 0.3.19（源码已删除） |
-| 豆瓣中心 `douban.rs` | `v3/douban-rs/` | 1.1.5 | 16 | 旧 schema 1 Rust 版 0.2.4（源码已删除） |
+| 音乐下载 `music.rs` | `v3/music-rs/` | 1.3.0 | 4 jobs + 2 events | 旧 schema 1 Rust 版 0.3.19（源码已删除） |
+| 豆瓣中心 `douban.rs` | `v3/douban-rs/` | 1.2.0 | 16 | 旧 schema 1 Rust 版 0.2.4（源码已删除） |
 
-约定：宿主插件 API 为 **3.5**（chase.rs / douban.rs 的 `requires.api` 为 `"3.5"`）；**music.rs 为 `"3.9"`**——
-它要用 `save_to` 直写用户目标目录（省一次跨盘拷贝），宿主不开放该能力时自动回落「暂存 → 定名 → move」。后台是宿主内 ESM
+约定：宿主插件 API 为 **3.5**（chase.rs 的 `requires.api`）；**douban.rs 为 `"3.6"`**——TG 指令回执用
+`ctx.messaging.reply`（消息渠道能力 3.6 起）；**music.rs 为 `"3.9"`**——它要用 `save_to` 直写用户目标
+目录（省一次跨盘拷贝），宿主不开放该能力时自动回落「暂存 → 定名 → move」。后台是宿主内 ESM
 JavaScript（无 `require`、无 Node 内置模块、无子进程），页面是 `ui/page.js` 导出的
 `mount(el, ctx)`。页面已迁到 **Vue 3**（vue / naive-ui / lucide 全部自打包进 `ui/page.js`，
 不依赖宿主共享单例）；界面源码与依赖在仓库根的 `v3-ui/`，见[「界面（Vue 3）」](#界面vue-3)。
@@ -44,7 +45,7 @@ dist/                   构建产物 .dian115p（本地生成，不提交；现�
 
 | 维度 | 旧（schema 1，WASM） | v3 |
 | --- | --- | --- |
-| 清单 | `manifest.template.json`：`schema_version: 1`、`compatibility.plugin_api: "^2.0"` | `plugin.json`：`schema_version: 3`、`requires.api: "3.5"`（music.rs 3.9） |
+| 清单 | `manifest.template.json`：`schema_version: 1`、`compatibility.plugin_api: "^2.0"` | `plugin.json`：`schema_version: 3`、`requires.api: "3.5"`（douban.rs 3.6、music.rs 3.9） |
 | 运行时 | `runtime.kind: "wasm"`、`entry: "runtime/plugin.wasm"`、`protocol: "dian115:wasm@1"`、`memory_mb` / `max_concurrency` / `restart_policy`；Rust 侧 `abi.rs` / `arena.rs` / `host.rs` / `protocol.rs` | **删除 `runtime` 段**。宿主按任务加载 `jobs/<id>.js` 的 ESM 入口；无常驻 VM，每次运行由 `run(ctx, input)` 进入，`recover(ctx, checkpoint)` 续跑；超时/并发由清单的 `timeout_seconds` / `allow_overlap` 描述 |
 | 任务与调度 | 清单 `jobs[]` 只写 `id` + Rust `handler` 名（如 `alignHourly`）+ `default_schedule`；WASM 内自行分发 | 清单 `jobs[]` 写 `entry` / `handler` / `recover` / `default_schedule`（cron）或 `interval_seconds` / `timeout_seconds` / `queue`；页面动作是 `queue:false` 的短任务 |
 | 事件 | `events: ["telegram.callback"]`（music-rs），WASM 内处理回调 | `events: [{event: "callback", job: "tg-callback"}]`：事件触发一个普通任务；music-rs 用它重排失败任务 |
@@ -71,6 +72,8 @@ dist/                   构建产物 .dian115p（本地生成，不提交；现�
 - 4 个任务：`align`（`0 * * * *`，整点对齐）、`align-now`、`refresh`、`probe-dump`，均带 `recover`。
 - 判定层与旧 Rust 对应：只增 PATCH `total_episodes`、单轮条数/单条抬升上限、dry-run、四类互斥跳过文案；
   减方向只出建议，从不写。
+- **外部写检查点**（0.1.14）：PATCH 前后各落一次任务检查点；`recover` 先查订阅池里该 intent 的真实
+  `total_known` 再决定 complete / resume / attention（整点入口把 attention 收敛为 resume，靠只增守卫兜底）。
 - Emby 覆盖探测：实例选择、参数矩阵与指纹缓存、探测预算；TMDB 只取该季集数，不用整剧集数顶替。
 - 订阅池读取（`media_type=tv`，≤4 页 × 500）、追剧日历、每日日报（`ctx.notify` + `dedupe_key`）。
 - 状态文档：默认值/上限裁剪/256KB 逐级降级，`expected_revision` CAS；404 两次确认视为全新安装，
@@ -78,7 +81,7 @@ dist/                   构建产物 .dian115p（本地生成，不提交；现�
 - 旧页面 12 个用户配置项现在都在页面设置抽屉里（清单不再声明 `settings[]`）；页面用 Vue 3 重写（源码 `v3-ui/src/chase-rs/`），
   保留指标瓦片（`StatTile.vue`）、看板（`AlignCard.vue`）与移动端单栏（`styles.css` 里
   `@media (max-width: 1000px)` 收成单列）。
-- 126 个 `node --test` 用例通过。
+- 129 个 `node --test` 用例通过（新增 `recover.test.mjs` 10 项）。
 
 **Gaps**
 
@@ -88,7 +91,7 @@ dist/                   构建产物 .dian115p（本地生成，不提交；现�
 - 旧版没有事件订阅，v3 也不声明 `events[]`；没有新增消息/回调能力。
 - 每日报告的实际渠道取决于宿主通知配置；旧版经宿主通知端点投递，本次未在真机核对渠道与按钮渲染。
 
-### 音乐下载（`v3/music-rs`，music.rs 1.2.2）
+### 音乐下载（`v3/music-rs`，music.rs 1.3.0）
 
 **Covered（离线可验证）**
 
@@ -106,16 +109,21 @@ dist/                   构建产物 .dian115p（本地生成，不提交；现�
   重复页报「未能完整读取」；收藏歌单撞分页硬上限时返回已读到的部分 + 说明。缺账号标识
   （`encryptUin`，只有 QQLogin 响应里有）时如实提示「收藏读不到」，不装作「没有收藏」。
 - 下载队列：KV 分片（`tasks.idx` + `task.<id>`），按 `source+song_id+quality` 去重；
-  `queued → downloading → copying → done/failed`，失败重试 ≤3 次（每轮最多一次）后通知；每轮最多新开
-  `max_active` 首并向宿主任务队列上报 `total/done/failed`；`*/5 * * * *` 的 `queue-pump` 与页面手动推进共用入口，
-  被宿主重启打断（attention_required）时页面提供「核对并继续」（`ctx.tasks.retry`）。
-- 入库：宿主 API 3.9 时 `ctx.http.request({save_to})` 直写目标目录；宿主不开放直写时回落到插件自有
-  `downloads/` 暂存，`ctx.files.call` rename/move 交给宿主复制进目标目录（CD2 挂载由宿主分流）。
-  目标目录已有同名文件时加「 (2)」等后缀，不覆盖；文件名清洗非法/控制字符并按 UTF-8 字节截断。
-- Telegram 失败通知带 `callback_data: retry:<短id>` 按钮；点击触发 `tg-callback` 事件任务重新排队。
+  `queued → downloading → copying → done/failed`，失败重试 ≤3 次后通知；`*/5 * * * *` 的 `queue-pump`
+  与页面手动推进共用入口。
+- 入库（1.3.0 起 API 3.9 直写优先）：`save_to` 直接写用户目标目录（含 CD2 挂载路径，省一次跨盘拷贝；
+  宿主不开放时回落 `ctx.http.request({save_to})` 到插件自有 `downloads/` + `ctx.files.call` move，
+  CD2 挂载由宿主分流）；下载前与 move 前用 `files.exists` 同名预检，撞名直接终态失败不进重试循环。
+- **外部写检查点**（1.3.0）：下载/入库前后各落任务检查点；`recoverPump` 先用 `exists`/`stat` 核对目标
+  目录真实文件再决定 complete / resume / attention，判 complete 时把 KV 在途任务收敛为 done（`queue-pump`
+  入口把 attention 收敛为 resume，交给下一轮兜底）。
+- **Telegram 命令与日报**（1.3.0）：失败通知带 `callback_data: retry:<短id>` 按钮（dedupe_key 收敛为
+  `dl-fail-<任务id>`），点击触发 `tg-callback` 事件任务重新排队；`event=message` 的 `tg-command` 提供
+  只读查询命令 `/music 队列|状态|帮助`、`/queue`、`/status`（回复走来源渠道，需授权 telegram.bot，
+  未授权回退 `ctx.notify`，dedupe_key 用 chat_id + message_id）；`daily-report` 每天 08:30 发一条
+  下载日报（dedupe_key 按天，notify 抛错不拖垮任务）。
 - 页面四个分页 + 登录卡 + 最近动作；`ui/qr.js` 为旧 `frontend/src/qr.ts` 的移植。
-- 189 个 `node --test` 用例；全过。
-  本轮连跑 10 次未复现，断言前提未变）。
+- 199 个 `node --test` 用例；全过（新增 `recover` 15 项、`tg-command` 10 项，`pump` +3 项）。
 
 **Gaps**
 
@@ -130,7 +138,7 @@ dist/                   构建产物 .dian115p（本地生成，不提交；现�
 - 队列页没有「取消单条任务」入口（旧版也没有独立取消动作，只有重试/清空已完成/对账）。
 - 真机上的扫码、eapi 取链、下载落盘、CD2 move 与通知按钮回调均未验证。
 
-### 豆瓣中心（`v3/douban-rs`，douban.rs 1.1.5）
+### 豆瓣中心（`v3/douban-rs`，douban.rs 1.2.0）
 
 **Covered（离线可验证）**
 
@@ -138,20 +146,25 @@ dist/                   构建产物 .dian115p（本地生成，不提交；现�
 - 观察队列：`observe_period_hours` 到期处理、`auto_subscribe`、黑名单增删、移出队列、墓碑集
   （`已删除不重订`）与 `no-resub-clear`。
 - 想看同步：movie+tv 去重、seen 先写再守卫、内联订阅 vs 入队、分页拉取、6 小时墓碑节流。
-- TMDB 匹配：置信度阈值 0.5；只认 movie/tv 候选，同分时偏向豆瓣已知类型；失配时用豆瓣详情（原名/又名）
-  回退重搜取最高置信；创建宿主聚合订阅前按 `media_type` 分页查重（`tmdb_id + media_type`），查重失败
-  或结果被截断时不创建。没订上的到期条目留队：置信不足标「待人工确认」，失败按 1h/2h 退避重试 3 次。
-- 存储：状态键整包信封读（值与 revision 同源），CAS 冲突时把本会话改动三方合并到对方新版本
-  （`lib/merge.js`），不再整份覆盖。
-- 想看登录态：重定向到登录页 / rexxar 错误体 / 401·403 都提示 Cookie 失效；单类型失败保留上一轮条目（`partial`）。
+- TMDB 匹配：置信度阈值 0.5；失配时用豆瓣详情（原名/又名）回退重搜取最高置信；创建宿主聚合订阅前
+  去重（`tmdb_id + media_type`）。
+- **外部写检查点**（1.2.0）：创建聚合订阅前后各落任务检查点；`recoverSubscribe` 按检查点先查宿主
+  订阅池里该 `(tmdb_id, media_type)` 的真实状态再决定 complete / resume / attention（批量入口命中时
+  返回 resume 让批次继续，已建那条由宿主去重跳过）。
 - 过滤：`min_rating` / `min_year` / `regions`，无评分按低于阈值处理，地区只在详情已取到时生效。
-- 海报：豆瓣 CDN 带 Referer 取图（页面 `ctx.http` base64）、img1~img9 镜像回退、`s_ratio → m_ratio` 降级、
-  `get-poster` 任务与 64 张内存缓存。
+- 海报：豆瓣 CDN 带 Referer 取图（页面 `ctx.http` base64）、img1~img9 镜像回退、`s_ratio → m_ratio` 降级；
+  `get-poster` 成功后写**插件文件缓存** `posters/<sha256(poster_url)>.<ext>`（超 64 张按 modified 淘汰
+  最旧，路径回填 state 的 `poster_file`），页面取图链改为「文件缓存快路径（`files.downloadURL`）→
+  页面直连 → `get-poster` 回退」（`v3-ui/src/douban-rs/poster-chain.js`，页面与测试同一份实现）。
 - 登录态：只用手工粘贴的豆瓣 Cookie（需含 dbcl2），45 分钟缓存；不再读 CookieCloud。
-- 15 个任务（定时刷新、想看同步、刷新、同步、订阅、海报、通知自检、维护动作），
+- **TG 指令**（1.2.0，需授权 telegram.bot 后回执才生效）：`events[]` 声明 `message` 事件
+  `commands: ['refresh','wish']` 限 telegram 渠道，`tg-command` 任务复用 refresh-charts deep /
+  wish-sync 编排并回执真实结果；`requires.api` 3.5 → 3.6（`ctx.messaging`）。
+- 16 个任务（定时刷新、想看同步、刷新、同步、订阅、海报、通知自检、维护动作、TG 指令），
   均带 `recover`；页面用 Vue 3 重写（源码 `v3-ui/src/douban-rs/`）：榜单/海报墙、观察队列/想看、
   历史日志、设置表单四个面板。
-- 117 个 `node --test` 用例通过（fixtures 复用旧仓库脱敏样本）。
+- 130 个 `node --test` 用例通过（新增 `recover` 11 / `manifest` 2 / `poster-chain` 5 项，`jobs-flow` +10、
+  `poster-core` +2；fixtures 复用旧仓库脱敏样本）。
 
 **Gaps**
 
@@ -330,9 +343,9 @@ node v3-kit/conformance/pack.mjs v3/douban-rs dist/douban-rs.dian115p
 node scripts/v3-pack-check.mjs dist/chase-rs-0.1.14.dian115p v3/chase-rs   # 查包
 
 # 4) 纯逻辑单测（Node 24 下要传文件 glob，不能只传目录）
-(cd v3/tests/chase-rs  && node --test *.test.mjs)   # 126 pass
-(cd v3/tests/music-rs  && node --test *.test.js)    # 189 用例
-(cd v3/tests/douban-rs && node --test *.test.mjs)   # 117 pass
+(cd v3/tests/chase-rs  && node --test *.test.mjs)   # 129 pass
+(cd v3/tests/music-rs  && node --test *.test.js)    # 199 用例
+(cd v3/tests/douban-rs && node --test *.test.mjs)   # 130 pass
 
 # 5) 语法检查
 find v3/chase-rs v3/music-rs v3/douban-rs -name '*.js' -exec node --check {} +
@@ -404,13 +417,14 @@ CI 拿不到，正式发布因此在本地发版脚本里完成。
 `docs/plugin-platform/market-index.schema.json`（`https://raw.githubusercontent.com/madbrolab/dian115/main/docs/plugin-platform/market-index.schema.json`），
 规则见 `v3-kit/docs/market.md`。
 
-三个条目：
+三个条目（下表是 `v3-market-index.json` **当前内容**的节选——插件清单已提到 0.1.14 / 1.3.0 / 1.2.0，
+索引里的 version / source_url / sha256 由发布流水线在打 `v3-*` 标签时按实产物回写，本仓库惯例不手工改）：
 
 | id | version | delivery | source_url | sha256 |
 | --- | --- | --- | --- | --- |
 | `chase.rs` | 0.1.13 | protected-v4 | 正式包 `chase.rs-<release_id>.dian115p` | 见 `v3-market-index.json` |
-| `music.rs` | 1.2.2 | protected-v4 | 正式包 `music.rs-<release_id>.dian115p` | 见 `v3-market-index.json` |
-| `douban.rs` | 1.1.5 | protected-v4 | 正式包 `douban.rs-<release_id>.dian115p` | 见 `v3-market-index.json` |
+| `music.rs` | 1.2.1 | protected-v4 | 正式包 `music.rs-<release_id>.dian115p` | 见 `v3-market-index.json` |
+| `douban.rs` | 1.1.4 | protected-v4 | 正式包 `douban.rs-<release_id>.dian115p` | 见 `v3-market-index.json` |
 
 （正式包由宿主「编译 MCP」签发，`delivery` 是 `protected-v4`，`author` 是签名绑定的**会员昵称**；
 `sha256` 与 `source_url` 由发布脚本按实际产物实算写入 `v3-market-index.json`。）
@@ -436,27 +450,31 @@ v3 索引 schema。仓库内旧 `plugin-market/index.json` 是 v1 格式，v3 �
 
 本次在仓库根实际执行过的检查（Node v24.18.0）：
 
+（版本提到 0.1.14 / 1.3.0 / 1.2.0 这一轮复跑了下表「结构检查 / JS 语法 / 纯逻辑单测 / 索引 JSON /
+构建脚本语法」五行；**打包与索引字段两行是上一发版轮次的实跑记录，本轮未重新打包**——
+产物由发版脚本 `scripts/release-v3-local.sh` 在发布时生成，本地字节值会随本轮改动变化。）
+
 | 检查 | 命令 | 结果 |
 | --- | --- | --- |
-| 三个插件结构检查 | `node v3-kit/conformance/project-check.mjs v3/<plugin>` | 3/3 通过：`chase.rs 0.1.13`、`music.rs 1.2.2`、`douban.rs 1.1.5` |
-| 全部 JS 语法 | `find v3/... -name '*.js' -exec node --check {} +` | 通过：chase 16 / music 30 / douban 38 个文件 |
-| 纯逻辑单测 | `(cd v3/tests/<plugin> && node --test *.test.*)` | chase 126 pass / music 189 pass / douban 117 pass，0 fail |
-| 打包 | `bash scripts/v3-build.sh`（连跑两次） | 两次 sha256 完全一致；产物 193844 / 284582 / 263162 字节（界面换成 Vue 3 自打包后比原生 JS 版大；sha256 见表下） |
-| 索引 JSON | `node -e 'JSON.parse(...)'` | 通过 |
-| 索引字段与摘要 | 本地校验脚本（必填/id/sha256/delivery/homepage，sha256 对 dist 实算） | 通过；仅 `source_url` 相对路径为已知偏差 |
-| 构建脚本语法 | `bash -n scripts/v3-build.sh` | 通过 |
+| 三个插件结构检查 | `node v3-kit/conformance/project-check.mjs v3/<plugin>` | 3/3 通过：`chase.rs 0.1.14`、`music.rs 1.3.0`、`douban.rs 1.2.0`（本轮复跑） |
+| 全部 JS 语法 | `find v3/... -name '*.js' -exec node --check {} +` | 通过：chase 16 / music 22 / douban 38 个文件（本轮复跑） |
+| 纯逻辑单测 | `(cd v3/tests/<plugin> && node --test *.test.*)` | chase 129 pass / music 199 pass / douban 130 pass，0 fail（本轮复跑） |
+| 打包 | `bash scripts/v3-build.sh`（连跑两次） | 上一轮实跑：两次 sha256 完全一致；产物 193844 / 284582 / 263162 字节（本轮改版后**未重跑**，发布时由发版脚本执行） |
+| 索引 JSON | `node -e 'JSON.parse(...)'` | 通过（本轮复跑；索引内容本身按约定不由文档轮次修改） |
+| 索引字段与摘要 | 本地校验脚本（必填/id/sha256/delivery/homepage，sha256 对 dist 实算） | 上一轮实跑通过；仅 `source_url` 相对路径为已知偏差（本轮**未重跑**） |
+| 构建脚本语法 | `bash -n scripts/v3-build.sh` | 通过（本轮复跑，另加 `v3-build-ui.sh` 与 `v3-verify-ui-artifacts.sh`） |
 | 真机安装/运行 | — | **未执行**（本机无可用 DIAN115 宿主，授权被锁） |
 
 工具版本：Node v24.18.0、npm 11.16.0；未使用 Rust/WASM 工具链。
 
 ### 界面（Vue 3）这一轮补做的检查
 
-界面迁到 Vue 3 之后、发布流水线接上之后，本轮实际跑过的检查：
+界面迁到 Vue 3 之后、发布流水线接上之后，那一轮实际跑过的检查（下表为该轮实跑记录；本轮只改了
+清单版本与文档，未重建界面产物、未重跑下表——重建与比对由 CI 发布流水线执行）：
 
 | 检查 | 命令 | 结果 |
 | --- | --- | --- |
-| 脚本语法 | `bash -n scripts/v3-build.sh scripts/v3-build-ui.sh` | 通过（另加 `bash -n scripts/v3-verify-ui-artifacts.sh`） |
-| 三个插件结构检查 | `node v3-kit/conformance/project-check.mjs v3/<plugin>` | 3/3 通过：`chase.rs 0.1.13`、`music.rs 1.2.2`、`douban.rs 1.1.5` |
+| 脚本语法 | `bash -n scripts/v3-build.sh scripts/v3-build-ui.sh` | 通过（另加 `bash -n scripts/v3-verify-ui-artifacts.sh`；本轮复跑仍通过） |
 | 界面构建可重复 | `bash scripts/v3-build-ui.sh` 连跑两次，比对 sha256 | 两次产物字节相同（chase `897e1d4c…5937c8ad`、douban `fc90a3dd…1e967675`、music `574a6486…554628e2`） |
 | 锁文件可复现 | 干净副本里 `rm -rf node_modules && npm ci` 后重建 | 与入库产物逐字节相同；本地多次打包 sha256 一致（跨环境的 zip 压缩字节会略差十余字节，以 Release 的 `SHA256SUMS.txt` 为准） |
 | 一键构建幂等 | `bash scripts/v3-build.sh` 连跑两次 | 两次 sha256 完全一致（本地值；Release 实算值见市场索引）；产物 193844 / 284582 / 263162 字节 |

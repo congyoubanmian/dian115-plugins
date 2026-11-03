@@ -1,9 +1,10 @@
 // 整点对齐任务（旧 job `align` / manifest jobs[0].handler=alignHourly 的 v3 形态）。
 //
 // 每小时：读订阅池 → 解析 Emby 实例 → 逐条对齐（只增 PATCH）→ 追剧日历 →
-// 每日一报 → 落盘。中断恢复：整个流程幂等（补订只增、日报按 dedupe_key 去重），
-// 已完成的检查点直接 complete，否则 resume 重跑。
-import { runHourlyAlign } from './runtime.js'
+// 每日一报 → 落盘。中断恢复：恢复时先查订阅池的真实状态再决定
+// complete / resume / attention（补订只增 + 日报 dedupe_key 去重，重跑不会重复写）；
+// 周期任务不允许重叠，recover 的 attention 在本入口收敛为 resume，避免整点调度停摆。
+import { runHourlyAlign, recoverAlign } from './runtime.js'
 import { taskCheckpoint, taskUpdate } from './task.js'
 
 export async function run(ctx, input) {
@@ -25,10 +26,10 @@ export async function run(ctx, input) {
 }
 
 export async function recover(ctx, checkpoint) {
-  if (checkpoint?.stage === 'completed') {
-    return { action: 'complete', result: checkpoint.result }
-  }
-  // 未到 completed 的中断：重跑一轮是幂等的（补订只增、日报 dedupe_key 去重、
-  // 状态文档按 CAS 落盘），resume 即可。
-  return { action: 'resume' }
+  // 恢复语义集中在 runtime.recoverAlign：先查订阅池真实状态，再决定三态。
+  const decision = await recoverAlign(ctx, checkpoint)
+  // 本 job 每小时跑且不允许重叠：attention（需要核对）会拒绝新运行，无人值守的
+  // 整点调度就此停摆。对齐入口只增不缩（PATCH 前有只增守卫，重跑不会写同一个值），
+  // 核对不上时收敛为 resume，交给下一轮整点对齐兜底；complete/resume 原样透传。
+  return decision.action === 'attention' ? { action: 'resume' } : decision
 }

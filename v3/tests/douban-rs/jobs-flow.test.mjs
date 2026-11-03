@@ -1,17 +1,21 @@
-// 编排层端到端测试：用假宿主 ctx 跑刷新/想看/订阅/守卫/动作全链路，
+// 编排层端到端测试：用假宿主 ctx 跑刷新/想看/订阅/守卫/动作/海报文件缓存/TG 指令全链路，
 // 对照 plugins/douban-rs/src/{runtime.rs,charts.rs,wish.rs,subscribe.rs} 内嵌测试的核心不变量。
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
+import { createHash } from 'node:crypto'
 
 import { Session, sendTest, observeRemove, blacklistAdd, blacklistRemove, archive, noResubClear, settingsUpdate, openSource } from '../../douban-rs/jobs/runtime.js'
 import { refreshNow } from '../../douban-rs/jobs/charts.js'
 import { runWishSyncJob, syncWishList } from '../../douban-rs/jobs/wish.js'
 import { processDue, subscribeQueueItem, subscribeQueueNow, subscribeFromSnapshot } from '../../douban-rs/jobs/subscribe-engine.js'
 import { getPoster } from '../../douban-rs/jobs/poster.js'
-import { parseStateDoc, defaultSettings } from '../../douban-rs/lib/model.js'
+import { run as runTgCommand, parseCommand } from '../../douban-rs/jobs/tg-command.js'
+import { parseStateDoc, defaultSettings, newWishItem } from '../../douban-rs/lib/model.js'
 import { setFixedNow } from '../../douban-rs/lib/clock.js'
+import { base64Decode } from '../../douban-rs/lib/base64.js'
+import { sniffImage, POSTER_CACHE_LIMIT } from '../../douban-rs/lib/poster-core.js'
 
 const readFixture = (name) => readFileSync(fileURLToPath(new URL(`./fixtures/${name}`, import.meta.url)), 'utf8')
 const CHART_HTML = readFixture('chart_listcont2.html')
@@ -29,7 +33,8 @@ const NOW_ISO = '2026-09-29T10:00:09Z'
 
 /**
  * 最小内存宿主：业务 API 路由 + 插件存储 KV（revision 乐观锁）+ 设置 + 出站 http 路由
- * + CookieCloud 快照 + 通知捕获。
+ * + CookieCloud 快照 + 通知捕获 + 插件文件区（ctx.files：write/list/mkdir/remove +
+ * downloadURL 字符串拼接）+ ctx.crypto.sha256 + ctx.messaging.reply 捕获。
  * apiRoutes: [{method, match(path), data, status}]
  * httpRoutes: [{match(url), text, status, bytes}]（text 优先于 bytes）
  */
@@ -37,7 +42,12 @@ function makeCtx({ apiRoutes = [], httpRoutes = [], settings = {}, storage = {} 
   const apiCalls = []
   const httpCalls = []
   const notifies = []
+  const fileCalls = []
+  const fileDownloads = []
+  const replies = []
   const kv = new Map(Object.entries(storage))
+  const fileStore = new Map() // path → { bytes: Uint8Array, modified: string }
+  const fileDirs = new Set()
   const id = 'douban.rs'
   const storageBase = `/api/extensions/v3/${id}/storage`
 
@@ -93,12 +103,52 @@ function makeCtx({ apiRoutes = [], httpRoutes = [], settings = {}, storage = {} 
     return { status, headers: route.headers ?? {}, body_base64: raw.toString('base64'), url: route.finalUrl ?? options.url }
   }
 
-  return {
+  // 插件文件区（posters/<sha256>.<ext> 走这里；语义对齐 sdk/core-types.d.ts 的 Files）
+  async function fileHandle(options) {
+    fileCalls.push(options)
+    const operation = options.operation
+    if (operation === 'write') {
+      const bytes =
+        options.encoding === 'base64' ? base64Decode(options.content) : new TextEncoder().encode(options.content)
+      fileStore.set(options.path, { bytes, modified: new Date().toISOString() })
+      return { size: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex'), path: options.path }
+    }
+    if (operation === 'mkdir') {
+      fileDirs.add(options.path)
+      return { path: options.path }
+    }
+    if (operation === 'list') {
+      return [...fileStore.entries()]
+        .filter(([path]) => path.startsWith(`${options.path}/`))
+        .map(([path, file]) => ({
+          name: path.slice(options.path.length + 1),
+          path,
+          is_dir: false,
+          size: file.bytes.length,
+          modified: file.modified,
+          backend: 'plugin',
+        }))
+    }
+    if (operation === 'remove') {
+      const victims = options.paths ?? (options.path ? [options.path] : [])
+      for (const path of victims) fileStore.delete(path)
+      return null
+    }
+    if (operation === 'exists') return fileStore.has(options.path) || fileDirs.has(options.path)
+    throw new Error(`files 不支持 operation=${operation}`)
+  }
+
+  const ctx = {
     id,
     apiCalls,
     httpCalls,
     notifies,
+    fileCalls,
+    fileDownloads,
+    replies,
     kv,
+    fileStore,
+    fileDirs,
     api: {
       get: (path) => apiHandle('GET', path),
       post: (path, body) => apiHandle('POST', path, body),
@@ -106,6 +156,30 @@ function makeCtx({ apiRoutes = [], httpRoutes = [], settings = {}, storage = {} 
       patch: (path, body) => apiHandle('PATCH', path, body),
     },
     http: { request: (options) => httpHandle(options) },
+    files: {
+      call: (options) => fileHandle(options),
+      downloadURL: (path, opts = {}) => {
+        const url = `https://host.test/api/extensions/v3/${id}/files/download?path=${encodeURIComponent(path)}${opts.inline ? '&inline=1' : ''}`
+        fileDownloads.push({ path, url, inline: Boolean(opts.inline) })
+        return url
+      },
+    },
+    crypto: {
+      sha256: async (data, output = 'hex') => {
+        const bytes = data instanceof Uint8Array ? data : new TextEncoder().encode(String(data))
+        const digest = createHash('sha256').update(bytes).digest()
+        if (output === 'bytes') return new Uint8Array(digest)
+        if (output === 'base64') return digest.toString('base64')
+        if (output === 'base64url') return digest.toString('base64url')
+        return digest.toString('hex')
+      },
+    },
+    messaging: {
+      reply: async (input, options) => {
+        replies.push({ input, text: options?.text ?? '' })
+        return { ok: true }
+      },
+    },
     settings: { get: async () => settings },
     notify: async (payload) => {
       notifies.push(payload)
@@ -114,6 +188,7 @@ function makeCtx({ apiRoutes = [], httpRoutes = [], settings = {}, storage = {} 
     sleep: async () => {},
     task: { id: 'run-test-1', update: async () => {}, checkpoint: async () => {}, log: async () => {} },
   }
+  return ctx
 }
 
 /** 打开会话并固定时钟；opts.state 预置 state 键，opts.settings 预置 settings 键。 */
@@ -124,6 +199,11 @@ async function openSession(ctx, { state = null, settingsKv = null, settingsInput
   ctx.settings.get = async () => settingsInput
   setFixedNow(FIXED_NOW)
   return Session.open(ctx)
+}
+
+/** 读回落盘的状态文档（TG 用例不持有 session，从 KV 读）。 */
+function sessionDocOf(ctx) {
+  return parseStateDoc(ctx.kv.get('state')?.value)
 }
 
 // ─────────────────────────── 会话三态与账号键 ───────────────────────────
@@ -733,7 +813,9 @@ test('settings-update：lists 合并保存、黑名单替换、账号字段变�
 
 // ─────────────────────────── 海报动作 ───────────────────────────
 
-test('get-poster：镜像回退 + dataURL 缓存', async () => {
+const JPEG_HEX_SHA256 = (text) => createHash('sha256').update(text).digest('hex')
+
+test('get-poster：镜像回退 → 写插件文件缓存 → 返回相对路径；命中缓存不再发请求', async () => {
   const jpeg = Buffer.alloc(64)
   jpeg[0] = 0xff
   jpeg[1] = 0xd8
@@ -748,12 +830,245 @@ test('get-poster：镜像回退 + dataURL 缓存', async () => {
   const url = 'https://img9.doubanio.com/view/photo/s_ratio_poster/public/p1.jpg'
   const result = await getPoster(session, ctx, { poster_url: url })
   assert.equal(result.status, 'succeeded')
-  assert.ok(result.url.startsWith('data:image/jpeg;base64,'))
-  // 命中缓存：不再发请求
-  const callsAfterFirst = ctx.httpCalls.length
+  // 返回体只有路径引用，不再有 dataURL 大块头
+  assert.equal(result.url, undefined)
+  assert.equal(result.path, `posters/${JPEG_HEX_SHA256(url)}.jpg`)
+  assert.equal(result.source_url, url)
+  assert.equal(result.size, 64)
+  assert.equal(result.sha256, JPEG_HEX_SHA256(jpeg), 'sha256 是 FileWriteResult 的文件内容哈希')
+  // 文件确实写进了插件相对路径（base64 内容、解码后 sniff 回 jpeg）
+  const writes = ctx.fileCalls.filter((call) => call.operation === 'write')
+  assert.equal(writes.length, 1)
+  assert.equal(writes[0].path, result.path)
+  assert.equal(writes[0].encoding, 'base64')
+  assert.deepEqual(sniffImage(base64Decode(writes[0].content)), 'image/jpeg')
+  assert.equal(ctx.fileDownloads.length, 0, 'job 侧只落路径引用，不拼 downloadURL（页面侧职责）')
+
+  // 命中内存缓存：不再发请求、不再写文件
+  const httpAfterFirst = ctx.httpCalls.length
+  const filesAfterFirst = ctx.fileCalls.length
   const again = await getPoster(session, ctx, { poster_url: url })
-  assert.equal(again.url, result.url)
-  assert.equal(ctx.httpCalls.length, callsAfterFirst)
+  assert.equal(again.path, result.path)
+  assert.equal(again.sha256, result.sha256)
+  assert.equal(ctx.httpCalls.length, httpAfterFirst)
+  assert.equal(ctx.fileCalls.length, filesAfterFirst)
+})
+
+test('get-poster：ctx.files 不可用 → 降级 dataURL（旧宿主兜底）', async () => {
+  const jpeg = Buffer.alloc(8)
+  jpeg[0] = 0xff
+  jpeg[1] = 0xd8
+  jpeg[2] = 0xff
+  const ctx = makeCtx({
+    httpRoutes: [{ match: () => true, bytes: jpeg }],
+  })
+  delete ctx.files
+  const session = await openSession(ctx)
+  const result = await getPoster(session, ctx, { poster_url: 'https://img9.doubanio.com/p2.jpg' })
+  assert.equal(result.status, 'succeeded')
+  assert.ok(result.url.startsWith('data:image/jpeg;base64,'))
+  assert.equal(result.degraded, true)
+  assert.equal(result.path, undefined)
+})
+
+test('get-poster：写入失败（目录修不好）→ 降级 dataURL，不留半截文件语义', async () => {
+  const jpeg = Buffer.alloc(8)
+  jpeg[0] = 0xff
+  jpeg[1] = 0xd8
+  jpeg[2] = 0xff
+  const ctx = makeCtx({
+    httpRoutes: [{ match: () => true, bytes: jpeg }],
+  })
+  ctx.files.call = async (options) => {
+    if (options.operation === 'write') throw new Error('disk full')
+    return null
+  }
+  const session = await openSession(ctx)
+  const result = await getPoster(session, ctx, { poster_url: 'https://img9.doubanio.com/p3.jpg' })
+  assert.equal(result.status, 'succeeded')
+  assert.ok(result.url.startsWith('data:image/jpeg;base64,'))
+  assert.equal(result.degraded, true)
+  assert.ok((session.doc.logs ?? []).some((entry) => entry.message.includes('海报缓存写入失败')))
+})
+
+test('get-poster：成功写入后把相对路径回填进 state（快照/队列/想看），persist 只在有变化时发生', async () => {
+  const jpeg = Buffer.alloc(8)
+  jpeg[0] = 0xff
+  jpeg[1] = 0xd8
+  jpeg[2] = 0xff
+  const url = 'https://img1.doubanio.com/view/photo/s_ratio_poster/public/p9.jpg'
+  const ctx = makeCtx({ httpRoutes: [{ match: () => true, bytes: jpeg }] })
+  const session = await openSession(ctx, { state: STATE_RAW })
+  // 快照与队列里各造一条同 poster_url 的条目（队列条目已有 poster_path 的 TMDB 语义，不能混用）
+  const path = `posters/${JPEG_HEX_SHA256(url)}.jpg`
+  session.doc.snapshot.lists.hot[0].poster_url = url
+  session.doc.queue.items[0].poster_url = url
+  session.doc.queue.items[0].poster_path = '/tmdb_abc.jpg'
+  session.doc.wish = [{ ...newWishItem(), douban_ref: '999', title: '想看的', poster_url: url }]
+
+  const before = ctx.apiCalls.filter((call) => call.method === 'PUT' && call.path.endsWith('/storage/state')).length
+  const result = await getPoster(session, ctx, { poster_url: url })
+  assert.equal(result.path, path)
+  const after = ctx.apiCalls.filter((call) => call.method === 'PUT' && call.path.endsWith('/storage/state')).length
+  assert.ok(after > before, '回填必须落盘')
+  assert.equal(session.doc.snapshot.lists.hot[0].poster_file, path)
+  assert.equal(session.doc.queue.items[0].poster_file, path)
+  assert.equal(session.doc.queue.items[0].poster_path, '/tmdb_abc.jpg', 'TMDB 的 poster_path 语义不被侵占')
+  assert.equal(session.doc.wish[0].poster_file, path)
+
+  // 落盘内容里没有 base64：poster_file 只是相对路径字符串
+  const persisted = ctx.kv.get('state')?.value
+  assert.equal(persisted.snapshot.lists.hot[0].poster_file, path)
+  assert.ok(!JSON.stringify(persisted).includes('base64,'))
+
+  // 第二次：路径已回填 → 无变化不落盘
+  const mid = ctx.apiCalls.filter((call) => call.method === 'PUT' && call.path.endsWith('/storage/state')).length
+  ctx.httpCalls.length = 0
+  ctx.fileCalls.length = 0
+  session.posterCache.clear()
+  const again = await getPoster(session, ctx, { poster_url: url })
+  assert.equal(again.path, path)
+  const end = ctx.apiCalls.filter((call) => call.method === 'PUT' && call.path.endsWith('/storage/state')).length
+  assert.equal(end, mid, '无变化不再写 state')
+})
+
+test('get-poster：文件缓存淘汰 —— 超过 64 张删最旧（modified 升序），刚写的保留', async () => {
+  const jpeg = Buffer.alloc(8)
+  jpeg[0] = 0xff
+  jpeg[1] = 0xd8
+  jpeg[2] = 0xff
+  const ctx = makeCtx({ httpRoutes: [{ match: () => true, bytes: jpeg }] })
+  const session = await openSession(ctx)
+  // 目录里预置 64 张旧海报（modified 时间递增，都早于"现在"）
+  for (let i = 0; i < POSTER_CACHE_LIMIT; i += 1) {
+    const modified = new Date(Date.UTC(2026, 0, 1, 0, 0, i)).toISOString()
+    ctx.fileStore.set(`posters/old${i}.jpg`, { bytes: new Uint8Array(8), modified })
+  }
+
+  const url = 'https://img2.doubanio.com/evict.jpg'
+  const result = await getPoster(session, ctx, { poster_url: url })
+  assert.equal(result.status, 'succeeded')
+  const removes = ctx.fileCalls.filter((call) => call.operation === 'remove')
+  assert.equal(removes.length, 1, '淘汰只发生一次')
+  assert.deepEqual(removes[0].paths, ['posters/old0.jpg'], '删的是 modified 最旧的一张')
+  assert.equal(ctx.fileStore.has(result.path), true, '刚写的海报不被淘汰')
+  assert.equal(ctx.fileStore.size, POSTER_CACHE_LIMIT, '淘汰后回到上限')
+})
+
+test('get-poster：参数校验与失败路径不变', async () => {
+  const ctx = makeCtx({})
+  const session = await openSession(ctx)
+  assert.deepEqual(await getPoster(session, ctx, {}), { status: 'failed', message: '缺少 poster_url' })
+  assert.deepEqual(await getPoster(session, ctx, { poster_url: 'ftp://x/y.jpg' }), { status: 'failed', message: '非法的海报地址' })
+  const failed = await getPoster(session, ctx, { poster_url: 'https://img9.doubanio.com/none.jpg' })
+  assert.equal(failed.status, 'failed')
+  assert.ok(failed.message.startsWith('海报抓取失败: HTTP'))
+})
+
+// ─────────────────────────── TG 指令（events[].commands） ───────────────────────────
+
+function tgInput(text) {
+  return { channel: 'telegram', chat_id: 123456789, chat_type: 'private', user_id: 123456789, username: 'alice', message_id: 42, text, trigger: { type: 'command', value: text } }
+}
+
+test('parseCommand：/refresh、/wish、@bot 后缀、大小写、非指令', () => {
+  assert.equal(parseCommand('/refresh'), 'refresh')
+  assert.equal(parseCommand('/refresh extra args'), 'refresh')
+  assert.equal(parseCommand('/Refresh@My_Bot'), 'refresh')
+  assert.equal(parseCommand('/wish'), 'wish')
+  assert.equal(parseCommand('/wish@bot'), 'wish')
+  assert.equal(parseCommand('refresh'), '')
+  assert.equal(parseCommand(''), '')
+  assert.equal(parseCommand('/'), '')
+  assert.equal(parseCommand('/help'), 'help', '未知指令也解析出来，交给 COMMANDS 白名单挡')
+  assert.equal(parseCommand('你好'), '')
+})
+
+function tgCtx() {
+  return makeCtx({
+    httpRoutes: [
+      // 想看路由在前：rexxar 的 interests URL 也含 'rexxar/api/v2'，别被下面的 404 兜底遮住
+      ...wishHttpRoutes(),
+      ...chartHttpRoutes(),
+      // 深刷补海报的 suggest/rexxar 兜底：404 即可（poster 返回空串不炸）
+      { match: (url) => url.includes('j/subject_suggest') || (url.includes('rexxar/api/v2') && !url.includes('/interests?')), status: 404, text: 'x' },
+    ],
+    apiRoutes: subscribeApiRoutes(),
+    settings: { wish_sync_enabled: true, auto_subscribe: true, observe_period_hours: 24, max_logs: 200, manual_cookie: 'dbcl2=123456789:manual; ck=m' },
+  })
+}
+
+test('TG /refresh：复用 refresh-charts 编排，回执「开始→摘要」，不含凭据', async () => {
+  const ctx = tgCtx()
+  setFixedNow(FIXED_NOW)
+  const result = await runTgCommand(ctx, tgInput('/refresh'))
+
+  assert.equal(result.status, 'succeeded')
+  assert.equal(result.subscribed, 0, 'deep 刷新的 subscribed 只统计到期队列；想看条目由 wish 编排内联订阅')
+  // TMDB 路由固定返回《奥德赛》：三条想看里只有同名的那条命中并内联订阅，其余两条置信不足入 needs_review
+  assert.equal(ctx.apiCalls.filter((call) => call.method === 'POST' && call.path === '/api/subscribe/pool/intents').length, 1, '想看里同名条目内联订阅')
+  assert.equal(ctx.replies.length, 2, '开始回执 + 结果回执')
+  assert.ok(ctx.replies[0].text.startsWith('开始刷新榜单'), ctx.replies[0].text)
+  assert.ok(ctx.replies[1].text.includes('榜单刷新完成'), ctx.replies[1].text)
+  assert.equal(ctx.replies[1].input.text, '/refresh', 'messaging.reply 收到消息投影')
+  // 快照/落盘确实发生了
+  assert.equal(Object.keys(sessionDocOf(ctx).snapshot.lists).length, 5)
+  assert.ok(ctx.kv.has('state'))
+  // 凭据不进回执、不进运行日志
+  for (const reply of ctx.replies) assert.ok(!reply.text.includes('dbcl2'))
+  const logs = JSON.stringify(sessionDocOf(ctx).logs ?? [])
+  assert.ok(!logs.includes('dbcl2'), '日志里不能有 cookie')
+})
+
+test('TG /wish：复用 wish-sync 编排，回执同步统计', async () => {
+  const ctx = tgCtx()
+  setFixedNow(FIXED_NOW)
+  const result = await runTgCommand(ctx, tgInput('/wish'))
+
+  assert.equal(result.status, 'succeeded')
+  assert.equal(result.wish_status, 'succeeded')
+  assert.equal(ctx.replies.length, 2)
+  assert.ok(ctx.replies[0].text.startsWith('开始同步「我的想看」'), ctx.replies[0].text)
+  assert.ok(ctx.replies[1].text.includes('想看同步完成：共 3 条，新增 3'), ctx.replies[1].text)
+  assert.ok(ctx.replies.every((reply) => !reply.text.includes('dbcl2')))
+  assert.ok(ctx.kv.has('state'))
+  assert.ok(sessionDocOf(ctx).no_resub_scan_at !== '', '墓碑判定扫描时间已记录')
+})
+
+test('TG 指令：白名单外不干活；回执失败不影响业务结果', async () => {
+  // /help 不在清单 commands 里（防御：宿主不会投，但任务自身也要挡）
+  let ctx = tgCtx()
+  setFixedNow(FIXED_NOW)
+  let result = await runTgCommand(ctx, tgInput('/help'))
+  assert.deepEqual(result, { status: 'succeeded', handled: false, message: '未识别的指令：help' })
+  assert.equal(ctx.replies.length, 0)
+  assert.equal(ctx.httpCalls.length, 0, '未识别指令不发起任何外呼')
+
+  // messaging.reply 抛错（未授权 telegram.bot 等）→ 业务照常完成
+  ctx = tgCtx()
+  setFixedNow(FIXED_NOW)
+  ctx.messaging.reply = async () => {
+    throw new Error('messaging 未授权')
+  }
+  result = await runTgCommand(ctx, tgInput('/wish'))
+  assert.equal(result.status, 'succeeded')
+  assert.ok(result.message.includes('想看同步完成'), result.message)
+  const logs = (sessionDocOf(ctx).logs ?? []).map((entry) => entry.message)
+  assert.ok(logs.some((message) => message.includes('TG 回执发送失败')), '回执失败要留日志')
+})
+
+test('TG /wish：想看同步失败时回执如实（不假装成功）', async () => {
+  // 手动 cookie 没有 dbcl2 → doubanCookie 报错 → wish_info.last_status = failed
+  const ctx = makeCtx({
+    httpRoutes: wishHttpRoutes(),
+    settings: { wish_sync_enabled: true, auto_subscribe: true, manual_cookie: 'foo=bar' },
+  })
+  setFixedNow(FIXED_NOW)
+  const result = await runTgCommand(ctx, tgInput('/wish'))
+  assert.equal(result.status, 'succeeded', '任务完成，但回执如实说同步失败')
+  assert.equal(result.wish_status, 'failed')
+  assert.ok(ctx.replies[1].text.includes('想看同步失败'), ctx.replies[1].text)
+  assert.ok(ctx.replies[1].text.includes('手动 cookie 里缺少 dbcl2'), ctx.replies[1].text)
 })
 
 test('douban_cookie：只用手动 cookie；缺失或不含 dbcl2 → 报错', async () => {

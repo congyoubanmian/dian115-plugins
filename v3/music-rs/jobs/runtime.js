@@ -22,7 +22,7 @@ export function cryptoAdapter(crypto) {
   }
 }
 
-/** 装配 deps：{kv, http, crypto?, settings?, notify?}（按调用方能力裁剪）。 */
+/** 装配 deps：{kv, http, crypto?, messaging?, notify?}（按调用方能力裁剪）。 */
 export function buildDeps(ctx) {
   const deps = {
     ctx,
@@ -32,6 +32,8 @@ export function buildDeps(ctx) {
     notify: (options) => ctx.notify(options),
   }
   if (ctx.crypto) deps.crypto = cryptoAdapter(ctx.crypto)
+  // messaging（API 3.6+）：TG 命令回复用；页面 ctx / 老宿主没有时不挂，调用方自行回退 notify。
+  if (ctx.messaging) deps.messaging = ctx.messaging
   return deps
 }
 

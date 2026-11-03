@@ -10,10 +10,9 @@ export const POLL_INTERVAL_MS = 900
 export const POLL_TIMEOUT_MS = 150_000
 /** 海报并发（页面 ctx.http 请求，不占宿主任务队列）。 */
 export const POSTER_CONCURRENCY = 4
-/** 页面内存海报缓存条数（data URL，每张 ≤ 128 KiB）。 */
+/** 页面内存海报缓存条数（条目只存 URL 字符串：downloadURL 或 data:，不再是 base64 大块头）。 */
 export const POSTER_CACHE_LIMIT = 160
-/** 页面直连海报的 base64 上限；超过就交给后端 get-poster 的 128 KiB 规则。 */
-export const MAX_POSTER_B64 = 400_000
+/** 页面直连海报的 base64 上限挪到了 poster-chain.js（取图链路 own 它，node 测试同源）。 */
 /** 批量「订阅全部到期条目」单次最多处理多少条（避免一次刷屏提交上百个任务）。 */
 export const BATCH_SUBSCRIBE_LIMIT = 20
 

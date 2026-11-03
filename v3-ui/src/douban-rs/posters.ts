@@ -1,16 +1,20 @@
 // 海报加载器 —— 与原生 JS 版同一套取图链路。
 //
-// 豆瓣 CDN 有防盗链：浏览器直连 img*.doubanio.com 会返回 418。所以页面用
-// ctx.http 带豆瓣 Referer 取回 base64（response_type:'base64'），再拼成 data URL；
-// 直连失败（代理/限流/体积）再回退后端 get-poster job —— 那个 job 内部会按
-// img1~img9 镜像逐个回退（lib/poster-core.js 的 mirrorCandidates），并把结果
-// 限在 128 KiB 以内。页面内存缓存最多 160 张，滚动到视口附近才发起请求。
+// 取图优先级与降级链在 ./poster-chain.js（框架无关，node --test 用假 ctx 覆盖）：
+// ① 文件缓存快路径（state 里 poster_file → ctx.files.downloadURL，Range 探测）
+// ② 页面直连（ctx.http 带豆瓣 Referer 取 base64 拼 data URL）
+// ③ 回退后端 get-poster job（镜像回退 + 128 KiB 上限 + 写插件文件缓存 → downloadURL）
+// 本文件只管并发/懒加载/内存缓存这些页面侧机制：滚动到视口附近才发起请求，内存缓存
+// 最多 160 张、条目只存 URL 字符串（downloadURL 或 data:），不再把 base64 大块头搬进页面。
 //
-// 页面只读 ctx.http / ctx.tasks，不直接 fetch 豆瓣。
+// 页面只读 ctx.http / ctx.tasks / ctx.files.downloadURL，不直接 fetch 豆瓣
+// （探测文件缓存用的是同源 downloadURL 的全局 fetch，不是豆瓣）。
 
 import { inject, provide, reactive, type InjectionKey } from 'vue'
 import type { HostContext } from '../shared/types'
-import { MAX_POSTER_B64, POSTER_CACHE_LIMIT, POSTER_CONCURRENCY } from './constants'
+import { POSTER_CACHE_LIMIT, POSTER_CONCURRENCY } from './constants'
+// @ts-ignore -- 纯 JS 模块，没有类型声明（与 lib-bridge.ts 引 v3/lib/*.js 同一模式）
+import { createPosterFetcher } from './poster-chain.js'
 import type { TaskRun } from './store'
 
 /** 单个 URL 的取图状态。 */
@@ -44,37 +48,26 @@ export function usePosterLoader(): PosterLoader {
   return loader
 }
 
-/** base64 化（宿主可能给字符串，也可能给字节数组）。 */
-function base64Of(value: unknown): string {
-  if (typeof value === 'string') return value
-  if (value instanceof Uint8Array) {
-    let binary = ''
-    for (const byte of value) binary += String.fromCharCode(byte)
-    return btoa(binary)
-  }
-  return ''
-}
-
-/** 从响应头里取某个头（大小写不敏感）。 */
-function headerValue(headers: unknown, name: string): string {
-  if (!headers || typeof headers !== 'object') return ''
-  for (const [key, value] of Object.entries(headers as Record<string, unknown>)) {
-    if (key.toLowerCase() !== name) continue
-    return Array.isArray(value) ? String(value[0] ?? '') : String(value ?? '')
-  }
-  return ''
-}
-
 /**
  * 建海报加载器。
  *
  * @param ctx 宿主上下文。
  * @param invokeJob 提交宿主任务并等终态（用于回退的 get-poster job）。
+ * @param findPosterFile 从 state 里查某条 poster_url 已回填的海报文件相对路径
+ *   （posters/<sha256>.<ext>，缺省没有 → 跳过快路径）。
  */
 export function createPosterLoader(
   ctx: HostContext,
   invokeJob: (name: string, input?: Record<string, unknown>, timeoutMs?: number) => Promise<TaskRun>,
+  findPosterFile?: (url: string) => string,
 ): PosterLoader {
+  const fetcher = createPosterFetcher({
+    http: ctx.http,
+    files: ctx.files,
+    invokeJob,
+    findPosterFile,
+    fetchImpl: (globalThis as { fetch?: typeof fetch }).fetch,
+  })
   const entries = reactive(new Map<string, PosterState>())
   const cache = new Map<string, string>()
   const queue: string[] = []
@@ -160,9 +153,11 @@ export function createPosterLoader(
       active += 1
       const entry = ensureEntry(url)
       entry.status = 'loading'
-      void loadPosterData(url)
-        .then((dataUrl) => {
-          cache.set(url, dataUrl || '')
+      void fetcher
+        .load(url)
+        .then((srcUrl: string) => {
+          // 缓存条目只存 URL 字符串（downloadURL 或 data:），不再塞 base64 大块头
+          cache.set(url, srcUrl || '')
           if (cache.size > POSTER_CACHE_LIMIT) {
             for (const key of cache.keys()) {
               if (key === url) continue
@@ -171,8 +166,8 @@ export function createPosterLoader(
             }
           }
           const target = ensureEntry(url)
-          target.status = dataUrl ? 'ready' : 'error'
-          target.src = dataUrl
+          target.status = srcUrl ? 'ready' : 'error'
+          target.src = srcUrl
         })
         .finally(() => {
           inflight.delete(url)
@@ -180,53 +175,6 @@ export function createPosterLoader(
           pump()
         })
     }
-  }
-
-  async function loadPosterData(url: string): Promise<string> {
-    try {
-      return await fetchPosterDirect(url)
-    } catch {
-      try {
-        return await fetchPosterViaJob(url)
-      } catch {
-        return ''
-      }
-    }
-  }
-
-  /** 页面直连：带豆瓣 Referer 取 base64。 */
-  async function fetchPosterDirect(url: string): Promise<string> {
-    const result = (await ctx.http.request({
-      url,
-      method: 'GET',
-      headers: {
-        Referer: 'https://movie.douban.com/',
-        Accept: 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
-      },
-      response_type: 'base64',
-      timeout_seconds: 30,
-      cache_seconds: 3600,
-    })) as { status?: number; body_base64?: unknown; headers?: unknown }
-    if (!result || (result.status ?? 0) < 200 || (result.status ?? 0) >= 300) {
-      throw new Error(`HTTP ${result?.status ?? '?'}`)
-    }
-    const body = base64Of(result.body_base64)
-    if (body === '') throw new Error('空响应')
-    if (body.length > MAX_POSTER_B64) throw new Error('海报过大')
-    const contentType = headerValue(result.headers, 'content-type') || 'image/jpeg'
-    if (!contentType.toLowerCase().startsWith('image/')) throw new Error(`非图片内容 ${contentType}`)
-    return `data:${contentType.split(';')[0]};base64,${body}`
-  }
-
-  /** 回退后端 job（内部按镜像逐个回退，限 128 KiB）。 */
-  async function fetchPosterViaJob(url: string): Promise<string> {
-    const run = await invokeJob('get-poster', { poster_url: url })
-    const raw = run?.result
-    const result = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {}
-    if (result.status === 'succeeded' && typeof result.url === 'string' && result.url.startsWith('data:')) {
-      return result.url
-    }
-    throw new Error(String(result.message || '海报获取失败'))
   }
 
   function dispose(): void {
