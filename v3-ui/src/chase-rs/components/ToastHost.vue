@@ -8,9 +8,9 @@ const store = useChaseStore()
 </script>
 
 <template>
-  <div class="c-toasts" aria-live="polite">
-    <div v-for="toast in store.toasts" :key="toast.id" class="toast" :class="`toast-${toast.kind}`">
+  <TransitionGroup tag="div" name="c-toast" class="c-toasts" aria-live="polite">
+    <div v-for="toast in store.toasts" :key="toast.id" class="toast" :class="`toast-${toast.kind}`" role="status">
       {{ toast.message }}
     </div>
-  </div>
+  </TransitionGroup>
 </template>

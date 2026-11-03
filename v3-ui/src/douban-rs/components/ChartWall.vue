@@ -1,19 +1,20 @@
 <script setup lang="ts">
 // 榜单与海报墙（对应原生版的 renderCharts）。
 //
-// 每个榜单一个区块：标题 + 来源提示 + 条数；下面��海报网格。
-// 条目卡片：海报（可点开放大）、标题（豆瓣链接）、评分/年份/排名/热度、
-// 队列状态徽标、订阅动作。
+// 每个榜单一个区块：标题 + 来源提示 + 条数；下面是海报轮播（横向 scroll-snap）
+// 或网格（右上角切换）。条目卡片见 PosterCard：海报（可点开放大）、排名缎带、
+// 队列状态角标、星条评分、年份/热度、订阅动作与豆瓣链接。
 
-import { computed } from 'vue'
-import { NButton } from 'naive-ui'
-import { ExternalLink } from '@lucide/vue'
-import { doubanHref, formatTime, listHint, listTitle, num, sortListKeys, text } from '../format'
+import { computed, ref } from 'vue'
+import { ChevronLeft, ChevronRight, GalleryHorizontal, LayoutGrid } from '@lucide/vue'
+import { doubanHref, formatTime, listHint, listTitle, sortListKeys, text } from '../format'
 import { QUEUE_STATE_META } from '../constants'
+import { prefersReducedMotion } from '../motion'
 import { useDoubanStore } from '../store'
 import type { ChartItem } from '../types'
 import BlockCard from './BlockCard.vue'
-import PosterImg from './PosterImg.vue'
+import PosterCard from './PosterCard.vue'
+import SkeletonBlock from './SkeletonBlock.vue'
 import StateBadge from './StateBadge.vue'
 
 const emit = defineEmits<{
@@ -21,15 +22,33 @@ const emit = defineEmits<{
 }>()
 
 const store = useDoubanStore()
-const { docSettings, stateDoc, snapshotLists, snapshotListCount, queueIndex, busy } = store
+const { docSettings, stateDoc, snapshotLists, snapshotListCount, queueIndex, busy, loaded } = store
 
 const locked = computed(() => busy.value !== '')
+
+/** 展示方式：轮播（默认，一行横向滑动）或网格（一次看全）。 */
+const layout = ref<'carousel' | 'grid'>('carousel')
+const layouts = [
+  { key: 'carousel' as const, label: '轮播', icon: GalleryHorizontal },
+  { key: 'grid' as const, label: '网格', icon: LayoutGrid },
+]
 
 const listKeys = computed(() => sortListKeys(Object.keys(snapshotLists.value)))
 
 function itemsOf(key: string): ChartItem[] {
   const items = snapshotLists.value[key]
   return Array.isArray(items) ? items : []
+}
+
+/** 带稳定 key 的条目（同一豆瓣条目在榜单里重复出现时追加序号，避免 key 冲突）。 */
+function keyedItems(key: string): Array<{ id: string; item: ChartItem; position: number }> {
+  const seen = new Set<string>()
+  return itemsOf(key).map((item, index) => {
+    let id = item.douban_ref ? `ref:${item.douban_ref}` : `idx:${index}`
+    if (seen.has(id)) id = `${id}#${index}`
+    seen.add(id)
+    return { id, item, position: index + 1 }
+  })
 }
 
 function hintOf(key: string): string {
@@ -46,6 +65,31 @@ function stateOf(item: ChartItem): { label: string; tone: string; state: string 
 function onZoom(item: ChartItem, payload: { url: string; title: string }): void {
   emit('zoom', { url: payload.url, title: payload.title, href: doubanHref(item) })
 }
+
+function subscribe(item: ChartItem): void {
+  void store.runAction(
+    'subscribe',
+    { douban_ref: item.douban_ref },
+    {
+      label: `订阅「${text(item.title) || item.douban_ref}」`,
+      tombstoneRef: item.douban_ref,
+    },
+  )
+}
+
+const tracks = new Map<string, HTMLElement>()
+
+function setTrack(key: string, el: unknown): void {
+  if (el instanceof HTMLElement) tracks.set(key, el)
+  else tracks.delete(key)
+}
+
+function scrollTrack(key: string, direction: 1 | -1): void {
+  const el = tracks.get(key)
+  if (!el) return
+  const left = direction * Math.max(160, el.clientWidth * 0.85)
+  el.scrollBy?.({ left, behavior: prefersReducedMotion() ? 'auto' : 'smooth' })
+}
 </script>
 
 <template>
@@ -57,9 +101,38 @@ function onZoom(item: ChartItem, payload: { url: string; title: string }): void 
           快照时间：{{ formatTime(stateDoc?.snapshot?.fetched_at) || '尚未刷新' }}。海报经宿主 HTTP 带豆瓣 Referer 获取。
         </p>
       </div>
+      <div v-if="snapshotListCount > 0" class="db-seg" role="group" aria-label="海报墙展示方式">
+        <button
+          v-for="mode in layouts"
+          :key="mode.key"
+          type="button"
+          class="db-seg__btn"
+          :class="{ 'db-seg__btn--on': layout === mode.key }"
+          :aria-pressed="layout === mode.key"
+          @click="layout = mode.key"
+        >
+          <component :is="mode.icon" :size="14" aria-hidden="true" />
+          {{ mode.label }}
+        </button>
+      </div>
     </div>
 
-    <div v-if="snapshotListCount === 0" class="db-empty">
+    <!-- 首次读取：骨架海报墙 -->
+    <div v-if="!loaded" class="db-skeleton-wall" role="status">
+      <span class="db-sr">正在读取榜单快照…</span>
+      <div v-for="row in 2" :key="row" class="db-skeleton-row">
+        <SkeletonBlock width="160px" height="16px" />
+        <div class="db-skeleton-track">
+          <div v-for="col in 6" :key="col" class="db-skeleton-card">
+            <SkeletonBlock height="auto" radius="12px" class="db-skeleton-poster" />
+            <SkeletonBlock width="85%" height="11px" />
+            <SkeletonBlock width="55%" height="9px" />
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div v-else-if="snapshotListCount === 0" class="db-empty">
       <p>还没有榜单快照。</p>
       <p class="db-empty__note">
         点击右上角「刷新榜单」按已启用的榜单抓取；抓取完成后，通过黑名单/过滤器的条目会进入观察队列。
@@ -79,6 +152,14 @@ function onZoom(item: ChartItem, payload: { url: string; title: string }): void 
           label="已在设置里停用"
           tone="muted"
         />
+        <template v-if="layout === 'carousel' && itemsOf(key).length > 0">
+          <button type="button" class="db-nav" :aria-label="`${listTitle(key)}：向左滚动`" @click="scrollTrack(key, -1)">
+            <ChevronLeft :size="16" aria-hidden="true" />
+          </button>
+          <button type="button" class="db-nav" :aria-label="`${listTitle(key)}：向右滚动`" @click="scrollTrack(key, 1)">
+            <ChevronRight :size="16" aria-hidden="true" />
+          </button>
+        </template>
       </template>
 
       <div v-if="itemsOf(key).length === 0" class="db-empty">
@@ -86,72 +167,31 @@ function onZoom(item: ChartItem, payload: { url: string; title: string }): void 
         <p class="db-empty__note">抓取失败或榜单为空时后端会在日志里记录原因。</p>
       </div>
 
-      <div v-else class="db-poster-grid">
-        <article v-for="(item, index) in itemsOf(key)" :key="`${key}-${index}`" class="db-item">
-          <PosterImg
-            :url="item.poster_url"
-            :title="text(item.title)"
-            variant="poster"
-            @zoom="onZoom(item, $event)"
-          />
-          <div class="db-item__body">
-            <a
-              v-if="doubanHref(item)"
-              class="db-item__title"
-              :href="doubanHref(item)"
-              target="_blank"
-              rel="noreferrer noopener"
-            >{{ text(item.title) || '(无标题)' }}</a>
-            <span v-else class="db-item__title">{{ text(item.title) || '(无标题)' }}</span>
-
-            <div v-if="item.rate && item.rate !== '0'" class="db-item__meta">
-              <span class="db-rate">★ {{ item.rate }}</span>
-              <span v-if="item.year">{{ item.year }}</span>
-              <span v-if="item.rank">第 {{ item.rank }} 名</span>
-              <span v-if="num(item.hotness) > 0">热度 {{ item.hotness }}</span>
-            </div>
-
-            <StateBadge
-              v-if="stateOf(item).label"
-              :label="stateOf(item).label"
-              :tone="stateOf(item).tone"
-            />
-
-            <div class="db-item__actions">
-              <NButton
-                v-if="stateOf(item).state !== 'subscribed'"
-                size="tiny"
-                type="primary"
-                :disabled="locked"
-                data-busy-lock="1"
-                @click="
-                  store.runAction(
-                    'subscribe',
-                    { douban_ref: item.douban_ref },
-                    {
-                      label: `订阅「${text(item.title) || item.douban_ref}」`,
-                      tombstoneRef: item.douban_ref,
-                    },
-                  )
-                "
-              >
-                订阅
-              </NButton>
-              <NButton v-else size="tiny" quaternary disabled data-busy-lock="1">已订阅</NButton>
-              <a
-                v-if="doubanHref(item)"
-                class="db-link"
-                :href="doubanHref(item)"
-                target="_blank"
-                rel="noreferrer noopener"
-              >
-                <ExternalLink :size="12" aria-hidden="true" />
-                豆瓣
-              </a>
-            </div>
-          </div>
-        </article>
-      </div>
+      <TransitionGroup
+        v-else
+        :ref="(el) => setTrack(key, (el as { $el?: unknown } | null)?.$el)"
+        tag="div"
+        name="db-pop"
+        class="db-wall"
+        :class="layout === 'carousel' ? 'db-wall--carousel' : 'db-wall--grid'"
+        :aria-label="`${listTitle(key)}海报墙`"
+        role="list"
+      >
+        <PosterCard
+          v-for="entry in keyedItems(key)"
+          :key="entry.id"
+          role="listitem"
+          class="db-wall__cell"
+          :item="entry.item"
+          :position="entry.position"
+          :queue-label="stateOf(entry.item).label"
+          :queue-tone="stateOf(entry.item).tone"
+          :queue-state="stateOf(entry.item).state"
+          :locked="locked"
+          @zoom="onZoom(entry.item, $event)"
+          @subscribe="subscribe(entry.item)"
+        />
+      </TransitionGroup>
     </BlockCard>
   </div>
 </template>
@@ -164,7 +204,7 @@ function onZoom(item: ChartItem, payload: { url: string; title: string }): void 
 
 .db-panel-head {
   display: flex;
-  align-items: flex-start;
+  align-items: flex-end;
   justify-content: space-between;
   gap: 14px;
   flex-wrap: wrap;
@@ -175,8 +215,8 @@ function onZoom(item: ChartItem, payload: { url: string; title: string }): void 
 }
 
 .db-panel-title {
-  font-size: 16px;
-  font-weight: 650;
+  font-size: 17px;
+  font-weight: 700;
   margin: 0;
 }
 
@@ -187,79 +227,157 @@ function onZoom(item: ChartItem, payload: { url: string; title: string }): void 
   overflow-wrap: anywhere;
 }
 
-.db-poster-grid {
+/* 分段切换：轮播 / 网格 */
+.db-seg {
+  display: inline-flex;
+  padding: 3px;
+  gap: 2px;
+  border-radius: 10px;
+  border: 1px solid var(--db-line, var(--app-border, #e3e6eb));
+  background: var(--app-surface, #fff);
+}
+
+.db-seg__btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--db-muted, var(--app-text-secondary, #6b7280));
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition:
+    background-color 0.2s ease,
+    color 0.2s ease;
+}
+
+.db-seg__btn:hover {
+  color: var(--app-text, #1f2329);
+}
+
+.db-seg__btn--on {
+  color: var(--db-accent, #2080f0);
+  font-weight: 600;
+  background: color-mix(in srgb, var(--db-accent, #2080f0) 13%, transparent);
+}
+
+.db-seg__btn:focus-visible,
+.db-nav:focus-visible {
+  outline: 2px solid var(--db-accent, #2080f0);
+  outline-offset: 2px;
+}
+
+.db-nav {
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid var(--db-line, var(--app-border, #e3e6eb));
+  background: var(--app-surface, #fff);
+  color: var(--app-text, #1f2329);
+  cursor: pointer;
+  transition:
+    border-color 0.2s ease,
+    color 0.2s ease;
+}
+
+.db-nav:hover {
+  border-color: var(--db-accent, #2080f0);
+  color: var(--db-accent, #2080f0);
+}
+
+.db-wall {
+  position: relative;
+  min-width: 0;
+}
+
+.db-wall--grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(142px, 1fr));
+  gap: 16px 14px;
+}
+
+.db-wall--carousel {
+  display: flex;
+  gap: 14px;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scroll-snap-type: x mandatory;
+  scroll-padding-inline: 4px;
+  padding: 10px 4px 12px;
+  margin: -10px -4px -6px;
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--db-accent, #2080f0) 35%, transparent) transparent;
+  -webkit-mask-image: linear-gradient(90deg, #000, #000 calc(100% - 28px), transparent);
+  mask-image: linear-gradient(90deg, #000, #000 calc(100% - 28px), transparent);
+}
+
+.db-wall--carousel > .db-wall__cell {
+  flex: 0 0 clamp(128px, 15cqi, 168px);
+  scroll-snap-align: start;
+}
+
+/* TransitionGroup：条目进出与位移 */
+.db-pop-enter-active,
+.db-pop-leave-active {
+  transition:
+    opacity 0.3s ease,
+    transform 0.3s ease;
+}
+
+.db-pop-enter-from,
+.db-pop-leave-to {
+  opacity: 0;
+  transform: translateY(10px) scale(0.96);
+}
+
+.db-pop-move {
+  transition: transform 0.35s ease;
+}
+
+/* 骨架海报墙 */
+.db-skeleton-wall {
+  display: grid;
   gap: 14px;
 }
 
-.db-item {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  min-width: 0;
-}
-
-.db-item__body {
+.db-skeleton-row {
   display: grid;
-  gap: 5px;
-  min-width: 0;
-  justify-items: start;
+  gap: 12px;
+  padding: 14px 16px;
+  border-radius: var(--db-radius, 14px);
+  border: 1px solid var(--db-line, var(--app-border, #e3e6eb));
+  background: var(--app-surface, #fff);
 }
 
-.db-item__title {
-  font-size: 13px;
-  font-weight: 550;
-  line-height: 1.35;
-  text-decoration: none;
-  color: var(--app-text, #1f2329);
-  overflow-wrap: anywhere;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
+.db-skeleton-track {
+  display: flex;
+  gap: 14px;
   overflow: hidden;
 }
 
-a.db-item__title:hover {
-  color: var(--db-accent, #2080f0);
+.db-skeleton-card {
+  flex: 0 0 clamp(120px, 15cqi, 160px);
+  display: grid;
+  gap: 7px;
 }
 
-.db-item__meta {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex-wrap: wrap;
-  color: var(--db-muted, var(--app-text-secondary, #6b7280));
-  font-size: 11px;
+.db-skeleton-poster {
+  aspect-ratio: 2 / 3;
 }
 
-.db-rate {
-  color: #e6a23c;
-  font-weight: 600;
-}
-
-.db-item__actions {
-  display: flex;
-  gap: 6px;
-  flex-wrap: wrap;
-  align-items: center;
-}
-
-.db-link {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 3px 8px;
-  border-radius: 7px;
-  border: 1px solid var(--db-line, var(--app-border, #e3e6eb));
-  font-size: 12px;
-  text-decoration: none;
-  color: var(--db-muted, var(--app-text-secondary, #6b7280));
-}
-
-.db-link:hover {
-  border-color: var(--db-accent, #2080f0);
-  color: var(--db-accent, #2080f0);
+.db-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
 }
 
 .db-empty {
@@ -279,10 +397,24 @@ a.db-item__title:hover {
   font-size: 11px;
 }
 
-@media (max-width: 720px) {
-  .db-poster-grid {
+@container db-page (max-width: 720px) {
+  .db-wall--grid {
     grid-template-columns: repeat(auto-fill, minmax(116px, 1fr));
-    gap: 10px;
+    gap: 12px 10px;
+  }
+
+  .db-wall--carousel > .db-wall__cell {
+    flex-basis: 118px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .db-seg__btn,
+  .db-nav,
+  .db-pop-enter-active,
+  .db-pop-leave-active,
+  .db-pop-move {
+    transition: none;
   }
 }
 </style>

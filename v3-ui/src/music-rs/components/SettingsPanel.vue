@@ -17,8 +17,8 @@ const { settings, busy, notifyResult } = store
 // insertStaticContent（需要 DOM 的 template.content），离线冒烟用的最小 DOM 垫片没有它。
 // 用插值渲染就没有这个问题（文本仍由同一份常量提供）。
 const STORAGE_HINT =
-  '下载先落插件自有暂存目录 downloads/<短id>.part（宿主流式写盘），定名后由宿主 move 进目标目录——「本地暂存目录 ' +
-  'staging_dir」与「CD2 直送」设置项随 v3 文件模型移除。'
+  '宿主支持直写（新版宿主）时直接流式写进目标目录；否则先落插件自有暂存目录 downloads/<短id>.part，定名后由宿主 ' +
+  'move 进目标目录。目标目录已有同名文件时自动加「 (2)」等后缀，不覆盖。'
 const NOTIFY_TEST_HINT =
   '主动发一条 info 通知；v3 宿主支持 callback_data 按钮，失败通知的「重试」按钮直达 Telegram 回调。'
 
@@ -76,12 +76,14 @@ function onMaxActiveInput(event: Event): void {
 }
 
 async function save(): Promise<void> {
-  await store.saveSettings({
+  const ok = await store.saveSettings({
     target_dir: targetDir.value.trim(),
     quality: quality.value,
     max_active: Number(maxActive.value),
     notify_on_fail: notifyOnFail.value,
   })
+  // 保存成功：表单回到「跟随生效值」（目录去尾斜杠等规范化后的值也同步回来）。
+  if (ok) revert()
 }
 </script>
 
@@ -103,7 +105,7 @@ async function save(): Promise<void> {
         @update:value="markEdited"
       />
       <span class="hint">
-        最终落点（宿主绝对路径或 cd2:/网盘路径）；宿主按 CD2 挂载前缀自动分流并报告字节进度。
+        最终落点，必须是以 / 开头的宿主绝对路径（可以是 CD2 挂载目录，如 /CloudNAS/…）；宿主按挂载前缀自动分流。
       </span>
     </label>
 
@@ -125,12 +127,12 @@ async function save(): Promise<void> {
         :value="maxActive"
         @input="onMaxActiveInput"
       />
-      <span class="hint">每轮任务最多推进几个下载，1-{{ MAX_ACTIVE_CAP }}（超出回默认 2）。</span>
+      <span class="hint">每轮（定时每 5 分钟或手动推进）最多新开几首下载，1-{{ MAX_ACTIVE_CAP }} 的整数；逐首顺序下载。</span>
     </label>
 
     <div class="field">
       <span class="label">失败时发通知</span>
-      <NSwitch v-model:value="notifyOnFail" @update:value="markEdited" />
+      <NSwitch v-model:value="notifyOnFail" aria-label="失败时发通知" @update:value="markEdited" />
       <span class="hint">
         尝试次数用尽时推送错误通知，通知里带「重试」按钮（callback_data retry:&lt;短id&gt;，仅 Telegram）。
       </span>
@@ -167,8 +169,8 @@ async function save(): Promise<void> {
 
 .card-title {
   margin: 0;
-  font-size: 16px;
-  font-weight: 600;
+  font-size: 17px;
+  font-weight: 700;
 }
 
 .sub {
@@ -185,8 +187,17 @@ async function save(): Promise<void> {
 
 .field {
   display: grid;
-  gap: 5px;
+  gap: 6px;
   align-content: start;
+  padding: 14px;
+  border-radius: 14px;
+  border: 1px solid color-mix(in srgb, var(--app-border, #e0e4ea) 80%, transparent);
+  background: color-mix(in srgb, var(--app-bg, transparent) 45%, transparent);
+  transition: border-color 0.2s ease;
+}
+
+.field:focus-within {
+  border-color: color-mix(in srgb, var(--mx-accent, #2080f0) 55%, var(--app-border, #e0e4ea));
 }
 
 .label {
@@ -201,8 +212,14 @@ async function save(): Promise<void> {
   line-height: 1.6;
 }
 
+.sel:focus-visible,
+.input:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--mx-accent, #2080f0) 60%, transparent);
+  outline-offset: 1px;
+}
+
 .sel {
-  padding: 5px 8px;
+  padding: 6px 8px;
   border-radius: 8px;
   border: 1px solid var(--app-border, #e0e4ea);
   background: var(--app-bg, transparent);
@@ -221,6 +238,19 @@ async function save(): Promise<void> {
 }
 
 .divider {
-  border-top: 1px solid var(--app-border, #e0e4ea);
+  height: 1px;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    var(--app-border, #e0e4ea) 15%,
+    var(--app-border, #e0e4ea) 85%,
+    transparent
+  );
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .field {
+    transition: none;
+  }
 }
 </style>

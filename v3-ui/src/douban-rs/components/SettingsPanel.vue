@@ -10,7 +10,7 @@
 
 import { computed, reactive, ref, watch } from 'vue'
 import { NButton } from 'naive-ui'
-import { SOURCE_LABEL, TYPE_LABEL } from '../constants'
+import { COOKIE_SOURCE_LABEL, SOURCE_LABEL, TYPE_LABEL, WISH_STATUS_LABEL } from '../constants'
 import { formatTime, listTitle, num, sortListKeys, splitListValue, text } from '../format'
 import { defaultSettings } from '../lib-bridge'
 import { useDoubanStore } from '../store'
@@ -260,13 +260,13 @@ function onKeywordInput(event: Event): void {
         <div class="db-kv">
           <span class="db-kv__label">想看同步</span>
           <span class="db-kv__value">
-            {{ stateDoc?.wish_info?.last_status ? `${stateDoc.wish_info.last_status} · ${formatTime(stateDoc.wish_info.last_sync) || '—'}` : '未同步' }}
+            {{ stateDoc?.wish_info?.last_status ? `${WISH_STATUS_LABEL[stateDoc.wish_info.last_status] ?? stateDoc.wish_info.last_status} · ${formatTime(stateDoc.wish_info.last_sync) || '—'}` : '未同步' }}
           </span>
         </div>
         <div class="db-kv">
           <span class="db-kv__label">登录态缓存</span>
           <span class="db-kv__value">
-            {{ stateDoc?.cookie?.source ? `${stateDoc.cookie.source} · uid=${text(stateDoc.cookie.uid) || '—'} · ${formatTime(stateDoc.cookie.fetched_at) || '—'}` : '无（下次刷新/同步时获取）' }}
+            {{ stateDoc?.cookie?.source ? `${COOKIE_SOURCE_LABEL[stateDoc.cookie.source] ?? stateDoc.cookie.source} · uid=${text(stateDoc.cookie.uid) || '—'} · ${formatTime(stateDoc.cookie.fetched_at) || '—'}` : '无（下次刷新/同步时获取）' }}
           </span>
         </div>
         <div class="db-kv">
@@ -301,11 +301,11 @@ function onKeywordInput(event: Event): void {
         </label>
         <label class="db-switch-row">
           <span class="db-switch-text">
-            <span class="db-field-label">到期自动订阅</span>
-            <span class="db-field-help">关闭后新条目只入队，等后台/手动处理</span>
+            <span class="db-field-label">想看新条目直接订阅</span>
+            <span class="db-field-help">开：新加入的想看跳过观察期，由后台任务尽快订阅；关：先观察一段时间再订阅。榜单条目始终先观察</span>
           </span>
           <span class="db-switch">
-            <input v-model="form.auto" type="checkbox" aria-label="到期自动订阅" />
+            <input v-model="form.auto" type="checkbox" aria-label="想看新条目直接订阅" />
             <span class="db-track" />
           </span>
         </label>

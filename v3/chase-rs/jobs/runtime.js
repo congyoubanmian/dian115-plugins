@@ -12,6 +12,7 @@ import {
   bumpRevision,
   forgetTmdbTarget,
   log,
+  mergeStateDocs,
   newStateDoc,
   normalizeStateDoc,
   pushAlignItem,
@@ -60,7 +61,7 @@ import {
   shouldSuggestTrim,
   trimReason,
 } from '../lib/align.js'
-import { applyOutcome, compose, dedupeKey, shouldSend } from '../lib/notify.js'
+import { applyOutcome, bumpRetry, compose, dedupeKey, retrySeqFor, shouldSend } from '../lib/notify.js'
 import { sampleText, truncateUtf8 } from '../lib/loose.js'
 
 // ─────────────────────────── 预算与窗口（与 runtime.rs 一致） ───────────────────────────
@@ -163,9 +164,12 @@ export async function loadRuntimeState(ctx) {
     const stored = await readStoredValue(ctx, STATE_KEY)
     if (stored.ok) {
       if (stored.missing) return { kind: 'fresh', doc: null, revision: 0 }
-      const revision = await readStoredRevision(ctx, path)
-      const doc = normalizeStateDoc(stored.value)
-      return { kind: doc ? 'loaded' : 'foreign', doc, revision }
+      const envelope = await readStoredEnvelope(ctx, path)
+      // 值与版本号必须出自同一次读取：两次读之间有别的任务落盘时，拿新版本号配旧值
+      // 会让 CAS 放行一份过期文档（静默覆盖对方结果）。信封带值就以信封为准。
+      const value = envelope.value !== null && envelope.value !== undefined ? envelope.value : stored.value
+      const doc = normalizeStateDoc(value)
+      return { kind: doc ? 'loaded' : 'foreign', doc, revision: envelope.revision }
     }
     lastMessage = stored.message
     await delay(200)
@@ -195,11 +199,14 @@ async function readStoredValue(ctx, key) {
   return { ok: true, missing: value === null || value === undefined, value }
 }
 
-/** 读存储信封里的版本号（CAS 用）。 */
-async function readStoredRevision(ctx, path) {
+/** 读存储信封（版本号 + 值，CAS 用）。读不到时版本号记 0、值记 null。 */
+async function readStoredEnvelope(ctx, path) {
   const result = await tryApi(ctx, 'GET', path)
-  if (!result.ok) return 0
-  return typeof result.data?.revision === 'number' ? result.data.revision : 0
+  if (!result.ok) return { revision: 0, value: null }
+  return {
+    revision: typeof result.data?.revision === 'number' ? result.data.revision : 0,
+    value: result.data?.value ?? null,
+  }
 }
 
 /** 一次性运行时会话：文档 + 存储可用性 + 轮次序号。 */
@@ -212,6 +219,8 @@ export class Session {
     // 认不出的文档（foreign）不落盘：避免默认值覆盖未知内容（对照 apply_loaded）。
     this.persistAllowed = this.storageOk && loaded.kind !== 'foreign'
     this.revision = loaded.revision ?? 0
+    // 本会话起点（三方合并的基线）：冲突时据此判断哪些字段是本会话改的。
+    this.baseline = JSON.parse(JSON.stringify(this.doc))
     // 轮次序号跟着已落盘的版本走：新会话的幂等键不会与上一会话撞车。
     this.runSeq = this.revision
     this.loadedKind = loaded.kind
@@ -233,26 +242,31 @@ export class Session {
   }
 
   /**
-   * 落盘：脱敏 + 裁剪 + CAS 写回；conflict 时重读版本同字节重放一次
-   * （对照 store.rs put 的 If-Match 重试）。存储不可用时按"本轮只读"直接返回成功。
+   * 落盘：脱敏 + 裁剪 + CAS 写回（对照 store.rs put 的 If-Match 重试）。
+   *
+   * conflict 时不再"同字节重放"：那会把并发任务（例如整点对齐与页面触发的刷新）
+   * 刚写下的结果整份盖掉 —— 包括 daily.last_sent_date，下一小时就会重复发日报。
+   * 改为重读最新文档，按「本会话改过的字段用自己的、没改过的用对方的」三方合并后再写。
+   * 存储不可用时按"本轮只读"直接返回成功。
    */
   async persist() {
     if (!this.persistAllowed) return { ok: true, skipped: true }
     sanitizeForPersist(this.doc)
     const revision = bumpRevision(this.doc)
     this.runSeq = Math.max(this.runSeq, revision)
-    let text
-    try {
-      text = serializeState(this.doc)
-    } catch (error) {
-      return { ok: false, message: error.message }
-    }
     const path = `/api/extensions/v3/${encodeURIComponent(pluginIdOf(this.ctx))}/storage/${STATE_KEY}`
     let expected = this.revision
-    for (let attempt = 0; attempt < 2; attempt += 1) {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      let text
+      try {
+        text = serializeState(this.doc)
+      } catch (error) {
+        return { ok: false, message: error.message }
+      }
       const result = await tryApi(this.ctx, 'PUT', path, { value: JSON.parse(text), expected_revision: expected })
       if (result.ok) {
-        this.revision = typeof result.data?.revision === 'number' ? result.data.revision : revision
+        this.revision = typeof result.data?.revision === 'number' ? result.data.revision : this.doc.revision
+        this.baseline = JSON.parse(text)
         return { ok: true }
       }
       if (result.status !== 409 && result.status !== 412) {
@@ -261,6 +275,13 @@ export class Session {
       const fresh = await tryApi(this.ctx, 'GET', path)
       if (!fresh.ok) return { ok: false, message: `storage 冲突后重读失败: ${fresh.message}` }
       expected = typeof fresh.data?.revision === 'number' ? fresh.data.revision : expected + 1
+      const freshValue = fresh.data?.value
+      if (freshValue !== null && freshValue !== undefined) {
+        const theirs = normalizeStateDoc(freshValue)
+        if (!theirs) return { ok: false, message: 'storage 冲突后读到认不出的文档, 不覆盖' }
+        this.doc = mergeStateDocs(this.baseline, this.doc, theirs)
+        sanitizeForPersist(this.doc)
+      }
     }
     return { ok: false, message: 'storage PUT 冲突重试后仍失败' }
   }
@@ -454,6 +475,15 @@ export function coverageIsAbsent(evidence) {
   return evidence.have_max === null && evidence.have_count === 0
 }
 
+/**
+ * 缓存行是否带着一次真实的 Emby 覆盖观测（有集号，或探到了「该季 0 集」）。
+ * 整点任务因预算/时间/负缓存跳过的行同样带着新鲜的 at，却从没探过 Emby；
+ * 若当缓存复用，「立即对齐」在 6 小时内永远不会去补探这些条目。
+ */
+export function rowHasCoverage(row) {
+  return row.emby_have_max >= 0 || row.emby_have_count === 0
+}
+
 /** 轮内/跨轮共用的探测键：`{proxy_id}:{tmdb_id}:{season}`。 */
 export function probeKey(proxyId, tmdbId, season) {
   return `${proxyId ?? 0}:${tmdbId}:${season}`
@@ -623,7 +653,7 @@ export async function maybeSendDaily(session, settings, calendarToday, now) {
       level: 'info',
       title,
       body,
-      dedupe_key: dedupeKey(today),
+      dedupe_key: dedupeKey(today, retrySeqFor(session.doc.daily, today)),
     })
     applyOutcome(session.doc.daily, today, outcome ?? {}, now)
     recordAttempt(session.doc, 'notifications.plugin', 'chase-daily', 200, 'sent', now)
@@ -637,6 +667,7 @@ export async function maybeSendDaily(session, settings, calendarToday, now) {
     session.doc.daily.last_at = now
     session.doc.daily.last_result = 'failed'
     session.doc.daily.last_error = truncateUtf8(error?.message || String(error), 200)
+    bumpRetry(session.doc.daily, today)
     recordError(session.doc, 'job.notify', session.doc.daily.last_error, now)
     return { status: 'failed', message: session.doc.daily.last_error }
   }
@@ -1136,6 +1167,7 @@ export async function runAlignNow(ctx) {
   let patches = 0
   let planned = 0
   let pendingProbe = 0
+  let selected
   const items = []
 
   for (const intent of fetched.items) {
@@ -1152,7 +1184,7 @@ export async function runAlignNow(ctx) {
 
     // 优先用 6 小时内新鲜的缓存判定（按 (intent_id, tmdb_id, season) 命中）。
     const cachedRow = cache.get(`${intent.id}:${intent.tmdb_id}:${intent.season}`)
-    const cached = cachedRow && isFresh(cachedRow.at, CACHE_FRESH_SECS) ? cachedRow : null
+    const cached = cachedRow && rowHasCoverage(cachedRow) && isFresh(cachedRow.at, CACHE_FRESH_SECS) ? cachedRow : null
     const verifiedAt = cached ? cached.at : null
     let targetState
     let evidence
@@ -1165,7 +1197,8 @@ export async function runAlignNow(ctx) {
       targetState = { value: evidence.target_upper, known: evidence.target_known, note: evidence.target_note }
     } else {
       const remaining = Math.max(0, ALIGN_NOW_PROBE_LIMIT - probeCalls)
-      const selected = selectedInstance(session, settings)
+      // 实例只解析一次：逐条解析会把同一条选择错误/直连记录刷满诊断列表。
+      if (selected === undefined) selected = selectedInstance(session, settings)
       if (selected === null) {
         counters.skipped += 1
         continue
@@ -1345,8 +1378,9 @@ export async function runRefresh(ctx) {
     if (message === '') message = `日历读取失败: ${failure.message}`
   }
 
-  const matched = session.doc.align.items.length
-  session.doc.stats.matched = matched
+  // 只读刷新不重新判定：「已判定」沿用上一轮对齐的计数（不拿结果行数顶替，
+  // 结果行含未参与判定的条目且上限 50 行）。
+  const matched = session.doc.stats.matched
   const elapsedMs = Math.max(0, nowUnixSecs() - startedAt) * 1000
   if (message === '') message = `界面计数已刷新(${elapsedMs}ms)`
   log(session.doc, 'info', message, now)

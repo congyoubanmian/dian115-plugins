@@ -12,9 +12,11 @@
 
 import { computed, reactive } from 'vue'
 import { NButton, NTag } from 'naive-ui'
+import { Heart as HeartIcon, ListMusic as ListMusicIcon, Play as PlayIcon, Sparkles as SparklesIcon } from '@lucide/vue'
 import { SOURCES, qualitiesOfSource, useMusicStore } from '../store'
 import type { PlaylistItem } from '../types'
 import SongTable from './SongTable.vue'
+import Skeleton from './Skeleton.vue'
 
 const store = useMusicStore()
 const {
@@ -100,12 +102,14 @@ function onQualityChange(event: Event): void {
           {{ item.name }}
         </button>
       </span>
-      <NButton size="small" secondary :loading="busy === 'playlists'" @click="store.loadPlaylists()">刷新</NButton>
+      <NButton size="small" secondary round :loading="busy === 'playlists'" @click="store.loadPlaylists()">刷新</NButton>
     </div>
 
     <!-- 后端给的提示 / 真实错误：如实显示，不静默也不美化 -->
     <p v-if="playlistError" class="hint hint--error">{{ playlistError }}</p>
     <p v-if="playlistNotice" class="hint hint--warn">{{ playlistNotice }}</p>
+
+    <Skeleton v-if="busy === 'playlists' && !playlists.length" variant="card" :count="6" />
 
     <!-- QQ 特殊入口：每日推荐 / 我喜欢（不是普通歌单，取曲目走各自的后端接口） -->
     <div v-if="specialPlaylists.length" class="entry-row">
@@ -116,6 +120,9 @@ function onQualityChange(event: Event): void {
         class="pl-entry"
         @click="store.openPlaylist(entry)"
       >
+        <span class="pl-entry__icon" aria-hidden="true">
+          <component :is="entry.special === 'liked' ? HeartIcon : SparklesIcon" :size="18" />
+        </span>
         <span class="pl-entry__name">{{ entry.name }}</span>
         <span class="pl-entry__meta">{{ entry.count > 0 ? `${entry.count} 首` : '点开查看' }}</span>
       </button>
@@ -142,6 +149,8 @@ function onQualityChange(event: Event): void {
               loading="lazy"
               @error="onCoverError(playlist.id)"
             />
+            <ListMusicIcon v-else :size="28" aria-hidden="true" />
+            <span class="pl-play" aria-hidden="true"><PlayIcon :size="16" /></span>
           </div>
           <div class="pl-name">{{ playlist.name || '—' }}</div>
           <div class="pl-meta">
@@ -164,15 +173,16 @@ function onQualityChange(event: Event): void {
       <NButton size="small" secondary @click="store.closePlaylist()">← 返回歌单列表</NButton>
       <h3 class="card-title">{{ playlistView.name || '歌单' }}</h3>
       <span class="hint-inline">统一音质:</span>
-      <select :value="playlistQuality" class="sel" @change="onQualityChange">
+      <select :value="playlistQuality" class="sel" aria-label="整单统一音质" @change="onQualityChange">
         <option v-for="value in detailQualities" :key="value" :value="value">{{ store.qualityLabel(value) }}</option>
       </select>
-      <NButton size="small" type="primary" :loading="busy === 'pl-all'" @click="store.downloadPlaylistAll()">
+      <NButton size="small" type="primary" round :loading="busy === 'pl-all'" @click="store.downloadPlaylistAll()">
         整单下载
       </NButton>
     </div>
 
     <SongTable v-if="playlistSongs.length" :songs="playlistSongs" @download="store.downloadSong" />
+    <Skeleton v-else-if="busy === 'pl-songs'" :count="5" />
     <p v-else-if="playlistSongsError" class="hint hint--error">{{ playlistSongsError }}</p>
     <p v-else class="hint">这个歌单还没有取到曲目（可能需要登录或歌单为空）。</p>
 
@@ -207,29 +217,43 @@ function onQualityChange(event: Event): void {
 
 .card-title {
   margin: 0;
-  font-size: 16px;
-  font-weight: 600;
+  font-size: 17px;
+  font-weight: 700;
 }
 
 .seg {
   display: inline-flex;
+  gap: 2px;
+  padding: 3px;
   border: 1px solid var(--app-border, #e0e4ea);
-  border-radius: 9px;
-  overflow: hidden;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--app-bg, transparent) 60%, transparent);
 }
 
 .seg button {
   border: none;
+  border-radius: 999px;
   background: transparent;
-  color: inherit;
-  padding: 6px 14px;
+  color: var(--app-text-secondary, inherit);
+  padding: 4px 14px;
   font-size: 13px;
   cursor: pointer;
+  transition:
+    background-color 0.2s ease,
+    color 0.2s ease;
 }
 
 .seg button.on {
-  background: var(--app-accent, #2080f0);
+  background: var(--mx-accent, var(--app-accent, #2080f0));
   color: #fff;
+  box-shadow: 0 4px 12px -6px var(--mx-accent, #2080f0);
+}
+
+.seg button:focus-visible,
+.pl-card:focus-visible,
+.pl-entry:focus-visible {
+  outline: 2px solid var(--mx-accent, #2080f0);
+  outline-offset: 2px;
 }
 
 .hint {
@@ -240,11 +264,11 @@ function onQualityChange(event: Event): void {
 }
 
 .hint--error {
-  color: #d03050;
+  color: var(--mx-err, #d03050);
 }
 
 .hint--warn {
-  color: #d97706;
+  color: var(--mx-warn, #d97706);
 }
 
 .hint-inline {
@@ -253,8 +277,8 @@ function onQualityChange(event: Event): void {
 }
 
 .sel {
-  padding: 5px 8px;
-  border-radius: 8px;
+  padding: 5px 10px;
+  border-radius: 999px;
   border: 1px solid var(--app-border, #e0e4ea);
   background: var(--app-bg, transparent);
   color: inherit;
@@ -266,30 +290,61 @@ function onQualityChange(event: Event): void {
   display: flex;
   gap: 10px;
   flex-wrap: wrap;
+  margin-top: 12px;
 }
 
 .pl-entry {
   display: grid;
-  gap: 2px;
+  grid-template-columns: auto 1fr;
+  grid-template-areas:
+    'icon name'
+    'icon meta';
+  column-gap: 10px;
+  align-items: center;
   text-align: left;
-  padding: 10px 14px;
-  border: 1px solid var(--app-border, #e0e4ea);
-  border-radius: 10px;
-  background: var(--app-bg, transparent);
+  padding: 10px 16px 10px 10px;
+  border: 1px solid color-mix(in srgb, var(--mx-accent, #2080f0) 25%, var(--app-border, #e0e4ea));
+  border-radius: 14px;
+  background: linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--mx-accent, #2080f0) 12%, var(--app-surface, #fff)),
+    var(--app-surface, #fff)
+  );
   color: inherit;
   cursor: pointer;
+  transition:
+    transform 0.2s ease,
+    border-color 0.2s ease;
 }
 
 .pl-entry:hover {
-  border-color: var(--app-accent, #2080f0);
+  border-color: var(--mx-accent, #2080f0);
+  transform: translateY(-2px);
+}
+
+.pl-entry__icon {
+  grid-area: icon;
+  width: 36px;
+  height: 36px;
+  display: grid;
+  place-items: center;
+  border-radius: 10px;
+  color: #fff;
+  background: linear-gradient(
+    140deg,
+    var(--mx-accent, #2080f0),
+    color-mix(in srgb, var(--mx-accent, #2080f0) 55%, var(--app-text, #000))
+  );
 }
 
 .pl-entry__name {
+  grid-area: name;
   font-size: 13px;
-  font-weight: 500;
+  font-weight: 600;
 }
 
 .pl-entry__meta {
+  grid-area: meta;
   font-size: 11px;
   color: var(--app-text-secondary, rgba(0, 0, 0, 0.45));
 }
@@ -297,13 +352,14 @@ function onQualityChange(event: Event): void {
 /* 分段 */
 .pl-section {
   display: grid;
-  gap: 8px;
+  gap: 10px;
+  margin-top: 14px;
 }
 
 .seg-title {
   margin: 0;
   font-size: 13px;
-  font-weight: 600;
+  font-weight: 700;
   color: var(--app-text-secondary, rgba(0, 0, 0, 0.6));
   display: flex;
   align-items: center;
@@ -312,16 +368,24 @@ function onQualityChange(event: Event): void {
 
 .seg-count {
   font-size: 11px;
-  font-weight: 400;
-  padding: 1px 7px;
+  font-weight: 600;
+  padding: 1px 8px;
   border-radius: 999px;
-  background: color-mix(in srgb, var(--app-accent, #2080f0) 12%, transparent);
+  color: var(--mx-accent, #2080f0);
+  background: color-mix(in srgb, var(--mx-accent, #2080f0) 12%, transparent);
 }
 
 .pl-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
-  gap: 12px;
+  gap: 14px;
+}
+
+@container music-page (max-width: 480px) {
+  .pl-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+  }
 }
 
 .pl-card {
@@ -329,33 +393,77 @@ function onQualityChange(event: Event): void {
   gap: 6px;
   text-align: left;
   padding: 10px;
-  border: 1px solid var(--app-border, #e0e4ea);
-  border-radius: 10px;
-  background: var(--app-bg, transparent);
+  border: 1px solid color-mix(in srgb, var(--app-border, #e0e4ea) 80%, transparent);
+  border-radius: 14px;
+  background: var(--app-surface, #fff);
   color: inherit;
   cursor: pointer;
+  transition:
+    transform 0.22s ease,
+    border-color 0.22s ease,
+    box-shadow 0.22s ease;
 }
 
 .pl-card:hover {
-  border-color: var(--app-accent, #2080f0);
+  transform: translateY(-3px);
+  border-color: color-mix(in srgb, var(--mx-accent, #2080f0) 45%, var(--app-border, #e0e4ea));
+  box-shadow: 0 14px 30px -20px color-mix(in srgb, var(--mx-accent, #2080f0) 90%, transparent);
 }
 
 .pl-cover {
+  position: relative;
   aspect-ratio: 1;
-  border-radius: 8px;
+  border-radius: 10px;
   overflow: hidden;
-  background: color-mix(in srgb, var(--app-accent, #2080f0) 10%, transparent);
+  display: grid;
+  place-items: center;
+  color: color-mix(in srgb, var(--mx-accent, #2080f0) 70%, transparent);
+  background: linear-gradient(
+    145deg,
+    color-mix(in srgb, var(--mx-accent, #2080f0) 18%, transparent),
+    color-mix(in srgb, var(--mx-accent, #2080f0) 6%, transparent)
+  );
 }
 
 .pl-cover img {
   width: 100%;
   height: 100%;
   object-fit: cover;
+  transition: transform 0.4s ease;
+}
+
+.pl-card:hover .pl-cover img {
+  transform: scale(1.06);
+}
+
+.pl-play {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  color: #fff;
+  background: var(--mx-accent, #2080f0);
+  box-shadow: 0 6px 16px -6px color-mix(in srgb, #000 60%, transparent);
+  opacity: 0;
+  transform: translateY(6px);
+  transition:
+    opacity 0.2s ease,
+    transform 0.2s ease;
+}
+
+.pl-card:hover .pl-play,
+.pl-card:focus-visible .pl-play {
+  opacity: 1;
+  transform: none;
 }
 
 .pl-name {
   font-size: 13px;
-  font-weight: 500;
+  font-weight: 600;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -370,5 +478,21 @@ function onQualityChange(event: Event): void {
 .pl-meta :deep(.n-tag) {
   vertical-align: middle;
   margin-left: 4px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .seg button,
+  .pl-entry,
+  .pl-card,
+  .pl-cover img,
+  .pl-play {
+    transition: none;
+  }
+
+  .pl-entry:hover,
+  .pl-card:hover,
+  .pl-card:hover .pl-cover img {
+    transform: none;
+  }
 }
 </style>

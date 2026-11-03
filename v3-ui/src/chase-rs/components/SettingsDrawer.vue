@@ -85,9 +85,22 @@ const changedKeys = computed(() => {
   return keys
 })
 
+/** 数字框清空后 v-model.number 给的是空串：不能当 0 保存（例如发送小时会被改成 0 点）。 */
+const invalidNumbers = computed(() =>
+  FIELDS.filter((field) => {
+    if (field.kind !== 'number') return false
+    const value = form[field.key] as unknown
+    return value === '' || value === null || !Number.isFinite(Number(value))
+  }).map((field) => field.label),
+)
+
 async function save(): Promise<void> {
   if (changedKeys.value.length === 0) {
     store.toast('info', '没有改动')
+    return
+  }
+  if (invalidNumbers.value.length > 0) {
+    store.toast('error', `请填写有效数字: ${invalidNumbers.value.join('、')}`)
     return
   }
   const payload: Partial<FlatSettings> = {}
@@ -100,8 +113,13 @@ async function save(): Promise<void> {
 </script>
 
 <template>
-  <div v-if="store.drawerOpen" class="c-overlay" @click.self="store.closeSettings()">
-    <div class="c-drawer" role="dialog" aria-label="追剧管家设置">
+  <div
+    v-if="store.drawerOpen"
+    class="c-overlay"
+    @click.self="store.closeSettings()"
+    @keydown.esc="store.closeSettings()"
+  >
+    <div class="c-drawer" role="dialog" aria-modal="true" aria-label="追剧管家设置">
       <div class="c-drawer-head">
         <h3>追剧管家设置</h3>
         <NButton class="c-icon-btn" quaternary circle aria-label="关闭" title="关闭" @click="store.closeSettings()">
@@ -145,14 +163,24 @@ async function save(): Promise<void> {
       <div class="c-drawer-foot">
         <div class="alert alert-info c-changed">
           {{
-            changedKeys.length > 0
+            invalidNumbers.length > 0
+              ? `请填写有效数字: ${invalidNumbers.join('、')}`
+              : changedKeys.length > 0
               ? `将提交改动: ${changedKeys.join(', ')}`
               : '没有改动: 保存只提交被改动的键, 其余保持原值。'
           }}
         </div>
         <div class="c-drawer-buttons">
           <NButton size="small" @click="store.closeSettings()">取消</NButton>
-          <NButton size="small" type="primary" :disabled="changedKeys.length === 0" @click="save">保存</NButton>
+          <NButton
+            size="small"
+            type="primary"
+            :loading="store.saving"
+            :disabled="changedKeys.length === 0 || store.saving"
+            @click="save"
+          >
+            保存
+          </NButton>
         </div>
       </div>
     </div>

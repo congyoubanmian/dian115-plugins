@@ -35,6 +35,7 @@ const status = computed(() => {
   return entry.value?.status ?? 'idle'
 })
 const src = computed(() => entry.value?.src ?? '')
+const pending = computed(() => status.value === 'loading' || status.value === 'idle')
 
 const placeholder = computed(() => {
   switch (status.value) {
@@ -84,6 +85,9 @@ onBeforeUnmount(() => loader.release(root.value))
       decoding="async"
       @error="broken = true"
     />
+    <span v-else-if="pending" class="db-poster__ph db-poster__ph--shimmer">
+      <span class="db-poster__sr">{{ placeholder }}</span>
+    </span>
     <span v-else class="db-poster__ph">{{ placeholder }}</span>
   </component>
 </template>
@@ -139,7 +143,56 @@ onBeforeUnmount(() => loader.release(root.value))
   background: transparent;
 }
 
-@media (max-width: 720px) {
+.db-poster__img {
+  animation: db-poster-in 0.45s ease both;
+}
+
+@keyframes db-poster-in {
+  from {
+    opacity: 0;
+    filter: blur(6px);
+    transform: scale(1.04);
+  }
+}
+
+.db-poster__ph--shimmer {
+  overflow: hidden;
+  background: linear-gradient(
+    110deg,
+    transparent 30%,
+    color-mix(in srgb, var(--app-surface, #fff) 50%, transparent) 50%,
+    transparent 70%
+  );
+  background-size: 250% 100%;
+  animation: db-poster-shimmer 1.4s ease-in-out infinite;
+}
+
+@keyframes db-poster-shimmer {
+  from {
+    background-position: 120% 0;
+  }
+  to {
+    background-position: -120% 0;
+  }
+}
+
+.db-poster__sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .db-poster__img,
+  .db-poster__ph--shimmer {
+    animation: none;
+  }
+}
+
+@container db-page (max-width: 720px) {
   .db-poster--thumb {
     width: 48px;
     height: 72px;

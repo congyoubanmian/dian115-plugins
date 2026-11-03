@@ -2,7 +2,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
-import { applyOutcome, compose, dedupeKey, shouldSend, BODY_MAX, TITLE_MAX } from '../../chase-rs/lib/notify.js'
+import { applyOutcome, bumpRetry, compose, dedupeKey, retrySeqFor, shouldSend, BODY_MAX, TITLE_MAX } from '../../chase-rs/lib/notify.js'
 import { FLAT_DEFAULTS, toNested } from '../../chase-rs/lib/settings.js'
 
 function calendarItem(season, episode, title, time) {
@@ -78,6 +78,18 @@ test('should_send 尊重开关/日期/小时', () => {
 test('dedupe_key 按天稳定', () => {
   assert.equal(dedupeKey('2026-10-01'), 'chase-daily-2026-10-01')
   assert.notEqual(dedupeKey('2026-10-01'), dedupeKey('2026-10-02'))
+})
+
+test('dedupe_key：当天发送失败后换新键重试，跨天归零', () => {
+  const daily = { retry_date: '', retry_seq: 0 }
+  assert.equal(dedupeKey('2026-10-01', retrySeqFor(daily, '2026-10-01')), 'chase-daily-2026-10-01')
+  bumpRetry(daily, '2026-10-01')
+  assert.equal(dedupeKey('2026-10-01', retrySeqFor(daily, '2026-10-01')), 'chase-daily-2026-10-01-r1')
+  bumpRetry(daily, '2026-10-01')
+  assert.equal(dedupeKey('2026-10-01', retrySeqFor(daily, '2026-10-01')), 'chase-daily-2026-10-01-r2')
+  assert.equal(retrySeqFor(daily, '2026-10-02'), 0, '新的一天用当天首发键')
+  bumpRetry(daily, '2026-10-02')
+  assert.equal(daily.retry_seq, 1)
 })
 
 test('落账：accepted / deduplicated 都记日期', () => {

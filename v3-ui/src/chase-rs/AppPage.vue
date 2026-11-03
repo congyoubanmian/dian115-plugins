@@ -1,19 +1,24 @@
 <script setup lang="ts">
 // 追剧管家（chase.rs）页面 —— Vue 3 版。
 //
-// 结构（与原生 JS 版页面 v3-ui/legacy/chase-rs/page.native.js 一一对应）：
-// 页头（状态/日报胶囊 + 动作组）→ 8 块指标瓦片 → 告警条 → 对齐结果卡（筛选 pill）
-// → 双栏（补订建议 + 追剧日历）→ 探测诊断折叠条 → 最近动作 → 页脚；
-// 状态不可用时只显示「状态不可用」卡；另有设置抽屉与顶部提示条。
+// 结构（功能与原生 JS 版页面 v3-ui/legacy/chase-rs/page.native.js 一一对应）：
+// hero 页头（状态/日报胶囊 + 动作组）→ 告警条 → bento 网格：
+// 8 块指标瓦片 · 日报预览（手机通知样式）· 追剧日历（横向周时间线）· 对齐结果（进度环卡片/表格）
+// · 补订建议 · 最近动作 · 探测诊断折叠条 → 页脚；
+// 首次读取时显示骨架屏；状态不可用时只显示「状态不可用」卡；另有设置抽屉与顶部提示条。
+// 布局用容器查询（.c-shell），跟随插件区域宽度而不是视口宽度。
 //
 // 数据只走 ctx（共享底座 provide 进来的宿主上下文）：
 // 状态文档 ctx.storage.get('state')、设置 ctx.settings.get()/set()、
 // 动作 ctx.tasks.run() + ctx.tasks.get() 轮询、通知由后台任务负责。
 
-import { onBeforeUnmount, onMounted } from 'vue'
+import { computed, onBeforeUnmount, onMounted } from 'vue'
 import { NButton } from 'naive-ui'
 import { useCtx } from '../shared/use-ctx'
+import { useHostTheme } from '../shared/theme'
 import { BUSY_LABELS, createChaseStore, provideChaseStore } from './use-chase'
+import { num } from './format'
+import { logSeries } from './visuals'
 import PageHeader from './components/PageHeader.vue'
 import StatTile from './components/StatTile.vue'
 import AlertBox from './components/AlertBox.vue'
@@ -22,6 +27,8 @@ import TrimCard from './components/TrimCard.vue'
 import CalendarCard from './components/CalendarCard.vue'
 import ProbeCard from './components/ProbeCard.vue'
 import LogCard from './components/LogCard.vue'
+import ReportCard from './components/ReportCard.vue'
+import SkeletonPage from './components/SkeletonPage.vue'
 import SettingsDrawer from './components/SettingsDrawer.vue'
 import ToastHost from './components/ToastHost.vue'
 import './styles.css'
@@ -29,6 +36,27 @@ import './styles.css'
 const ctx = useCtx()
 const store = createChaseStore(ctx)
 provideChaseStore(store)
+
+const theme = useHostTheme()
+const themeMode = computed(() => theme.mode.value)
+
+// 瓦片上的迷你折线 / 占比环：只用状态文档里真有的数据（最近 7 个本地日的日志分桶）。
+const offset = computed(() => num(store.settings.report_tz_offset_minutes, 480))
+const patchSeries = computed(() =>
+  logSeries(store.logs, offset.value, (entry) => String(entry.message ?? '').startsWith('补订 ')),
+)
+const issueSeries = computed(() =>
+  logSeries(store.logs, offset.value, (entry) => entry.level === 'warning' || entry.level === 'error'),
+)
+function tileExtras(key: string) {
+  if (key === 'tv_intents') {
+    const whole = num(store.state?.stats?.tv_intents, 0)
+    return { share: { part: num(store.state?.stats?.matched, 0), whole, label: '已判定' } }
+  }
+  if (key === 'patched') return { series: patchSeries.value, seriesLabel: '近 7 天补订日志条数' }
+  if (key === 'failed') return { series: issueSeries.value, seriesLabel: '近 7 天告警日志条数' }
+  return {}
+}
 
 onMounted(() => {
   void store.loadData()
@@ -41,67 +69,90 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <main class="chase3">
-    <PageHeader />
+  <main class="chase3" :data-theme="themeMode">
+    <div class="c-shell">
+      <PageHeader />
 
-    <p v-if="store.busy" class="c-progress">
-      <span class="c-spinner" />
-      <span>{{ BUSY_LABELS[store.busy] }}</span>
-    </p>
-
-    <div
-      v-if="store.result"
-      class="c-result"
-      :class="store.result.ok ? 'c-result-ok' : 'c-result-err'"
-    >
-      <span>{{ store.result.ok ? '✓' : '⚠' }}</span>
-      <span>{{ store.result.text }}</span>
-    </div>
-
-    <section v-if="store.loading" class="card">
-      <div class="alert alert-info">
-        <strong>正在读取状态…</strong>
-        <p>正在从宿主存储读取追剧管家的状态文档，请稍候。</p>
-      </div>
-    </section>
-
-    <section v-else-if="!store.state" class="card">
-      <div class="alert alert-error">
-        <strong>状态不可用</strong>
-        <p>
-          宿主还没有返回本插件的状态文档{{ store.stateError ? `（${store.stateError}）` : '' }}。常见原因：插件刚安装还没有跑过整点任务（存储键尚不存在时这里是空的），或插件存储暂不可读。
+      <Transition name="c-fade">
+        <p v-if="store.busy" class="c-progress" role="status">
+          <span class="c-spinner" />
+          <span>{{ BUSY_LABELS[store.busy] }}</span>
         </p>
-      </div>
-      <p class="next-line">
-        下一步：点「立即对齐」或「刷新」先跑一轮；仍然失败就把宿主机上插件的运行日志贴给作者。
-      </p>
-      <div class="c-inline-actions">
-        <NButton size="small" type="primary" @click="store.loadData()">重新读取状态</NButton>
-      </div>
-    </section>
+      </Transition>
 
-    <div v-else class="c-content">
-      <section class="c-tiles">
-        <StatTile v-for="tile in store.tiles" :key="tile.key" :tile="tile" />
+      <Transition name="c-fade">
+        <div
+          v-if="store.result"
+          class="c-result"
+          :class="store.result.ok ? 'c-result-ok' : 'c-result-err'"
+          role="status"
+        >
+          <span>{{ store.result.ok ? '✓' : '⚠' }}</span>
+          <span>{{ store.result.text }}</span>
+        </div>
+      </Transition>
+
+      <SkeletonPage v-if="store.loading" />
+
+      <section v-else-if="!store.state" class="card c-nostate">
+        <div v-if="store.stateError" class="alert alert-error">
+          <strong>状态不可用</strong>
+          <p>
+            读取本插件的状态文档失败（{{ store.stateError }}）：插件存储暂不可读。
+          </p>
+        </div>
+        <div v-else class="alert alert-info">
+          <strong>还没有状态</strong>
+          <p>
+            插件刚安装、还没有跑过任何任务，所以存储里没有状态文档；跑完一轮后这里会显示指标与对齐结果。
+          </p>
+        </div>
+        <p class="next-line">
+          下一步：点「立即对齐」或「刷新」先跑一轮；仍然失败就把宿主机上插件的运行日志贴给作者。
+        </p>
+        <div class="c-inline-actions">
+          <NButton size="small" :disabled="store.busy !== ''" @click="store.loadData()">重新读取状态</NButton>
+          <NButton size="small" type="primary" :disabled="store.busy !== ''" @click="store.runAction('align-now')">
+            立即对齐
+          </NButton>
+        </div>
       </section>
 
-      <AlertBox kind="warning" :text="store.instanceAlert" />
-      <AlertBox kind="error" :text="store.storageAlert" />
-      <AlertBox kind="warning" :text="store.probeAlert" />
+      <div v-else class="c-content">
+        <div class="c-alerts">
+          <AlertBox
+            kind="warning"
+            :text="store.stateError ? `重新读取状态失败（${store.stateError}），下面显示的是上一次读到的数据。` : ''"
+          />
+          <AlertBox kind="warning" :text="store.instanceAlert" />
+          <AlertBox kind="error" :text="store.storageAlert" />
+          <AlertBox kind="warning" :text="store.probeAlert" />
+        </div>
 
-      <AlignCard />
+        <div class="c-bento">
+          <section class="card c-stats" aria-label="本轮指标">
+            <div class="c-tiles">
+              <StatTile
+                v-for="(tile, index) in store.tiles"
+                :key="tile.key"
+                :tile="tile"
+                :index="index"
+                v-bind="tileExtras(tile.key)"
+              />
+            </div>
+          </section>
+          <ReportCard />
+          <CalendarCard />
+          <AlignCard />
+          <TrimCard />
+          <LogCard />
+          <ProbeCard />
+        </div>
 
-      <div class="c-duo">
-        <TrimCard />
-        <CalendarCard />
+        <footer class="c-foot">
+          状态文档来自插件存储（ctx.storage）· 布局跟随插件区域宽度（容器查询）自动在三栏 / 双栏 / 单栏间切换 · 表格与时间线在窄屏可横向滚动
+        </footer>
       </div>
-
-      <ProbeCard />
-      <LogCard />
-
-      <footer class="c-foot">
-        状态文档来自插件存储（ctx.storage）· 页面宽度跟随宿主可用宽度，双栏在 900–1000px 回落单栏 · 表格在 ≤640px 退化为卡片
-      </footer>
     </div>
 
     <SettingsDrawer />

@@ -23,7 +23,9 @@ export function createKv(ctx) {
       }
       return { value: payload ?? null, revision: undefined }
     } catch (error) {
-      if (error?.status === 404) return { value: null, revision: undefined }
+      // 键不存在：revision 0 = 「只允许首次创建」（storage-and-lifecycle.md：首次创建传 0），
+      // 两个写者同时建同一个键时后到的会冲突重读，而不是互相覆盖。
+      if (error?.status === 404) return { value: null, revision: 0 }
       throw error
     }
   }

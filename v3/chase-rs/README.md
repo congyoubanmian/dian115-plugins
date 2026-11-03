@@ -14,7 +14,7 @@ find v3/chase-rs -name '*.js' -not -path '*/node_modules/*' -exec node --check {
 
 # 官方黑盒检查 + 打包（包必须在源码目录外）
 node v3-kit/conformance/project-check.mjs v3/chase-rs
-node v3-kit/conformance/pack.mjs v3/chase-rs dist/chase-rs-0.1.13.dian115p
+node v3-kit/conformance/pack.mjs v3/chase-rs dist/chase-rs-0.1.14.dian115p
 ```
 
 `package.json` 只声明 `{"type":"module"}`：宿主 v3 直接 import ESM，本地
@@ -79,11 +79,14 @@ ui/page.js           原生 JS + DOM 重写的页面（mount(el, ctx)）
 4. **日报通道去 `POST /api/notifications/plugin` 改 `ctx.notify`。** 宿主返回的
    `accepted/deduplicated/suppressed/suppression_reason` 与旧端点同语义，
    `dedupe_key: "chase-daily-<本地日期>"` 原样保留；落账逻辑（只有
-   accepted/deduplicated 记 `last_sent_date`）不变。
+   accepted/deduplicated 记 `last_sent_date`）不变。当天发送抛错后的重试改用
+   `chase-daily-<本地日期>-r<n>`：宿主要求投递未确认的键换新键，且同键不同内容返回冲突。
 5. **storage 三态映射。** 旧的"404 两次确认全新安装"对应 v3 的
    `GET /storage/{key}` 404 ⇒ fresh；其他读取失败重试 3 次后 ⇒ unavailable
    （绝不落盘，默认值不得覆盖用户配置）。ETag 乐观锁对应 KV 的
-   `expected_revision` CAS（冲突重读版本同字节重放一次，同旧 put）。
+   `expected_revision` CAS。读状态时值与版本号取自同一次信封读取；冲突时重读最新文档，
+   按「本任务改过的字段用自己的、其余用存储里的」三方合并（日志/诊断列表两边都保留）
+   后再写，不再同字节重放 —— 否则并发的刷新会整份盖掉整点对齐刚写的结果（含日报落账）。
 
 ## 端点
 

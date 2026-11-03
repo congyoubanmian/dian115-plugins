@@ -28,7 +28,7 @@ DIST="$ROOT/dist"
 
 # 插件 ID | 源码目录（相对仓库根） | 交付包名（与 v3-market-index.json 的 source_url 一致）
 PLUGINS=(
-  "chase.rs|v3/chase-rs|chase-rs-0.1.13.dian115p"
+  "chase.rs|v3/chase-rs|chase-rs-0.1.14.dian115p"
   "music.rs|v3/music-rs|music-rs.dian115p"
   "douban.rs|v3/douban-rs|douban-rs.dian115p"
 )
