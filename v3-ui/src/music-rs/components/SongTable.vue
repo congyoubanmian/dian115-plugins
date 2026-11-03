@@ -35,6 +35,7 @@ const { busy } = store
           <td>
             <select
               class="sel"
+              :aria-label="`${song.name || '歌曲'} 的音质`"
               :value="store.qualityOf(song)"
               @change="store.setSongQuality(song, ($event.target as HTMLSelectElement).value)"
             >

@@ -130,17 +130,17 @@ export async function adopt(kv, taskId) {
   if (!id) throw new Error('缺少任务 id')
   const task = await loadTask(kv, id)
   if (!task) throw new Error(`分片不存在: task.${id}`)
-  const { adopted, index } = await casWrite(kv, TASKS_IDX_KEY, (currentIndex) => {
+  // casWrite 已带 CAS 落盘；不能再无条件 saveIndex 覆盖一次（会冲掉期间 pump 写入的索引）。
+  const { adopted } = await casWrite(kv, TASKS_IDX_KEY, (currentIndex) => {
     const list = Array.isArray(currentIndex) ? [...currentIndex] : []
-    if (list.some((entry) => entry.id === task.id)) return { next: list, result: { adopted: false, index: list } }
+    if (list.some((entry) => entry.id === task.id)) return { next: list, result: { adopted: false } }
     list.push(indexEntryOf(task))
     sortIndex(list)
-    return { next: list, result: { adopted: true, index: list } }
+    return { next: list, result: { adopted: true } }
   })
   if (!adopted) {
     return { task_id: task.id, status: task.status, adopted: false, message: '已在索引里, 无需对账' }
   }
-  await saveIndex(kv, index)
   return {
     task_id: task.id,
     status: task.status,
@@ -155,23 +155,49 @@ export async function adopt(kv, taskId) {
  *  同轮成功删除的其它条目连带从索引里抹掉 —— 否则分片会变成永久孤儿。 */
 export async function clearFinished(kv) {
   const index = await loadIndex(kv)
-  const kept = []
+  const removedIds = new Set()
   let removed = 0
   const errors = []
   for (const entry of index) {
     if (entry.status === 'done' || entry.status === 'failed') {
       try {
+        // 快照之后被重试回队的任务（分片已不是终态）不删。
+        const shard = await loadTask(kv, entry.id)
+        if (shard && shard.status !== 'done' && shard.status !== 'failed') continue
         await deleteTask(kv, entry.id)
+        removedIds.add(entry.id)
         removed += 1
       } catch (error) {
         errors.push(`${entry.id}: ${error?.message ?? error}`)
-        kept.push(entry)
       }
-    } else {
-      kept.push(entry)
     }
   }
-  if (removed > 0) await saveIndex(kv, kept)
+  // 只从「当前」索引里摘掉本轮删掉分片的条目（CAS 读改写）：不能把开头读到的快照整份写回，
+  // 否则清理期间 pump / 入队写进索引的变更会被旧快照覆盖（任务「消失」或状态回退）。
+  if (removedIds.size > 0) {
+    await casWrite(kv, TASKS_IDX_KEY, (currentIndex) => {
+      const list = Array.isArray(currentIndex) ? currentIndex : []
+      return { next: list.filter((entry) => !removedIds.has(entry.id)), result: null }
+    })
+  }
   if (errors.length > 0) throw new Error(`清理失败 ${errors.length} 条: ${errors.join('; ')}`)
   return removed
+}
+
+/** 全部失败任务重新排队（页面「重试全部失败」）。逐条走 retry（CAS 落盘），
+ *  单条出错不中断其余条目，返回 {retried, errors}。 */
+export async function retryAllFailed(kv) {
+  const index = await loadIndex(kv)
+  let retried = 0
+  const errors = []
+  for (const entry of index) {
+    if (entry.status !== 'failed') continue
+    try {
+      const outcome = await retry(kv, entry.id)
+      if (outcome.status === 'queued') retried += 1
+    } catch (error) {
+      errors.push(`${entry.id}: ${error?.message ?? error}`)
+    }
+  }
+  return { retried, errors }
 }

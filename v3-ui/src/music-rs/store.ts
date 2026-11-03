@@ -133,7 +133,12 @@ export function createMusicStore(ctx: HostContext) {
 
   // ── 状态 ──────────────────────────────────────────────
   const settings = ref<MusicSettings>(api.settingsView(api.normalizeSettings({})))
+  /** 列表展示的任务（最近 STATE_TASKS_LIMIT 条）。 */
   const tasks = ref<TaskEntry[]>([])
+  /** 完整索引（按队列序）：计数与排队位置用它，不受展示上限影响。 */
+  const allTasks = ref<TaskEntry[]>([])
+  /** 需要核对（attention_required）的 queue-pump 运行：核对前宿主不再接受新的推进（含定时）。 */
+  const attentionRun = ref<{ id: string; message: string } | null>(null)
   const login = reactive<{ netease: LoginInfo; qq: LoginInfo }>({
     netease: { logged_in: false },
     qq: { logged_in: false },
@@ -330,6 +335,9 @@ export function createMusicStore(ctx: HostContext) {
         deps.kv.get('state'),
       ])
       settings.value = api.settingsView(settingsRaw)
+      const sorted = [...index]
+      api.sortIndex(sorted)
+      allTasks.value = sorted
       tasks.value = api.stateView(index)
       login.netease = api.neteaseLoginInfo(neteaseJar)
       // QQ：登录态摘要 + 有没有账号标识（encryptUin）。收藏歌单 / 我喜欢接口的
@@ -341,6 +349,21 @@ export function createMusicStore(ctx: HostContext) {
       toast('error', `状态读取失败: ${errorText(error)}`)
     } finally {
       loading.value = false
+    }
+    await refreshAttention()
+  }
+
+  /** 查最近的 queue-pump 运行里有没有「需要核对」的（宿主重启打断时产生）。读不到就当没有。 */
+  async function refreshAttention(): Promise<void> {
+    if (disposed.value || typeof ctx.tasks?.list !== 'function') return
+    try {
+      const runs = await ctx.tasks.list(20)
+      const hit = (Array.isArray(runs) ? runs : []).find(
+        (run) => run.job_id === 'queue-pump' && run.status === 'attention_required',
+      )
+      attentionRun.value = hit ? { id: String(hit.id), message: String(hit.message || hit.error || '') } : null
+    } catch {
+      // 任务列表只用于提示，读失败不打扰。
     }
   }
 
@@ -880,6 +903,30 @@ export function createMusicStore(ctx: HostContext) {
     })
   }
 
+  async function retryAllFailed(): Promise<void> {
+    await withBusy('retry-all', '批量重试失败', async () => {
+      const { retried, errors } = await api.retryAllFailed(deps.kv)
+      if (retried > 0) await api.addLog(deps.kv, 'info', `批量重试: ${retried} 个失败任务已重新排队`)
+      if (errors.length > 0) {
+        toast('warning', `已重新排队 ${retried} 个，${errors.length} 个失败: ${errors.slice(0, 2).join('；')}`)
+      } else {
+        toast(retried > 0 ? 'success' : 'info', retried > 0 ? `已重新排队 ${retried} 个失败任务` : '没有失败的任务')
+      }
+    })
+  }
+
+  /** 核对被打断的 queue-pump：交给宿主 retry，由插件 recover 决定收尾或重跑。 */
+  async function retryAttentionRun(): Promise<void> {
+    const run = attentionRun.value
+    if (!run) return
+    await withBusy('attention', '核对失败', async () => {
+      const next = await ctx.tasks.retry(run.id)
+      attentionRun.value = null
+      const finished = await pollRun(next, 30000)
+      toast(finished.status === 'succeeded' ? 'success' : 'info', runStatusText(finished, '已核对，队列恢复推进'))
+    })
+  }
+
   async function clearAllFinished(): Promise<void> {
     await withBusy('clear', '清理失败', async () => {
       const removed = await api.clearFinished(deps.kv)
@@ -911,11 +958,26 @@ export function createMusicStore(ctx: HostContext) {
       const run = await ctx.tasks.run('queue-pump', `pump-${Date.now()}`, {})
       const finished = await pollRun(run, 30000)
       if (finished.status === 'failed') throw new Error(finished.error || '推进失败')
-      if (finished.status === 'attention_required') throw new Error('任务需要核对（见宿主任务队列）')
+      if (finished.status === 'attention_required') throw new Error('任务需要核对：点任务页顶部的「核对并继续」')
+      if (finished.status !== 'succeeded') {
+        toast('info', runStatusText(finished, '已提交推进'))
+        return
+      }
       const summary = finished.result ?? {}
       const lines = (summary.messages ?? []).map((m: unknown) => String(m).trim()).filter(Boolean)
       toast('success', lines.length > 0 ? lines.slice(0, 3).join('；') : `已推进（排队 ${summary.queued ?? 0} · 进行中 ${summary.active ?? 0}）`)
     })
+  }
+
+  /** 非成功终态 / 超时仍在跑 → 一句人话。 */
+  function runStatusText(run: Record<string, any>, fallback: string): string {
+    if (run.status === 'cancelled') return '推进已取消'
+    if (run.status === 'queued' || run.status === 'running') {
+      return String(run.message || '任务仍在后台运行，可在宿主任务队列查看进度')
+    }
+    if (run.status === 'failed') return `推进失败: ${run.error || run.message || '未知原因'}`
+    if (run.status === 'attention_required') return '任务仍需核对（见宿主任务队列）'
+    return fallback
   }
 
   /** 轮询宿主任务直到终态；页面关闭（signal 中止）就放手，让它转后台继续。 */
@@ -925,7 +987,7 @@ export function createMusicStore(ctx: HostContext) {
     while (current && (current.status === 'queued' || current.status === 'running')) {
       if (cancelled()) throw new Error('页面已关闭，任务转入后台继续')
       if (Date.now() - started > timeoutMs) {
-        return { ...current, status: 'running', message: `任务仍在运行（${current.id}），可在宿主任务队列查看` }
+        return { ...current, message: `任务仍在后台运行（${current.id}），可在宿主任务队列查看进度` }
       }
       await sleep(800)
       if (cancelled()) throw new Error('页面已关闭，任务转入后台继续')
@@ -935,14 +997,26 @@ export function createMusicStore(ctx: HostContext) {
   }
 
   // ── 设置 ──────────────────────────────────────────────
-  async function saveSettings(patch: Partial<MusicSettings>): Promise<void> {
-    await withBusy('settings', '设置保存失败', async () => {
+  /** 保存设置；返回是否成功（失败已 toast）。 */
+  async function saveSettings(patch: Partial<MusicSettings>): Promise<boolean> {
+    const ok = await withBusy('settings', '设置保存失败', async () => {
+      if (patch.target_dir !== undefined && !String(patch.target_dir).trim().startsWith('/')) {
+        throw new Error('下载目录必须是以 / 开头的绝对路径')
+      }
+      if (patch.max_active !== undefined) {
+        const value = Number(patch.max_active)
+        if (!Number.isInteger(value) || value < 1 || value > api.MAX_ACTIVE_CAP) {
+          throw new Error(`每轮新开下载数必须是 1–${api.MAX_ACTIVE_CAP} 的整数`)
+        }
+      }
       const current = api.normalizeSettings(settings.value)
       const next = api.applySettingsPatch(current, patch)
       await ctx.settings.set(next)
       toast('success', '设置已保存')
       await api.addLog(deps.kv, 'info', '设置已保存')
+      return true
     })
+    return ok === true
   }
 
   /** 通知自检：发一条 info 通知，把结果回显在设置页。 */
@@ -954,21 +1028,21 @@ export function createMusicStore(ctx: HostContext) {
         title: '音乐下载 · 通知链路自检',
         body: '这是一条测试通知: 收到说明插件通知可用。',
         dedupe_key: `mr-dl-notifytest-${Date.now()}`,
-      })) as { accepted?: boolean; deduplicated?: boolean; channels?: Array<{ channel: string }> } | undefined
-      const parts = [`accepted: ${outcome?.accepted}`, outcome?.deduplicated ? '（被去重）' : '']
-      if (outcome?.channels?.length) {
-        parts.push(`通道: ${outcome.channels.map((c: { channel: string }) => c.channel).join(' · ')}`)
-      }
+      })) as { accepted?: boolean; deduplicated?: boolean; suppressed?: boolean } | undefined
+      const accepted = outcome?.accepted !== false && !outcome?.suppressed
+      const parts = [accepted ? '已提交' : '未发送', outcome?.deduplicated ? '（被去重）' : '']
+      const channels = api.channelSummary(outcome)
+      if (channels) parts.push(`通道: ${channels}`)
       notifyResult.value = parts.filter(Boolean).join(' · ')
-      toast(outcome?.accepted ? 'success' : 'warning', notifyResult.value)
+      toast(accepted ? 'success' : 'warning', notifyResult.value)
     })
   }
 
   // ── 派生量 ────────────────────────────────────────────
   const pendingTasks = computed(() =>
-    tasks.value.filter((task) => ['queued', 'downloading', 'copying'].includes(task.status)),
+    allTasks.value.filter((task) => ['queued', 'downloading', 'copying'].includes(task.status)),
   )
-  const failedTasks = computed(() => tasks.value.filter((task) => task.status === 'failed'))
+  const failedTasks = computed(() => allTasks.value.filter((task) => task.status === 'failed'))
 
   /** 任务页有进行中任务时每 5 秒跟随队列刷新（原生版 ensureTaskTimer）。 */
   function setTaskRefresh(enabled: boolean): void {
@@ -1002,6 +1076,8 @@ export function createMusicStore(ctx: HostContext) {
     // 状态
     settings,
     tasks,
+    allTasks,
+    attentionRun,
     login,
     logs,
     lastPump,
@@ -1067,6 +1143,8 @@ export function createMusicStore(ctx: HostContext) {
     fetchPlaylistSongs,
     downloadPlaylistAll,
     retryTask,
+    retryAllFailed,
+    retryAttentionRun,
     clearAllFinished,
     adoptTask,
     pumpQueue,

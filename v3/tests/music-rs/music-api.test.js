@@ -152,7 +152,7 @@ function host(http, kvStore = new Map(), sessions = fakeSessions()) {
       async set(key, value, expectedRevision) {
         const hit = kvStore.get(key)
         if (expectedRevision !== undefined) {
-          const current = hit ? hit.revision : undefined
+          const current = hit ? hit.revision : 0
           if (current !== expectedRevision) throw Object.assign(new Error('conflict'), { status: 412 })
         }
         kvStore.set(key, { value: JSON.parse(JSON.stringify(value)), revision: (hit?.revision ?? 0) + 1 })

@@ -47,6 +47,7 @@ const summary = computed(() => {
       class="grow"
       size="small"
       placeholder="歌名 歌手"
+      :input-props="{ 'aria-label': '搜索歌名或歌手' }"
       @keyup.enter="store.runSearch(1)"
     />
     <NButton size="small" type="primary" :loading="busy === 'search'" @click="store.runSearch(1)">

@@ -24,7 +24,7 @@ function makeHost() {
       async set(key, value, expectedRevision) {
         const hit = kvStore.get(key)
         if (expectedRevision !== undefined) {
-          const current = hit ? hit.revision : undefined
+          const current = hit ? hit.revision : 0
           if (current !== expectedRevision) throw Object.assign(new Error('conflict'), { status: 412 })
         }
         kvStore.set(key, { value: JSON.parse(JSON.stringify(value)), revision: (hit?.revision ?? 0) + 1 })
@@ -93,12 +93,18 @@ function await_import() {
 
 test('queue-pump run completes a queued task and stores the summary', async () => {
   const host = makeHost()
+  const checkpoints = []
+  host.ctx.task.checkpoint = async (value) => { checkpoints.push(value) }
   await enqueue(createKv(host.ctx), { source: 'netease', song_id: '1', name: '歌', singers: '歌手', album: '', quality: DEFAULT_QUALITY })
   const summary = await runPump(host.ctx, {})
   assert.equal(summary.completed.length, 1)
   const state = host.kvStore.get('state').value
   assert.equal(state.last_pump.completed.length, 1)
   assert.ok(state.last_pump.at)
+  // 收尾写 done 检查点（recover 的 complete 分支才有机会命中），日志一次性追加。
+  assert.deepEqual(checkpoints, [{ stage: 'done', result: summary }])
+  const logs = host.kvStore.get('logs').value
+  assert.ok(logs.some((entry) => entry.message.includes('完成')), JSON.stringify(logs))
   // recover：completed 检查点 → complete。
   const decision = await recoverPump(host.ctx, { stage: 'done', result: summary })
   assert.equal(decision.action, 'complete')
