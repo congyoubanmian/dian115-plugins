@@ -9,8 +9,8 @@
     {
       "id": "chase.rs",
       "name": "追剧管家（Rust 版）",
-      "version": "0.1.13",
-      "description": "小时级对齐「订阅池里的剧集订阅」与「Emby 已有集数」：只对可解析的条目做只增 PATCH total_episodes，并产出追剧日历与当天一次的日报；减方向只给建议，从不写。已核实无缺口的条目在 5 小时窗口内复用缓存，不重复探测 Emby。界面按统一设计稿重绘：指标瓦片、徽标胶囊、双栏看板与移动端单栏适配。",
+      "version": "0.1.14",
+      "description": "小时级对齐「订阅池里的剧集订阅」与「Emby 已有集数」：只对可解析的条目做只增 PATCH total_episodes，并产出追剧日历与当天一次的日报；减方向只给建议，从不写。已核实无缺口的条目在 5 小时窗口内复用缓存，不重复探测 Emby。每次 PATCH 前后落任务检查点，中断恢复先查订阅池里该条目的真实集数，已确认写到位才记 complete、确认没写才 resume、核对不上记 attention（整点入口把 attention 收敛为 resume，靠只增守卫保证重跑不重复写）。界面按统一设计稿重绘：指标瓦片、徽标胶囊、双栏看板与移动端单栏适配。",
       "author": "镜头的蒙太奇",
       "source_url": "https://github.com/congyoubanmian/dian115-plugins/releases/download/v3-2026.11.03/chase.rs-ffab4392-1509-4b78-9cd4-7b4c8899f2da.dian115p",
       "sha256": "c281131ffcdf9d4e99d4f705f654f1636fb6c1ece3d01d65b49b337815374fff",
@@ -29,13 +29,13 @@
         "risk": "每小时读取订阅池与 Emby 覆盖，并按只增原则 PATCH 订阅集数（从不缩小）；发送每日追剧报告通知；读写插件自有存储。不触碰宿主文件与外部站点。"
       },
       "homepage": "https://github.com/congyoubanmian/dian115-plugins",
-      "changelog": "v3 迁移首个发布：plugins/chase-rs 0.1.9（Rust WASM）逐函数移植为宿主内 ESM；整点对齐、立即对齐、刷新计数、探测诊断 4 个任务与每日报告保留，12 项设置迁至清单 settings，状态文档经插件 KV 的 expected_revision CAS 落盘。0.1.10：页面改写为 Vue 3（自打包 vue/naive-ui/lucide，数据与动作全走 ctx，主题跟随宿主），入口仍为 ui/page.js 的 mount(el, ctx)。0.1.11：修复后台任务用 ctx.id 拼存储路径（后台只有 ctx.plugin.id）导致状态永远写不进去、页面一直显示「状态不可用」的问题。；本版起按宿主「编译 MCP」出正式包（protected-v4），署名取签名绑定的会员昵称。；0.1.13：后台读插件数据改走官方 ctx.storage.get；任务写 title 并上报批量计数。\""
+      "changelog": "v3 迁移首个发布：plugins/chase-rs 0.1.9（Rust WASM）逐函数移植为宿主内 ESM；整点对齐、立即对齐、刷新计数、探测诊断 4 个任务与每日报告保留，12 项设置迁至清单 settings，状态文档经插件 KV 的 expected_revision CAS 落盘。0.1.10：页面改写为 Vue 3（自打包 vue/naive-ui/lucide，数据与动作全走 ctx，主题跟随宿主），入口仍为 ui/page.js 的 mount(el, ctx)。0.1.11：修复后台任务用 ctx.id 拼存储路径（后台只有 ctx.plugin.id）导致状态永远写不进去、页面一直显示「状态不可用」的问题。；本版起按宿主「编译 MCP」出正式包（protected-v4），署名取签名绑定的会员昵称。；0.1.13：后台读插件数据改走官方 ctx.storage.get；任务写 title 并上报批量计数。\"；0.1.14：存储并发合并（后台与页面同时写状态按 expected_revision CAS 合并）、日报重试换键、立即对齐补探与该入口状态完善；每次 PATCH 前后落任务检查点，恢复时按订阅池真实集数判定 complete/resume/attention，整点入口把 attention 收敛为 resume；界面按统一设计稿重绘（指标瓦片、徽标胶囊、双栏看板、移动端单栏）并补「需要核对」入口。"
     },
     {
       "id": "music.rs",
       "name": "音乐下载",
-      "version": "1.2.1",
-      "description": "网易云 / QQ 音乐搜索、扫码登录（网易云 unikey 二维码；QQ 官方二维码 + graph.qq.com OAuth 授权换音乐凭据）与手动粘贴 Cookie 回退、按音质逐级取链；单曲与整张歌单入队后由后台任务自动推进：取链接 → 下载到插件暂存目录 → 定名 → 移交宿主复制进目标目录（CD2 挂载由宿主自动分流）→ 失败通知带「重试」按钮。旧 schema 1 WASM 插件（plugins/music-rs 0.3.19）的 v3 迁移版。",
+      "version": "1.3.0",
+      "description": "网易云 / QQ 音乐搜索、扫码登录（网易云 unikey 二维码；QQ 官方二维码 + graph.qq.com OAuth 授权换音乐凭据）与手动粘贴 Cookie 回退、我的歌单（网易云与 QQ 都能读我创建的与收藏的歌单；QQ 另有「每日推荐」与「我喜欢」两个入口）、按音质逐级取链；单曲与整张歌单入队后由后台任务自动推进：取链接 → API 3.9 起 save_to 优先直写目标目录（宿主不开放该能力时回落「暂存 → 定名 → move」，CD2 挂载由宿主自动分流）→ 失败通知带「重试」按钮。下载与入库前后落任务检查点，中断恢复先核对目标目录里的真实文件再决定 complete / resume / attention；入库前做同名预检，目标已有同名文件直接终态失败不进重试循环。Telegram 机器人提供只读查询命令（/music 队列|状态|帮助、/queue、/status），不触发下载与删除，回复走来源渠道、未授权 telegram.bot 时回退普通通知；每天 08:30 发一条下载日报（dedupe_key 按天，当天送达不重发，发送失败换新键）。旧 schema 1 WASM 插件（plugins/music-rs 0.3.19）的 v3 迁移版。",
       "author": "镜头的蒙太奇",
       "source_url": "https://github.com/congyoubanmian/dian115-plugins/releases/download/v3-2026.11.03/music.rs-282216fe-ffe2-41f0-a203-99e9c774b706.dian115p",
       "sha256": "6af3a752257082a26f04fa5d52f1c1e790cc7f59abce58a76ef3379697b405b1",
@@ -46,30 +46,31 @@
           "GET /api/extensions/v3/{id}/settings",
           "PUT /api/extensions/v3/{id}/settings",
           "POST /api/extensions/v3/{id}/notify",
+          "POST /api/extensions/v3/{id}/messaging/reply",
           "POST /api/extensions/v3/{id}/http",
           "POST /api/extensions/v3/{id}/files",
-          "POST /api/extensions/v3/{id}/cookiecloud/read",
           "POST /api/extensions/v3/{id}/jobs/{job}"
         ],
         "sites": [
           "music.163.com / interface.music.163.com / interface3.music.163.com（网易云搜索、扫码、eapi 取链）",
-          "c.y.qq.com / u.y.qq.com（QQ 音乐搜索与取链）",
+          "c.y.qq.com / u.y.qq.com（QQ 音乐搜索与取链；歌单 / 每日推荐 / 我喜欢走 u.y.qq.com 的 musicu.fcg）",
           "xui.ptlogin2.qq.com / ssl.ptlogin2.graph.qq.com / graph.qq.com（QQ 扫码登录：取二维码、轮询、OAuth 授权换凭据）"
         ],
         "files": [
-          "downloads/*（插件自有暂存目录：直链下载、定名，再由宿主 move 到用户配置的目标目录）"
+          "downloads/*（插件自有暂存目录：直链下载、定名，再由宿主 move 到用户配置的目标目录）",
+          "目标目录里本插件刚直写出的 0 字节空文件（预检确认原本不存在时才 remove；下载失败绝不删除目录里原有文件）"
         ],
         "notifications": true,
-        "risk": "把网易云/QQ 音乐直链下载到插件暂存目录并复制进用户配置的宿主目录（可能经 CD2 上传网盘）；失败时发送带重试按钮的通知；从宿主 CookieCloud 读取网易云/QQ 域登录 Cookie；扫码登录在本插件 KV 里保存网易云/QQ 音乐登录凭据（QQ 扫码登录期间会访问 graph.qq.com 的 OAuth 授权端点换凭据）。"
+        "risk": "把网易云/QQ 音乐直链下载到插件暂存目录并复制进用户配置的宿主目录（可能经 CD2 上传网盘）；失败时发送带重试按钮的通知；每日一条下载日报（TG）；Telegram 机器人命令（/music、/queue、/status）只读查询队列与状态，回复走来源渠道（需要 telegram.bot 授权），不触发下载/删除；按宿主新规约不读取 CookieCloud，登录态只来自扫码或用户手动粘贴的 Cookie；扫码登录在本插件 KV 里保存网易云/QQ 音乐登录凭据（QQ 还保存账号标识 encryptUin，用于读收藏的歌单与「我喜欢」；QQ 扫码登录期间会访问 graph.qq.com 的 OAuth 授权端点换凭据）。"
       },
       "homepage": "https://github.com/congyoubanmian/dian115-plugins",
-      "changelog": "v3 迁移首个发布：plugins/music-rs 0.3.19（Rust WASM）迁移为宿主内 ESM；搜索/登录/取链/歌单入队/下载队列保留，暂存改插件自有 downloads/，入库交给宿主 move（移除 CD2 直送），CookieCloud 走宿主内置服务，Telegram 重试改为清单 events 回调任务。1.0.1：页面改写为 Vue 3；QQ 取链对齐参考客户端 Lilt：先取 media_mid，登录态按 F000/M800/M500 逐档请求 vkey，相对 purl 用 sip 域名拼接，匿名仅请求 M500。1.0.2：网易云与 QQ 音乐扫码登录都在单插件内实现；QQ 走官方二维码 + graph.qq.com OAuth 授权换 musicid/musickey，登录 Cookie 只写插件 KV，保留手动粘贴回退。1.1.0：QQ 音乐内容能力补齐——我的歌单（我创建的 + 收藏的）、每日推荐、我喜欢、歌单歌曲分页与整单入队；musicu 请求带 authst，登录时保存 encryptUin。；本版起按宿主「编译 MCP」出正式包（protected-v4），署名取签名绑定的会员昵称。；1.2.0：requires.api 提到 3.9，下载直写目标目录（宿主不支持时回落暂存→move）；设置做在页面里。；1.2.1：直写目标目录的能力判断改用宿主上报的 host_api（不再靠错误信息猜测）。\""
+      "changelog": "v3 迁移首个发布：plugins/music-rs 0.3.19（Rust WASM）迁移为宿主内 ESM；搜索/登录/取链/歌单入队/下载队列保留，暂存改插件自有 downloads/，入库交给宿主 move（移除 CD2 直送），CookieCloud 走宿主内置服务，Telegram 重试改为清单 events 回调任务。1.0.1：页面改写为 Vue 3；QQ 取链对齐参考客户端 Lilt：先取 media_mid，登录态按 F000/M800/M500 逐档请求 vkey，相对 purl 用 sip 域名拼接，匿名仅请求 M500。1.0.2：网易云与 QQ 音乐扫码登录都在单插件内实现；QQ 走官方二维码 + graph.qq.com OAuth 授权换 musicid/musickey，登录 Cookie 只写插件 KV，保留手动粘贴回退。1.1.0：QQ 音乐内容能力补齐——我的歌单（我创建的 + 收藏的）、每日推荐、我喜欢、歌单歌曲分页与整单入队；musicu 请求带 authst，登录时保存 encryptUin。；本版起按宿主「编译 MCP」出正式包（protected-v4），署名取签名绑定的会员昵称。；1.2.0：requires.api 提到 3.9，下载直写目标目录（宿主不支持时回落暂存→move）；设置做在页面里。；1.2.1：直写目标目录的能力判断改用宿主上报的 host_api（不再靠错误信息猜测）。\"；1.3.0：下载与入库前后落任务检查点，中断恢复先核对目标目录里的真实文件再判定 complete/resume/attention；修正队列并发与取链流程，API 3.9 起 save_to 直写优先、否则回落暂存→定名→move；新增每日下载日报与 /music、/queue、/status 三个只读 TG 命令（回执走 ctx.messaging.reply）；任务页与界面视觉改版。"
     },
     {
       "id": "douban.rs",
       "name": "豆瓣中心（Rust 版）",
-      "version": "1.1.4",
-      "description": "豆瓣榜单抓取 + 黑名单过滤 + 观察队列 + 聚合订阅；从宿主 CookieCloud（或自建 CookieCloud / 手动粘贴 cookie）取豆瓣登录态，自动追订「我的想看」；TMDB 匹配失败时用豆瓣详情（原名/又名）回退重搜；支持最低评分/年份/地区订阅过滤与「已删除不重订」墓碑集。旧 schema 1 WASM 插件（plugins/douban-rs 0.2.4）的 v3 迁移版；页面提供榜单海报墙、观察队列/我的想看、历史日志与设置。",
+      "version": "1.2.0",
+      "description": "豆瓣榜单抓取 + 黑名单过滤 + 观察队列 + 聚合订阅；按宿主新规约不再读取 CookieCloud；登录态由用户手动粘贴浏览器里的豆瓣 Cookie 提供，自动追订「我的想看」；TMDB 匹配失败时用豆瓣详情（原名/又名）回退重搜；支持最低评分/年份/地区订阅过滤与「已删除不重订」墓碑集。创建聚合订阅前后落任务检查点，中断恢复先查宿主订阅池里该 (tmdb_id, media_type) 的真实状态再决定 complete / resume / attention。海报抓回后落插件文件缓存 posters/<sha256>.<ext>（超 64 张按 modified 淘汰最旧，卸载即清空），页面用 downloadURL 取图，files 不可用时降级 dataURL。Telegram 机器人接收 /refresh、/wish 两条指令并回执执行结果（指令触发不需要授权，回执走 ctx.messaging.reply 需要用户授权 telegram.bot）。旧 schema 1 WASM 插件（plugins/douban-rs 0.2.4）的 v3 迁移版；页面提供榜单海报墙、观察队列/我的想看、历史日志与设置。",
       "author": "镜头的蒙太奇",
       "source_url": "https://github.com/congyoubanmian/dian115-plugins/releases/download/v3-2026.11.03/douban.rs-398bc33f-c243-4720-b230-f33e9b040d1b.dian115p",
       "sha256": "8e32832e529c3a2da7995a5217130d96713cd7dbe74d19789183d72d03b73792",
@@ -79,9 +80,11 @@
           "GET/PUT/DELETE /api/extensions/v3/{id}/storage*",
           "GET /api/extensions/v3/{id}/settings",
           "POST /api/extensions/v3/{id}/notify",
-          "POST /api/extensions/v3/{id}/cookiecloud/read",
           "POST /api/extensions/v3/{id}/http",
           "POST /api/extensions/v3/{id}/jobs/{job}",
+          "POST /api/extensions/v3/{id}/files*",
+          "GET /api/extensions/v3/{id}/files/download*",
+          "POST /api/extensions/v3/{id}/messaging/*",
           "GET /api/tmdb/search",
           "GET/POST /api/subscribe/pool/intents",
           "GET /api/subscribe/records"
@@ -91,11 +94,12 @@
           "m.douban.com（想看列表与条目详情：rexxar api v2）",
           "*.doubanio.com（豆瓣海报 CDN，需带豆瓣 Referer 防盗链）"
         ],
+        "files": "只读写插件自有相对路径 posters/<sha256>.<ext>（海报缓存，超过 64 张按 modified 淘汰删除最旧；卸载即清空），不写宿主文件",
         "notifications": true,
-        "risk": "定期抓取豆瓣榜单与想看列表，按黑名单/过滤器入观察队列；到期条目经 TMDB 匹配（失配时回查豆瓣详情重搜）后创建宿主聚合订阅（宿主负责检索并投递 115 离线）；从宿主 CookieCloud 或用户自建 CookieCloud / 手动粘贴的 cookie 读取豆瓣登录态；订阅结果发送通知。不写宿主文件，不触碰 115 账号。"
+        "risk": "定期抓取豆瓣榜单与想看列表，按黑名单/过滤器入观察队列；到期条目经 TMDB 匹配（失配时回查豆瓣详情重搜）后创建宿主聚合订阅（宿主负责检索并投递 115 离线）；登录态只来自用户手动粘贴的豆瓣 Cookie（不读取 CookieCloud）；订阅结果发送通知。Telegram 机器人只接收 /refresh、/wish 两条命令并回执执行结果（需用户授权 telegram.bot）。海报缓存写插件自有 data/files 的 posters/ 目录，超量时删除其中最旧的缓存文件（只限 posters/ 内）。不写宿主文件，不触碰 115 账号。"
       },
       "homepage": "https://github.com/congyoubanmian/dian115-plugins",
-      "changelog": "v3 迁移首个发布：plugins/douban-rs 0.2.4（Rust WASM）迁移为宿主内 ESM；榜单抓取、黑名单/过滤、观察队列、想看同步、TMDB 匹配回退与订阅链保留，16 个任务不变，页面用原生 JS 重写；CookieCloud 主路径改为宿主内置服务（自建服务链保留）。1.1.0：页面改写为 Vue 3（榜单海报墙/观察队列/想看/历史日志/设置），数据与动作全走 ctx。1.1.1：修复一周口碑榜 deep refresh 把未 await 的海报 Promise 写入 snapshot.poster_url（落盘成 {}）导致整份状态文档被判非法；读取旧文档时把这类 {} 按空串兼容。；本版起按宿主「编译 MCP」出正式包（protected-v4），署名取签名绑定的会员昵称。；1.1.3：后台读插件数据改走官方 ctx.storage.get；任务写 title 并上报批量计数；设置做在页面里。；1.1.4：主页地址修正为仓库改名前的旧域名改为 dian115-plugins。\""
+      "changelog": "v3 迁移首个发布：plugins/douban-rs 0.2.4（Rust WASM）迁移为宿主内 ESM；榜单抓取、黑名单/过滤、观察队列、想看同步、TMDB 匹配回退与订阅链保留，16 个任务不变，页面用原生 JS 重写；CookieCloud 主路径改为宿主内置服务（自建服务链保留）。1.1.0：页面改写为 Vue 3（榜单海报墙/观察队列/想看/历史日志/设置），数据与动作全走 ctx。1.1.1：修复一周口碑榜 deep refresh 把未 await 的海报 Promise 写入 snapshot.poster_url（落盘成 {}）导致整份状态文档被判非法；读取旧文档时把这类 {} 按空串兼容。；本版起按宿主「编译 MCP」出正式包（protected-v4），署名取签名绑定的会员昵称。；1.1.3：后台读插件数据改走官方 ctx.storage.get；任务写 title 并上报批量计数；设置做在页面里。；1.1.4：主页地址修正为仓库改名前的旧域名改为 dian115-plugins。\"；1.2.0：创建聚合订阅前后落任务检查点，中断恢复先查宿主订阅池里该条目的真实状态再判定 complete/resume/attention；海报抓回后落插件文件缓存 posters/<sha256>.<ext>（超 64 张按 modified 淘汰最旧，卸载清空），页面改用 downloadURL 取图、files 不可用时降级 dataURL；整合 1.1.5 的订阅查重/失败重试/想看登录态/存储 CAS 合并修正；新增 /refresh、/wish 两条 TG 指令与回执；页面视觉与布局升级。"
     }
   ]
 }
