@@ -16,6 +16,8 @@ import type { HostContext } from '../shared/types'
 import type {
   ActionName,
   AlignItem,
+  AttentionRun,
+  BusyName,
   AlignRow,
   CalendarEntry,
   FlatSettings,
@@ -45,8 +47,48 @@ import { FLAT_DEFAULTS, mergeFlat, normalizeFlat } from '../../../v3/chase-rs/li
 const POLL_INTERVAL_MS = 800
 const POLL_TIMEOUT_MS = 150_000
 
+/** 本插件的后台任务（plugin.json jobs[].id → 页面上的叫法）。 */
+const JOB_LABELS: Record<string, string> = {
+  align: '整点对齐',
+  'align-now': '立即对齐',
+  refresh: '刷新',
+  'probe-dump': '探测诊断',
+}
+
+/** 把宿主 Run 收敛成「需要核对」卡上的一行（检查点字段见 jobs/runtime.js sendPatch）。 */
+function toAttentionRun(run: { id: string; [k: string]: unknown }): AttentionRun {
+  const jobId = String(run.job_id ?? '')
+  const raw = run.checkpoint
+  const checkpoint = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : null
+  const stage = checkpoint ? text(checkpoint.stage, '') : ''
+  const intent = `intent #${num(checkpoint?.intent_id, 0)}${checkpoint?.season !== undefined ? ` S${num(checkpoint.season, 0)}` : ''}`
+  const move = `${num(checkpoint?.from_total, 0)} → ${num(checkpoint?.to_total, 0)} 集`
+  let detail: string
+  if (stage === 'before-patch-episodes') {
+    detail = `中断在写订阅池之前：${intent} 准备 ${move}；核对时先查订阅池真实集数，没写就继续、已到位就完成`
+  } else if (stage === 'after-patch-episodes') {
+    detail = `中断在写订阅池之后：${intent} 宿主已确认 ${move}；核对时确认订阅池已到位即完成`
+  } else if (stage === 'completed') {
+    detail = '整轮已跑完，只差宿主落账；核对即完成'
+  } else if (!checkpoint) {
+    detail = '还没开始写订阅池（无检查点）；核对后直接重跑，只增守卫保证不重复写'
+  } else {
+    detail = `检查点阶段未知（${text(checkpoint.stage, '空')}），无法定位写到哪一步`
+  }
+  return {
+    id: String(run.id),
+    jobId,
+    jobLabel: JOB_LABELS[jobId] ?? jobId,
+    stage,
+    detail,
+    message: text(run.error, '') || text(run.message, ''),
+    updatedAt: text(run.updated_at, '') || text(run.created_at, ''),
+  }
+}
+
 /** 动作进行中的提示文案。 */
-export const BUSY_LABELS: Record<ActionName, string> = {
+export const BUSY_LABELS: Record<BusyName, string> = {
+  retry: '正在核对中断任务（recover 先查订阅池真实集数，再决定完成 / 继续 / 仍需核对）…',
   refresh: '正在刷新（重读订阅池 1 页 + 追剧日历）…',
   'align-now': '对齐中 · ≤1 页订阅池 · ≤5 次 PATCH · ≤3 次 Emby 探测 · 6 秒预算…',
   'probe-dump': '正在探测诊断（emby/instances + 未知端点的参数矩阵）…',
@@ -86,7 +128,11 @@ export interface ChaseStore {
   /** 扁平设置（ctx.settings）。 */
   settings: FlatSettings
   /** 当前进行中的动作名；空串 = 空闲。 */
-  busy: ActionName | ''
+  busy: BusyName | ''
+  /** 中断后「需要核对」的任务（attention_required）。 */
+  attentionRuns: AttentionRun[]
+  /** 正在核对的那条任务 ID；空串 = 没有。 */
+  retryingId: string
   /** 最近一次动作结果行。 */
   result: { ok: boolean; text: string } | null
   /** 对齐结果卡的筛选。 */
@@ -153,6 +199,8 @@ export interface ChaseStore {
   loadData(): Promise<void>
   /** 触发一个前台动作（refresh / align-now / probe-dump）。 */
   runAction(name: ActionName): Promise<void>
+  /** 核对并恢复一条中断任务（ctx.tasks.retry → 后台 recover）。 */
+  retryRun(id: string): Promise<void>
   /** 设置筛选。 */
   setFilter(filter: AlignFilter): void
   /** 展开探测诊断并跑一次探测。 */
@@ -177,7 +225,9 @@ export function createChaseStore(ctx: HostContext): ChaseStore {
   const loading = ref(true)
   const stateError = ref('')
   const settings = ref<FlatSettings>({ ...(FLAT_DEFAULTS as FlatSettings) })
-  const busy = ref<ActionName | ''>('')
+  const busy = ref<BusyName | ''>('')
+  const attentionRuns = ref<AttentionRun[]>([])
+  const retryingId = ref('')
   const result = ref<{ ok: boolean; text: string } | null>(null)
   const filter = ref<AlignFilter>('all')
   const probeOpen = ref(false)
@@ -253,6 +303,21 @@ export function createChaseStore(ctx: HostContext): ChaseStore {
     } catch {
       settings.value = { ...(FLAT_DEFAULTS as FlatSettings) }
     }
+    await loadAttention()
+  }
+
+  /** 读宿主任务记录里本插件「需要核对」的中断任务；读不到就保留上一次的列表。 */
+  async function loadAttention(): Promise<void> {
+    if (typeof ctx.tasks?.list !== 'function') return
+    try {
+      const runs = await ctx.tasks.list(50)
+      if (disposed) return
+      attentionRuns.value = (Array.isArray(runs) ? runs : [])
+        .filter((run) => run?.status === 'attention_required' && JOB_LABELS[String(run.job_id ?? '')] !== undefined)
+        .map(toAttentionRun)
+    } catch {
+      /* 任务记录读不到不影响主页面 */
+    }
   }
 
   // ─────────────────────────── 动作 ───────────────────────────
@@ -300,6 +365,13 @@ export function createChaseStore(ctx: HostContext): ChaseStore {
       toast('info', String(run?.message ?? '任务仍在运行，可在宿主任务队列查看'))
       return
     }
+    if (taskResult.recovered === true) {
+      // recover 判定「写已落地」直接 complete：结果里只有核对结论，没有本轮计数。
+      const message = String(taskResult.message ?? '中断任务已核对完成')
+      if (name === 'align-now') result.value = { ok: true, text: message }
+      toast('success', message)
+      return
+    }
     if (name === 'align-now') {
       const absent = num(taskResult.absent, 0)
       const note = taskResult.budget_hit ? ' · 达时间预算提前结束' : ''
@@ -330,6 +402,39 @@ export function createChaseStore(ctx: HostContext): ChaseStore {
       // 先重读状态再解除忙碌：避免按钮已可点、页面还显示动作前的旧数据。
       if (!disposed) await loadData()
       if (!disposed) busy.value = ''
+    }
+  }
+
+  async function retryRun(id: string): Promise<void> {
+    if (busy.value) return
+    const target = attentionRuns.value.find((run) => run.id === id)
+    busy.value = 'retry'
+    retryingId.value = id
+    result.value = null
+    try {
+      const run = await ctx.tasks.retry(id)
+      const finished = await pollRun(run as { id: string; [k: string]: unknown })
+      if (disposed) return
+      if (finished?.status === 'attention_required') {
+        toast(
+          'warning',
+          `仍需核对：${target?.detail ?? '订阅池里核对不上真实集数'}。请先到订阅池确认该条目，或在宿主任务队列取消这条任务`,
+        )
+      } else if (finished?.status === 'succeeded') {
+        const raw = finished.result
+        const taskResult = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {}
+        toast('success', String(taskResult.message ?? `${target?.jobLabel ?? '任务'}已核对完成`))
+      } else {
+        showActionResult((target?.jobId === 'align-now' ? 'align-now' : 'refresh') as ActionName, finished)
+      }
+    } catch (error) {
+      if (!disposed) toast('error', String((error as { message?: string } | null)?.message ?? error))
+    } finally {
+      if (!disposed) await loadData()
+      if (!disposed) {
+        busy.value = ''
+        retryingId.value = ''
+      }
     }
   }
 
@@ -482,6 +587,13 @@ export function createChaseStore(ctx: HostContext): ChaseStore {
     const withTime = suffix ? ` · ${suffix}` : ''
     if (text(state.value.status, '') === 'failed') {
       return { label: `运行异常${withTime}`, type: 'error', title: '上一次运行失败' }
+    }
+    if (attentionRuns.value.length > 0) {
+      return {
+        label: `待核对 ${attentionRuns.value.length} 条`,
+        type: 'warning',
+        title: '有任务被宿主重启打断，核对前同名任务不会再运行',
+      }
     }
     if (settings.value.enabled === false) {
       return { label: '已停用', type: 'default', title: '设置里关掉了「启用插件」' }
@@ -687,6 +799,8 @@ export function createChaseStore(ctx: HostContext): ChaseStore {
     stateError,
     settings,
     busy,
+    attentionRuns,
+    retryingId,
     result,
     filter,
     probeOpen,
@@ -719,6 +833,7 @@ export function createChaseStore(ctx: HostContext): ChaseStore {
     diagnosticsText,
     loadData,
     runAction,
+    retryRun,
     setFilter(next: AlignFilter) {
       filter.value = next
     },

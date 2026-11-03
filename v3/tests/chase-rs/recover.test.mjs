@@ -234,18 +234,45 @@ test('恢复时订阅池读不到（HTTP 500 / 结构不认识）→ attention�
   assert.equal(decision.action, 'attention')
 })
 
-test('订阅池里查不到这条 intent / 无检查点 / 阶段未知 → attention', async () => {
+test('订阅池里查不到这条 intent / 阶段未知 → attention', async () => {
   const ctx = makeCtx()
   // intent 不在池里：定位不到真实状态。
   const ghost = await recoverAlign(ctx, {
     stage: 'before-patch-episodes', task_ref: 'run-x', intent_id: 999, from_total: 3, to_total: 9,
   })
   assert.equal(ghost.action, 'attention')
-  // 无检查点。
-  assert.equal((await recoverAlign(ctx, null)).action, 'attention')
-  assert.equal((await recoverAlign(ctx, undefined)).action, 'attention')
-  // 阶段未知。
+  // 阶段未知 / 有检查点却没有阶段。
   assert.equal((await recoverAlign(ctx, { stage: 'somewhere' })).action, 'attention')
+  assert.equal((await recoverAlign(ctx, {})).action, 'attention')
+})
+
+test('无检查点（还没开始写订阅池）→ resume，且 recover 自身零请求', async () => {
+  const ctx = makeCtx()
+  assert.equal((await recoverAlign(ctx, null)).action, 'resume')
+  assert.equal((await recoverAlign(ctx, undefined)).action, 'resume')
+  assert.equal((await recoverAlignNowJob(ctx, null)).action, 'resume')
+  assert.equal(ctx.calls.length, 0)
+})
+
+test('写前检查点落不下 → 本条不 PATCH、记失败（不让 recover 把可能的写误判成没开始）', async () => {
+  const ctx = makeCtx()
+  ctx.task.checkpoint = async () => {
+    throw new Error('checkpoint store down')
+  }
+  const result = await runHourlyAlign(ctx)
+  assert.equal(ctx.patches.length, 0)
+  assert.equal(result.patched, 0)
+  assert.ok(result.failed >= 1)
+})
+
+test('complete 结果带 recovered 标记与说明（页面据此显示恢复结论）', async () => {
+  const ctx = makeCtx()
+  const decision = await recoverAlign(ctx, {
+    stage: 'after-patch-episodes', task_ref: 'run-x', intent_id: 41, from_total: 10, to_total: 10,
+  })
+  assert.equal(decision.action, 'complete')
+  assert.equal(decision.result.recovered, true)
+  assert.match(decision.result.message, /intent #41/)
 })
 
 test('旧词表 completed → complete(result)；job 壳 recover 与 runtime 版一致', async () => {

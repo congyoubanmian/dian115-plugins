@@ -61,9 +61,18 @@ import {
   shouldSuggestTrim,
   trimReason,
 } from '../lib/align.js'
-import { applyOutcome, bumpRetry, compose, dedupeKey, retrySeqFor, shouldSend } from '../lib/notify.js'
+import {
+  applyOutcome,
+  bumpRetry,
+  compose,
+  dedupeKey,
+  isDedupeConflict,
+  markAlreadySent,
+  retrySeqFor,
+  shouldSend,
+} from '../lib/notify.js'
 import { sampleText, truncateUtf8 } from '../lib/loose.js'
-import { taskCheckpoint } from './task.js'
+import { taskCheckpoint, taskCheckpointRequired } from './task.js'
 
 // ─────────────────────────── 预算与窗口（与 runtime.rs 一致） ───────────────────────────
 
@@ -619,7 +628,8 @@ export async function sendPatch(session, intent, decision, settings, runSeq) {
   const path = patchPath(intent.id)
   // 写前检查点：超时 / 重启 / 调用失败都不能证明这次 PATCH 没发生 —— 落一条
   // 「准备写哪条 intent、从几集抬到几集」，恢复时拿它去订阅池核对真实状态。
-  await taskCheckpoint(session.ctx, {
+  // 检查点落不下就不写：否则中断后 recover 看不到这次写，会把「可能写了」误判成「没开始」。
+  const guard = await taskCheckpointRequired(session.ctx, {
     stage: 'before-patch-episodes',
     task_ref: taskRefOf(session.ctx),
     intent_id: intent.id,
@@ -630,6 +640,16 @@ export async function sendPatch(session, intent, decision, settings, runSeq) {
     run_seq: runSeq,
     updated_at: nowRfc3339(),
   })
+  if (!guard.ok) {
+    const message = `写前检查点落盘失败, 本条不写: ${truncateUtf8(guard.message, 160)}`
+    recordError(session.doc, 'job.checkpoint', message, session.now())
+    return new Decision({
+      ...decision,
+      action: ACTION_FAILED,
+      to_total: decision.from_total,
+      reason: message,
+    })
+  }
   const result = await tryApi(session.ctx, 'PATCH', path, body)
   const now = session.now()
   if (result.ok && result.status === 200) {
@@ -697,11 +717,14 @@ export async function probeIntentTotalKnown(ctx, intentId) {
  * - stage=before-patch-episodes→ 订阅池已到目标值 → complete（写其实落地了）；
  *                                仍是旧值 → 明确没写，resume（只增守卫保证重跑不会写同一个值）；
  *                                读不到 → attention。
- * - 其余（无检查点 / 阶段未知）→ 定位不到是哪条 intent，attention。
+ * - 无检查点                  → 写前检查点是 PATCH 的前置条件（落不下就不写），没有它
+ *                                就说明这一轮还没开始写订阅池，resume（重跑幂等）。
+ * - 阶段未知                    → 定位不到是哪条 intent，attention。
  */
 export async function recoverAlign(ctx, checkpoint) {
   const stage = typeof checkpoint?.stage === 'string' ? checkpoint.stage : ''
   if (stage === 'completed') return { action: 'complete', result: checkpoint.result }
+  if (checkpoint === null || checkpoint === undefined) return { action: 'resume' }
   const intentId = Number(checkpoint?.intent_id ?? 0)
   const fromTotal = Number(checkpoint?.from_total ?? -1)
   const toTotal = Number(checkpoint?.to_total ?? -1)
@@ -713,7 +736,13 @@ export async function recoverAlign(ctx, checkpoint) {
   const probe = await probeIntentTotalKnown(ctx, intentId)
   if (!probe.ok || !probe.found) return { action: 'attention' }
   const known = probe.total_known
-  const result = { status: 'succeeded', intent_id: intentId, total_episodes: known }
+  const result = {
+    status: 'succeeded',
+    recovered: true,
+    intent_id: intentId,
+    total_episodes: known,
+    message: `中断恢复: 订阅池 intent #${intentId} 已是 ${known} 集（目标 ${toTotal}），写已落地，不再重写`,
+  }
   if (known >= toTotal) return { action: 'complete', result }
   if (stage === 'after-patch-episodes') return { action: 'attention' }
   if (Number.isFinite(fromTotal) && fromTotal >= 0 && known === fromTotal) {
@@ -739,12 +768,13 @@ export async function maybeSendDaily(session, settings, calendarToday, now) {
   const { title, body } = compose(
     today, calendarToday, patched, session.doc.align.skipped, session.doc.align.failed, firstReason,
   )
+  const key = dedupeKey(today, retrySeqFor(session.doc.daily, today))
   try {
     const outcome = await session.ctx.notify({
       level: 'info',
       title,
       body,
-      dedupe_key: dedupeKey(today, retrySeqFor(session.doc.daily, today)),
+      dedupe_key: key,
     })
     applyOutcome(session.doc.daily, today, outcome ?? {}, now)
     recordAttempt(session.doc, 'notifications.plugin', 'chase-daily', 200, 'sent', now)
@@ -755,6 +785,15 @@ export async function maybeSendDaily(session, settings, calendarToday, now) {
       suppressed: outcome?.suppressed === true,
     }
   } catch (error) {
+    if (isDedupeConflict(error)) {
+      // 同键不同内容：今天的报告已经用这个键送出过（上一轮落账前中断/落盘失败），
+      // 换新键重发会让用户收到第二份日报 —— 记为已发，不重试。
+      const note = `日报去重键 ${key} 已被今天更早的一轮使用, 视为已发送`
+      markAlreadySent(session.doc.daily, today, now, note)
+      recordAttempt(session.doc, 'notifications.plugin', 'chase-daily', 409, 'deduplicated', now)
+      log(session.doc, 'info', note, now)
+      return { status: 'deduplicated', accepted: false, deduplicated: true, suppressed: false }
+    }
     session.doc.daily.last_at = now
     session.doc.daily.last_result = 'failed'
     session.doc.daily.last_error = truncateUtf8(error?.message || String(error), 200)

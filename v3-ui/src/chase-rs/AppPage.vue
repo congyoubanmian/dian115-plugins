@@ -2,7 +2,7 @@
 // 追剧管家（chase.rs）页面 —— Vue 3 版。
 //
 // 结构（功能与原生 JS 版页面 v3-ui/legacy/chase-rs/page.native.js 一一对应）：
-// hero 页头（状态/日报胶囊 + 动作组）→ 告警条 → bento 网格：
+// hero 页头（状态/日报胶囊 + 动作组）→ 告警条 → 需要核对（中断任务，有才显示）→ bento 网格：
 // 8 块指标瓦片 · 日报预览（手机通知样式）· 追剧日历（横向周时间线）· 对齐结果（进度环卡片/表格）
 // · 补订建议 · 最近动作 · 探测诊断折叠条 → 页脚；
 // 首次读取时显示骨架屏；状态不可用时只显示「状态不可用」卡；另有设置抽屉与顶部提示条。
@@ -28,6 +28,7 @@ import CalendarCard from './components/CalendarCard.vue'
 import ProbeCard from './components/ProbeCard.vue'
 import LogCard from './components/LogCard.vue'
 import ReportCard from './components/ReportCard.vue'
+import RecoverCard from './components/RecoverCard.vue'
 import SkeletonPage from './components/SkeletonPage.vue'
 import SettingsDrawer from './components/SettingsDrawer.vue'
 import ToastHost from './components/ToastHost.vue'
@@ -128,6 +129,10 @@ onBeforeUnmount(() => {
           <AlertBox kind="error" :text="store.storageAlert" />
           <AlertBox kind="warning" :text="store.probeAlert" />
         </div>
+
+        <Transition name="c-fade">
+          <RecoverCard v-if="store.attentionRuns.length" />
+        </Transition>
 
         <div class="c-bento">
           <section class="card c-stats" aria-label="本轮指标">
