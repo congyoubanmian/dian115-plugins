@@ -48,6 +48,18 @@ export const QUEUE_STATE_META: Record<string, { label: string; cls: string }> = 
   [NO_RESUB_QUEUE_STATE]: { label: '墓碑拦截', cls: 'muted' },
 }
 
+/** 想看同步结果（wish_info.last_status）→ 中文。 */
+export const WISH_STATUS_LABEL: Record<string, string> = {
+  succeeded: '成功',
+  partial: '部分成功',
+  failed: '失败',
+}
+
+/** 登录态来源（wish_info.source / cookie.source）→ 中文。 */
+export const COOKIE_SOURCE_LABEL: Record<string, string> = {
+  manual: '手动粘贴的 Cookie',
+}
+
 /** 动作名 → 按钮/提示文案。 */
 export const ACTION_LABELS: Record<string, string> = {
   refresh: '刷新榜单',

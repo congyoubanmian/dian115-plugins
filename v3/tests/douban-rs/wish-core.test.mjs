@@ -4,7 +4,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 
-import { wishItemsFromInterests, flexId, parseInterestsResponse, wishInterestsUrl, WISH_PAGE_SIZE, WISH_MAX_PAGES, WISH_USER_AGENT } from '../../douban-rs/lib/wish-core.js'
+import { wishItemsFromInterests, flexId, parseInterestsResponse, wishInterestsUrl, WISH_PAGE_SIZE, WISH_MAX_PAGES, WISH_USER_AGENT, WISH_LOGIN_EXPIRED, isDoubanLoginUrl, rexxarErrorMessage, wishHttpErrorMessage } from '../../douban-rs/lib/wish-core.js'
 
 const WISH_MOVIE = JSON.parse(readFileSync(fileURLToPath(new URL('./fixtures/wish_movie.json', import.meta.url)), 'utf8'))
 const WISH_TV = JSON.parse(readFileSync(fileURLToPath(new URL('./fixtures/wish_tv.json', import.meta.url)), 'utf8'))
@@ -66,4 +66,20 @@ test('想看接口 URL/分页常量与旧实现一致', () => {
     'https://m.douban.com/rexxar/api/v2/user/123456789/interests?kind=mark&type=movie&start=50&limit=50',
   )
   assert.ok(WISH_USER_AGENT.includes('iPhone'), '移动 UA')
+})
+
+test('登录态失效识别：登录页重定向 / rexxar 错误体 / 401·403', () => {
+  assert.ok(isDoubanLoginUrl('https://accounts.douban.com/passport/login?redir=https%3A%2F%2Fm.douban.com'))
+  assert.ok(isDoubanLoginUrl('https://www.douban.com/accounts/login'))
+  assert.ok(!isDoubanLoginUrl('https://m.douban.com/rexxar/api/v2/user/1/interests?type=movie'))
+  assert.ok(!isDoubanLoginUrl(''))
+
+  assert.equal(rexxarErrorMessage({ code: 103, msg: 'invalid_credencial2' }), WISH_LOGIN_EXPIRED)
+  assert.equal(rexxarErrorMessage({ msg: 'need_login' }), WISH_LOGIN_EXPIRED)
+  assert.equal(rexxarErrorMessage({ code: 1287, msg: 'rate_limit', localized_message: '请求过于频繁' }), '豆瓣返回错误 code=1287 rate_limit（请求过于频繁）')
+  assert.equal(rexxarErrorMessage(WISH_MOVIE), null, '正常响应不是错误体')
+  assert.equal(rexxarErrorMessage({ total: 0 }), null)
+
+  assert.ok(wishHttpErrorMessage(403, 'HTTP 403').includes('重新粘贴豆瓣 Cookie'))
+  assert.equal(wishHttpErrorMessage(500, 'HTTP 500'), 'HTTP 500: HTTP 500')
 })

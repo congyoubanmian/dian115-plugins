@@ -12,9 +12,10 @@
 //
 // （job 入口在 jobs/subscribe.js / jobs/subscribe-now.js，这两个是薄壳。）
 
-import { CONFIDENCE_THRESHOLD, MAX_ATTEMPT, matchTmdb, tmdbTitle, tmdbYear, buildIntentBody, parseIntentCreateResult, poolIntentsPath, parseIntentList, parseTmdbSearchResult } from '../lib/subscribe-core.js'
+import { CONFIDENCE_THRESHOLD, MAX_ATTEMPT, matchTmdb, tmdbTitle, tmdbYear, buildIntentBody, parseIntentCreateResult, intentExists, parseTmdbSearchResult } from '../lib/subscribe-core.js'
+import { listPoolIntents } from './runtime.js'
 import { queryEscape } from '../lib/text.js'
-import { nowUnixNanos, parseRfc3339 } from '../lib/clock.js'
+import { nowUnixNanos, parseRfc3339, rfc3339 } from '../lib/clock.js'
 import { candidateFromQueueItem, queueItemRating, FILTERED_QUEUE_STATE, NO_RESUB_QUEUE_STATE, regionDegradedLog } from '../lib/filter-core.js'
 import { doubanSubjectId, rexxarSubjectDetail } from './subject.js'
 import { newHistoryEntry, newQueueItem } from '../lib/model.js'
@@ -39,7 +40,8 @@ export async function tmdbSearch(ctx, query) {
  */
 export async function matchTmdbWithDetailFallback(session, ctx, query, doubanRef, kind) {
   const res = await tmdbSearch(ctx, query)
-  const direct = matchTmdb(res.results, query, '')
+  const preferType = kind === 'movie' || kind === 'tv' ? kind : ''
+  const direct = matchTmdb(res.results, query, '', preferType)
   if (direct.score >= CONFIDENCE_THRESHOLD && direct.best.id !== 0) {
     return { item: direct.best, confidence: direct.score, fallbackHit: null }
   }
@@ -55,7 +57,7 @@ export async function matchTmdbWithDetailFallback(session, ctx, query, doubanRef
     } catch {
       continue
     }
-    const evaluated = matchTmdb(candidateRes.results, candidate, '')
+    const evaluated = matchTmdb(candidateRes.results, candidate, '', preferType)
     if (evaluated.score < CONFIDENCE_THRESHOLD || evaluated.best.id === 0) continue
     if (hit === null || evaluated.score > hit.confidence) {
       hit = { item: evaluated.best, confidence: evaluated.score, fallbackHit: candidate }
@@ -65,21 +67,18 @@ export async function matchTmdbWithDetailFallback(session, ctx, query, doubanRef
   return { item: direct.best, confidence: direct.score, fallbackHit: null }
 }
 
-/** subscribe.rs host_intent_exists：宿主是否已有同 (tmdb_id, media_type) 的订阅；失败一律当不存在。 */
+/**
+ * 宿主是否已有同 (tmdb_id, media_type) 的订阅：按 media_type 分页读完订阅池。
+ * 查询失败返回 {exists:false, error}：调用方必须放弃创建 —— 无法核对就不能证明没订过，
+ * 否则宿主瞬时故障或订阅池超过单页上限时会重复创建（旧版"失败当不存在"的口径已废弃）。
+ */
 export async function hostIntentExists(ctx, tmdbId, mediaType) {
-  try {
-    const result = await ctx.api.get(poolIntentsPath())
-    const entries = parseIntentList(result)
-    if (entries === null) return { exists: false, id: 0 }
-    for (const entry of entries) {
-      if (entry.tmdb_id === tmdbId && (mediaType === '' || entry.media_type === mediaType)) {
-        return { exists: true, id: entry.id }
-      }
-    }
-    return { exists: false, id: 0 }
-  } catch {
-    return { exists: false, id: 0 }
-  }
+  const listing = await listPoolIntents(ctx, { mediaType })
+  if (listing === null) return { exists: false, id: 0, error: '宿主订阅池查询失败' }
+  const found = intentExists(listing.entries, tmdbId, mediaType)
+  if (found.exists) return found
+  if (listing.truncated) return { exists: false, id: 0, error: '宿主订阅池条目过多，无法确认是否已订阅' }
+  return found
 }
 
 /** subscribe.rs create_subscription：创建聚合订阅（body 形态 = v3 openapi PoolIntentCreateRequest）。 */
@@ -132,6 +131,7 @@ export async function processDue(session, ctx, invocationId, flat) {
 
   let subscribed = 0
   let needsReview = 0
+  let retrying = 0
   for (const q of due) {
     // 自动路径两道前置守卫（顺序固定：墓碑先于过滤）
     const rating = queueItemRating(q)
@@ -157,29 +157,43 @@ export async function processDue(session, ctx, invocationId, flat) {
       subscribed += 1
       continue
     }
-    if (outcome.status === 'needs_review') {
-      needsReview += 1
-      continue
-    }
-    // failed 且未达重试上限 → 保留为 needs_review；否则写失败历史并丢出队列
-    if (q.attempt < MAX_ATTEMPT) {
-      keep.push({ ...q, state: 'needs_review', last_error: outcome.message })
-      needsReview += 1
-    } else {
-      session.addHistory({
-        ...newHistoryEntry(),
-        douban_ref: q.douban_ref,
-        title: q.title,
-        list: q.list,
-        action: 'subscribe',
-        result: 'failed',
-        message: outcome.message,
-        tmdb_ref: q.tmdb_ref,
-      })
-    }
+    const next = settleUnsubscribed(session, q, outcome)
+    keep.push(next)
+    if (next.state === 'needs_review') needsReview += 1
+    else retrying += 1
   }
   session.doc.queue.items = keep
-  return { subscribed, needs_review: needsReview, message: '' }
+  return { subscribed, needs_review: needsReview, retrying, message: '' }
+}
+
+/** 失败重试的退避：第 n 次失败后 n 小时再试（定时任务每 30 分钟扫一次到期条目）。 */
+export const RETRY_BACKOFF_NANOS = 3_600_000_000_000
+
+/**
+ * 自动路径里没订上的条目怎么留队（返回新的队列条目，调用方负责放回队列）：
+ * - needs_review（TMDB 置信不足）→ 留队待人工确认 + 一条 needs_review 历史；
+ * - failed（宿主/网络等可重试错误）→ attempt+1；未达上限按退避延后重试，
+ *   达到上限转 needs_review 并写 failed 历史。条目始终留在队列里，不会悄悄消失。
+ */
+export function settleUnsubscribed(session, q, outcome) {
+  const history = { ...newHistoryEntry(), douban_ref: q.douban_ref, title: q.title, list: q.list, action: 'subscribe', message: outcome.message, tmdb_ref: q.tmdb_ref ?? '' }
+  if (outcome.status === 'needs_review') {
+    session.addHistoryAndLog({ ...history, result: 'needs_review' }, `TMDB 匹配待确认：${q.title} (${outcome.message})`)
+    return { ...q, state: 'needs_review', last_error: outcome.message }
+  }
+  const attempt = (Number.isFinite(q.attempt) ? q.attempt : 0) + 1
+  if (attempt < MAX_ATTEMPT) {
+    session.log('warning', `订阅失败，稍后重试（第 ${attempt} 次）：${q.title} (${outcome.message})`)
+    return {
+      ...q,
+      state: 'observing',
+      attempt,
+      last_error: outcome.message,
+      due_at: rfc3339(nowUnixNanos() + attempt * RETRY_BACKOFF_NANOS),
+    }
+  }
+  session.addHistoryAndLog({ ...history, result: 'failed' }, `订阅失败（已重试 ${attempt} 次，转人工确认）：${q.title} (${outcome.message})`)
+  return { ...q, state: 'needs_review', attempt, last_error: outcome.message }
 }
 
 /** 到期判定：解析失败按已到期（clock.rs parse_rfc3339 的口径，尊重固定时钟）。 */
@@ -216,6 +230,9 @@ export async function doSubscribe(session, ctx, invocationId, q, item, flat) {
   void invocationId
   const tmdbRef = `tmdb:${item.media_type}:${item.id}`
   const exists = await hostIntentExists(ctx, item.id, item.media_type)
+  if (exists.error) {
+    return { status: 'failed', intent_id: 0, message: `无法核对宿主已有订阅，暂不创建: ${exists.error}` }
+  }
   if (exists.exists) {
     for (const entry of session.doc.queue.items ?? []) {
       if (entry.douban_ref === q.douban_ref) {
@@ -237,7 +254,7 @@ export async function doSubscribe(session, ctx, invocationId, q, item, flat) {
       },
       `已存在订阅，跳过：${q.title}`,
     )
-    if (flat?.notify_on_subscribe) await notifySubscribe(session, ctx, q.title, '已存在同类聚合订阅，跳过重复创建')
+    if (flat?.notify_on_subscribe) await notifySubscribe(session, ctx, q.title, '已存在同类聚合订阅，跳过重复创建', `${q.douban_ref}:exists:${exists.id}`)
     return { status: 'succeeded', intent_id: exists.id, message: '' }
   }
   const title = tmdbTitle(item)
@@ -271,18 +288,23 @@ export async function doSubscribe(session, ctx, invocationId, q, item, flat) {
       entry.poster_path = item.poster_path
     }
   }
-  if (flat?.notify_on_subscribe) await notifySubscribe(session, ctx, q.title, '订阅成功')
+  if (flat?.notify_on_subscribe) await notifySubscribe(session, ctx, q.title, '订阅成功', `${q.douban_ref}:created:${intentId}`)
   return { status: 'succeeded', intent_id: intentId, message: '' }
 }
 
-/** 订阅结果通知（v3 ctx.notify；旧版宿主拒绝插件通知 payload，v3 恢复）。 */
-export async function notifySubscribe(session, ctx, title, detail) {
+/**
+ * 订阅结果通知（v3 ctx.notify；旧版宿主拒绝插件通知 payload，v3 恢复）。
+ * dedupe_key 按"豆瓣条目 + 结果 + 宿主订阅 ID"区分：宿主会永久记住每个键，
+ * 同键不同内容直接报冲突、同键同内容不再发送 —— 只按标题做键会让同名条目/
+ * 删除后重订的通知永远发不出去。同一次订阅被恢复重跑时键相同，正好去重。
+ */
+export async function notifySubscribe(session, ctx, title, detail, dedupeRef = title) {
   try {
     await ctx.notify({
       title: `豆瓣订阅：${title}`,
       body: detail,
       level: 'success',
-      dedupe_key: `douban.rs:subscribe:${title}`,
+      dedupe_key: `douban.rs:subscribe:${dedupeRef}`.slice(0, 200),
     })
   } catch (error) {
     session.log('warning', `订阅通知发送失败: ${error?.message ?? String(error)}`)

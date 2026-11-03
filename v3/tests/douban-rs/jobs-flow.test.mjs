@@ -5,7 +5,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 
-import { Session, observeRemove, blacklistAdd, blacklistRemove, archive, noResubClear, settingsUpdate, openSource } from '../../douban-rs/jobs/runtime.js'
+import { Session, sendTest, observeRemove, blacklistAdd, blacklistRemove, archive, noResubClear, settingsUpdate, openSource } from '../../douban-rs/jobs/runtime.js'
 import { refreshNow } from '../../douban-rs/jobs/charts.js'
 import { runWishSyncJob, syncWishList } from '../../douban-rs/jobs/wish.js'
 import { processDue, subscribeQueueItem, subscribeQueueNow, subscribeFromSnapshot } from '../../douban-rs/jobs/subscribe-engine.js'
@@ -89,7 +89,8 @@ function makeCtx({ apiRoutes = [], httpRoutes = [], settings = {}, storage = {} 
     const status = route.status ?? 200
     if (status >= 400) return { status, headers: {}, body_base64: Buffer.from(route.text ?? '').toString('base64') }
     const raw = route.bytes ?? Buffer.from(route.text ?? '', 'utf8')
-    return { status, headers: route.headers ?? {}, body_base64: raw.toString('base64') }
+    // 宿主返回重定向后的最终 url（finalUrl 模拟被重定向到登录页）
+    return { status, headers: route.headers ?? {}, body_base64: raw.toString('base64'), url: route.finalUrl ?? options.url }
   }
 
   return {
@@ -456,8 +457,8 @@ test('process_due：到期条目走 TMDB 匹配 + 聚合订阅 + 历史；未到
   assert.equal(ctx.notifies.length, 1, 'notify_on_subscribe 开 → 发订阅通知')
 })
 
-test('process_due：置信不足 → 不留队列；TMDB 失败且 attempt < 3 → 保留 needs_review', async () => {
-  // ① 置信不足（匹配不到）→ 到期条目不留队列
+test('process_due：置信不足 → 留队待确认；TMDB 失败按退避重试，满 3 次转待确认', async () => {
+  // ① 置信不足（匹配不到）→ 留在队列里标 needs_review（已记 wish_seen 的想看条目不能凭空消失）
   let ctx = makeCtx({
     apiRoutes: [
       { method: 'GET', match: (path) => path.startsWith('/api/tmdb/search'), data: { results: [{ id: 5, title: '完全不相关的片子', media_type: 'movie', vote_average: 3 }] } },
@@ -467,33 +468,42 @@ test('process_due：置信不足 → 不留队列；TMDB 失败且 attempt < 3 �
   let session = await openSession(ctx)
   session.doc.queue.items = [{ ...defaultQueueEntry('36808876', '奥德赛'), due_at: '2026-09-28T10:00:00Z' }]
   let outcome = await processDue(session, ctx, 'invocation_0003', {})
-  assert.deepEqual([outcome.subscribed, outcome.needs_review], [0, 1])
-  assert.equal(session.doc.queue.items.length, 0, 'Go 语义：needs_review 的到期条目不再留在队列')
+  assert.deepEqual([outcome.subscribed, outcome.needs_review, outcome.retrying], [0, 1, 0])
+  assert.equal(session.doc.queue.items.length, 1)
+  assert.equal(session.doc.queue.items[0].state, 'needs_review')
+  assert.ok(session.doc.queue.items[0].last_error.startsWith('TMDB 匹配置信不足'))
+  assert.equal(session.doc.history[0].result, 'needs_review')
 
-  // ② TMDB 搜索失败 + attempt < 3 → 保留为 needs_review（attempt 不自增）
+  // ② TMDB 搜索失败 + attempt < 3 → 仍是 observing，attempt+1，按 attempt 小时退避
   ctx = makeCtx({
     apiRoutes: [{ method: 'GET', match: (path) => path.startsWith('/api/tmdb/search'), status: 500 }],
   })
   session = await openSession(ctx)
   session.doc.queue.items = [{ ...defaultQueueEntry('11111111', '失败一次的'), due_at: '2026-09-28T10:00:00Z', attempt: 1 }]
   outcome = await processDue(session, ctx, 'invocation_0003', {})
-  assert.deepEqual([outcome.subscribed, outcome.needs_review], [0, 1])
+  assert.deepEqual([outcome.subscribed, outcome.needs_review, outcome.retrying], [0, 0, 1])
   assert.equal(session.doc.queue.items.length, 1)
   const kept = session.doc.queue.items[0]
   assert.equal(kept.douban_ref, '11111111')
-  assert.equal(kept.state, 'needs_review')
-  assert.equal(kept.attempt, 1, 'attempt 不自增（Go 同款）')
+  assert.equal(kept.state, 'observing')
+  assert.equal(kept.attempt, 2)
+  assert.equal(kept.due_at, '2026-09-29T12:00:09Z', '第 2 次失败 → 2 小时后再试')
   assert.ok(kept.last_error.startsWith('TMDB 搜索失败:'))
+  // 退避期内不会再被处理
+  outcome = await processDue(session, ctx, 'invocation_0003', {})
+  assert.equal(outcome.retrying, 0)
 
-  // ③ 失败 + attempt >= 3 → 丢弃并写 result: failed 的历史（不计统计）
+  // ③ 失败满 3 次 → 转 needs_review 留队，写 result: failed 的历史（不计统计）
   ctx = makeCtx({
     apiRoutes: [{ method: 'GET', match: (path) => path.startsWith('/api/tmdb/search'), status: 500 }],
   })
   session = await openSession(ctx)
-  session.doc.queue.items = [{ ...defaultQueueEntry('dead', '奥德赛'), due_at: '2026-09-28T10:00:00Z', attempt: 3 }]
+  session.doc.queue.items = [{ ...defaultQueueEntry('dead', '奥德赛'), due_at: '2026-09-28T10:00:00Z', attempt: 2 }]
   outcome = await processDue(session, ctx, 'invocation_0003', {})
-  assert.deepEqual([outcome.subscribed, outcome.needs_review], [0, 0])
-  assert.equal(session.doc.queue.items.length, 0)
+  assert.deepEqual([outcome.subscribed, outcome.needs_review, outcome.retrying], [0, 1, 0])
+  assert.equal(session.doc.queue.items.length, 1)
+  assert.equal(session.doc.queue.items[0].state, 'needs_review')
+  assert.equal(session.doc.queue.items[0].attempt, 3)
   assert.equal(session.doc.history[0].result, 'failed')
   assert.equal(session.doc.history[0].douban_ref, 'dead')
   assert.equal(session.doc.stats.total, 0, '失败历史不计入统计')
@@ -770,4 +780,140 @@ test('parseStateDoc 解析 STATE_RAW 夹具（会话层依赖）', () => {
   const doc = parseStateDoc(STATE_RAW)
   assert.ok(doc !== null && doc.settings.lists !== null)
   assert.equal(doc.queue.items.length, 109)
+})
+
+// ─────────────────────────── 修复回归 ───────────────────────────
+
+test('订阅前查重失败 → 不创建（宁可下轮重试也不重复订阅）', async () => {
+  const ctx = makeCtx({
+    apiRoutes: [
+      { method: 'GET', match: (path) => path.startsWith('/api/tmdb/search'), data: { results: [{ id: 11, title: '奥德赛', media_type: 'movie', vote_average: 7.5 }] } },
+      { method: 'GET', match: (path) => path.startsWith('/api/subscribe/pool/intents'), status: 502 },
+      { method: 'POST', match: (path) => path === '/api/subscribe/pool/intents', data: { code: 'ok', data: { id: 171 } } },
+    ],
+  })
+  const session = await openSession(ctx)
+  session.doc.queue.items = [{ ...defaultQueueEntry('36808876', '奥德赛'), due_at: '2026-09-28T10:00:00Z', media_type: 'movie' }]
+  const outcome = await processDue(session, ctx, 'invocation_fix1', {})
+  assert.equal(ctx.apiCalls.filter((call) => call.method === 'POST').length, 0, '查不了重就不能 POST')
+  assert.equal(outcome.retrying, 1)
+  assert.ok(session.doc.queue.items[0].last_error.startsWith('无法核对宿主已有订阅'))
+})
+
+test('订阅前查重按 media_type 分页：第 2 页已有同 TMDB 订阅 → 不重复创建', async () => {
+  const filler = Array.from({ length: 200 }, (_, index) => ({ id: 1000 + index, tmdb_id: 5000 + index, media_type: 'movie', title: `x${index}`, state: 'pending' }))
+  const ctx = makeCtx({
+    apiRoutes: [
+      { method: 'GET', match: (path) => path.startsWith('/api/tmdb/search'), data: { results: [{ id: 11, title: '奥德赛', media_type: 'movie', vote_average: 7.5 }] } },
+      { method: 'GET', match: (path) => path.startsWith('/api/subscribe/pool/intents') && path.includes('offset=200'), data: { code: 'ok', data: [{ id: 77, tmdb_id: 11, media_type: 'movie', title: '奥德赛', state: 'pending' }], counts: {} } },
+      { method: 'GET', match: (path) => path.startsWith('/api/subscribe/pool/intents'), data: { code: 'ok', data: filler, counts: {} } },
+      { method: 'POST', match: (path) => path === '/api/subscribe/pool/intents', data: { code: 'ok', data: { id: 171 } } },
+    ],
+  })
+  const session = await openSession(ctx)
+  session.doc.queue.items = [{ ...defaultQueueEntry('36808876', '奥德赛'), due_at: '2026-09-28T10:00:00Z', media_type: 'movie' }]
+  const outcome = await processDue(session, ctx, 'invocation_fix2', {})
+  assert.equal(outcome.subscribed, 1)
+  assert.equal(ctx.apiCalls.filter((call) => call.method === 'POST').length, 0)
+  const lookups = ctx.apiCalls.filter((call) => call.method === 'GET' && call.path.startsWith('/api/subscribe/pool/intents'))
+  assert.ok(lookups.every((call) => call.path.includes('media_type=movie')))
+  assert.equal(session.doc.history[0].intent_id, 77)
+})
+
+test('后台想看同步（自动订阅开）：没订上的新条目必须留队重试', async () => {
+  const ctx = makeCtx({
+    httpRoutes: wishHttpRoutes(),
+    apiRoutes: [{ method: 'GET', match: (path) => path.startsWith('/api/tmdb/search'), status: 500 }],
+  })
+  const session = await openSession(ctx, { settingsInput: { wish_sync_enabled: true, auto_subscribe: true } })
+  session.doc.cookie = { header: 'dbcl2=123456789:testToken; ck=testCk', uid: '123456789', source: 'manual', fetched_at: NOW_ISO }
+  await syncWishList(session, ctx, 'invocation_fix3', { deep: true })
+  assert.equal(Object.keys(session.doc.wish_seen).length, 3)
+  const queue = session.doc.queue.items ?? []
+  assert.equal(queue.length, 3, '记入 wish_seen 的条目不能凭空消失')
+  assert.ok(queue.every((item) => item.state === 'observing' && item.attempt === 1 && item.due_at === '2026-09-29T11:00:09Z'))
+})
+
+test('想看同步：被重定向到登录页 / 401 → 明确提示 Cookie 失效', async () => {
+  let ctx = makeCtx({
+    httpRoutes: [{ match: (url) => url.includes('/interests?'), text: '<html>登录豆瓣</html>', finalUrl: 'https://accounts.douban.com/passport/login?redir=x' }],
+  })
+  let session = await openWishSession(ctx)
+  await syncWishList(session, ctx, 'invocation_fix4', { deep: false })
+  assert.equal(session.doc.wish_info.last_status, 'failed')
+  assert.ok(session.doc.wish_info.last_error.includes('登录态已失效'), session.doc.wish_info.last_error)
+  assert.equal(ctx.httpCalls.length, 2, '每个类型只试一次，不翻页')
+
+  ctx = makeCtx({ httpRoutes: [{ match: (url) => url.includes('/interests?'), status: 403 }] })
+  session = await openWishSession(ctx)
+  await syncWishList(session, ctx, 'invocation_fix4', { deep: false })
+  assert.ok(session.doc.wish_info.last_error.includes('重新粘贴豆瓣 Cookie'), session.doc.wish_info.last_error)
+})
+
+test('想看同步：一类失败保留该类上一轮条目（partial）；老条目沿用首次加入时间', async () => {
+  const ctx = makeCtx({
+    httpRoutes: [
+      { match: (url) => url.includes('/interests?kind=mark&type=movie'), text: WISH_MOVIE },
+      { match: (url) => url.includes('/interests?kind=mark&type=tv'), status: 500 },
+    ],
+  })
+  const session = await openWishSession(ctx)
+  session.doc.wish = [
+    { douban_ref: '36808876', title: '奥德赛', type: 'movie', added_at: '2026-01-01T00:00:00Z' },
+    { douban_ref: 'tv-old', title: '旧剧', type: 'tv', added_at: '2026-02-02T00:00:00Z' },
+  ]
+  await syncWishList(session, ctx, 'invocation_fix5', { deep: false })
+  const info = session.doc.wish_info
+  assert.equal(info.last_status, 'partial')
+  assert.ok(info.last_error.startsWith('tv 拉取失败'))
+  const byRef = new Map(session.doc.wish.map((item) => [item.douban_ref, item]))
+  assert.equal(byRef.get('36808876').added_at, '2026-01-01T00:00:00Z')
+  assert.ok(byRef.has('tv-old'), 'tv 拉取失败 ≠ 用户删了想看')
+})
+
+test('通知 dedupe_key：订阅按条目+结果+订阅 ID 区分；自检每次唯一', async () => {
+  const ctx = makeCtx({ apiRoutes: subscribeApiRoutes() })
+  const session = await openSession(ctx, { settingsInput: { notify_on_subscribe: true } })
+  session.doc.queue.items = [{ ...defaultQueueEntry('36808876', '奥德赛'), due_at: '2026-09-28T10:00:00Z', media_type: 'movie' }]
+  await processDue(session, ctx, 'invocation_fix6', { notify_on_subscribe: true })
+  assert.equal(ctx.notifies[0].dedupe_key, 'douban.rs:subscribe:36808876:created:171')
+
+  await sendTest(session, ctx)
+  assert.equal(ctx.notifies.at(-1).dedupe_key, 'douban.rs:send-test:run-test-1')
+})
+
+test('落盘 CAS 冲突：合并对方的新版本，而不是整份覆盖', async () => {
+  const ctx = makeCtx()
+  const session = await openSession(ctx, { state: STATE_RAW })
+  const removed = session.doc.queue.items[0].douban_ref
+  const theirs = parseStateDoc(ctx.kv.get('state').value)
+  theirs.queue.items = theirs.queue.items.slice(1)
+  theirs.settings.min_rating = 7.7
+  ctx.kv.set('state', { value: theirs, revision: 2 })
+
+  session.doc.queue.items.push({ ...defaultQueueEntry('ours-new', '本会话新增'), due_at: NOW_ISO })
+  const outcome = await session.persist()
+  assert.ok(outcome.ok)
+  const stored = ctx.kv.get('state')
+  assert.equal(stored.revision, 3)
+  const refs = stored.value.queue.items.map((item) => item.douban_ref)
+  assert.ok(!refs.includes(removed), '对方删除的条目不能被写回')
+  assert.ok(refs.includes('ours-new'), '本会话新增的条目要保留')
+  assert.equal(stored.value.settings.min_rating, 7.7)
+  assert.equal(session.revision, 3)
+  assert.ok(!session.doc.queue.items.some((item) => item.douban_ref === removed), '合并结果回灌内存')
+})
+
+test('榜单刷新：抓取失败的启用榜单沿用上一轮条目展示', async () => {
+  const routes = chartHttpRoutes().filter((route) => !route.match('https://movie.douban.com/chart'))
+  const ctx = makeCtx({ httpRoutes: routes, settings: { observe_period_hours: 24, wish_sync_enabled: false } })
+  const session = await openSession(ctx)
+  session.doc.settings = refreshSettings()
+  const previous = [{ douban_ref: 'db:subj:old', title: '上一轮的', rate: '8.0', url: '', poster_url: '', year: '' }]
+  session.doc.snapshot = { fetched_at: '2026-09-28T00:00:00Z', lists: { movie_wom: previous } }
+  const result = await refreshNow(session, ctx, 'inv_carry', { deep: false })
+  assert.deepEqual(session.doc.snapshot.lists.movie_wom, previous)
+  assert.equal(session.doc.snapshot.lists.hot.length, 6)
+  assert.ok(result.message.startsWith('榜单刷新完成：2 榜'), result.message)
+  assert.ok(!session.doc.queue.items.some((item) => item.douban_ref === 'db:subj:old'), '沿用条目只展示不重新入队')
 })

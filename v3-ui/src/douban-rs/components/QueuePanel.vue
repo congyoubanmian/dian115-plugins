@@ -8,7 +8,7 @@
 import { computed } from 'vue'
 import { NButton } from 'naive-ui'
 import { ExternalLink } from '@lucide/vue'
-import { QUEUE_STATE_META, TYPE_LABEL } from '../constants'
+import { COOKIE_SOURCE_LABEL, QUEUE_STATE_META, TYPE_LABEL, WISH_STATUS_LABEL } from '../constants'
 import { doubanHref, dueLabel, formatTime, listTitle, num, text } from '../format'
 import { useDoubanStore } from '../store'
 import type { QueueItem, WishItem } from '../types'
@@ -21,7 +21,7 @@ const emit = defineEmits<{
 }>()
 
 const store = useDoubanStore()
-const { queueItems, wishItems, wishInfo, flat, queueIndex, dueItems, busy } = store
+const { queueItems, wishItems, wishInfo, flat, queueIndex, dueItems, busy, historyItems } = store
 
 const locked = computed(() => busy.value !== '')
 
@@ -53,9 +53,21 @@ function removeObserved(item: QueueItem): void {
   )
 }
 
+/** 订阅成功过的豆瓣条目（订阅后条目会移出队列，不能再显示成「未入队」）。 */
+const subscribedRefs = computed(() => {
+  const refs = new Set<string>()
+  for (const entry of historyItems.value) {
+    if (entry?.action === 'subscribe' && entry.result === 'succeeded' && entry.douban_ref) refs.add(entry.douban_ref)
+  }
+  return refs
+})
+
 function wishState(item: WishItem): { label: string; tone: string } {
   const queued = item.douban_ref ? queueIndex.value.get(item.douban_ref) : undefined
-  if (!queued) return { label: '未入队', tone: 'muted' }
+  if (!queued) {
+    if (item.douban_ref && subscribedRefs.value.has(item.douban_ref)) return stateMeta('subscribed')
+    return { label: '未入队', tone: 'muted' }
+  }
   return stateMeta(queued.state)
 }
 </script>
@@ -189,7 +201,7 @@ function wishState(item: WishItem): { label: string; tone: string } {
           <div class="db-kv">
             <span class="db-kv__label">上次结果</span>
             <span class="db-kv__value">
-              {{ wishInfo.last_status ? `${wishInfo.last_status}（共 ${num(wishInfo.last_count)} 条，新增 ${num(wishInfo.last_new)}）` : '—' }}
+              {{ wishInfo.last_status ? `${WISH_STATUS_LABEL[wishInfo.last_status] ?? wishInfo.last_status}（共 ${num(wishInfo.last_count)} 条，新增 ${num(wishInfo.last_new)}）` : '—' }}
             </span>
           </div>
           <div class="db-kv">
@@ -198,7 +210,7 @@ function wishState(item: WishItem): { label: string; tone: string } {
           </div>
           <div class="db-kv">
             <span class="db-kv__label">登录态来源</span>
-            <span class="db-kv__value">{{ text(wishInfo.source) || '—' }}</span>
+            <span class="db-kv__value">{{ COOKIE_SOURCE_LABEL[text(wishInfo.source)] ?? (text(wishInfo.source) || '—') }}</span>
           </div>
         </div>
 
