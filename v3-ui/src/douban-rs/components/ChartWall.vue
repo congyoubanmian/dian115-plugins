@@ -14,7 +14,7 @@ import { useDoubanStore } from '../store'
 import type { ChartItem } from '../types'
 import BlockCard from './BlockCard.vue'
 import PosterCard from './PosterCard.vue'
-import SkeletonBlock from './SkeletonBlock.vue'
+import SkeletonBlock from '../../shared/components/SkeletonBlock.vue'
 import StateBadge from './StateBadge.vue'
 
 const emit = defineEmits<{
@@ -397,7 +397,7 @@ function scrollTrack(key: string, direction: 1 | -1): void {
   font-size: 11px;
 }
 
-@container db-page (max-width: 720px) {
+@container page (max-width: 719.98px) {
   .db-wall--grid {
     grid-template-columns: repeat(auto-fill, minmax(116px, 1fr));
     gap: 12px 10px;

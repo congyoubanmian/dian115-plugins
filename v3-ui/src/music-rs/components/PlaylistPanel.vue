@@ -16,7 +16,7 @@ import { Heart as HeartIcon, ListMusic as ListMusicIcon, Play as PlayIcon, Spark
 import { SOURCES, qualitiesOfSource, useMusicStore } from '../store'
 import type { PlaylistItem } from '../types'
 import SongTable from './SongTable.vue'
-import Skeleton from './Skeleton.vue'
+import Skeleton from '../../shared/components/Skeleton.vue'
 
 const store = useMusicStore()
 const {
@@ -304,7 +304,7 @@ function onQualityChange(event: Event): void {
   text-align: left;
   padding: 10px 16px 10px 10px;
   border: 1px solid color-mix(in srgb, var(--mx-accent, #2080f0) 25%, var(--app-border, #e0e4ea));
-  border-radius: 14px;
+  border-radius: var(--ui-radius, 14px);
   background: linear-gradient(
     135deg,
     color-mix(in srgb, var(--mx-accent, #2080f0) 12%, var(--app-surface, #fff)),
@@ -381,7 +381,7 @@ function onQualityChange(event: Event): void {
   gap: 14px;
 }
 
-@container music-page (max-width: 480px) {
+@container page (max-width: 479.98px) {
   .pl-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 10px;
@@ -394,7 +394,7 @@ function onQualityChange(event: Event): void {
   text-align: left;
   padding: 10px;
   border: 1px solid color-mix(in srgb, var(--app-border, #e0e4ea) 80%, transparent);
-  border-radius: 14px;
+  border-radius: var(--ui-radius, 14px);
   background: var(--app-surface, #fff);
   color: inherit;
   cursor: pointer;

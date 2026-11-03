@@ -19,8 +19,9 @@ import HistoryPanel from './components/HistoryPanel.vue'
 import PosterLightbox from './components/PosterLightbox.vue'
 import QueuePanel from './components/QueuePanel.vue'
 import SettingsPanel from './components/SettingsPanel.vue'
-import StatTile from './components/StatTile.vue'
-import ToastHost from './components/ToastHost.vue'
+import StatTile from '../shared/components/StatTile.vue'
+import ToastHost from '../shared/components/ToastHost.vue'
+import type { StatTileItem } from '../shared/components/types'
 import { useCtx } from '../shared/use-ctx'
 import { useHostTheme } from '../shared/theme'
 
@@ -54,6 +55,7 @@ const {
   wishInfo,
   tombstones,
   dueItems,
+  toasts,
 } = store
 
 /** 海报放大预览的当前对象。 */
@@ -75,42 +77,48 @@ const tabCounts = computed<Record<TabKey, string>>(() => ({
   settings: tombstones.value.length > 0 ? String(tombstones.value.length) : '',
 }))
 
-const tiles = computed(() => {
+const tiles = computed<StatTileItem[]>(() => {
   const stats = stateDoc.value?.stats ?? {}
   const blacklist = docSettings.value.blacklist ?? []
   const due = dueItems.value.length
   return [
     {
+      key: 'charts',
       label: '榜单条目',
       icon: Clapperboard, tone: 'accent',
       value: String(snapshotItems.value.length),
       hint: `${snapshotListCount.value} 个榜单 · ${formatTime(stateDoc.value?.snapshot?.fetched_at) || '尚未刷新'}`,
     },
     {
+      key: 'queue',
       label: '观察队列',
       icon: Eye, tone: due > 0 ? 'warn' : 'accent',
       value: String(queueItems.value.length),
       hint: due > 0 ? `${due} 条已到期` : '暂无到期条目',
     },
     {
+      key: 'wish',
       label: '我的想看',
       icon: Heart, tone: 'alt',
       value: String(wishItems.value.length),
       hint: wishInfo.value.last_sync ? `上次同步 ${formatTime(wishInfo.value.last_sync)}` : '尚未同步',
     },
     {
+      key: 'subscriptions',
       label: '累计订阅',
       icon: BellRing, tone: 'ok',
       value: String(num(stats.total)),
       hint: `本月 +${num(stats.month_new)}${stats.month ? `（${stats.month}）` : ''}`,
     },
     {
+      key: 'blacklist',
       label: '黑名单命中',
       icon: ShieldBan, tone: 'error',
       value: String(num(blackState.value.hits)),
       hint: `${blacklist.length} 个关键词`,
     },
     {
+      key: 'tombstones',
       label: '已删除不重订',
       icon: ArchiveX, tone: 'muted',
       value: String(tombstones.value.length),
@@ -141,94 +149,97 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="db-root" :class="{ 'db-root--dark': isDark }">
+  <div class="db-root v3-ui" :class="{ 'db-root--dark': isDark }">
     <div class="db-shell">
-      <AppHeader />
+      <div class="db-inner">
+        <AppHeader />
 
-      <Transition name="db-fade">
-        <p v-if="busy" class="db-progress" role="status">
-          <span class="db-spinner" />
-          <span>{{ busyText }}</span>
-          <span class="db-progress__bar" aria-hidden="true" />
-        </p>
-      </Transition>
+        <Transition name="db-fade">
+          <p v-if="busy" class="db-progress" role="status">
+            <span class="db-spinner" />
+            <span>{{ busyText }}</span>
+            <span class="db-progress__bar" aria-hidden="true" />
+          </p>
+        </Transition>
 
-      <section class="db-tiles" :aria-busy="!loaded">
-        <StatTile
-          v-for="tile in tiles"
-          :key="tile.label"
-          :label="tile.label"
-          :value="tile.value"
-          :hint="tile.hint"
-          :icon="tile.icon"
-          :tone="tile.tone"
-          :loading="!loaded"
-        />
-      </section>
-
-      <p v-if="!loaded && !busy" class="db-sr" role="status">正在读取插件数据…</p>
-
-      <TransitionGroup tag="div" name="db-fade" class="db-banners">
-        <div v-if="stateError" key="state-error" class="db-banner db-banner--error" role="alert">
-          <span class="db-banner__dot" />
-          <span>{{ stateError }}</span>
-        </div>
-        <div v-if="settingsError" key="settings-error" class="db-banner db-banner--warning" role="alert">
-          <span class="db-banner__dot" />
-          <span>{{ settingsError }}</span>
-        </div>
-        <div v-if="stateInvalid" key="invalid" class="db-banner db-banner--warning">
-          <span class="db-banner__dot" />
-          <span>页面不会覆盖无法识别的旧数据；如需重新开始，请先在宿主存储里处理 state 键。</span>
-        </div>
-        <div v-if="showFreshHint" key="fresh" class="db-banner db-banner--info">
-          <span class="db-banner__dot" />
-          <span>全新安装：还没有榜单快照。点击「刷新榜单」抓取第一轮数据；想看同步需要先在设置里粘贴豆瓣 Cookie。</span>
-        </div>
-        <div v-if="showNoSnapshotHint" key="no-snapshot" class="db-banner db-banner--info">
-          <span class="db-banner__dot" />
-          <span>当前还没有榜单快照。点击右上角「刷新榜单」，后台会按已启用的榜单逐项抓取。</span>
-        </div>
-      </TransitionGroup>
-
-      <nav class="db-tabs" role="tablist" aria-label="豆瓣中心分区">
-        <button
-          v-for="tab in tabs"
-          :key="tab.key"
-          type="button"
-          role="tab"
-          class="db-tab"
-          :aria-selected="activeTab === tab.key"
-          :class="{ 'db-tab--active': activeTab === tab.key }"
-          @click="store.showTab(tab.key)"
-        >
-          <component :is="tab.icon" :size="15" aria-hidden="true" />
-          <span>{{ tab.label }}</span>
-          <span class="db-tab-count">{{ tabCounts[tab.key] }}</span>
-        </button>
-      </nav>
-
-      <div class="db-panels">
-        <section v-show="activeTab === 'charts'" class="db-panel">
-          <ChartWall @zoom="zoom = $event" />
+        <section class="db-tiles" :aria-busy="!loaded">
+          <StatTile
+            v-for="tile in tiles"
+            :key="tile.key"
+            :label="tile.label"
+            :value="tile.value"
+            :hint="tile.hint"
+            :icon="tile.icon"
+            :tone="tile.tone"
+            :loading="!loaded"
+            variant="card"
+          />
         </section>
-        <section v-show="activeTab === 'queue'" class="db-panel">
-          <QueuePanel @zoom="zoom = $event" />
-        </section>
-        <section v-show="activeTab === 'history'" class="db-panel">
-          <HistoryPanel />
-        </section>
-        <section v-show="activeTab === 'settings'" ref="settingsSection" class="db-panel">
-          <SettingsPanel />
-        </section>
+
+        <p v-if="!loaded && !busy" class="db-sr" role="status">正在读取插件数据…</p>
+
+        <TransitionGroup tag="div" name="db-fade" class="db-banners">
+          <div v-if="stateError" key="state-error" class="db-banner db-banner--error" role="alert">
+            <span class="db-banner__dot" />
+            <span>{{ stateError }}</span>
+          </div>
+          <div v-if="settingsError" key="settings-error" class="db-banner db-banner--warning" role="alert">
+            <span class="db-banner__dot" />
+            <span>{{ settingsError }}</span>
+          </div>
+          <div v-if="stateInvalid" key="invalid" class="db-banner db-banner--warning">
+            <span class="db-banner__dot" />
+            <span>页面不会覆盖无法识别的旧数据；如需重新开始，请先在宿主存储里处理 state 键。</span>
+          </div>
+          <div v-if="showFreshHint" key="fresh" class="db-banner db-banner--info">
+            <span class="db-banner__dot" />
+            <span>全新安装：还没有榜单快照。点击「刷新榜单」抓取第一轮数据；想看同步需要先在设置里粘贴豆瓣 Cookie。</span>
+          </div>
+          <div v-if="showNoSnapshotHint" key="no-snapshot" class="db-banner db-banner--info">
+            <span class="db-banner__dot" />
+            <span>当前还没有榜单快照。点击右上角「刷新榜单」，后台会按已启用的榜单逐项抓取。</span>
+          </div>
+        </TransitionGroup>
+
+        <nav class="db-tabs" role="tablist" aria-label="豆瓣中心分区">
+          <button
+            v-for="tab in tabs"
+            :key="tab.key"
+            type="button"
+            role="tab"
+            class="db-tab"
+            :aria-selected="activeTab === tab.key"
+            :class="{ 'db-tab--active': activeTab === tab.key }"
+            @click="store.showTab(tab.key)"
+          >
+            <component :is="tab.icon" :size="15" aria-hidden="true" />
+            <span>{{ tab.label }}</span>
+            <span class="db-tab-count">{{ tabCounts[tab.key] }}</span>
+          </button>
+        </nav>
+
+        <div class="db-panels">
+          <section v-show="activeTab === 'charts'" class="db-panel">
+            <ChartWall @zoom="zoom = $event" />
+          </section>
+          <section v-show="activeTab === 'queue'" class="db-panel">
+            <QueuePanel @zoom="zoom = $event" />
+          </section>
+          <section v-show="activeTab === 'history'" class="db-panel">
+            <HistoryPanel />
+          </section>
+          <section v-show="activeTab === 'settings'" ref="settingsSection" class="db-panel">
+            <SettingsPanel />
+          </section>
+        </div>
+
+        <footer class="db-foot">
+          数据来自插件存储 state 键与宿主设置 KV；动作通过宿主任务队列执行。
+        </footer>
       </div>
-
-      <footer class="db-foot">
-        数据来自插件存储 state 键与宿主设置 KV；动作通过宿主任务队列执行。
-      </footer>
     </div>
 
-    <ToastHost />
+    <ToastHost :items="toasts" position="bottom-right" :z-index="80" />
 
     <Transition name="db-zoom">
       <PosterLightbox
@@ -250,46 +261,48 @@ onBeforeUnmount(() => {
   overflow: auto;
   box-sizing: border-box;
   position: relative;
-  padding: 12px clamp(12px, 2.4vw, 28px) 42px;
-  color: var(--app-text, #1f2329);
+  padding: 0;
+  color: var(--ui-text, var(--app-text, #1f2329));
   font-size: 14px;
   line-height: 1.5;
 
-  /* 页面内的语义色（继承宿主的明暗变量）。 */
-  --db-line: var(--app-border, #e3e6eb);
-  --db-muted: var(--app-text-secondary, #6b7280);
-  --db-accent: var(--app-accent, #2080f0);
-  /* 第二强调色：由宿主强调色混出，支持相对颜色语法时转一个色相。 */
-  --db-accent-2: color-mix(in oklab, var(--db-accent) 70%, var(--app-text, #1f2329));
-  --db-ok: #18a058;
-  --db-warn: #f0a020;
-  --db-err: #d03050;
+  /* 页面内的语义色：统一指向 shared/tokens.css 的 --ui-*，旧名保留给子组件。 */
+  --db-line: var(--ui-border, var(--app-border, #e3e6eb));
+  --db-muted: var(--ui-muted, var(--app-text-secondary, #6b7280));
+  --db-accent: var(--ui-accent, var(--app-accent, #2080f0));
+  /* 第二强调色由共享令牌子定义（含 @supports oklch 覆盖）。 */
+  --db-accent-2: var(--ui-accent-2, color-mix(in oklab, var(--db-accent) 70%, var(--app-text, #1f2329)));
+  --db-ok: var(--ui-ok, #18a058);
+  --db-warn: var(--ui-warn, #f0a020);
+  --db-err: var(--ui-err, #d03050);
   --db-star: var(--db-warn);
-  --db-radius: 14px;
+  --db-radius: var(--ui-radius, 14px);
+  --db-gap: var(--ui-gap, 10px);
 
   /* 背景：宿主底色上叠两团很淡的强调色光晕。 */
   background:
     radial-gradient(900px 420px at 100% -10%, color-mix(in srgb, var(--db-accent) 9%, transparent), transparent 70%),
     radial-gradient(700px 380px at -10% 0%, color-mix(in srgb, var(--db-accent-2) 7%, transparent), transparent 70%),
-    var(--app-bg, #f5f6f8);
+    var(--ui-bg, var(--app-bg, #f5f6f8));
 }
 
-@supports (color: oklch(from red l c h)) {
-  .db-root {
-    --db-accent-2: oklch(from var(--db-accent) l c calc(h + 55));
-  }
+/* 页面内边距单独放在内层：滚动根不再有 padding，容器查询测量的是整页宽度。 */
+.db-inner {
+  box-sizing: border-box;
+  min-width: 0;
+  padding: 12px clamp(12px, 2.4vw, 28px) 42px;
 }
 
 .db-root--dark {
   background:
     radial-gradient(900px 420px at 100% -10%, color-mix(in srgb, var(--db-accent) 16%, transparent), transparent 70%),
     radial-gradient(700px 380px at -10% 0%, color-mix(in srgb, var(--db-accent-2) 12%, transparent), transparent 70%),
-    var(--app-bg, #18181c);
+    var(--ui-bg, var(--app-bg, #18181c));
 }
 
 /* 容器查询：子组件按页面自身宽度（而不是视口）调整布局。 */
 .db-shell {
-  container: db-page / inline-size;
+  container: page / inline-size;
   min-width: 0;
 }
 
@@ -366,7 +379,7 @@ onBeforeUnmount(() => {
 .db-tiles {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
-  gap: 10px;
+  gap: var(--db-gap, 10px);
   margin-bottom: 14px;
 }
 
@@ -558,19 +571,17 @@ onBeforeUnmount(() => {
   opacity: 0;
 }
 
-@container db-page (max-width: 720px) {
+@container page (max-width: 719.98px) {
+  .db-inner {
+    padding: 10px 10px 30px;
+  }
+
   .db-tiles {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .db-tabs {
     width: 100%;
-  }
-}
-
-@media (max-width: 720px) {
-  .db-root {
-    padding: 10px 10px 30px;
   }
 }
 

@@ -16,7 +16,11 @@
 import { computed, onBeforeUnmount, onMounted, provide, ref, watch, type Component } from 'vue'
 import { NButton, NTag } from 'naive-ui'
 import {
+  CircleAlert as FailIcon,
+  CircleCheck as DoneIcon,
+  Clock3 as QueueIcon,
   Cookie as CookieIcon,
+  Disc3 as ActiveIcon,
   Download as DownloadIcon,
   ListMusic as ListMusicIcon,
   RefreshCw as RefreshIcon,
@@ -25,6 +29,11 @@ import {
 } from '@lucide/vue'
 import { useCtx } from '../shared/use-ctx'
 import { useHostTheme } from '../shared/theme'
+import PageHeader from '../shared/components/PageHeader.vue'
+import StatTiles from '../shared/components/StatTiles.vue'
+import ToastHost from '../shared/components/ToastHost.vue'
+import type { StatTileItem } from '../shared/components/types'
+import '../shared/tokens.css'
 import { COVER_KEY, createCoverCache, READY_KEY } from './ui-kit'
 import { createMusicStore, MUSIC_STORE_KEY } from './store'
 import LoginCard from './components/LoginCard.vue'
@@ -33,8 +42,6 @@ import PlaylistPanel from './components/PlaylistPanel.vue'
 import TaskPanel from './components/TaskPanel.vue'
 import SettingsPanel from './components/SettingsPanel.vue'
 import ActivityPanel from './components/ActivityPanel.vue'
-import Toasts from './components/Toasts.vue'
-import StatTiles from './components/StatTiles.vue'
 import NowDownloading from './components/NowDownloading.vue'
 
 type TabId = 'search' | 'playlists' | 'tasks' | 'settings'
@@ -53,7 +60,7 @@ const covers = createCoverCache(ctx)
 provide(COVER_KEY, covers)
 const { isDark } = useHostTheme()
 
-const { login, loginSource, pendingTasks, busy, loading, playlists, playlistView } = store
+const { login, loginSource, pendingTasks, busy, loading, playlists, playlistView, allTasks, toasts } = store
 
 const tab = ref<TabId>('search')
 const tabIndex = computed(() => TABS.findIndex((item) => item.id === tab.value))
@@ -68,6 +75,27 @@ const loginCardRef = ref<HTMLElement | null>(null)
 
 /** 页头的登录胶囊跟随登录卡当前来源。 */
 const headLogin = computed(() => (loginSource.value === 'qq' ? login.qq : login.netease))
+
+/**
+ * 页头统计：进行中 / 排队中 / 已完成 / 失败（按完整任务索引计数）。
+ * 原 components/StatTiles.vue 的 count/tiles 计算迁到这里，展示交给共享 StatTiles。
+ */
+function countTasks(...statuses: string[]): number {
+  return allTasks.value.filter((task) => statuses.includes(task.status)).length
+}
+
+const statItems = computed<StatTileItem[]>(() => {
+  const active = countTasks('downloading', 'copying')
+  const queued = countTasks('queued')
+  const done = countTasks('done')
+  const failed = countTasks('failed')
+  return [
+    { key: 'active', label: '进行中', value: active, icon: ActiveIcon, tone: 'accent', live: active > 0 },
+    { key: 'queued', label: '排队中', value: queued, icon: QueueIcon, tone: 'muted', live: queued > 0 },
+    { key: 'done', label: '已完成', value: done, icon: DoneIcon, tone: 'ok', live: done > 0 },
+    { key: 'failed', label: '失败', value: failed, icon: FailIcon, tone: 'error', live: failed > 0 },
+  ]
+})
 
 function switchTab(id: TabId): void {
   tab.value = id
@@ -114,23 +142,27 @@ onBeforeUnmount(() => {
 
 
 <template>
-  <div class="music-page" :class="{ 'music-page--dark': isDark }">
-    <!-- 页头：玻璃质感 + 强调色渐变；深色主题带柔光 -->
-    <header class="music-head">
-      <div class="music-head__top">
-        <div class="music-brand">
-          <span class="music-brand__icon" aria-hidden="true">
-            <span v-for="bar in 4" :key="bar" class="music-brand__bar" />
-          </span>
-          <div class="music-brand__text">
-            <h1>音乐下载</h1>
-            <p>扫码登录网易云 / QQ 音乐 · 下载至 115 网盘 · 队列自动推进</p>
+  <div class="music-page v3-ui" :class="{ 'music-page--dark': isDark }">
+    <div class="music-shell">
+      <!-- 页头：玻璃质感 + 强调色渐变；深色主题带柔光（布局交给共享 PageHeader） -->
+      <PageHeader class="music-head">
+        <template #brand>
+          <div class="music-brand">
+            <span class="music-brand__icon" aria-hidden="true">
+              <span v-for="bar in 4" :key="bar" class="music-brand__bar" />
+            </span>
+            <div class="music-brand__text">
+              <h1>音乐下载</h1>
+              <p>扫码登录网易云 / QQ 音乐 · 下载至 115 网盘 · 队列自动推进</p>
+            </div>
           </div>
-        </div>
-        <div class="music-head__actions">
+        </template>
+        <template #capsules>
           <NTag size="small" round :bordered="false" :type="headLogin.logged_in ? 'success' : 'warning'">
             {{ headLogin.logged_in ? '已登录' : '未登录' }} · {{ store.sourceName(loginSource) }}
           </NTag>
+        </template>
+        <template #actions>
           <NButton size="small" secondary round @click="openCookiePanel">
             <template #icon><CookieIcon :size="14" /></template>
             手动 Cookie
@@ -149,65 +181,67 @@ onBeforeUnmount(() => {
           <NButton size="small" quaternary circle title="设置" aria-label="设置" @click="switchTab('settings')">
             <template #icon><SettingsIcon :size="16" /></template>
           </NButton>
-        </div>
-      </div>
-      <StatTiles @open="switchTab('tasks')" />
-    </header>
+        </template>
 
-    <!-- 进行中任务的主视觉（无进行中任务时不占位） -->
-    <NowDownloading />
+        <StatTiles :items="statItems" :loading="!ready" interactive @select="switchTab('tasks')" />
+      </PageHeader>
 
-    <!-- 登录卡：左 QR 白底卡 | 右 stepper + 其他登录方式 + 音质档位 -->
-    <section ref="loginCardRef" class="music-card music-login">
-      <LoginCard />
-    </section>
+      <!-- 进行中任务的主视觉（无进行中任务时不占位） -->
+      <NowDownloading />
 
-    <!-- 胶囊式 Tabs：指示块随选中项滑动 -->
-    <nav class="music-tabs" role="tablist" aria-label="功能分页" :style="{ '--tab-i': tabIndex, '--tab-n': TABS.length }">
-      <span class="music-tabs__pill" aria-hidden="true" />
-      <button
-        v-for="item in TABS"
-        :key="item.id"
-        type="button"
-        role="tab"
-        class="music-tab"
-        :class="{ 'music-tab--on': tab === item.id }"
-        :aria-selected="tab === item.id"
-        :aria-label="item.text"
-        :title="item.text"
-        @click="switchTab(item.id)"
-      >
-        <component :is="item.icon" :size="15" aria-hidden="true" />
-        <span class="music-tab__text">{{ item.text }}</span>
-        <span v-if="item.id === 'tasks' && pendingTasks.length" class="music-tab__badge">
-          {{ pendingTasks.length }}
-        </span>
-      </button>
-    </nav>
+      <!-- 登录卡：左 QR 白底卡 | 右 stepper + 其他登录方式 + 音质档位 -->
+      <section ref="loginCardRef" class="music-card music-login">
+        <LoginCard />
+      </section>
 
-    <!-- 各分页 -->
-    <section v-show="tab === 'search'" class="music-card music-panel" role="tabpanel" aria-label="搜索">
-      <SearchPanel />
-    </section>
-    <section v-show="tab === 'playlists'" class="music-card music-panel" role="tabpanel" aria-label="我的歌单">
-      <PlaylistPanel />
-    </section>
-    <section v-show="tab === 'tasks'" class="music-card music-panel" role="tabpanel" aria-label="任务">
-      <TaskPanel />
-    </section>
-    <section v-show="tab === 'settings'" class="music-card music-panel" role="tabpanel" aria-label="设置">
-      <SettingsPanel />
-    </section>
+      <!-- 胶囊式 Tabs：指示块随选中项滑动 -->
+      <nav class="music-tabs" role="tablist" aria-label="功能分页" :style="{ '--tab-i': tabIndex, '--tab-n': TABS.length }">
+        <span class="music-tabs__pill" aria-hidden="true" />
+        <button
+          v-for="item in TABS"
+          :key="item.id"
+          type="button"
+          role="tab"
+          class="music-tab"
+          :class="{ 'music-tab--on': tab === item.id }"
+          :aria-selected="tab === item.id"
+          :aria-label="item.text"
+          :title="item.text"
+          @click="switchTab(item.id)"
+        >
+          <component :is="item.icon" :size="15" aria-hidden="true" />
+          <span class="music-tab__text">{{ item.text }}</span>
+          <span v-if="item.id === 'tasks' && pendingTasks.length" class="music-tab__badge">
+            {{ pendingTasks.length }}
+          </span>
+        </button>
+      </nav>
 
-    <!-- 最近动作 -->
-    <ActivityPanel />
+      <!-- 各分页 -->
+      <section v-show="tab === 'search'" class="music-card music-panel" role="tabpanel" aria-label="搜索">
+        <SearchPanel />
+      </section>
+      <section v-show="tab === 'playlists'" class="music-card music-panel" role="tabpanel" aria-label="我的歌单">
+        <PlaylistPanel />
+      </section>
+      <section v-show="tab === 'tasks'" class="music-card music-panel" role="tabpanel" aria-label="任务">
+        <TaskPanel />
+      </section>
+      <section v-show="tab === 'settings'" class="music-card music-panel" role="tabpanel" aria-label="设置">
+        <SettingsPanel />
+      </section>
 
-    <footer class="music-foot">
-      状态由页面实时读插件 KV 组装 · 任务页有进行中任务时每 5 秒刷新 · 扫码登录每 2 秒轮询 ·
-      页面宽度跟随宿主可用宽度
-    </footer>
+      <!-- 最近动作 -->
+      <ActivityPanel />
 
-    <Toasts />
+      <footer class="music-foot">
+        状态由页面实时读插件 KV 组装 · 任务页有进行中任务时每 5 秒刷新 · 扫码登录每 2 秒轮询 ·
+        页面宽度跟随宿主可用宽度
+      </footer>
+    </div>
+
+    <!-- 提示条：fixed 相对视口，放在滚动壳外面 -->
+    <ToastHost :items="toasts" position="bottom-right" :z-index="50" />
   </div>
 </template>
 
@@ -224,19 +258,25 @@ onBeforeUnmount(() => {
     0 12px 32px -20px color-mix(in srgb, var(--app-text, #000) 30%, transparent);
   --mx-glow: var(--mx-shadow);
 
-  /* 页面占满内容区并在插件区域内滚动；sticky 相对插件区域生效。 */
-  container: music-page / inline-size;
+  /* 页面占满内容区并在插件区域内滚动；sticky 相对插件区域生效。
+     容器名统一为 page，供 shared 与各分页的 @container page 查询。 */
+  container: page / inline-size;
   height: 100%;
   overflow: auto;
   box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  background: var(--app-bg, transparent);
+  color: var(--app-text, inherit);
+}
+
+/* 内容壳：间距/内边距从页面根移到这里（容器不能样式化自己）。 */
+.music-shell {
   display: grid;
   align-content: start;
   gap: 16px;
-  width: 100%;
   min-width: 0;
   padding: 14px 18px 18px;
-  background: var(--app-bg, transparent);
-  color: var(--app-text, inherit);
 }
 
 .music-page--dark {
@@ -246,18 +286,18 @@ onBeforeUnmount(() => {
 }
 
 /* ── 页头 ─────────────────────────────────────── */
+/* 网格/sticky/compact 由共享 PageHeader 负责，这里只保留玻璃质感皮肤。 */
 .music-head {
-  position: relative;
-  display: grid;
-  gap: 16px;
-  padding: 18px 20px;
-  border-radius: 20px;
+  --ui-head-padding: 18px 20px;
+  --ui-head-padding-compact: 14px;
+  --ui-head-radius: 20px;
+  --ui-head-gap: 16px 12px;
   overflow: hidden;
-  border: 1px solid color-mix(in srgb, var(--mx-accent) 22%, var(--app-border, #e0e4ea));
+  border: 1px solid color-mix(in srgb, var(--mx-accent) 22%, var(--ui-border, #e0e4ea));
   background:
     radial-gradient(110% 150% at 0% 0%, color-mix(in srgb, var(--mx-accent) 24%, transparent), transparent 58%),
     radial-gradient(90% 130% at 100% 0%, color-mix(in srgb, var(--mx-accent) 12%, transparent), transparent 62%),
-    color-mix(in srgb, var(--app-surface, #fff) 80%, transparent);
+    color-mix(in srgb, var(--ui-surface, #fff) 80%, transparent);
   backdrop-filter: blur(16px) saturate(1.3);
   box-shadow: var(--mx-glow);
 }
@@ -276,16 +316,12 @@ onBeforeUnmount(() => {
   );
 }
 
-.music-head > * {
+/* 高光 ::before 是绝对定位层：把共享页头的各槽位抬到它上面。 */
+.music-head :deep(.ui-head__brand),
+.music-head :deep(.ui-head__capsules),
+.music-head :deep(.ui-head__actions),
+.music-head :deep(.ui-head__body) {
   position: relative;
-}
-
-.music-head__top {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 12px;
-  flex-wrap: wrap;
 }
 
 .music-brand {
@@ -358,35 +394,25 @@ onBeforeUnmount(() => {
   color: var(--app-text-secondary, rgba(0, 0, 0, 0.72));
 }
 
-.music-head__actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
 /* ── 卡片 ─────────────────────────────────────── */
 .music-card {
-  border: 1px solid var(--app-border, #e0e4ea);
-  border-radius: 16px;
-  background: var(--app-surface, #fff);
+  border: 1px solid var(--ui-border, #e0e4ea);
+  border-radius: var(--ui-radius, 14px);
+  background: var(--ui-surface, #fff);
   padding: 20px 24px;
   display: grid;
-  gap: 14px;
+  gap: var(--ui-gap, 10px);
   min-width: 0;
   box-shadow: var(--mx-shadow);
 }
 
-@container music-page (max-width: 560px) {
-  .music-page {
+@container page (max-width: 719.98px) {
+  .music-shell {
     padding: 10px;
     gap: 12px;
   }
 
-  .music-head {
-    padding: 14px;
-  }
-
+  /* 页头内边距走 shared 的 --ui-head-padding-compact（14px）。 */
   .music-card {
     padding: 14px;
   }
@@ -473,7 +499,7 @@ onBeforeUnmount(() => {
   white-space: nowrap;
 }
 
-@container music-page (max-width: 420px) {
+@container page (max-width: 479.98px) {
   .music-tab__text {
     display: none;
   }

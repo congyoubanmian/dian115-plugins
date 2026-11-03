@@ -9,7 +9,7 @@ import { NButton, NInput } from 'naive-ui'
 import { Search as SearchIcon } from '@lucide/vue'
 import { SOURCES, useMusicStore } from '../store'
 import SongTable from './SongTable.vue'
-import Skeleton from './Skeleton.vue'
+import Skeleton from '../../shared/components/Skeleton.vue'
 
 const store = useMusicStore()
 const { source, query, searchResults, searchPage, searchTotal, busy } = store
@@ -144,7 +144,7 @@ const summary = computed(() => {
   justify-items: center;
   gap: 8px;
   padding: 26px 12px;
-  border-radius: 14px;
+  border-radius: var(--ui-radius, 14px);
   border: 1px dashed var(--app-border, #e0e4ea);
   background: radial-gradient(
     60% 90% at 50% 0%,

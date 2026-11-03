@@ -79,21 +79,35 @@ function archive(): void {
           </thead>
           <tbody>
             <tr v-for="(entry, index) in historyItems" :key="index">
-              <td class="db-nowrap">{{ formatTime(entry.created_at) || '—' }}</td>
-              <td>
-                <span class="db-item-title">{{ entry.title || entry.douban_ref || '—' }}</span>
-                <div v-if="entry.douban_ref" class="db-mono db-sub">{{ entry.douban_ref }}</div>
+              <td class="db-nowrap" data-label="时间">
+                <div class="db-cell-value">{{ formatTime(entry.created_at) || '—' }}</div>
               </td>
-              <td>{{ entry.list ? listTitle(entry.list) : '—' }}</td>
-              <td>{{ entry.action || '—' }}</td>
-              <td>
-                <StateBadge
-                  :label="entry.result || '未知'"
-                  :tone="entry.result === 'succeeded' ? 'ok' : 'error'"
-                />
+              <td data-label="条目">
+                <div class="db-cell-value">
+                  <span class="db-item-title">{{ entry.title || entry.douban_ref || '—' }}</span>
+                  <div v-if="entry.douban_ref" class="db-mono db-sub">{{ entry.douban_ref }}</div>
+                </div>
               </td>
-              <td class="db-wrap">{{ entry.message || '—' }}</td>
-              <td class="db-mono db-nowrap">{{ entry.tmdb_ref || (entry.intent_id ? `#${entry.intent_id}` : '—') }}</td>
+              <td data-label="来源">
+                <div class="db-cell-value">{{ entry.list ? listTitle(entry.list) : '—' }}</div>
+              </td>
+              <td data-label="动作">
+                <div class="db-cell-value">{{ entry.action || '—' }}</div>
+              </td>
+              <td data-label="结果">
+                <div class="db-cell-value">
+                  <StateBadge
+                    :label="entry.result || '未知'"
+                    :tone="entry.result === 'succeeded' ? 'ok' : 'error'"
+                  />
+                </div>
+              </td>
+              <td class="db-wrap db-cell--wide" data-label="消息">
+                <div class="db-cell-value">{{ entry.message || '—' }}</div>
+              </td>
+              <td class="db-mono db-nowrap" data-label="TMDB">
+                <div class="db-cell-value">{{ entry.tmdb_ref || (entry.intent_id ? `#${entry.intent_id}` : '—') }}</div>
+              </td>
             </tr>
           </tbody>
         </table>
@@ -307,9 +321,84 @@ function archive(): void {
   font-size: 11px;
 }
 
-@media (max-width: 720px) {
+/* 窄容器：订阅历史表改成逐条卡片（不横向滚动），日志时间列再收窄。 */
+@container page (max-width: 719.98px) {
+  .db-scroll {
+    overflow: visible;
+    border: 0;
+  }
+
+  .db-table {
+    display: block;
+    min-width: 0;
+  }
+
+  .db-table thead {
+    display: none;
+  }
+
+  .db-table tbody {
+    display: block;
+  }
+
+  .db-table tr {
+    display: block;
+    padding: 8px 0;
+    border-bottom: 1px solid var(--db-line, var(--ui-border, #e3e6eb));
+  }
+
+  .db-table tr:last-child {
+    border-bottom: 0;
+  }
+
+  .db-table td {
+    display: grid;
+    grid-template-columns: 72px minmax(0, 1fr);
+    column-gap: 8px;
+    padding: 3px 0;
+    border: 0;
+  }
+
+  .db-table td::before {
+    content: attr(data-label);
+    grid-column: 1;
+    grid-row: 1;
+    color: var(--db-muted, var(--ui-muted, #6b7280));
+    font-size: 11px;
+  }
+
+  .db-table td > .db-cell-value {
+    grid-column: 2;
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+
+  .db-cell-value > * {
+    overflow-wrap: anywhere;
+  }
+
+  .db-table td.db-cell--wide {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .db-table td.db-cell--wide::before {
+    display: none;
+  }
+
+  .db-table td.db-cell--wide > .db-cell-value {
+    grid-column: 1;
+  }
+
+  .db-wrap {
+    min-width: 0;
+  }
+
+  .db-nowrap {
+    white-space: normal;
+  }
+
   .db-log-row {
-    grid-template-columns: 82px 8px minmax(0, 1fr);
+    grid-template-columns: 72px 8px minmax(0, 1fr);
   }
 }
 </style>

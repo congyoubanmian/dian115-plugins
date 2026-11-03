@@ -18,6 +18,10 @@ import { TARGET_UPPER_LIMIT } from './state.js'
 import { Coverage } from './emby.js'
 import { looseI64 } from './loose.js'
 
+// 海报尺寸/URL 助手定义在 state.js（缓存条目也要用，避免 lib 之间循环依赖），
+// 解析层对外仍从这里取用。
+export { POSTER_SIZE, posterUrlOf } from './state.js'
+
 /** 动作：真的补订。 */
 export const ACTION_PATCHED = 'patched'
 /** 动作：dry-run 下判定要补但没写。 */
@@ -237,6 +241,18 @@ export function parseTargetUpper(value, season) {
   throw new Error(`TMDB 详情缺少 seasons[](不是数组): 无法确定第 ${season} 季的集数, 整剧的 number_of_episodes 不能当该季目标`)
 }
 
+/**
+ * 从同一份 TMDB 详情里取 `poster_path`（顶层字段）。只接受非空字符串，
+ * 返回 TMDB 给的原样路径（通常是 `/xxx.jpg`）；取不到返回 `''`，调用方据此
+ * 保留首字头像的原有行为。与 parseTargetUpper 共用 tmdbDetailObject，
+ * 因此 `{code,data}` 信封同样适用。
+ */
+export function parsePosterPath(value) {
+  const object = tmdbDetailObject(value)
+  if (!object || typeof object.poster_path !== 'string') return ''
+  return object.poster_path.trim()
+}
+
 function firstNumber(obj, keys) {
   for (const key of keys) {
     if (obj[key] === undefined || obj[key] === null) continue
@@ -246,12 +262,15 @@ function firstNumber(obj, keys) {
   return null
 }
 
-/** 定位 TMDB 详情对象：优先顶层；顶层没有 seasons[] 时下探一层 data 信封。 */
+/** 定位 TMDB 详情对象：优先顶层；顶层没有详情时下探一层 data 信封。 */
 function tmdbDetailObject(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null
   if (Array.isArray(value.seasons)) return value
   const inner = value.data
-  if (inner && typeof inner === 'object' && !Array.isArray(inner) && Array.isArray(inner.seasons)) {
+  if (
+    inner && typeof inner === 'object' && !Array.isArray(inner)
+    && (Array.isArray(inner.seasons) || typeof inner.poster_path === 'string')
+  ) {
     return inner
   }
   return value

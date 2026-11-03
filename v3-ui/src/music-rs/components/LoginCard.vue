@@ -224,7 +224,7 @@ const cookiePlaceholder = computed(
   gap: 24px;
 }
 
-@container music-page (max-width: 720px) {
+@container page (max-width: 719.98px) {
   .login-grid {
     grid-template-columns: 1fr;
   }
@@ -471,7 +471,7 @@ const cookiePlaceholder = computed(
   padding: 4px 0;
 }
 
-@container music-page (max-width: 480px) {
+@container page (max-width: 479.98px) {
   .stepper {
     grid-template-columns: repeat(2, minmax(0, 1fr));
     row-gap: 10px;

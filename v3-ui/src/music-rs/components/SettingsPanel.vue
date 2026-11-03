@@ -227,7 +227,7 @@ async function save(): Promise<void> {
   gap: 6px;
   align-content: start;
   padding: 14px;
-  border-radius: 14px;
+  border-radius: var(--ui-radius, 14px);
   border: 1px solid color-mix(in srgb, var(--app-border, #e0e4ea) 80%, transparent);
   background: color-mix(in srgb, var(--app-bg, transparent) 45%, transparent);
   transition: border-color 0.2s ease;

@@ -18,6 +18,7 @@ import {
   pushAlignItem,
   recordAttempt,
   recordError,
+  rememberPoster,
   rememberTmdbTarget,
   sanitizeForPersist,
   serializeState,
@@ -57,7 +58,9 @@ import {
   Decision,
   decide,
   Evidence,
+  parsePosterPath,
   parseTargetUpper,
+  posterUrlOf,
   shouldSuggestTrim,
   trimReason,
 } from '../lib/align.js'
@@ -92,6 +95,8 @@ export const PROBE_NEGATIVE_TTL_SECS = 6 * 3600
 export const NO_GAP_TTL_SECS = 5 * 3600
 /** align-now 只读 1 页的大小。 */
 export const ALIGN_NOW_PAGE_SIZE = 50
+/** 整点对齐首轮最多补取几张海报（不占 Emby 探测预算，失败静默）。 */
+export const POSTER_BACKFILL_PER_RUN = 5
 
 /** 状态文档在插件 KV 里的单键（与旧实现同名，便于对照）。 */
 export const STATE_KEY = 'state'
@@ -234,6 +239,9 @@ export class Session {
     // 轮次序号跟着已落盘的版本走：新会话的幂等键不会与上一会话撞车。
     this.runSeq = this.revision
     this.loadedKind = loaded.kind
+    // 本轮已经用 /api/tmdb/tv/{id} 取过详情的剧：海报有无都出自同一响应，
+    // 首轮回填不再为它们额外发请求。
+    this.targetFetched = new Set()
   }
 
   now() {
@@ -428,7 +436,16 @@ export async function fetchTargetUpper(session, tmdbId, season) {
   const now = session.now()
   const attempts = 1
   const result = await tryApi(session.ctx, 'GET', path)
+  if (session.targetFetched) session.targetFetched.add(Number(tmdbId))
   if (result.ok && result.status < 400) {
+    // 海报和该季集数出自同一响应：先独立解析，target 解析失败也保留海报。
+    // 海报失败静默（首字头像兜底），不影响判定、不写 last_errors。
+    try {
+      const posterPath = parsePosterPath(result.data)
+      if (posterPath !== '') rememberPoster(session.doc, tmdbId, posterPath, now)
+    } catch {
+      // 忽略：海报是纯展示数据
+    }
     try {
       const target = parseTargetUpper(result.data, season)
       recordAttempt(session.doc, 'tmdb.tv', label, result.status, `target=${target}`, now)
@@ -483,6 +500,28 @@ export function itemOf(intent, decision, at, target) {
 /** 该条证据是否属于「探到了，但 Emby 该季一集都没有」。 */
 export function coverageIsAbsent(evidence) {
   return evidence.have_max === null && evidence.have_count === 0
+}
+
+/**
+ * 把 `doc.posters` 的缓存按 tmdb_id 贴到本轮每一行。缓存缺失的行保持原样
+ * （不写空 poster），已有 poster 的行在有新缓存时才被覆盖。
+ */
+export function attachPosters(doc, items) {
+  const byId = new Map()
+  for (const entry of Array.isArray(doc?.posters) ? doc.posters : []) {
+    const tmdbId = Number(entry?.tmdb_id)
+    const url = typeof entry?.url === 'string' && /^https?:\/\//i.test(entry.url)
+      ? entry.url
+      : posterUrlOf(entry?.path)
+    if (!Number.isSafeInteger(tmdbId) || tmdbId <= 0 || url === '') continue
+    byId.set(tmdbId, url)
+  }
+  if (byId.size === 0) return items
+  for (const item of items) {
+    const url = byId.get(Number(item?.tmdb_id))
+    if (url !== undefined) item.poster = url
+  }
+  return items
 }
 
 /**
@@ -804,6 +843,51 @@ export async function maybeSendDaily(session, settings, calendarToday, now) {
 }
 
 // ─────────────────────────── 整点对齐（job align） ───────────────────────────
+
+/**
+ * 首轮海报回填：主循环已经用同一端点取过集数的条目，海报已在 fetchTargetUpper
+ * 里顺手缓存；这里只补「本轮没有任何 TMDB 详情请求」的缺海报行。最多 5 个、
+ * 不占 Emby 探测预算，总时长受 min(deadline, 现在+5s) 约束。失败静默。
+ */
+async function backfillPosters(session, items, deadline, now, budgetHit) {
+  if (budgetHit || nowUnixSecs() > deadline - 5) return 0
+  const cached = new Set()
+  for (const entry of Array.isArray(session.doc.posters) ? session.doc.posters : []) {
+    const tmdbId = Number(entry?.tmdb_id)
+    if (Number.isSafeInteger(tmdbId) && tmdbId > 0) cached.add(tmdbId)
+  }
+  // 本轮已经取过详情的剧（含取得详情但没有 poster_path 的情况）不再重复请求。
+  for (const tmdbId of session.targetFetched ?? []) cached.add(tmdbId)
+  const missing = []
+  const seen = new Set()
+  for (const item of items) {
+    if (item.poster) continue
+    const tmdbId = Number(item.tmdb_id)
+    if (!Number.isSafeInteger(tmdbId) || tmdbId <= 0) continue
+    if (cached.has(tmdbId) || seen.has(tmdbId)) continue
+    seen.add(tmdbId)
+    missing.push(tmdbId)
+    if (missing.length >= POSTER_BACKFILL_PER_RUN) break
+  }
+  if (missing.length === 0) return 0
+
+  const posterDeadline = Math.min(deadline, nowUnixSecs() + 5)
+  let fetched = 0
+  for (const tmdbId of missing) {
+    if (nowUnixSecs() > posterDeadline) break
+    try {
+      // 不带 raw_episode_counts：只取海报，不参与集数判定。
+      const result = await tryApi(session.ctx, 'GET', `/api/tmdb/tv/${tmdbId}`)
+      if (!result.ok || result.status >= 400) continue
+      const posterPath = parsePosterPath(result.data)
+      if (posterPath === '') continue
+      if (rememberPoster(session.doc, tmdbId, posterPath, now)) fetched += 1
+    } catch {
+      // 静默：海报缺失时界面回退首字头像
+    }
+  }
+  return fetched
+}
 
 /** `align`：① 加载 → ② 实例 → ③ 订阅池 → ④ 日历 → ⑤⑥⑦⑧ 逐条对齐 → ⑨⑩ 日报 → ⑪ 落盘。 */
 export async function runHourlyAlign(ctx) {
@@ -1209,6 +1293,10 @@ export async function runHourlyAlign(ctx) {
     degraded = `本轮 TMDB 目标不可用: ${targetCalls} 次取数全部失败, 追更判定降级为仅 Emby 缺口(目标记未知)`
   }
 
+  // 海报：首轮回填后立刻贴到本轮每一行（跳过行、复用行、缓存命中行都要有）。
+  await backfillPosters(session, items, deadline, now, budgetHit)
+  attachPosters(session.doc, items)
+
   // 落账（计数 + 逐条结果）
   session.doc.align.last_run_at = now
   session.doc.align.pages = counters.pages
@@ -1444,6 +1532,8 @@ export async function runAlignNow(ctx) {
   session.doc.align.failed = counters.failed
   session.doc.align.absent = counters.absent
   session.doc.align.pending_probe = pendingProbe
+  // 立即对齐只贴已有缓存，不发海报回填请求（6 秒预算全留给判定与 PATCH）。
+  attachPosters(session.doc, items)
   session.doc.align.items = items
   session.doc.stats.tv_intents = counters.intents_seen
   session.doc.stats.matched = counters.matched
@@ -1664,6 +1754,13 @@ export async function runProbeDump(ctx) {
     const result = await tryApi(session.ctx, 'GET', path)
     const rawText = apiRawText(result)
     if (result.ok && result.status < 400) {
+      // 同一份详情顺手解析海报（不新增调用）；失败不影响诊断结论。
+      try {
+        const posterPath = parsePosterPath(result.data)
+        if (posterPath !== '') rememberPoster(session.doc, sample.tmdb_id, posterPath, now)
+      } catch {
+        // 静默：海报是纯展示数据
+      }
       try {
         const target = parseTargetUpper(result.data, sample.season)
         tmdbStatus = 'ok'

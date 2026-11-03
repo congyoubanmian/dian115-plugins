@@ -113,7 +113,7 @@ const bars = computed<number[]>(() => {
   box-shadow: var(--mx-glow, none);
 }
 
-@container music-page (max-width: 560px) {
+@container page (max-width: 719.98px) {
   .hero {
     grid-template-columns: 1fr;
     justify-items: center;
@@ -262,7 +262,7 @@ const bars = computed<number[]>(() => {
   color: var(--accent);
 }
 
-@container music-page (max-width: 560px) {
+@container page (max-width: 719.98px) {
   .hero__eyebrow {
     justify-content: center;
   }

@@ -20,7 +20,7 @@ import { useMusicStore } from '../store'
 import type { TaskEntry } from '../types'
 import { useReady } from '../ui-kit'
 import QualityTag from './QualityTag.vue'
-import Skeleton from './Skeleton.vue'
+import Skeleton from '../../shared/components/Skeleton.vue'
 
 const store = useMusicStore()
 const { tasks, allTasks, attentionRun, pendingTasks, failedTasks, busy, settings, queueBusyNotice } = store
@@ -451,7 +451,7 @@ async function adopt(): Promise<void> {
   --tone: var(--mx-err, #d03050);
 }
 
-@container music-page (max-width: 520px) {
+@container page (max-width: 520px) {
   .task-progress {
     display: none;
   }

@@ -1,57 +1,15 @@
 // 追剧管家 —— 纯视觉层的派生与小工具（不碰 ctx、不改业务语义）。
 //
-// - 动效：数字递增（count-up）与 prefers-reduced-motion 判定；
 // - 迷你折线：按本地日期把运行日志分桶（数据不足时不画，绝不编造）；
+//   数字递增与折线路径已交给 shared 组件（shared/components/StatTile、Sparkline）；
 // - 进度环：Emby 已入库 / 该季目标；
 // - 海报：状态文档里若带了 http(s) 海报地址就用，没有就用首字头像；
 // - 日报预览：复用 lib/notify.js 的 compose()（与后台发送同一份文案逻辑）。
 
-import { onBeforeUnmount, ref, watch, type Ref } from 'vue'
 import type { AlignItem, CalendarDay, LogEntry, StateDoc } from './types'
 import { list, localDateOf, num, targetKnown, text } from './format'
 // @ts-ignore —— lib/notify.js 是纯 JS 模块，没有类型声明；打包时内联进 ui/page.js。
 import { compose } from '../../../v3/chase-rs/lib/notify.js'
-
-/** 用户是否要求减少动效（Node 冒烟环境里没有 matchMedia 时按「不减少」）。 */
-export function prefersReducedMotion(): boolean {
-  const mm = (globalThis as { matchMedia?: (q: string) => { matches: boolean } }).matchMedia
-  return typeof mm === 'function' && mm('(prefers-reduced-motion: reduce)').matches === true
-}
-
-/** 数字从旧值缓动到新值；减少动效或没有 rAF 时直接跳到终值。卸载时取消动画帧。 */
-export function useCountUp(source: () => number, duration = 700): Ref<number> {
-  const display = ref(0)
-  const raf = (globalThis as { requestAnimationFrame?: (cb: (t: number) => void) => number }).requestAnimationFrame
-  const caf = (globalThis as { cancelAnimationFrame?: (id: number) => void }).cancelAnimationFrame
-  let frame = 0
-  const cancel = () => {
-    if (frame && typeof caf === 'function') caf(frame)
-    frame = 0
-  }
-  watch(
-    source,
-    (to) => {
-      cancel()
-      const from = display.value
-      if (typeof raf !== 'function' || prefersReducedMotion() || from === to) {
-        display.value = to
-        return
-      }
-      let start = -1
-      const step = (now: number) => {
-        if (start < 0) start = now
-        const t = Math.min(1, (now - start) / duration)
-        const eased = 1 - Math.pow(1 - t, 3)
-        display.value = Math.round(from + (to - from) * eased)
-        frame = t < 1 ? raf(step) : 0
-      }
-      frame = raf(step)
-    },
-    { immediate: true },
-  )
-  onBeforeUnmount(cancel)
-  return display
-}
 
 const DAY_MS = 86_400_000
 
@@ -82,16 +40,6 @@ export function logSeries(
     }
   }
   return hits > 0 ? counts : []
-}
-
-/** 折线路径（viewBox 100×28）；少于 2 个点返回空串。 */
-export function sparkPath(series: number[], width = 100, height = 28): { line: string; area: string } {
-  if (series.length < 2) return { line: '', area: '' }
-  const max = Math.max(1, ...series)
-  const stepX = width / (series.length - 1)
-  const points = series.map((value, i) => [i * stepX, height - 2 - (value / max) * (height - 4)] as const)
-  const line = points.map(([x, y], i) => `${i ? 'L' : 'M'}${x.toFixed(1)} ${y.toFixed(1)}`).join(' ')
-  return { line, area: `${line} L${width} ${height} L0 ${height} Z` }
 }
 
 /** 单行进度环的数据：Emby 已入库 / 目标，以及订阅集数 / 目标。 */

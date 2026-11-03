@@ -16,7 +16,7 @@ import { useDoubanStore } from '../store'
 import type { QueueItem, WishItem } from '../types'
 import BlockCard from './BlockCard.vue'
 import PosterImg from './PosterImg.vue'
-import SkeletonBlock from './SkeletonBlock.vue'
+import SkeletonBlock from '../../shared/components/SkeletonBlock.vue'
 import StarBar from './StarBar.vue'
 import StateBadge from './StateBadge.vue'
 
@@ -764,7 +764,7 @@ a.db-item__title:hover {
   color: var(--db-accent, #2080f0);
 }
 
-@container db-page (max-width: 720px) {
+@container page (max-width: 719.98px) {
   .db-queue-item {
     grid-template-columns: 48px minmax(0, 1fr);
   }

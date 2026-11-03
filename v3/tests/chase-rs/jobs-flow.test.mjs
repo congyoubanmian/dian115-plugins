@@ -123,6 +123,7 @@ const TMDB_BODY = {
   id: 1396,
   name: '绝命毒师',
   number_of_episodes: 62,
+  poster_path: '/poster.jpg',
   seasons: [{ season_number: 5, episode_count: 16 }],
 }
 
@@ -177,6 +178,15 @@ test('整点对齐只增补订并逐条记录', async () => {
   assert.equal(doc.align.items.length, 2)
   assert.equal(doc.align.items[0].target_known, true)
   assert.equal(doc.align.items[0].target_upper, 16)
+  assert.equal(
+    doc.align.items[0].poster,
+    'https://image.tmdb.org/t/p/w342/poster.jpg',
+    '海报从同一份 TMDB 详情解析，写完整 w342 地址',
+  )
+  assert.equal(doc.posters.find((poster) => poster.tmdb_id === 1396).path, '/poster.jpg')
+  const tmdbCalls = ctx.calls.filter(([method, path]) => method === 'GET' && path.startsWith('/api/tmdb/tv/'))
+  assert.equal(tmdbCalls.length, 2, '海报与集数出自同一响应，不额外请求')
+  assert.ok(tmdbCalls.every(([, path]) => path.includes('raw_episode_counts=true')))
   assert.equal(doc.align.items[1].target_known, false, '缺季目标记未知')
   assert.equal(doc.calendar.days.length, 1)
   assert.equal(doc.stats.tv_intents, 2, 'movie 不参与')
@@ -184,6 +194,31 @@ test('整点对齐只增补订并逐条记录', async () => {
   // 键名不得出现凭据模式
   const text = JSON.stringify(doc)
   assert.ok(!text.includes('api_key'), text.slice(0, 200))
+})
+
+test('整点对齐：目标命中缓存时首轮回填海报（不带 raw，最多 5 个）', async () => {
+  const seeded = newStateDoc()
+  seeded.emby_instances.push({ id: 3, name: '客厅', is_default: true, key_ready: true, at: '2026-10-01T00:00:00Z' })
+  const freshAt = new Date().toISOString().replace(/\.\d{3}Z$/, 'Z')
+  seeded.tmdb_targets.push(
+    { tmdb_id: 1396, season: 5, episode_count: 16, at: freshAt },
+    { tmdb_id: 1399, season: 1, episode_count: 10, at: freshAt },
+  )
+  const ctx = makeCtx({ routes: baseRoutes(TODAY), storage: { state: { value: seeded, revision: 1 } } })
+  await runHourlyAlign(ctx)
+
+  const tmdbCalls = ctx.calls.filter(([method, path]) => method === 'GET' && path.startsWith('/api/tmdb/tv/'))
+  assert.deepEqual(
+    tmdbCalls.map(([, path]) => path).sort(),
+    ['/api/tmdb/tv/1396', '/api/tmdb/tv/1399'],
+    '缓存命中不再取集数；海报回填只发不带 raw 的详情请求',
+  )
+  const doc = storedDoc(ctx)
+  assert.ok(
+    doc.align.items.every((item) => item.poster === 'https://image.tmdb.org/t/p/w342/poster.jpg'),
+    JSON.stringify(doc.align.items),
+  )
+  assert.equal(doc.posters.length, 2)
 })
 
 test('整点对齐绝不写相等或更小的总数', async () => {

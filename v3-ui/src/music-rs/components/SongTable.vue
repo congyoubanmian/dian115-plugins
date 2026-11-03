@@ -91,7 +91,7 @@ function initialOf(song: Song): string {
   align-items: center;
   gap: 12px;
   padding: 8px 10px;
-  border-radius: 14px;
+  border-radius: var(--ui-radius, 14px);
   border: 1px solid color-mix(in srgb, var(--app-border, #e0e4ea) 80%, transparent);
   background: var(--app-surface, #fff);
   transition:
@@ -173,7 +173,7 @@ function initialOf(song: Song): string {
   font-size: 12px;
 }
 
-@container music-page (max-width: 640px) {
+@container page (max-width: 640px) {
   .song {
     grid-template-columns: 44px minmax(0, 1fr);
   }

@@ -39,8 +39,28 @@ export const PATCH_HARD_LIMIT = 20
 export const PROBE_BOOK_MAX = 200
 /** `tmdb_targets` 上限。 */
 export const TMDB_TARGETS_MAX = 50
+/** `posters` 上限（按 tmdb_id 去重）。 */
+export const POSTERS_MAX = 50
+/** 海报相对路径的字节上限。 */
+export const POSTER_PATH_MAX = 200
+/** 海报绝对地址的字节上限。 */
+export const POSTER_URL_MAX = 400
+/**
+ * TMDB 海报尺寸档位。宿主文档（host-api-reference.md 的 poster_path 字段）示例
+ * 拼接 w500；本插件按产品口径统一用 w342。要切回文档口径只改这一行。
+ */
+export const POSTER_SIZE = 'w342'
 /** 目标集数的硬上限（元数据异常的保护阈值）。 */
 export const TARGET_UPPER_LIMIT = 2000
+
+/** TMDB 海报相对路径 → 可直接放进 <img src> 的绝对地址（已是 http(s) 的原样返回）。 */
+export function posterUrlOf(path) {
+  const text = typeof path === 'string' ? path.trim() : ''
+  if (text === '') return ''
+  if (/^https?:\/\//i.test(text)) return text
+  const suffix = text.startsWith('/') ? text : `/${text}`
+  return `https://image.tmdb.org/t/p/${POSTER_SIZE}${suffix}`
+}
 
 /** 全新的空快照：缺键的槽位是 `never`，不是空串。 */
 export function probeSnapshotNever() {
@@ -96,6 +116,7 @@ export function newStateDoc() {
     emby_instances: [],
     probe_book: [],
     tmdb_targets: [],
+    posters: [],
     probe: { emby_episodes_shape: '', air_calendar_shape: '' },
   }
 }
@@ -118,6 +139,24 @@ function asNumber(value, fallback = 0) {
 function asText(value, fallback = '') {
   const text = looseString(value)
   return text === null ? fallback : text
+}
+
+/** 海报缓存条目：只留 `{tmdb_id, path, url}`，按 tmdb_id 去重、裁到上限。 */
+function normalizePosters(value) {
+  const byId = new Map()
+  for (const item of asArray(value)) {
+    const poster = asObject(item)
+    const tmdbId = asNumber(poster.tmdb_id)
+    const path = truncateUtf8(asText(poster.path), POSTER_PATH_MAX)
+    let url = truncateUtf8(asText(poster.url), POSTER_URL_MAX)
+    if (tmdbId <= 0 || path === '') continue
+    if (!/^https?:\/\//i.test(url)) url = posterUrlOf(path)
+    if (url === '') continue
+    // 后出现的同 id 覆盖先出现的（最近一次成功取数优先）。
+    byId.delete(tmdbId)
+    byId.set(tmdbId, { tmdb_id: tmdbId, path, url })
+  }
+  return [...byId.values()].slice(-POSTERS_MAX)
 }
 
 /**
@@ -161,6 +200,7 @@ export function normalizeStateDoc(raw) {
       action: asText(asObject(item).action),
       reason: asText(asObject(item).reason),
       at: asText(asObject(item).at),
+      poster: asText(asObject(item).poster),
     })),
   })
   doc.trim_suggestions = asArray(raw.trim_suggestions).map((item) => {
@@ -285,6 +325,7 @@ export function normalizeStateDoc(raw) {
       at: asText(target.at),
     }
   })
+  doc.posters = normalizePosters(raw.posters)
   const probe = asObject(raw.probe)
   doc.probe.emby_episodes_shape = asText(probe.emby_episodes_shape)
   doc.probe.air_calendar_shape = asText(probe.air_calendar_shape)
@@ -350,6 +391,24 @@ export function tmdbTargetOf(doc, tmdbId, season) {
   return null
 }
 
+/**
+ * 记下该剧的海报（成功取数时调用）。缓存按 tmdb_id 去重、无 TTL（海报稳定），
+ * 同一 id 再次成功即覆盖；条目只存 `{tmdb_id, path, url}`。`now` 仅为调用方
+ * 语义保留，不写入缓存（避免把缓存做成带过期的判定数据）。
+ */
+export function rememberPoster(doc, tmdbId, path, now) {
+  const id = looseI64(tmdbId)
+  const clean = truncateUtf8(typeof path === 'string' ? path.trim() : '', POSTER_PATH_MAX)
+  if (id === null || id <= 0 || clean === '') return false
+  const url = truncateUtf8(posterUrlOf(clean), POSTER_URL_MAX)
+  if (url === '') return false
+  if (!Array.isArray(doc.posters)) doc.posters = []
+  doc.posters = doc.posters.filter((item) => asNumber(asObject(item).tmdb_id) !== id)
+  doc.posters.push({ tmdb_id: id, path: clean, url })
+  trimTail(doc.posters, POSTERS_MAX)
+  return true
+}
+
 function trimTail(items, max) {
   if (items.length > max) items.splice(0, items.length - max)
 }
@@ -366,6 +425,12 @@ export function enforceLimits(doc) {
   trimTail(doc.emby_instances, INSTANCES_MAX)
   trimTail(doc.probe_book, PROBE_BOOK_MAX)
   trimTail(doc.tmdb_targets, TMDB_TARGETS_MAX)
+  doc.posters = asArray(doc.posters)
+  trimTail(doc.posters, POSTERS_MAX)
+  for (const poster of doc.posters) {
+    poster.path = truncateUtf8(poster.path, POSTER_PATH_MAX)
+    poster.url = truncateUtf8(poster.url, POSTER_URL_MAX)
+  }
   for (const key of SNAPSHOT_KEYS) {
     doc.debug[key].sample = truncateUtf8(doc.debug[key].sample, SAMPLE_MAX)
     trimTail(doc.debug[key].params_tried, 8)
@@ -373,6 +438,7 @@ export function enforceLimits(doc) {
   for (const item of doc.align.items) {
     item.reason = truncateUtf8(item.reason, LOG_MESSAGE_MAX)
     item.title = truncateUtf8(item.title, 120)
+    if (item.poster) item.poster = truncateUtf8(item.poster, POSTER_URL_MAX)
   }
   for (const item of doc.trim_suggestions) {
     item.reason = truncateUtf8(item.reason, LOG_MESSAGE_MAX)
@@ -384,14 +450,20 @@ export function enforceLimits(doc) {
 
 /**
  * 序列化到 ≤MAX_STATE_BYTES 的 JSON 文本（超限则逐级降级裁掉诊断，仍超限抛错）。
- * 降级顺序与 model.rs to_bytes 一致：attempts → 样本 → logs → align 减半 → 日历砍半 → 建议减半。
+ * 降级顺序与 model.rs to_bytes 一致：attempts+海报 → 样本 → logs → align 减半 → 日历砍半 → 建议减半。
  */
 export function serializeState(doc) {
   enforceLimits(doc)
   let text = JSON.stringify(doc)
   for (let step = 0; step < 6 && text.length > MAX_STATE_BYTES; step += 1) {
-    if (step === 0) doc.debug.attempts = []
-    else if (step === 1) for (const key of SNAPSHOT_KEYS) doc.debug[key].sample = ''
+    if (step === 0) {
+      doc.debug.attempts = []
+      // 海报缓存是纯展示数据，和 attempts 同批清掉；行上的 poster 也一并去掉，
+      // 避免下一步只用得上 poster 的行仍撑爆文档。step 上限保持 6，最后一步
+      // trim_suggestions 仍可达。
+      doc.posters = []
+      for (const item of doc.align.items) delete item.poster
+    } else if (step === 1) for (const key of SNAPSHOT_KEYS) doc.debug[key].sample = ''
     else if (step === 2) doc.logs = []
     else if (step === 3) trimTail(doc.align.items, Math.floor(ALIGN_ITEMS_MAX / 2))
     else if (step === 4) trimTail(doc.calendar.days, 4)
@@ -444,6 +516,27 @@ const APPEND_LISTS = {
 }
 
 /**
+ * 海报缓存的并发合并：以对方（存储里最新）为底，本会话同 tmdb_id 覆盖；
+ * 不交给顶层的「整体取 ours / 整体取 theirs」，免得住点对齐与 probe-dump
+ * 并发落盘时互相清空对方的缓存。按 tmdb_id 去重并裁到 POSTERS_MAX。
+ */
+export function mergePosters(ours, theirs) {
+  const byId = new Map()
+  for (const item of [...asArray(theirs), ...asArray(ours)]) {
+    const poster = asObject(item)
+    const tmdbId = asNumber(poster.tmdb_id)
+    const path = asText(poster.path)
+    let url = asText(poster.url)
+    if (tmdbId <= 0 || path === '') continue
+    if (!/^https?:\/\//i.test(url)) url = posterUrlOf(path)
+    if (url === '') continue
+    // 已有的 id 直接覆盖（保留对方的位置），本会话新增的 id 追加在末尾。
+    byId.set(tmdbId, { tmdb_id: tmdbId, path, url })
+  }
+  return [...byId.values()].slice(-POSTERS_MAX)
+}
+
+/**
  * 存储 CAS 冲突时的三方合并：以对方（存储里最新的文档）为底，本会话相对基线改过的
  * 字段（顶层键，及其下一层子键）用本会话的值；日志与诊断列表两边的新条目都保留。
  * 这样并发的两个任务各自只覆盖自己真正写过的部分。
@@ -455,6 +548,10 @@ export function mergeStateDocs(base, ours, theirs) {
     if (key === 'revision' || key === 'schema_version') continue
     if (APPEND_LISTS[key] !== undefined) {
       merged[key] = unionAppended(baseDoc[key], ours[key], theirs[key], APPEND_LISTS[key])
+      continue
+    }
+    if (key === 'posters') {
+      merged[key] = mergePosters(ours[key], theirs[key])
       continue
     }
     const mine = ours[key]

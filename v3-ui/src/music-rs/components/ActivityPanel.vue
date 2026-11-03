@@ -49,17 +49,17 @@ function dotClass(level: string): string {
 
 <style scoped>
 .music-card {
-  border: 1px solid var(--app-border, #e0e4ea);
-  border-radius: 16px;
-  background: var(--app-surface, #fff);
+  border: 1px solid var(--ui-border, #e0e4ea);
+  border-radius: var(--ui-radius, 14px);
+  background: var(--ui-surface, #fff);
   padding: 20px 24px;
   display: grid;
-  gap: 12px;
+  gap: var(--ui-gap, 10px);
   min-width: 0;
   box-shadow: var(--mx-shadow, none);
 }
 
-@container music-page (max-width: 560px) {
+@container page (max-width: 719.98px) {
   .music-card {
     padding: 14px;
   }

@@ -406,7 +406,7 @@ function onKeywordInput(event: Event): void {
 
     <!-- 榜单配置 -->
     <BlockCard title="榜单配置" subtitle="嵌套配置留在状态文档；enabled=false 的榜单下一轮刷新会跳过。">
-      <div class="db-scroll">
+      <div class="db-scroll db-scroll--table">
         <table class="db-table db-table--form">
           <thead>
             <tr>
@@ -425,85 +425,99 @@ function onKeywordInput(event: Event): void {
               :key="key"
               :class="{ 'db-row-locked': key === 'upcoming' }"
             >
-              <td>
-                <input
-                  v-model="form.lists[key].enabled"
-                  type="checkbox"
-                  :aria-label="`启用 ${listTitle(key)}`"
-                  :disabled="key === 'upcoming'"
-                  :title="key === 'upcoming' ? '即将上映榜单固定启用（后端 normalize_settings 强制）' : undefined"
-                />
+              <td data-label="启用">
+                <div class="db-cell-value">
+                  <input
+                    v-model="form.lists[key].enabled"
+                    type="checkbox"
+                    :aria-label="`启用 ${listTitle(key)}`"
+                    :disabled="key === 'upcoming'"
+                    :title="key === 'upcoming' ? '即将上映榜单固定启用（后端 normalize_settings 强制）' : undefined"
+                  />
+                </div>
               </td>
-              <td>
-                <strong>{{ listTitle(key) }}</strong>
-                <div class="db-mono db-sub">{{ key }}</div>
+              <td data-label="榜单">
+                <div class="db-cell-value">
+                  <strong>{{ listTitle(key) }}</strong>
+                  <div class="db-mono db-sub">{{ key }}</div>
+                </div>
               </td>
-              <td>
-                <select
-                  class="db-select"
-                  :value="form.lists[key].source"
-                  :aria-label="`${listTitle(key)}来源`"
-                  :disabled="key === 'upcoming'"
-                  @change="onListFieldChange(key, 'source', $event)"
-                >
-                  <option
-                    v-for="[value, label] in sourceOptions(form.lists[key].source)"
-                    :key="value"
-                    :value="value"
-                    :selected="form.lists[key].source === value"
+              <td data-label="来源">
+                <div class="db-cell-value">
+                  <select
+                    class="db-select"
+                    :value="form.lists[key].source"
+                    :aria-label="`${listTitle(key)}来源`"
+                    :disabled="key === 'upcoming'"
+                    @change="onListFieldChange(key, 'source', $event)"
                   >
-                    {{ label }}
-                  </option>
-                </select>
+                    <option
+                      v-for="[value, label] in sourceOptions(form.lists[key].source)"
+                      :key="value"
+                      :value="value"
+                      :selected="form.lists[key].source === value"
+                    >
+                      {{ label }}
+                    </option>
+                  </select>
+                </div>
               </td>
-              <td>
-                <select
-                  class="db-select"
-                  :value="form.lists[key].type"
-                  :aria-label="`${listTitle(key)}类型`"
-                  :disabled="key === 'upcoming'"
-                  @change="onListFieldChange(key, 'type', $event)"
-                >
-                  <option
-                    v-for="[value, label] in typeOptions(form.lists[key].type)"
-                    :key="value"
-                    :value="value"
-                    :selected="form.lists[key].type === value"
+              <td data-label="类型">
+                <div class="db-cell-value">
+                  <select
+                    class="db-select"
+                    :value="form.lists[key].type"
+                    :aria-label="`${listTitle(key)}类型`"
+                    :disabled="key === 'upcoming'"
+                    @change="onListFieldChange(key, 'type', $event)"
                   >
-                    {{ label }}
-                  </option>
-                </select>
+                    <option
+                      v-for="[value, label] in typeOptions(form.lists[key].type)"
+                      :key="value"
+                      :value="value"
+                      :selected="form.lists[key].type === value"
+                    >
+                      {{ label }}
+                    </option>
+                  </select>
+                </div>
               </td>
-              <td>
-                <input
-                  :value="form.lists[key].tag" @input="onListInput(key, 'tag', $event)"
-                  class="db-input"
-                  type="text"
-                  placeholder="热门 / 国产剧 / 欧美"
-                  :aria-label="`${listTitle(key)}标签`"
-                  :disabled="key === 'upcoming'"
-                />
+              <td data-label="标签">
+                <div class="db-cell-value">
+                  <input
+                    :value="form.lists[key].tag" @input="onListInput(key, 'tag', $event)"
+                    class="db-input"
+                    type="text"
+                    placeholder="热门 / 国产剧 / 欧美"
+                    :aria-label="`${listTitle(key)}标签`"
+                    :disabled="key === 'upcoming'"
+                  />
+                </div>
               </td>
-              <td>
-                <input
-                  :value="form.lists[key].sort" @input="onListInput(key, 'sort', $event)"
-                  class="db-input"
-                  type="text"
-                  placeholder="recommend"
-                  :aria-label="`${listTitle(key)}排序`"
-                  :disabled="key === 'upcoming'"
-                />
+              <td data-label="排序">
+                <div class="db-cell-value">
+                  <input
+                    :value="form.lists[key].sort" @input="onListInput(key, 'sort', $event)"
+                    class="db-input"
+                    type="text"
+                    placeholder="recommend"
+                    :aria-label="`${listTitle(key)}排序`"
+                    :disabled="key === 'upcoming'"
+                  />
+                </div>
               </td>
-              <td>
-                <input
-                  :value="form.lists[key].limit" @input="onListInput(key, 'limit', $event)"
-                  class="db-input"
-                  type="number"
-                  min="0"
-                  max="200"
-                  step="1"
-                  :aria-label="`${listTitle(key)}条数`"
-                />
+              <td data-label="条数">
+                <div class="db-cell-value">
+                  <input
+                    :value="form.lists[key].limit" @input="onListInput(key, 'limit', $event)"
+                    class="db-input"
+                    type="number"
+                    min="0"
+                    max="200"
+                    step="1"
+                    :aria-label="`${listTitle(key)}条数`"
+                  />
+                </div>
               </td>
             </tr>
           </tbody>
@@ -936,5 +950,77 @@ function onKeywordInput(event: Event): void {
   margin-right: auto;
   color: var(--db-muted, var(--app-text-secondary, #6b7280));
   font-size: 11px;
+}
+
+/* 窄容器：榜单配置表改成逐条卡片，输入控件不再按 92px 最小宽撑开。 */
+@container page (max-width: 719.98px) {
+  .db-scroll--table {
+    overflow: visible;
+    border: 0;
+  }
+
+  .db-table.db-table {
+    display: block;
+    min-width: 0;
+  }
+
+  .db-table.db-table thead {
+    display: none;
+  }
+
+  .db-table.db-table tbody {
+    display: block;
+  }
+
+  .db-table.db-table tr {
+    display: block;
+    padding: 8px 0;
+    border-bottom: 1px solid var(--db-line, var(--ui-border, #e3e6eb));
+  }
+
+  .db-table.db-table tr:last-child {
+    border-bottom: 0;
+  }
+
+  .db-table.db-table td {
+    display: grid;
+    grid-template-columns: 72px minmax(0, 1fr);
+    column-gap: 8px;
+    padding: 3px 0;
+    border: 0;
+  }
+
+  .db-table.db-table td::before {
+    content: attr(data-label);
+    grid-column: 1;
+    grid-row: 1;
+    color: var(--db-muted, var(--ui-muted, #6b7280));
+    font-size: 11px;
+  }
+
+  .db-table.db-table td > .db-cell-value {
+    grid-column: 2;
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+
+  .db-cell-value > * {
+    overflow-wrap: anywhere;
+  }
+
+  .db-table--form td .db-input,
+  .db-table--form td .db-select {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .db-table--form td:first-child {
+    width: auto;
+  }
+
+  .db-table--form td:first-child > .db-cell-value {
+    display: flex;
+    align-items: center;
+  }
 }
 </style>

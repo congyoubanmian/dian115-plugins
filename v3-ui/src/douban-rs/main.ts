@@ -8,6 +8,7 @@
 // 并把 ctx.theme.mode 接到 naive-ui 的 n-config-provider（订阅在卸载时退订）。
 // 本文件只负责把根组件交出去。
 
+import '../shared/tokens.css'
 import { mountPlugin } from '../shared/mount'
 import type { HostContext } from '../shared/types'
 import AppPage from './AppPage.vue'

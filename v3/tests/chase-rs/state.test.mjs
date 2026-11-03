@@ -8,11 +8,13 @@ import {
   forgetTmdbTarget,
   log,
   MAX_STATE_BYTES,
+  mergeStateDocs,
   newStateDoc,
   normalizeStateDoc,
   pushAlignItem,
   recordAttempt,
   recordError,
+  rememberPoster,
   rememberTmdbTarget,
   sanitizeForPersist,
   SCHEMA_VERSION,
@@ -24,6 +26,9 @@ import {
   LOGS_MAX,
   DEBUG_ATTEMPTS_MAX,
   PROBE_BOOK_MAX,
+  POSTERS_MAX,
+  POSTER_PATH_MAX,
+  POSTER_URL_MAX,
   SAMPLE_MAX,
 } from '../../chase-rs/lib/state.js'
 import { containsForbiddenKey, isForbiddenKey, sampleText, truncateUtf8 } from '../../chase-rs/lib/loose.js'
@@ -77,6 +82,90 @@ test('TMDB 目标簿：更新/遗忘/封顶', () => {
   enforceLimits(doc)
   assert.equal(doc.tmdb_targets.length, TMDB_TARGETS_MAX)
   assert.ok(doc.tmdb_targets.every((target) => target.tmdb_id !== 1399), '最旧的被裁掉')
+})
+
+test('海报缓存：按 tmdb_id 去重、只存相对路径与 w342 绝对地址、封顶 50', () => {
+  const doc = newStateDoc()
+  assert.deepEqual(doc.posters, [])
+  assert.equal(rememberPoster(doc, 1396, '/abc.jpg', '2026-10-04T00:00:00Z'), true)
+  assert.deepEqual(doc.posters, [{
+    tmdb_id: 1396,
+    path: '/abc.jpg',
+    url: 'https://image.tmdb.org/t/p/w342/abc.jpg',
+  }])
+  // 同一 id 再次成功 → 覆盖而不是重复；条目不带 at（无 TTL）
+  rememberPoster(doc, 1396, '/new.jpg', '2026-10-04T01:00:00Z')
+  assert.equal(doc.posters.length, 1)
+  assert.equal(doc.posters[0].path, '/new.jpg')
+  assert.equal(doc.posters[0].at, undefined)
+  // 非法输入静默忽略
+  assert.equal(rememberPoster(doc, 0, '/x.jpg', 'at'), false)
+  assert.equal(rememberPoster(doc, 1396, '   ', 'at'), false)
+  // 上限：只留最新 50 条
+  for (let index = 0; index < 80; index += 1) {
+    rememberPoster(doc, 1000 + index, `/p${index}.jpg`, '2026-10-04T02:00:00Z')
+  }
+  enforceLimits(doc)
+  assert.equal(doc.posters.length, POSTERS_MAX)
+  assert.ok(doc.posters.every((poster) => poster.tmdb_id !== 1396), '最旧的被裁掉')
+  assert.equal(doc.posters.at(-1).tmdb_id, 1079)
+})
+
+test('海报字段旧文档缺键为空；normalize 保留行内 poster 与缓存', () => {
+  const legacy = normalizeStateDoc({ schema_version: SCHEMA_VERSION })
+  assert.deepEqual(legacy.posters, [])
+  assert.equal(legacy.align.items.length, 0)
+
+  const doc = normalizeStateDoc({
+    schema_version: SCHEMA_VERSION,
+    align: { items: [{ tmdb_id: 1396, poster: 'https://image.tmdb.org/t/p/w342/a.jpg' }] },
+    posters: [
+      { tmdb_id: 1396, path: '/a.jpg', url: 'https://image.tmdb.org/t/p/w342/a.jpg' },
+      { tmdb_id: 1396, path: '/b.jpg', url: 'https://image.tmdb.org/t/p/w342/b.jpg' },
+      { tmdb_id: 1399, path: '/c.jpg', url: '' },
+      { tmdb_id: 0, path: '/bad.jpg', url: 'https://image.tmdb.org/t/p/w342/bad.jpg' },
+    ],
+  })
+  assert.equal(doc.align.items[0].poster, 'https://image.tmdb.org/t/p/w342/a.jpg')
+  assert.equal(doc.posters.length, 2, '同 id 去重、非法 id 丢弃')
+  assert.equal(doc.posters.find((poster) => poster.tmdb_id === 1396).path, '/b.jpg')
+  assert.equal(
+    doc.posters.find((poster) => poster.tmdb_id === 1399).url,
+    'https://image.tmdb.org/t/p/w342/c.jpg',
+    '缺 url 时按 path 补齐',
+  )
+})
+
+test('海报 path/url 落盘前按字节上限截断', () => {
+  const doc = newStateDoc()
+  doc.posters.push({
+    tmdb_id: 1,
+    path: '/'.concat('p'.repeat(500)),
+    url: 'https://image.tmdb.org/t/p/w342/'.concat('u'.repeat(500)),
+  })
+  doc.align.items.push({ intent_id: 1, action: 'skipped', reason: '', title: '', poster: 'h'.repeat(500) })
+  enforceLimits(doc)
+  assert.ok(new TextEncoder().encode(doc.posters[0].path).length <= POSTER_PATH_MAX)
+  assert.ok(new TextEncoder().encode(doc.posters[0].url).length <= POSTER_URL_MAX)
+  assert.ok(new TextEncoder().encode(doc.align.items[0].poster).length <= POSTER_URL_MAX)
+})
+
+test('并发合并海报：theirs 为底、ours 同 id 覆盖，并集不互相清空', () => {
+  const base = newStateDoc()
+  const ours = JSON.parse(JSON.stringify(base))
+  const theirs = JSON.parse(JSON.stringify(base))
+  theirs.posters = [
+    { tmdb_id: 1, path: '/theirs-1.jpg', url: 'https://image.tmdb.org/t/p/w342/theirs-1.jpg' },
+    { tmdb_id: 2, path: '/theirs-2.jpg', url: 'https://image.tmdb.org/t/p/w342/theirs-2.jpg' },
+  ]
+  ours.posters = [
+    { tmdb_id: 1, path: '/ours-1.jpg', url: 'https://image.tmdb.org/t/p/w342/ours-1.jpg' },
+    { tmdb_id: 3, path: '/ours-3.jpg', url: 'https://image.tmdb.org/t/p/w342/ours-3.jpg' },
+  ]
+  const merged = mergeStateDocs(base, ours, theirs)
+  assert.deepEqual(merged.posters.map((poster) => poster.tmdb_id), [1, 2, 3])
+  assert.equal(merged.posters.find((poster) => poster.tmdb_id === 1).path, '/ours-1.jpg')
+  assert.equal(merged.posters.find((poster) => poster.tmdb_id === 2).path, '/theirs-2.jpg')
 })
 
 test('日志与错误有界，保留最新的', () => {

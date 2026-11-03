@@ -10,7 +10,9 @@ import {
   Evidence,
   coverageOf,
   decide,
+  parsePosterPath,
   parseTargetUpper,
+  posterUrlOf,
   shouldSuggestTrim,
   trimReason,
   TRIM_CHECK_LIMIT,
@@ -155,6 +157,31 @@ test('parseTargetUpper 夹取与非法结构', () => {
   assert.throws(() => parseTargetUpper({ seasons: [{ season_number: 1 }] }, 1))
   assert.throws(() => parseTargetUpper([], 1))
   assert.throws(() => parseTargetUpper('<html>502</html>', 1))
+})
+
+test('parsePosterPath 只认非空字符串，信封同样适用', () => {
+  assert.equal(parsePosterPath({ poster_path: '/abc.jpg' }), '/abc.jpg')
+  assert.equal(parsePosterPath({ poster_path: '  /abc.jpg  ' }), '/abc.jpg')
+  assert.equal(parsePosterPath({ seasons: [{ season_number: 5, episode_count: 16 }], poster_path: '/top.jpg' }), '/top.jpg')
+  // {code,data} 信封；data 没有 seasons 也能取到海报
+  assert.equal(parsePosterPath({ code: 'ok', data: { poster_path: '/env.jpg' } }), '/env.jpg')
+  assert.equal(parsePosterPath({ code: 'ok', data: { seasons: [], poster_path: '/env2.jpg' } }), '/env2.jpg')
+  // 缺字段/空串/非字符串 → ''（调用方保留首字头像）
+  assert.equal(parsePosterPath({}), '')
+  assert.equal(parsePosterPath({ poster_path: '' }), '')
+  assert.equal(parsePosterPath({ poster_path: '   ' }), '')
+  assert.equal(parsePosterPath({ poster_path: 123 }), '')
+  assert.equal(parsePosterPath(null), '')
+  assert.equal(parsePosterPath('<html>502</html>'), '')
+})
+
+test('posterUrlOf 统一拼 w342，已是绝对地址原样返回', () => {
+  assert.equal(posterUrlOf('/abc.jpg'), 'https://image.tmdb.org/t/p/w342/abc.jpg')
+  assert.equal(posterUrlOf('abc.jpg'), 'https://image.tmdb.org/t/p/w342/abc.jpg')
+  assert.equal(posterUrlOf('https://img.example/abc.jpg'), 'https://img.example/abc.jpg')
+  assert.equal(posterUrlOf('http://img.example/abc.jpg'), 'http://img.example/abc.jpg')
+  assert.equal(posterUrlOf(''), '')
+  assert.equal(posterUrlOf(null), '')
 })
 
 test('缺季时按纯 Emby 缺口补订，绝不抬到全剧集数', () => {

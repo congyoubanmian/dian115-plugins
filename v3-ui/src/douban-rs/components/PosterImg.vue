@@ -215,7 +215,7 @@ onBeforeUnmount(() => loader.release(root.value))
   }
 }
 
-@container db-page (max-width: 720px) {
+@container page (max-width: 719.98px) {
   .db-poster--thumb {
     width: 48px;
     height: 72px;

@@ -1,0 +1,48 @@
+/* 共享设计令牌 —— 三个 v3 插件页面共用的唯一入口。
+ *
+ * 约束：
+ * - 只在 `.v3-ui` 作用域里定义，不写 :root / 元素选择器，避免漏到宿主全局；
+ * - 值全部从宿主的 --app-* 变量派生，明暗主题都由宿主切换 --app-* 完成；
+ * - 旧插件自己的 --ch-* / --db-* / --mx-* 本轮保留，继续服务插件专属样式；
+ *   共享组件只读 --ui-*，不反向依赖任何一个插件的令牌。
+ *
+ * 用法：插件的页面根节点同时加上 `v3-ui` class，并在入口处 import 本文件。
+ * 页面根例：chase `<main class="chase3 v3-ui">`、douban `<div class="db-root v3-ui">`、
+ * music `<div class="music-page v3-ui">`。
+ *
+ * --ui-accent-2 / --ui-alt：复刻豆瓣中心原先在 .db-root 上算第二强调色的公式
+ * （color-mix oklab 70%），支持相对颜色语法时再转 55° 色相。
+ * douban StatTile 的 alt tone 使用 --ui-alt。
+ */
+
+.v3-ui {
+  /* 基础色：与宿主主题变量对齐。 */
+  --ui-accent: var(--app-accent, #2080f0);
+  --ui-text: var(--app-text, #1f2329);
+  --ui-muted: var(--app-text-secondary, #6b7280);
+  --ui-surface: var(--app-surface, #fff);
+  --ui-bg: var(--app-bg, #f5f6f8);
+  --ui-border: var(--app-border, #e3e6eb);
+
+  /* 语义色：与三个插件现有固定色相保持一致。 */
+  --ui-ok: #18a058;
+  --ui-warn: #f0a020;
+  --ui-err: #d03050;
+  --ui-info: var(--ui-accent);
+
+  /* 形状与间距。 */
+  --ui-radius: 14px;
+  --ui-gap: 10px;
+
+  /* 第二强调色：由宿主强调色与正文色混合（豆瓣 AppPage.vue:262-263 的同款公式）。 */
+  --ui-accent-2: color-mix(in oklab, var(--ui-accent) 70%, var(--ui-text, #1f2329));
+  --ui-alt: var(--ui-accent-2);
+}
+
+/* 支持相对颜色语法时，把第二强调色转一个色相（豆瓣 AppPage.vue:277-281 的同款覆盖）。
+   --ui-alt 引用 --ui-accent-2，会跟着这里的覆盖一起生效。 */
+@supports (color: oklch(from red l c h)) {
+  .v3-ui {
+    --ui-accent-2: oklch(from var(--ui-accent) l c calc(h + 55));
+  }
+}
