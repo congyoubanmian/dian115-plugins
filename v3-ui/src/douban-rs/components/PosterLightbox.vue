@@ -64,7 +64,10 @@ onBeforeUnmount(() => {
   display: grid;
   place-items: center;
   padding: 24px;
-  background: rgb(0 0 0 / 62%);
+  background:
+    radial-gradient(circle at 50% 40%, color-mix(in srgb, var(--app-accent, #2080f0) 18%, transparent), transparent 60%),
+    rgb(0 0 0 / 62%);
+  backdrop-filter: blur(8px);
 }
 
 .db-lightbox__panel {
@@ -79,7 +82,9 @@ onBeforeUnmount(() => {
   max-width: 100%;
   max-height: 78vh;
   border-radius: 12px;
-  box-shadow: 0 18px 48px rgb(0 0 0 / 45%);
+  box-shadow:
+    0 18px 48px rgb(0 0 0 / 45%),
+    0 0 0 1px color-mix(in srgb, var(--app-surface, #fff) 18%, transparent);
   object-fit: contain;
   background: var(--app-surface, #fff);
 }

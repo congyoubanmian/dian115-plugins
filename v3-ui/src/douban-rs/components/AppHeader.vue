@@ -31,6 +31,7 @@ const locked = computed(() => busy.value !== '')
 
 <template>
   <header class="db-head">
+    <span class="db-head__aura" aria-hidden="true" />
     <div class="db-brand">
       <span class="db-brand__icon">
         <Film :size="22" aria-hidden="true" />
@@ -42,8 +43,12 @@ const locked = computed(() => busy.value !== '')
     </div>
 
     <div class="db-actions">
-      <span class="db-capsule" :class="`db-capsule--${snapshotTone}`">{{ snapshotLabel }}</span>
-      <span class="db-capsule" :class="`db-capsule--${queueTone}`">{{ queueLabel }}</span>
+      <span class="db-capsule" :class="`db-capsule--${snapshotTone}`">
+        <span class="db-capsule__dot" aria-hidden="true" />{{ snapshotLabel }}
+      </span>
+      <span class="db-capsule" :class="`db-capsule--${queueTone}`">
+        <span class="db-capsule__dot" aria-hidden="true" />{{ queueLabel }}
+      </span>
       <NButton
         size="small"
         type="primary"
@@ -96,16 +101,67 @@ const locked = computed(() => busy.value !== '')
 <style scoped>
 .db-head {
   position: sticky;
-  top: 0;
+  top: 8px;
   z-index: 20;
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
-  gap: 16px;
+  gap: 14px 16px;
   flex-wrap: wrap;
-  padding: 10px 0 14px;
-  background: color-mix(in srgb, var(--app-bg, #f5f6f8) 88%, transparent);
-  backdrop-filter: blur(12px);
+  margin-bottom: 14px;
+  padding: 14px 16px;
+  border-radius: 18px;
+  overflow: hidden;
+  isolation: isolate;
+  border: 1px solid color-mix(in srgb, var(--db-accent, #2080f0) 22%, var(--db-line, var(--app-border, #e3e6eb)));
+  background:
+    linear-gradient(
+      120deg,
+      color-mix(in srgb, var(--db-accent, #2080f0) 14%, transparent),
+      color-mix(in srgb, var(--db-accent-2, var(--db-accent, #2080f0)) 10%, transparent) 55%,
+      transparent
+    ),
+    color-mix(in srgb, var(--app-surface, #fff) 78%, transparent);
+  backdrop-filter: blur(14px) saturate(1.3);
+  box-shadow: 0 10px 30px -22px color-mix(in srgb, var(--app-text, #1f2329) 60%, transparent);
+}
+
+/* 缓慢漂移的光斑：给玻璃页头一点景深；减少动态效果时静止。 */
+.db-head__aura {
+  position: absolute;
+  z-index: -1;
+  inset: -60% -10% auto auto;
+  width: 280px;
+  height: 280px;
+  border-radius: 50%;
+  pointer-events: none;
+  background: radial-gradient(
+    circle,
+    color-mix(in srgb, var(--db-accent-2, var(--db-accent, #2080f0)) 26%, transparent),
+    transparent 65%
+  );
+  animation: db-aura 14s ease-in-out infinite alternate;
+}
+
+@keyframes db-aura {
+  to {
+    transform: translate(-120px, 40px) scale(1.15);
+  }
+}
+
+.db-root--dark .db-head {
+  border-color: color-mix(in srgb, var(--db-accent, #2080f0) 35%, transparent);
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--db-accent, #2080f0) 10%, transparent) inset,
+    0 12px 40px -18px color-mix(in srgb, var(--db-accent, #2080f0) 55%, transparent);
+}
+
+.db-root--dark .db-head__aura {
+  background: radial-gradient(
+    circle,
+    color-mix(in srgb, var(--db-accent-2, var(--db-accent, #2080f0)) 38%, transparent),
+    transparent 65%
+  );
 }
 
 .db-brand {
@@ -116,15 +172,24 @@ const locked = computed(() => busy.value !== '')
 }
 
 .db-brand__icon {
-  width: 42px;
-  height: 42px;
+  width: 44px;
+  height: 44px;
   flex: none;
   display: grid;
   place-items: center;
-  border-radius: 12px;
-  color: #fff;
-  background: linear-gradient(135deg, var(--db-accent, #2080f0), #7c5cfc);
-  box-shadow: 0 6px 18px color-mix(in srgb, var(--db-accent, #2080f0) 30%, transparent);
+  border-radius: 13px;
+  color: var(--app-surface, #fff);
+  background: linear-gradient(135deg, var(--db-accent, #2080f0), var(--db-accent-2, var(--db-accent, #2080f0)));
+  box-shadow:
+    0 8px 22px -6px color-mix(in srgb, var(--db-accent, #2080f0) 60%, transparent),
+    inset 0 1px 0 color-mix(in srgb, var(--app-surface, #fff) 35%, transparent);
+}
+
+.db-root--dark .db-brand__icon {
+  color: var(--app-text, #fff);
+  box-shadow:
+    0 0 22px color-mix(in srgb, var(--db-accent, #2080f0) 55%, transparent),
+    inset 0 1px 0 color-mix(in srgb, var(--app-text, #fff) 25%, transparent);
 }
 
 .db-brand__text {
@@ -132,11 +197,24 @@ const locked = computed(() => busy.value !== '')
 }
 
 .db-brand__title {
-  font-size: 20px;
-  font-weight: 650;
-  letter-spacing: 0.01em;
+  font-size: 21px;
+  font-weight: 750;
+  letter-spacing: 0.02em;
   margin: 0;
   color: var(--app-text, #1f2329);
+}
+
+@supports ((-webkit-background-clip: text) or (background-clip: text)) {
+  .db-brand__title {
+    background: linear-gradient(
+      100deg,
+      var(--app-text, #1f2329) 30%,
+      color-mix(in srgb, var(--db-accent, #2080f0) 75%, var(--app-text, #1f2329))
+    );
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
 }
 
 .db-brand__sub {
@@ -155,12 +233,22 @@ const locked = computed(() => busy.value !== '')
 .db-capsule {
   display: inline-flex;
   align-items: center;
-  min-height: 30px;
-  padding: 4px 10px;
+  gap: 6px;
+  min-height: 28px;
+  padding: 3px 10px;
   border-radius: 999px;
   border: 1px solid var(--db-line, var(--app-border, #e3e6eb));
+  background: color-mix(in srgb, var(--app-surface, #fff) 60%, transparent);
   font-size: 12px;
   white-space: nowrap;
+}
+
+.db-capsule__dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+  box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 20%, transparent);
 }
 
 .db-capsule--muted {
@@ -179,9 +267,20 @@ const locked = computed(() => busy.value !== '')
   background: color-mix(in srgb, var(--db-warn, #f0a020) 10%, transparent);
 }
 
-@media (max-width: 720px) {
+.db-capsule--warn .db-capsule__dot {
+  animation: db-pulse 1.8s ease-in-out infinite;
+}
+
+@keyframes db-pulse {
+  50% {
+    box-shadow: 0 0 0 6px color-mix(in srgb, currentColor 0%, transparent);
+  }
+}
+
+@container db-page (max-width: 720px) {
   .db-head {
     position: static;
+    padding: 12px;
   }
 
   .db-actions {
@@ -190,6 +289,13 @@ const locked = computed(() => busy.value !== '')
 
   .db-capsule {
     display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .db-head__aura,
+  .db-capsule--warn .db-capsule__dot {
+    animation: none;
   }
 }
 </style>
