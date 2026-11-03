@@ -1,11 +1,12 @@
 <script setup lang="ts">
-// 页头：品牌 + 状态/日报/dry-run 胶囊 + 动作组（刷新 / 探测诊断 / 立即对齐 / 设置）。
+// 页头（hero）：品牌 + 状态/日报/dry-run 胶囊 + 动作组（刷新 / 探测诊断 / 立即对齐 / 设置）。
+// 背景是主题色渐变 + 毛玻璃，深色主题下带一圈柔光；忙碌时底边有一条不定进度条。
 //
 // 动作全部走 ctx.tasks.run（见 use-chase.ts 的 runAction），页面不直接 fetch 宿主接口。
 
 import { computed } from 'vue'
 import { NButton, NTag } from 'naive-ui'
-import { Radar, RefreshCw, Settings, Tv } from '@lucide/vue'
+import { Radar, RefreshCw, Settings, Sparkles, Tv } from '@lucide/vue'
 import { useChaseStore } from '../use-chase'
 
 const store = useChaseStore()
@@ -13,15 +14,20 @@ const busy = computed(() => store.busy !== '')
 </script>
 
 <template>
-  <header class="c-header">
+  <header class="c-header" :class="{ 'is-busy': busy }">
+    <svg class="c-hero-art" viewBox="0 0 200 200" aria-hidden="true">
+      <circle cx="150" cy="50" r="70" />
+      <circle cx="150" cy="50" r="48" />
+      <circle cx="150" cy="50" r="26" />
+    </svg>
     <div class="c-brand">
-      <span class="c-brand-icon"><Tv :size="22" aria-hidden="true" /></span>
+      <span class="c-brand-icon"><Tv :size="24" aria-hidden="true" /></span>
       <div class="c-brand-text">
         <h2>追剧管家</h2>
         <p>每小时对齐订阅池 · Emby 覆盖 / TMDB 目标 · 只增不减</p>
       </div>
     </div>
-    <div class="c-actions">
+    <div class="c-capsules">
       <NTag
         class="c-capsule"
         size="small"
@@ -30,6 +36,7 @@ const busy = computed(() => store.busy !== '')
         :type="store.healthCapsule.type"
         :title="store.healthCapsule.title"
       >
+        <span class="c-dot" :class="`c-dot-${store.healthCapsule.type}`" aria-hidden="true" />
         {{ store.healthCapsule.label }}
       </NTag>
       <NTag
@@ -45,15 +52,18 @@ const busy = computed(() => store.busy !== '')
       <NTag v-if="store.dryRun" class="c-capsule" size="small" round :bordered="false" type="warning">
         dry-run · 只判定不写入
       </NTag>
-      <NButton size="small" :disabled="busy" @click="store.runAction('refresh')">
-        <template #icon><RefreshCw :size="14" aria-hidden="true" /></template>
+    </div>
+    <div class="c-actions">
+      <NButton size="small" secondary :disabled="busy" @click="store.runAction('refresh')">
+        <template #icon><RefreshCw :size="14" aria-hidden="true" :class="{ 'c-spin': store.busy === 'refresh' }" /></template>
         刷新
       </NButton>
-      <NButton size="small" :disabled="busy" @click="store.openProbe()">
+      <NButton size="small" secondary :disabled="busy" @click="store.openProbe()">
         <template #icon><Radar :size="14" aria-hidden="true" /></template>
         探测诊断
       </NButton>
-      <NButton size="small" type="primary" :disabled="busy" @click="store.runAction('align-now')">
+      <NButton class="c-cta" size="small" type="primary" :disabled="busy" @click="store.runAction('align-now')">
+        <template #icon><Sparkles :size="14" aria-hidden="true" /></template>
         立即对齐
       </NButton>
       <NButton
@@ -69,5 +79,6 @@ const busy = computed(() => store.busy !== '')
         <template #icon><Settings :size="16" aria-hidden="true" /></template>
       </NButton>
     </div>
+    <span v-if="busy" class="c-hero-bar" aria-hidden="true" />
   </header>
 </template>

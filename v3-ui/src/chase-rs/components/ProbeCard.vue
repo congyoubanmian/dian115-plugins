@@ -6,7 +6,7 @@
 
 import { computed, onBeforeUnmount, ref } from 'vue'
 import { NButton } from 'naive-ui'
-import { ChevronDown, Copy } from '@lucide/vue'
+import { ChevronDown, Copy, Radar } from '@lucide/vue'
 import { formatAt, list, num, text } from '../format'
 import { useChaseStore } from '../use-chase'
 
@@ -55,18 +55,20 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <section class="card">
+  <section class="card c-probe">
     <button
       type="button"
       class="c-probe-head"
       :aria-expanded="store.probeOpen"
       @click="store.toggleProbe()"
     >
+      <span class="card-icon"><Radar :size="16" aria-hidden="true" /></span>
       <span class="c-probe-title">探测诊断</span>
       <span class="c-probe-sub">端点参数矩阵 · 形状指纹 · HTTP 状态 · 2KB 原文样本 —— 默认折叠，排障时展开</span>
       <ChevronDown class="c-chevron" :class="chevronClass" :size="16" aria-hidden="true" />
     </button>
 
+    <Transition name="c-fade">
     <div v-if="store.probeOpen" class="c-probe-body">
       <div class="c-probe-grid">
         <div v-for="panel in store.probePanels" :key="panel.name" class="c-probe-panel">
@@ -125,5 +127,6 @@ onBeforeUnmount(() => {
         />
       </div>
     </div>
+    </Transition>
   </section>
 </template>
