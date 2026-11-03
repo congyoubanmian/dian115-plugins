@@ -9,7 +9,7 @@ const { toasts } = store
 </script>
 
 <template>
-  <div class="music-toasts">
+  <div class="music-toasts" role="status" aria-live="polite">
     <div v-for="item in toasts" :key="item.id" class="music-toast" :class="`music-toast--${item.kind}`">
       {{ item.message }}
     </div>
@@ -30,11 +30,13 @@ const { toasts } = store
 
 .music-toast {
   padding: 10px 14px;
-  border-radius: 10px;
+  border-radius: 12px;
   font-size: 13px;
   color: #fff;
-  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.18);
-  animation: music-toast-in 0.18s ease-out;
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, #fff 18%, transparent) inset,
+    0 10px 28px -10px color-mix(in srgb, var(--app-text, #000) 45%, transparent);
+  animation: music-toast-in 0.24s cubic-bezier(0.34, 1.4, 0.5, 1);
   overflow-wrap: anywhere;
 }
 
@@ -57,11 +59,17 @@ const { toasts } = store
 @keyframes music-toast-in {
   from {
     opacity: 0;
-    transform: translateY(6px);
+    transform: translateY(10px) scale(0.96);
   }
   to {
     opacity: 1;
     transform: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .music-toast {
+    animation: none;
   }
 }
 </style>

@@ -6,14 +6,38 @@
 
 import { computed, ref } from 'vue'
 import { NAlert, NButton, NEmpty, NInput, NTag } from 'naive-ui'
-import { Inbox as InboxIcon, Music as MusicIcon, RefreshCw as RefreshIcon, RotateCcw as RetryIcon, Trash2 as TrashIcon } from '@lucide/vue'
+import {
+  CircleCheck as DoneIcon,
+  CircleX as FailIcon,
+  Clock3 as QueueIcon,
+  Inbox as InboxIcon,
+  Music as MusicIcon,
+  RefreshCw as RefreshIcon,
+  RotateCcw as RetryIcon,
+  Trash2 as TrashIcon,
+} from '@lucide/vue'
 import { useMusicStore } from '../store'
 import type { TaskEntry } from '../types'
+import { useReady } from '../ui-kit'
+import QualityTag from './QualityTag.vue'
+import Skeleton from './Skeleton.vue'
 
 const store = useMusicStore()
 const { tasks, allTasks, attentionRun, pendingTasks, failedTasks, busy, settings, queueBusyNotice } = store
 
+const ready = useReady()
 const adoptId = ref('')
+
+function isActive(task: TaskEntry): boolean {
+  return task.status === 'downloading' || task.status === 'copying'
+}
+
+function iconOf(task: TaskEntry) {
+  if (task.status === 'queued') return QueueIcon
+  if (task.status === 'done') return DoneIcon
+  if (task.status === 'failed') return FailIcon
+  return MusicIcon
+}
 
 /** 状态 → 文案与配色（原生版 STATUS_META 同表）。 */
 const STATUS_META: Record<string, { label: string; type: 'default' | 'info' | 'success' | 'error' | 'primary' }> = {
@@ -59,11 +83,11 @@ async function adopt(): Promise<void> {
 <template>
   <div class="row">
     <h3 class="card-title">下载任务</h3>
-    <NTag size="small" :bordered="false" :type="pendingTasks.length ? 'success' : 'default'">
+    <NTag size="small" round :bordered="false" :type="pendingTasks.length ? 'success' : 'default'">
       {{ pendingTasks.length ? '队列自动推进中' : '队列空闲' }}
     </NTag>
-    <NTag size="small" :bordered="false" type="default">共 {{ allTasks.length }} 条</NTag>
-    <NTag v-if="failedTasks.length" size="small" :bordered="false" type="error">失败 {{ failedTasks.length }}</NTag>
+    <NTag size="small" round :bordered="false" type="default">共 {{ allTasks.length }} 条</NTag>
+    <NTag v-if="failedTasks.length" size="small" round :bordered="false" type="error">失败 {{ failedTasks.length }}</NTag>
     <span class="spacer" />
     <NButton size="small" secondary :loading="busy === 'pump'" :disabled="!!busy && busy !== 'pump'" @click="store.pumpQueue()">
       <template #icon><RefreshIcon :size="13" /></template>
@@ -120,19 +144,23 @@ async function adopt(): Promise<void> {
     </NButton>
   </div>
 
-  <div v-if="tasks.length" class="task-list">
-    <div v-for="task in tasks" :key="task.id" class="task-row">
+  <Skeleton v-if="!ready && !tasks.length" :count="3" />
+  <TransitionGroup v-else-if="tasks.length" tag="div" name="task" class="task-list">
+    <div v-for="task in tasks" :key="task.id" class="task-row" :class="`task-row--${task.status}`">
       <div class="task-tile" :class="tileClass(task)">
-        <MusicIcon :size="17" aria-hidden="true" />
+        <span v-if="isActive(task)" class="task-disc" aria-hidden="true" />
+        <component :is="iconOf(task)" v-else :size="17" aria-hidden="true" />
       </div>
       <div class="task-main">
         <div class="task-title">{{ task.name || '—' }}{{ task.singers ? ` · ${task.singers}` : '' }}</div>
         <div class="task-sub" :title="task.error || undefined">
-          {{ store.qualityLabel(task.quality) }} · {{ store.sourceName(task.source ?? '') }}{{ task.error ? ` · ${task.error}` : '' }}
+          <QualityTag :quality="task.quality" />
+          <span class="task-src">{{ store.sourceName(task.source ?? '') }}</span>
+          <span v-if="task.error" class="task-err">{{ task.error }}</span>
         </div>
       </div>
-      <div v-if="task.status === 'downloading' || task.status === 'copying'" class="task-progress">
-        <div class="indet" />
+      <div v-if="isActive(task)" class="task-progress" aria-hidden="true">
+        <span v-for="bar in 5" :key="bar" class="task-eq" />
       </div>
       <NButton
         v-if="task.status === 'failed'"
@@ -147,13 +175,13 @@ async function adopt(): Promise<void> {
       >
         <template #icon><RetryIcon :size="14" /></template>
       </NButton>
-      <NTag size="small" :bordered="false" :type="statusOf(task).type">{{ statusOf(task).label }}</NTag>
+      <span class="status-pill" :class="`status-pill--${statusOf(task).type}`">{{ statusOf(task).label }}</span>
     </div>
-  </div>
+  </TransitionGroup>
   <p v-if="allTasks.length > tasks.length" class="hint">
     仅显示最近 {{ tasks.length }} 条（共 {{ allTasks.length }} 条）；点「清空已结束」可收起已完成/失败的任务。
   </p>
-  <NEmpty v-else-if="!tasks.length" description="暂无任务。去「搜索」页选一首歌点下载。">
+  <NEmpty v-else-if="!tasks.length && ready" class="task-empty" description="暂无任务。去「搜索」页选一首歌点下载。">
     <template #icon><InboxIcon :size="30" /></template>
   </NEmpty>
 
@@ -186,8 +214,8 @@ async function adopt(): Promise<void> {
 
 .card-title {
   margin: 0;
-  font-size: 16px;
-  font-weight: 600;
+  font-size: 17px;
+  font-weight: 700;
 }
 
 .hint {
@@ -211,53 +239,99 @@ async function adopt(): Promise<void> {
 .adopt-row {
   padding: 8px 10px;
   border: 1px dashed var(--app-border, #e0e4ea);
-  border-radius: 10px;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--app-bg, transparent) 50%, transparent);
 }
 
 .task-list {
+  position: relative;
   display: grid;
   gap: 8px;
   max-height: 480px;
   overflow: auto;
+  padding: 2px;
 }
 
 .task-row {
+  --tone: var(--app-text-secondary, #8a919c);
+  position: relative;
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 10px 12px;
+  gap: 12px;
+  padding: 10px 12px 10px 14px;
   border: 1px solid var(--app-border, #e0e4ea);
-  border-radius: 10px;
+  border-radius: 12px;
+  background: var(--app-surface, #fff);
+  overflow: hidden;
+  transition:
+    border-color 0.2s ease,
+    background-color 0.2s ease;
+}
+
+.task-row::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 8px;
+  bottom: 8px;
+  width: 3px;
+  border-radius: 0 3px 3px 0;
+  background: var(--tone);
+}
+
+.task-row:hover {
+  border-color: color-mix(in srgb, var(--tone) 45%, var(--app-border, #e0e4ea));
+}
+
+.task-row--downloading,
+.task-row--copying {
+  --tone: var(--mx-accent, #2080f0);
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--tone) 9%, var(--app-surface, #fff)),
+    var(--app-surface, #fff) 70%
+  );
+}
+
+.task-row--queued {
+  --tone: color-mix(in srgb, var(--mx-accent, #2080f0) 50%, var(--app-text-secondary, #8a919c));
+}
+
+.task-row--done {
+  --tone: var(--mx-ok, #18a058);
+}
+
+.task-row--failed {
+  --tone: var(--mx-err, #d03050);
 }
 
 .task-tile {
-  width: 36px;
-  height: 36px;
+  width: 38px;
+  height: 38px;
   flex: none;
   display: flex;
   align-items: center;
   justify-content: center;
-  border-radius: 9px;
+  border-radius: 10px;
 }
 
 .tile-primary {
-  background: var(--app-accent, #2080f0);
-  color: #fff;
+  background: color-mix(in srgb, var(--mx-accent, #2080f0) 14%, transparent);
 }
 
 .tile-info {
-  background: color-mix(in srgb, var(--app-accent, #2080f0) 14%, transparent);
-  color: var(--app-accent, #2080f0);
+  background: color-mix(in srgb, var(--mx-accent, #2080f0) 12%, transparent);
+  color: var(--mx-accent, #2080f0);
 }
 
 .tile-success {
-  background: color-mix(in srgb, #18a058 14%, transparent);
-  color: #18a058;
+  background: color-mix(in srgb, var(--mx-ok, #18a058) 14%, transparent);
+  color: var(--mx-ok, #18a058);
 }
 
 .tile-error {
-  background: color-mix(in srgb, #d03050 14%, transparent);
-  color: #d03050;
+  background: color-mix(in srgb, var(--mx-err, #d03050) 14%, transparent);
+  color: var(--mx-err, #d03050);
 }
 
 .tile-muted {
@@ -265,55 +339,185 @@ async function adopt(): Promise<void> {
   color: var(--app-text-secondary, #8a919c);
 }
 
+/* 迷你唱片：进行中的任务在转 */
+.task-disc {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background:
+    radial-gradient(circle, var(--mx-accent, #2080f0) 0 22%, transparent 23%),
+    repeating-radial-gradient(
+      circle,
+      color-mix(in srgb, #000 86%, var(--mx-accent, #2080f0)) 0 1.5px,
+      color-mix(in srgb, #000 70%, var(--mx-accent, #2080f0)) 1.5px 2.5px
+    );
+  animation: task-spin 2.4s linear infinite;
+}
+
 .task-main {
   flex: 1;
   min-width: 0;
+  display: grid;
+  gap: 4px;
 }
 
 .task-title {
   font-size: 13px;
-  font-weight: 500;
+  font-weight: 600;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .task-sub {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
   font-size: 11px;
   color: var(--app-text-secondary, rgba(0, 0, 0, 0.45));
-  overflow: hidden;
-  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.task-progress {
-  width: 90px;
+.task-src {
   flex: none;
 }
 
-.indet {
-  height: 4px;
-  border-radius: 2px;
-  background: color-mix(in srgb, var(--app-accent, #2080f0) 25%, transparent);
-  position: relative;
+.task-err {
+  min-width: 0;
   overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--mx-err, #d03050);
 }
 
-.indet::after {
-  content: '';
-  position: absolute;
-  inset: 0;
-  width: 40%;
-  background: var(--app-accent, #2080f0);
-  animation: music-slide 1.2s ease-in-out infinite;
+.task-progress {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 18px;
+  flex: none;
 }
 
-@keyframes music-slide {
-  0% {
-    transform: translateX(-100%);
+.task-eq {
+  width: 3px;
+  height: 100%;
+  border-radius: 2px;
+  background: var(--mx-accent, #2080f0);
+  transform-origin: bottom;
+  animation: task-eq 0.9s ease-in-out infinite;
+}
+
+.task-eq:nth-child(2) {
+  animation-delay: -0.3s;
+}
+
+.task-eq:nth-child(3) {
+  animation-delay: -0.6s;
+}
+
+.task-eq:nth-child(4) {
+  animation-delay: -0.15s;
+}
+
+.task-eq:nth-child(5) {
+  animation-delay: -0.45s;
+}
+
+.status-pill {
+  --tone: var(--app-text-secondary, #8a919c);
+  flex: none;
+  padding: 2px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  color: var(--tone);
+  background: color-mix(in srgb, var(--tone) 12%, transparent);
+}
+
+.status-pill--info {
+  --tone: color-mix(in srgb, var(--mx-accent, #2080f0) 70%, var(--app-text, #333));
+}
+
+.status-pill--primary {
+  --tone: var(--mx-accent, #2080f0);
+}
+
+.status-pill--success {
+  --tone: var(--mx-ok, #18a058);
+}
+
+.status-pill--error {
+  --tone: var(--mx-err, #d03050);
+}
+
+@container music-page (max-width: 520px) {
+  .task-progress {
+    display: none;
   }
+
+  .task-row {
+    flex-wrap: wrap;
+  }
+
+  .task-main {
+    flex-basis: calc(100% - 60px);
+  }
+}
+
+/* 列表变化：新任务滑入、移除淡出、其余平滑挪位 */
+.task-enter-active,
+.task-leave-active {
+  transition:
+    opacity 0.3s ease,
+    transform 0.3s ease;
+}
+
+.task-enter-from {
+  opacity: 0;
+  transform: translateY(-8px) scale(0.98);
+}
+
+.task-leave-to {
+  opacity: 0;
+  transform: translateX(16px);
+}
+
+.task-move {
+  transition: transform 0.35s ease;
+}
+
+@keyframes task-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes task-eq {
+  0%,
   100% {
-    transform: translateX(350%);
+    transform: scaleY(0.3);
+  }
+  50% {
+    transform: scaleY(1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .task-disc,
+  .task-eq {
+    animation: none;
+  }
+
+  .task-eq {
+    transform: scaleY(0.6);
+  }
+
+  .task-row,
+  .task-enter-active,
+  .task-leave-active,
+  .task-move {
+    transition: none;
   }
 }
 </style>
