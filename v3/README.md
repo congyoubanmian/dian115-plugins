@@ -436,8 +436,10 @@ Node/zlib 版本略有差异——本地 193844 / 284582 / 263162 字节——�
 `SHA256SUMS.txt` 为准。）
 
 `declared_usage` 逐字取自各插件 `plugin.json`（接口、站点、文件、通知与风险说明），没有另行美化。
-三个 v3 清单都没有 `permissions` 段，因此索引也省略可选的 `permissions` 字段；`source_url_note` 是
-附加说明字段，官方 schema 未禁止附加属性。
+索引的 `permissions` 由发布脚本从各插件 `plugin.json` 同步：music.rs / douban.rs 申请 `telegram.bot`
+（TG 指令回执），chase.rs 不申请。官方 schema 要求索引 `permissions` **覆盖清单申请的全部权限**，
+漏写会在安装/更新时被宿主拒绝（`source requests permission <x> not declared by the release`）；
+`source_url_note` 是附加说明字段，官方 schema 未禁止附加属性。
 
 **发布后的索引**
 

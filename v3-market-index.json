@@ -64,7 +64,10 @@
         "risk": "把网易云/QQ 音乐直链下载到插件暂存目录并复制进用户配置的宿主目录（可能经 CD2 上传网盘）；失败时发送带重试按钮的通知；每日一条下载日报（TG）；Telegram 机器人命令（/music、/queue、/status）只读查询队列与状态，回复走来源渠道（需要 telegram.bot 授权），不触发下载/删除；按宿主新规约不读取 CookieCloud，登录态只来自扫码或用户手动粘贴的 Cookie；扫码登录在本插件 KV 里保存网易云/QQ 音乐登录凭据（QQ 还保存账号标识 encryptUin，用于读收藏的歌单与「我喜欢」；QQ 扫码登录期间会访问 graph.qq.com 的 OAuth 授权端点换凭据）。"
       },
       "homepage": "https://github.com/congyoubanmian/dian115-plugins",
-      "changelog": "v3 迁移首个发布：plugins/music-rs 0.3.19（Rust WASM）迁移为宿主内 ESM；搜索/登录/取链/歌单入队/下载队列保留，暂存改插件自有 downloads/，入库交给宿主 move（移除 CD2 直送），CookieCloud 走宿主内置服务，Telegram 重试改为清单 events 回调任务。1.0.1：页面改写为 Vue 3；QQ 取链对齐参考客户端 Lilt：先取 media_mid，登录态按 F000/M800/M500 逐档请求 vkey，相对 purl 用 sip 域名拼接，匿名仅请求 M500。1.0.2：网易云与 QQ 音乐扫码登录都在单插件内实现；QQ 走官方二维码 + graph.qq.com OAuth 授权换 musicid/musickey，登录 Cookie 只写插件 KV，保留手动粘贴回退。1.1.0：QQ 音乐内容能力补齐——我的歌单（我创建的 + 收藏的）、每日推荐、我喜欢、歌单歌曲分页与整单入队；musicu 请求带 authst，登录时保存 encryptUin。；本版起按宿主「编译 MCP」出正式包（protected-v4），署名取签名绑定的会员昵称。；1.2.0：requires.api 提到 3.9，下载直写目标目录（宿主不支持时回落暂存→move）；设置做在页面里。；1.2.1：直写目标目录的能力判断改用宿主上报的 host_api（不再靠错误信息猜测）。\"；1.3.0：下载与入库前后落任务检查点，中断恢复先核对目标目录里的真实文件再判定 complete/resume/attention；修正队列并发与取链流程，API 3.9 起 save_to 直写优先、否则回落暂存→定名→move；新增每日下载日报与 /music、/queue、/status 三个只读 TG 命令（回执走 ctx.messaging.reply）；任务页与界面视觉改版。"
+      "changelog": "v3 迁移首个发布：plugins/music-rs 0.3.19（Rust WASM）迁移为宿主内 ESM；搜索/登录/取链/歌单入队/下载队列保留，暂存改插件自有 downloads/，入库交给宿主 move（移除 CD2 直送），CookieCloud 走宿主内置服务，Telegram 重试改为清单 events 回调任务。1.0.1：页面改写为 Vue 3；QQ 取链对齐参考客户端 Lilt：先取 media_mid，登录态按 F000/M800/M500 逐档请求 vkey，相对 purl 用 sip 域名拼接，匿名仅请求 M500。1.0.2：网易云与 QQ 音乐扫码登录都在单插件内实现；QQ 走官方二维码 + graph.qq.com OAuth 授权换 musicid/musickey，登录 Cookie 只写插件 KV，保留手动粘贴回退。1.1.0：QQ 音乐内容能力补齐——我的歌单（我创建的 + 收藏的）、每日推荐、我喜欢、歌单歌曲分页与整单入队；musicu 请求带 authst，登录时保存 encryptUin。；本版起按宿主「编译 MCP」出正式包（protected-v4），署名取签名绑定的会员昵称。；1.2.0：requires.api 提到 3.9，下载直写目标目录（宿主不支持时回落暂存→move）；设置做在页面里。；1.2.1：直写目标目录的能力判断改用宿主上报的 host_api（不再靠错误信息猜测）。\"；1.3.0：下载与入库前后落任务检查点，中断恢复先核对目标目录里的真实文件再判定 complete/resume/attention；修正队列并发与取链流程，API 3.9 起 save_to 直写优先、否则回落暂存→定名→move；新增每日下载日报与 /music、/queue、/status 三个只读 TG 命令（回执走 ctx.messaging.reply）；任务页与界面视觉改版。",
+      "permissions": [
+        "telegram.bot"
+      ]
     },
     {
       "id": "douban.rs",
@@ -99,7 +102,10 @@
         "risk": "定期抓取豆瓣榜单与想看列表，按黑名单/过滤器入观察队列；到期条目经 TMDB 匹配（失配时回查豆瓣详情重搜）后创建宿主聚合订阅（宿主负责检索并投递 115 离线）；登录态只来自用户手动粘贴的豆瓣 Cookie（不读取 CookieCloud）；订阅结果发送通知。Telegram 机器人只接收 /refresh、/wish 两条命令并回执执行结果（需用户授权 telegram.bot）。海报缓存写插件自有 data/files 的 posters/ 目录，超量时删除其中最旧的缓存文件（只限 posters/ 内）。不写宿主文件，不触碰 115 账号。"
       },
       "homepage": "https://github.com/congyoubanmian/dian115-plugins",
-      "changelog": "v3 迁移首个发布：plugins/douban-rs 0.2.4（Rust WASM）迁移为宿主内 ESM；榜单抓取、黑名单/过滤、观察队列、想看同步、TMDB 匹配回退与订阅链保留，16 个任务不变，页面用原生 JS 重写；CookieCloud 主路径改为宿主内置服务（自建服务链保留）。1.1.0：页面改写为 Vue 3（榜单海报墙/观察队列/想看/历史日志/设置），数据与动作全走 ctx。1.1.1：修复一周口碑榜 deep refresh 把未 await 的海报 Promise 写入 snapshot.poster_url（落盘成 {}）导致整份状态文档被判非法；读取旧文档时把这类 {} 按空串兼容。；本版起按宿主「编译 MCP」出正式包（protected-v4），署名取签名绑定的会员昵称。；1.1.3：后台读插件数据改走官方 ctx.storage.get；任务写 title 并上报批量计数；设置做在页面里。；1.1.4：主页地址修正为仓库改名前的旧域名改为 dian115-plugins。\"；1.2.0：创建聚合订阅前后落任务检查点，中断恢复先查宿主订阅池里该条目的真实状态再判定 complete/resume/attention；海报抓回后落插件文件缓存 posters/<sha256>.<ext>（超 64 张按 modified 淘汰最旧，卸载清空），页面改用 downloadURL 取图、files 不可用时降级 dataURL；整合 1.1.5 的订阅查重/失败重试/想看登录态/存储 CAS 合并修正；新增 /refresh、/wish 两条 TG 指令与回执；页面视觉与布局升级。"
+      "changelog": "v3 迁移首个发布：plugins/douban-rs 0.2.4（Rust WASM）迁移为宿主内 ESM；榜单抓取、黑名单/过滤、观察队列、想看同步、TMDB 匹配回退与订阅链保留，16 个任务不变，页面用原生 JS 重写；CookieCloud 主路径改为宿主内置服务（自建服务链保留）。1.1.0：页面改写为 Vue 3（榜单海报墙/观察队列/想看/历史日志/设置），数据与动作全走 ctx。1.1.1：修复一周口碑榜 deep refresh 把未 await 的海报 Promise 写入 snapshot.poster_url（落盘成 {}）导致整份状态文档被判非法；读取旧文档时把这类 {} 按空串兼容。；本版起按宿主「编译 MCP」出正式包（protected-v4），署名取签名绑定的会员昵称。；1.1.3：后台读插件数据改走官方 ctx.storage.get；任务写 title 并上报批量计数；设置做在页面里。；1.1.4：主页地址修正为仓库改名前的旧域名改为 dian115-plugins。\"；1.2.0：创建聚合订阅前后落任务检查点，中断恢复先查宿主订阅池里该条目的真实状态再判定 complete/resume/attention；海报抓回后落插件文件缓存 posters/<sha256>.<ext>（超 64 张按 modified 淘汰最旧，卸载清空），页面改用 downloadURL 取图、files 不可用时降级 dataURL；整合 1.1.5 的订阅查重/失败重试/想看登录态/存储 CAS 合并修正；新增 /refresh、/wish 两条 TG 指令与回执；页面视觉与布局升级。",
+      "permissions": [
+        "telegram.bot"
+      ]
     }
   ]
 }

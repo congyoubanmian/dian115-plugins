@@ -57,6 +57,21 @@ for (const plugin of index.plugins ?? []) {
   plugin.sha256 = sha256(distPath)
   plugin.source_url = `https://github.com/${repo}/releases/download/${tag}/${pkgName}`
   delete plugin.source_url_note
+
+  // 索引的 permissions 必须覆盖清单申请的全部权限（宿主安装/更新时按索引校验，
+  // 缺项会被拒绝：source requests permission <x> not declared by the release）。
+  const manifestPath = `v3/${plugin.id.replace(/\./g, '-')}/plugin.json`
+  if (existsSync(manifestPath)) {
+    const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'))
+    if (Array.isArray(manifest.permissions) && manifest.permissions.length > 0) {
+      plugin.permissions = [...manifest.permissions]
+    } else {
+      delete plugin.permissions
+    }
+  } else {
+    console.warn(`- ${plugin.id}: 缺少清单 ${manifestPath}，permissions 未同步`)
+  }
+
   changed += 1
   console.log(`- ${plugin.id}: ${pkgName} sha256=${plugin.sha256} delivery=${plugin.delivery ?? '(历史)'} author=${plugin.author}`)
 }
