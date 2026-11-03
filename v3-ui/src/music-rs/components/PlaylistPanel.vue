@@ -164,7 +164,7 @@ function onQualityChange(event: Event): void {
       <NButton size="small" secondary @click="store.closePlaylist()">← 返回歌单列表</NButton>
       <h3 class="card-title">{{ playlistView.name || '歌单' }}</h3>
       <span class="hint-inline">统一音质:</span>
-      <select :value="playlistQuality" class="sel" @change="onQualityChange">
+      <select :value="playlistQuality" class="sel" aria-label="整单统一音质" @change="onQualityChange">
         <option v-for="value in detailQualities" :key="value" :value="value">{{ store.qualityLabel(value) }}</option>
       </select>
       <NButton size="small" type="primary" :loading="busy === 'pl-all'" @click="store.downloadPlaylistAll()">

@@ -5,11 +5,11 @@
 // ctx.tasks.run('queue-pump', ...) 手动快进（与旧 action `pump` 同一入口）。
 //
 // 中断恢复：pump 幂等（入队去重、残留 .part 清理、downloading 残留按 fail 语义计数回队），
-// 未到 completed 的中断 resume 重跑即可。
+// 未到 done 检查点的中断 resume 重跑即可；已写 done 检查点的直接用检查点里的结果收尾。
 
 import { buildDeps, readSettings } from './runtime.js'
 import { pump, TASKS_IDX_KEY } from '../lib/pump.js'
-import { addLog } from '../lib/logs.js'
+import { addLogs } from '../lib/logs.js'
 import { nowRfc3339 } from '../lib/encoding.js'
 
 /** 状态摘要键（UI 展示最近一轮 pump 的结果）。 */
@@ -29,7 +29,8 @@ export async function run(ctx) {
   await ctx.storage.set(PUMP_STATE_KEY, {
     last_pump: { ...summary, at: nowRfc3339() },
   })
-  for (const line of lines.slice(-10)) await addLog(deps.kv, 'info', line)
+  if (lines.length > 0) await addLogs(deps.kv, 'info', lines.slice(-10))
+  await ctx.task.checkpoint({ stage: 'done', result: summary })
   await ctx.task.update({ stage: 'done', message, progress: 100 })
   return summary
 }

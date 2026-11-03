@@ -3,7 +3,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
   TASKS_KEY, TASKS_IDX_KEY, TASK_KEY_PREFIX, taskKey, keyIsHostSafe,
-  outName, sanitizeComponent, displayName, indexEntryOf, sortIndex, stateView,
+  outName, sanitizeComponent, withNameSuffix, truncateUtf8, NAME_STEM_BYTE_LIMIT, displayName, indexEntryOf, sortIndex, stateView,
   requeueTask, extractCallbackData, RETRY_PREFIX, MAX_ATTEMPTS, STATE_TASKS_LIMIT,
   STATUS_QUEUED, STATUS_DOWNLOADING, STATUS_COPYING, STATUS_DONE, STATUS_FAILED,
 } from '../../music-rs/lib/tasks-core.js'
@@ -24,6 +24,20 @@ test('out_name follows sidecar rules (tasks.rs vectors)', () => {
   assert.equal(outName('  周杰伦  ', '  晴天  ', '.mp3'), '周杰伦 - 晴天.mp3')
   assert.equal(outName('周杰伦', '', 'flac'), '周杰伦 - 未知.flac')
   assert.equal(sanitizeComponent('a/b\\c:d*e?f"g<h>i|j'), 'a_b_c_d_e_f_g_h_i_j')
+})
+
+test('outName 清洗控制字符、扩展名与首尾点，并按 UTF-8 字节截断超长主干', () => {
+  assert.equal(outName('A\nB', 'C\tD\u0000', 'flac'), 'A_B - C_D_.flac')
+  assert.equal(outName('S', 'N', 'mp3?x=1'), 'S - N.mp3x1')
+  assert.equal(outName('.hidden', '晴天...', 'flac'), 'hidden - 晴天.flac', '首尾点去掉')
+  const long = outName('周杰伦', '晴'.repeat(300), 'flac')
+  const stem = long.slice(0, -'.flac'.length)
+  assert.ok(new TextEncoder().encode(stem).length <= NAME_STEM_BYTE_LIMIT)
+  assert.ok(long.endsWith('晴.flac'), '不切开多字节字符')
+  assert.equal(truncateUtf8('😀😀', 5), '😀')
+  assert.equal(withNameSuffix('a.flac', 1), 'a.flac')
+  assert.equal(withNameSuffix('a.flac', 2), 'a (2).flac')
+  assert.equal(withNameSuffix('noext', 3), 'noext (3)')
 })
 
 test('storage keys satisfy the host key regex', () => {

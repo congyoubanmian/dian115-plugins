@@ -184,6 +184,7 @@ const cookiePlaceholder = computed(
           type="textarea"
           :rows="3"
           :placeholder="cookiePlaceholder"
+          :input-props="{ 'aria-label': '粘贴整行 Cookie' }"
           class="cookie-input"
         />
         <div class="row">

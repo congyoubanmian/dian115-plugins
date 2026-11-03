@@ -18,16 +18,24 @@
 // - 「downloading」状态在 pump 开始时出现即视为上一轮被宿主中断的残留（不允许重叠），
 //   按 fail_task 语义计数并回队。
 
-import { STATUS_QUEUED, STATUS_DOWNLOADING, STATUS_COPYING, STATUS_DONE, STATUS_FAILED, MAX_ATTEMPTS, TASKS_IDX_KEY, indexEntryOf, sortIndex } from './tasks-core.js'
+import { STATUS_QUEUED, STATUS_DOWNLOADING, STATUS_COPYING, STATUS_DONE, STATUS_FAILED, MAX_ATTEMPTS, TASKS_IDX_KEY, indexEntryOf, sortIndex, outName, withNameSuffix, displayName } from './tasks-core.js'
 import { loadIndex, loadTask, persistTask, retry, adopt, clearFinished } from './queue-store.js'
 import { normalizeSettings } from './settings.js'
 import { resolveSongUrl } from './music-api.js'
 import { nowMs } from './encoding.js'
+import { channelSummary } from './notify-summary.js'
+
+export { channelSummary }
 
 /** 暂存目录（插件自有文件，相对路径）。 */
 export const STAGING_SUBDIR = 'downloads'
 /** 每个直链下载的超时（秒）。 */
 export const DOWNLOAD_TIMEOUT_SECONDS = 600
+/** 单轮 pump 新开下载的时间预算（毫秒）：清单 timeout_seconds=1800，留出一个完整下载
+ *  超时（600 秒）加收尾余量，超过预算就把剩下的排队任务留给下一轮，避免整轮被宿主超时打断。 */
+export const PUMP_START_BUDGET_MS = (1800 - DOWNLOAD_TIMEOUT_SECONDS - 120) * 1000
+/** 同名去重最多试到「 (N)」。 */
+export const NAME_SUFFIX_LIMIT = 50
 
 /** 扩展名兜底（取链没给 type 时按 flac，与 sidecar 默认一致）。 */
 export function normalizeExt(ext) {
@@ -35,18 +43,55 @@ export function normalizeExt(ext) {
   return cleaned || 'flac'
 }
 
-/** 目标文件名（真实扩展名到手后定名）。 */
+/** 目标文件名（真实扩展名到手后定名；清洗规则见 tasks-core.outName）。 */
 export function targetName(task, ext) {
-  const singers = task.singers ?? ''
-  const name = task.name ?? ''
-  const safe = (text) => {
-    let out = ''
-    for (const ch of String(text)) out += '\\/:*?"<>|'.includes(ch) ? '_' : ch
-    return out.trim()
+  return outName(task.singers ?? '', task.name ?? '', normalizeExt(ext))
+}
+
+/** 目录 + 文件名（目录结尾的 / 不重复）。 */
+export function joinPath(dir, name) {
+  const base = String(dir ?? '').replace(/\/+$/, '')
+  return `${base}/${name}`
+}
+
+/** files.exists 的容错包装：宿主报错时返回 null（未知），由调用方决定保守分支。 */
+async function existsSafe(ctx, path) {
+  try {
+    return (await ctx.files.call({ operation: 'exists', path })) === true
+  } catch {
+    return null
   }
-  const s = safe(singers) || '未知'
-  const n = safe(name) || '未知'
-  return `${s} - ${n}.${normalizeExt(ext)}`
+}
+
+/** 在目标目录里挑一个不与已有文件重名的文件名（`a.flac` → `a (2).flac` …）。
+ *  直写会覆盖同名文件、move 遇同名会失败，两种都不是想要的：不同歌曲同名（翻唱、
+ *  现场版）时都保留。宿主读不到存在性时按原名继续（move 仍是 overwrite:false 兜底）。 */
+export async function uniqueTargetName(ctx, dir, fileName) {
+  for (let n = 1; n <= NAME_SUFFIX_LIMIT; n++) {
+    const candidate = withNameSuffix(fileName, n)
+    const exists = await existsSafe(ctx, joinPath(dir, candidate))
+    if (exists !== true) return candidate
+  }
+  throw new Error(`目标目录里同名文件过多（${fileName} 已到 (${NAME_SUFFIX_LIMIT})）`)
+}
+
+/** save_to 直写失败是否像「宿主没开放直写能力 / 路径不允许直写」（这时才回落暂存 → move）。
+ *  连接失败、超时等网络错误不算：回落只会把同一个下载再跑一遍。 */
+export function looksLikeDirectWriteUnsupported(error) {
+  const status = Number(error?.status)
+  if (status === 403 || status === 405 || status === 501) return true
+  const message = String(error?.message ?? error ?? '')
+  return /api\s*3\.9|requires\.api|不支持|未开放|不允许|受保护|unsupported|not supported|not allowed|protected path/i.test(message)
+}
+
+/** save_to 的结果是否是失败（非 2xx 宿主不写文件、作为 status 返回）。 */
+function downloadFailure(result) {
+  const status = Number(result?.status)
+  if (Number.isFinite(status) && status !== 0 && (status < 200 || status >= 300)) {
+    return `HTTP ${status} ${truncateChars(result?.body ?? '', 200)}`.trim()
+  }
+  if (result?.size === 0) return '下载结果是空文件(直链可能已失效)'
+  return ''
 }
 
 /** 列出暂存目录里以 prefix 开头的文件（宿主去重后缀 "xxx (1).part" 一并算）。 */
@@ -83,7 +128,8 @@ function hostApiAtLeast(hostApi, major, minor) {
   return maj === major && (Number.isFinite(min) ? min : 0) >= minor
 }
 
-/** 直写目标目录失败时清掉半截文件（尽力而为；清不掉也不该挡住任务失败语义）。 */
+/** 删掉本任务自己写出的无效文件（空文件；文件名已经过 uniqueTargetName，不会是用户原有文件）。
+ *  非 2xx / 抛错时宿主不落文件（临时文件由宿主清理，network.md），不需要也不应该去删目标路径。 */
 async function removePartial(ctx, path) {
   if (!path) return
   try {
@@ -143,22 +189,11 @@ async function notifyFailure(deps, task, error, report) {
       buttons: [[{ text: '重试', callback_data: `retry:${task.id}` }]],
     })
     const channels = channelSummary(outcome)
-    if (channels) report.messages.push(`任务 ${task.id} 失败通知已发出 · 通道: ${channels}`)
+    const verb = outcome?.suppressed ? '失败通知未发送' : outcome?.deduplicated ? '失败通知已去重' : '失败通知已提交'
+    if (channels) report.messages.push(`任务 ${task.id} ${verb} · 通道: ${channels}`)
   } catch (err) {
     report.messages.push(`任务 ${task.id} 失败通知发送失败: ${err?.message ?? err}`)
   }
-}
-
-/** 把通知结果里的通道能力上报拼成一行人话；没有 channels 字段 → null。 */
-function channelSummary(outcome) {
-  const channels = outcome?.channels
-  if (!Array.isArray(channels) || channels.length === 0) return null
-  return channels
-    .map((item) => {
-      const dropped = Array.isArray(item?.dropped) ? item.dropped : []
-      return dropped.length === 0 ? String(item.channel) : `${item.channel}(丢:${dropped.join('/')})`
-    })
-    .join(' · ')
 }
 
 function truncateChars(text, limit) {
@@ -197,14 +232,22 @@ async function runTask(ctx, deps, task, report) {
   // 暂存：清掉旧残留 → save_to 流式写盘。
   await cleanupStaged(ctx, task.id)
   const partName = `${task.id}.part`
-  const directPath = `${deps.settings.target_dir}/${task.out_name}`
   // API 3.9（requires.api=3.9）：save_to 可直写宿主/CD2 目标目录 —— 省一次跨盘拷贝。
   // 能力判断以宿主上报的 host_api 为准；真失败时只有「像是能力没开放」才回落
   // 「暂存 → 定名 → move」，其余按下载失败处理（避免把网络错误当成能力缺失重下一遍）。
   const directSupported = hostApiAtLeast(ctx.plugin?.host_api, 3, 9)
-  let download
-  let direct = false
   if (directSupported) {
+    // 直写会覆盖目标目录里的同名文件：先挑一个不重名的文件名。
+    let directName
+    try {
+      directName = await uniqueTargetName(ctx, deps.settings.target_dir, task.out_name)
+    } catch (error) {
+      await failTask(deps, task, error?.message ?? String(error), report)
+      await persistTask(deps.kv, task)
+      return
+    }
+    const directPath = joinPath(deps.settings.target_dir, directName)
+    let download = null
     try {
       download = await deps.http.request({
         url: song.url,
@@ -212,35 +255,35 @@ async function runTask(ctx, deps, task, report) {
         save_to: directPath,
         timeout_seconds: DOWNLOAD_TIMEOUT_SECONDS,
       })
-      direct = true
     } catch (error) {
-      const message = error?.message ?? String(error)
-      if (!/3\.9|不支持|未开放|requires|api/i.test(message)) {
-        await failTask(deps, task, `下载失败: ${message}`, report)
+      if (!looksLikeDirectWriteUnsupported(error)) {
+        await failTask(deps, task, `下载失败: ${error?.message ?? error}`, report)
         await persistTask(deps.kv, task)
         return
       }
-      download = null
+      report.messages.push(`任务 ${task.id} 目标目录不能直写(${truncateChars(error?.message ?? error, 120)}), 改走暂存 → move`)
     }
-  }
-  if (download) {
-    if (download.status >= 400) {
-      await removePartial(ctx, directPath)
-      await failTask(deps, task, `下载失败: HTTP ${download.status} ${truncateChars(download.body ?? '', 200)}`, report)
+    if (download) {
+      const failure = downloadFailure(download)
+      if (failure) {
+        if (download.size === 0) await removePartial(ctx, directPath)
+        await failTask(deps, task, `下载失败: ${failure}`, report)
+        await persistTask(deps.kv, task)
+        return
+      }
+      // 直写成功：文件已在目标目录，不需要定名与 move。
+      task.out_name = directName
+      task.staged_path = typeof download.path === 'string' && download.path ? download.path : directPath
+      task.status = STATUS_DONE
+      task.job_ref = ''
+      task.cd2_ref = ''
+      task.error = ''
+      task.updated_ms = nowMs()
       await persistTask(deps.kv, task)
+      report.completed.push(task.id)
+      report.messages.push(`任务 ${task.id} 完成: ${task.out_name}`)
       return
     }
-    // 直写成功：文件已在目标目录，不需要定名与 move。
-    task.staged_path = directPath
-    task.status = STATUS_DONE
-    task.job_ref = ''
-    task.cd2_ref = ''
-    task.error = ''
-    task.updated_ms = nowMs()
-    await persistTask(deps.kv, task)
-    report.completed.push(task.id)
-    report.messages.push(`任务 ${task.id} 完成: ${task.out_name}`)
-    return
   }
   // 回落路径：暂存 → 定名 → move（老宿主或目标目录不可直写时走这里）。
   let stagedDownload
@@ -256,24 +299,60 @@ async function runTask(ctx, deps, task, report) {
     await persistTask(deps.kv, task)
     return
   }
-  if (stagedDownload.status >= 400) {
-    await failTask(deps, task, `下载失败: HTTP ${stagedDownload.status} ${truncateChars(stagedDownload.body ?? '', 200)}`, report)
+  const stagedFailure = downloadFailure(stagedDownload)
+  if (stagedFailure) {
+    if (stagedDownload.size === 0) await cleanupStaged(ctx, task.id)
+    await failTask(deps, task, `下载失败: ${stagedFailure}`, report)
     await persistTask(deps.kv, task)
     return
   }
-  const staged = typeof stagedDownload.path === 'string' && stagedDownload.path ? stagedDownload.path : `${STAGING_SUBDIR}/${partName}`
-  task.staged_path = staged
+  task.staged_path = typeof stagedDownload.path === 'string' && stagedDownload.path ? stagedDownload.path : `${STAGING_SUBDIR}/${partName}`
   task.status = STATUS_COPYING
   task.updated_ms = nowMs()
   await persistTask(deps.kv, task)
+  await finishStaged(ctx, deps, task, report)
+}
 
-  // 定名（同目录改名；save_to 的去重变体已由 cleanupStaged 清掉，目标名应唯一）。
-  let finalPath = staged
-  if (!String(staged).endsWith(`/${task.out_name}`)) {
+/**
+ * 暂存文件入库：（必要时）定名成目标目录里不重名的文件名 → move 进目标目录 → done。
+ * 新下载与 copying 残留共用：残留可能停在 .part（定名前被打断）或已定名（move 前被打断）。
+ * 定名后立刻把新路径落盘 —— 否则下轮重试还拿着旧的 .part 路径去 move，必然「文件不存在」。
+ */
+async function finishStaged(ctx, deps, task, report) {
+  const targetDir = deps.settings.target_dir
+  const stagedName = String(task.staged_path).split('/').pop()
+
+  // 暂存文件已不在：可能上一轮 move 其实成功了、只是没来得及落盘。
+  const stagedExists = await existsSafe(ctx, task.staged_path)
+  if (stagedExists === false) {
+    if (task.out_name && stagedName === task.out_name && (await existsSafe(ctx, joinPath(targetDir, task.out_name))) === true) {
+      markDone(task, report)
+      await persistTask(deps.kv, task)
+      return
+    }
+    // 真丢了：回队重新下载（attempts 已在启动时计过）。
+    task.staged_path = ''
+    await failTask(deps, task, '暂存文件不见了, 重新下载', report)
+    await persistTask(deps.kv, task)
+    return
+  }
+
+  let finalName
+  try {
+    finalName = await uniqueTargetName(ctx, targetDir, task.out_name || stagedName)
+  } catch (error) {
+    await copyFailure(deps, task, error?.message ?? String(error), report)
+    await persistTask(deps.kv, task)
+    return
+  }
+  if (stagedName !== finalName) {
     try {
-      const renamed = await ctx.files.call({ operation: 'rename', path: staged, name: task.out_name })
-      if (renamed?.path) finalPath = renamed.path
-      else finalPath = `${STAGING_SUBDIR}/${task.out_name}`
+      const renamed = await ctx.files.call({ operation: 'rename', path: task.staged_path, name: finalName })
+      const dir = String(task.staged_path).split('/').slice(0, -1).join('/') || STAGING_SUBDIR
+      task.staged_path = renamed?.path ? renamed.path : `${dir}/${finalName}`
+      task.out_name = finalName
+      task.updated_ms = nowMs()
+      await persistTask(deps.kv, task)
     } catch (error) {
       await copyFailure(deps, task, `定名失败: ${error?.message ?? error}`, report)
       await persistTask(deps.kv, task)
@@ -285,8 +364,8 @@ async function runTask(ctx, deps, task, report) {
   try {
     await ctx.files.call({
       operation: 'move',
-      path: finalPath,
-      destination_dir: deps.settings.target_dir,
+      path: task.staged_path,
+      destination_dir: targetDir,
       overwrite: false,
     })
   } catch (error) {
@@ -294,17 +373,32 @@ async function runTask(ctx, deps, task, report) {
     await persistTask(deps.kv, task)
     return
   }
+  markDone(task, report)
+  await persistTask(deps.kv, task)
+}
 
-  // 完成：done + 记账（文件已 move 出暂存目录，无需清理；入库失败重试路径的残留
-  // 会在下轮 copyFailure 重试或终态后由用户处理）。
+/** 置 done（文件已 move 出暂存目录，无需清理）。 */
+function markDone(task, report) {
   task.status = STATUS_DONE
   task.job_ref = ''
   task.cd2_ref = ''
   task.error = ''
   task.updated_ms = nowMs()
-  await persistTask(deps.kv, task)
   report.completed.push(task.id)
   report.messages.push(`任务 ${task.id} 完成: ${task.out_name}`)
+}
+
+/** 上报任务级进度（developer-guide「任务队列与进度」：total/done/failed，宿主按计数算进度）。
+ *  failed = 本轮处理过但没完成的（含回队待重试）。上报失败不影响下载本身。 */
+async function progress(ctx, message, report) {
+  if (typeof ctx?.task?.update !== 'function') return
+  const total = Math.max(report.planned, report.handled)
+  const done = Math.min(report.completed.length, report.handled)
+  try {
+    await ctx.task.update({ stage: 'pump', message: truncateChars(message, 200), total, done, failed: report.handled - done })
+  } catch {
+    // 进度只是展示用。
+  }
 }
 
 /**
@@ -316,7 +410,7 @@ async function runTask(ctx, deps, task, report) {
  * 返回摘要 {queued, active, started, completed, failed, messages}。
  */
 export async function pump(ctx, deps) {
-  const report = { messages: [], started: [], completed: [], failed: [] }
+  const report = { messages: [], started: [], completed: [], failed: [], planned: 0, handled: 0 }
   const settings = deps.settings
   const index = await loadIndex(deps.kv)
 
@@ -340,62 +434,57 @@ export async function pump(ctx, deps) {
     await persistTask(deps.kv, task)
   }
 
-  // ② 推进 copying 残留（定名后入库被打断）：重试入库不重新下载。
+  // ② 推进 copying 残留（定名/入库被打断或失败）：重试入库不重新下载。
   const copying = index.filter((entry) => entry.status === STATUS_COPYING).map((entry) => entry.id)
+  const queuedAtStart = (await loadIndex(deps.kv)).filter((entry) => entry.status === STATUS_QUEUED).length
+  report.planned = copying.length + Math.min(queuedAtStart, Math.max(1, settings.max_active))
   for (const taskId of copying) {
     const task = await loadTask(deps.kv, taskId)
     if (!task || task.status !== STATUS_COPYING) continue
-    if (!task.staged_path || !task.out_name) {
-      await failTask(deps, task, '缺少暂存文件路径或目标文件名, 无法复制', report)
+    if (!task.staged_path) {
+      await failTask(deps, task, '缺少暂存文件路径, 重新下载', report)
       await persistTask(deps.kv, task)
       continue
     }
-    try {
-      await ctx.files.call({
-        operation: 'move',
-        path: task.staged_path,
-        destination_dir: settings.target_dir,
-        overwrite: false,
-      })
-      task.status = STATUS_DONE
-      task.error = ''
-      task.updated_ms = nowMs()
-      report.completed.push(task.id)
-      report.messages.push(`任务 ${task.id} 完成: ${task.out_name}`)
-    } catch (error) {
-      await copyFailure(deps, task, `入库失败: ${error?.message ?? error}`, report)
-    }
-    await persistTask(deps.kv, task)
+    await progress(ctx, `入库 ${displayName(task)}`, report)
+    await finishStaged(ctx, deps, task, report)
+    report.handled += 1
   }
 
-  // ③ 新开下载：按队列序（索引 updated_ms 倒序 = pump 从头取 queued）逐首推进。
+  // ③ 新开下载：按队列序（索引 updated_ms 倒序 = pump 从头取 queued）逐首推进，
+  //    单轮最多新开 max_active 首。本轮已经试过的任务不再挑（失败回队的任务等下一轮重试，
+  //    不在同一轮里连烧 3 次尝试）；超出时间预算就停，剩下的留给下一轮。
   //    迭代上限 = 索引长度 + 2：索引与分片不一致（状态损坏）时宁可停下报错，绝不自旋。
   const cap = Math.max(1, settings.max_active)
+  const startedAt = nowMs()
+  const tried = new Set()
   let startedCount = 0
   let cursor = await loadIndex(deps.kv)
   const maxIterations = cursor.length + 2
   for (let iteration = 0; iteration < maxIterations; iteration++) {
-    if (startedCount >= cap) {
-      const queuedLeft = cursor.filter((entry) => entry.status === STATUS_QUEUED).length
-      if (queuedLeft > 0) {
-        report.messages.push(`${queuedLeft} 个排队任务等待下一轮(本轮已新开 ${startedCount}/${cap})`)
+    const pending = cursor.filter((entry) => entry.status === STATUS_QUEUED && !tried.has(entry.id))
+    if (startedCount >= cap || (startedCount > 0 && nowMs() - startedAt > PUMP_START_BUDGET_MS)) {
+      if (pending.length > 0) {
+        report.messages.push(`${pending.length} 个排队任务等待下一轮(本轮已新开 ${startedCount}/${cap})`)
       }
       break
     }
-    const nextId = cursor.find((entry) => entry.status === STATUS_QUEUED)?.id
+    const nextId = pending[0]?.id
     if (!nextId) break
+    tried.add(nextId)
     const task = await loadTask(deps.kv, nextId)
     if (!task || task.status !== STATUS_QUEUED) {
       // 索引与分片不一致（分片缺失或状态漂移）：停止本轮，提示人工对账（task-adopt）。
       report.messages.push(`任务 ${nextId} 的索引条目与分片状态不一致, 本轮停止推进(可尝试「索引对账」)`)
       break
     }
-    await runTask(ctx, deps, task, report)
     startedCount += 1
+    await progress(ctx, `下载 ${displayName(task)}`, report)
+    await runTask(ctx, deps, task, report)
+    report.handled += 1
     cursor = await loadIndex(deps.kv)
-    // 一次 pump 最多收尾 1 首（旧版门禁保留）：避免单轮跑过长、重复失败风暴。
-    if (report.completed.length + report.failed.length > 0) break
   }
+  if (report.planned > 0) await progress(ctx, '本轮推进结束', report)
 
   // 摘要计数从索引重算。
   const finalIndex = await loadIndex(deps.kv)

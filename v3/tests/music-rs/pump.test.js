@@ -5,7 +5,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createCipheriv, createHash } from 'node:crypto'
-import { pump, STAGING_SUBDIR, DOWNLOAD_TIMEOUT_SECONDS } from '../../music-rs/lib/pump.js'
+import { pump, STAGING_SUBDIR, DOWNLOAD_TIMEOUT_SECONDS, channelSummary, looksLikeDirectWriteUnsupported, targetName } from '../../music-rs/lib/pump.js'
 import { enqueue, loadIndex, loadTask, persistTask } from '../../music-rs/lib/queue-store.js'
 import { createKv } from '../../music-rs/lib/kv.js'
 import { buildDeps, readSettings } from '../../music-rs/jobs/runtime.js'
@@ -14,12 +14,13 @@ import { DEFAULT_QUALITY } from '../../music-rs/lib/settings.js'
 
 // ─────────────────────────── 假宿主 ───────────────────────────
 
-function makeHost({ songUrlBodies = null, refuseDirectWrite = false, hostApi = '3.9' } = {}) {
+function makeHost({ songUrlBodies = null, refuseDirectWrite = false, hostApi = '3.9', withExists = true } = {}) {
   const kvStore = new Map()
   const files = new Map() // path → size
   const calls = { http: [], files: [], notify: [] }
   const failMoveFor = new Set() // 目标已存在的文件名（move 抛错）
   let httpHandler = null
+  let saveToHandler = null // (options) => 结果 | 抛错；null = 默认 2xx 写盘
 
   const storage = {
     async get(key) {
@@ -30,7 +31,7 @@ function makeHost({ songUrlBodies = null, refuseDirectWrite = false, hostApi = '
     async set(key, value, expectedRevision) {
       const hit = kvStore.get(key)
       if (expectedRevision !== undefined) {
-        const current = hit ? hit.revision : undefined
+        const current = hit ? hit.revision : 0
         if (current !== expectedRevision) throw Object.assign(new Error('conflict'), { status: 412 })
       }
       kvStore.set(key, { value: JSON.parse(JSON.stringify(value)), revision: (hit?.revision ?? 0) + 1 })
@@ -73,6 +74,10 @@ function makeHost({ songUrlBodies = null, refuseDirectWrite = false, hostApi = '
           if (refuseDirectWrite && String(options.save_to).startsWith('/')) {
             throw new Error('save_to 写绝对路径需要宿主插件 API 3.9')
           }
+          if (saveToHandler) {
+            const custom = await saveToHandler(options)
+            if (custom !== undefined) return custom
+          }
           // save_to：模拟 2xx 流式写盘。
           files.set(options.save_to, 4321)
           return { status: 200, url: options.url, headers: {}, body: '', cached: false, path: options.save_to, size: 4321, sha256: 'deadbeef' }
@@ -84,6 +89,10 @@ function makeHost({ songUrlBodies = null, refuseDirectWrite = false, hostApi = '
     files: {
       async call(options) {
         calls.files.push(options)
+        if (options.operation === 'exists') {
+          if (!withExists) throw new Error('unexpected files op: exists')
+          return files.has(options.path)
+        }
         if (options.operation === 'list') {
           return [...files.keys()].map((path) => ({ name: path.split('/').pop(), path, is_dir: false, size: files.get(path) ?? 0 }))
         }
@@ -98,8 +107,13 @@ function makeHost({ songUrlBodies = null, refuseDirectWrite = false, hostApi = '
         if (options.operation === 'move') {
           const name = options.path.split('/').pop()
           if (failMoveFor.has(name)) throw new Error('目标已存在')
+          if (!files.has(options.path)) throw new Error('文件不存在')
+          const target = `${options.destination_dir}/${name}`
+          if (files.has(target) && !options.overwrite) throw new Error('目标已存在')
+          const size = files.get(options.path) ?? 0
+          files.set(target, size)
           files.delete(options.path)
-          return { backend: 'system', items: [{ source: options.path, path: `${options.destination_dir}/${name}`, size: files.get(options.path) ?? 0 }] }
+          return { backend: 'system', items: [{ source: options.path, path: target, size }] }
         }
         if (options.operation === 'remove') {
           for (const path of options.paths ?? []) files.delete(path)
@@ -138,7 +152,7 @@ function makeHost({ songUrlBodies = null, refuseDirectWrite = false, hostApi = '
       body: JSON.stringify({ data: [{ url: 'https://cdn.example.com/song.flac', type: 'flac', level: 'lossless', size: 1024 }] }),
     }
   }
-  return { ctx, kvStore, files, calls, failMoveFor }
+  return { ctx, kvStore, files, calls, failMoveFor, setSaveTo(handler) { saveToHandler = handler } }
 }
 
 async function seedEnqueued(host, overrides = {}) {
@@ -204,11 +218,18 @@ test('宿主不支持 3.9 直写时回落：暂存 → 定名 → move → done'
 
 test('pump reports link failure and requeues until MAX_ATTEMPTS then notifies with retry button', async () => {
   const host = makeHost({ songUrlBodies: Array.from({ length: 24 }, () => '{"data":[]}') })
-  // 放宽单轮新开上限（默认 2），让一轮 pump 内跑满 3 次尝试。
   await host.ctx.storage.set('settings', { max_active: 4 })
   const { task } = await seedEnqueued(host)
-  // 一轮 pump 会循环推进直到收尾：取链失败 → 回 queued（第 1、2 次）→ 第 3 次用尽 → failed + 通知。
+  // 失败回队的任务等下一轮重试（同一轮不连烧尝试）：三轮 pump 才用尽 3 次。
+  const messages = []
+  for (let round = 1; round <= 2; round++) {
+    const partial = await runPump(host)
+    messages.push(...partial.messages)
+    assert.deepEqual(partial.failed, [], `第 ${round} 轮只回队不终态`)
+    assert.equal((await loadTask(createKv(host.ctx), task.id)).attempts, round)
+  }
   const summary = await runPump(host)
+  summary.messages.unshift(...messages)
   assert.deepEqual(summary.failed, [task.id])
   const stored = await loadTask(createKv(host.ctx), task.id)
   assert.equal(stored.status, 'failed')
@@ -302,7 +323,7 @@ test('pump retries copying residue without re-downloading', async () => {
   assert.equal(move.path, stored.staged_path)
 })
 
-test('pump respects max_active and the one-finalization gate', async () => {
+test('pump respects max_active (starts and finishes up to max_active per round)', async () => {
   const host = makeHost()
   const kv = createKv(host.ctx)
   const a = await seedEnqueued(host, { song_id: '1' })
@@ -315,11 +336,170 @@ test('pump respects max_active and the one-finalization gate', async () => {
   const index = await loadIndex(kv)
   const head = index.find((entry) => entry.status === 'queued')?.id
   const summary = await runPump(host)
-  // max_active=2：本轮最多新开 2 首；但收尾门禁（一次 pump 最多收尾 1 首）在第一首
-  // 完成后停止新开 —— 所以恰好 started=1，完成的是队首。
-  assert.equal(summary.started.length, 1)
-  assert.deepEqual(summary.completed, [head])
-  const aTask = await loadTask(kv, a.task.id)
-  const bTask = await loadTask(kv, b.task.id)
-  assert.ok([aTask.status, bTask.status].every((s) => s === 'queued' || s === 'done'))
+  // max_active=2（默认）：本轮新开并完成 2 首，从队首开始；第 3 首等下一轮。
+  assert.equal(summary.started.length, 2)
+  assert.equal(summary.completed.length, 2)
+  assert.equal(summary.completed[0], head)
+  assert.equal(summary.queued, 1)
+  assert.ok(summary.messages.some((m) => m.includes('1 个排队任务等待下一轮')), summary.messages.join(' | '))
+  const statuses = await Promise.all([a, b].map(async (x) => (await loadTask(kv, x.task.id)).status))
+  assert.ok(statuses.every((s) => s === 'queued' || s === 'done'))
+})
+
+test('直写遇到目标目录同名文件：挑「 (2)」不覆盖用户原有文件', async () => {
+  const host = makeHost()
+  const dir = normalizeSettings(null).target_dir
+  host.files.set(`${dir}/周杰伦 - 晴天.flac`, 999)
+  const { task } = await seedEnqueued(host)
+  const summary = await runPump(host)
+  assert.deepEqual(summary.completed, [task.id])
+  const download = host.calls.http.find((c) => c.save_to)
+  assert.equal(download.save_to, `${dir}/周杰伦 - 晴天 (2).flac`)
+  assert.equal(host.files.get(`${dir}/周杰伦 - 晴天.flac`), 999, '原有文件不被覆盖')
+  const done = await loadTask(createKv(host.ctx), task.id)
+  assert.equal(done.out_name, '周杰伦 - 晴天 (2).flac')
+})
+
+test('直写返回非 2xx：不删目标路径上的文件，回队重试', async () => {
+  const host = makeHost()
+  const { task } = await seedEnqueued(host)
+  host.setSaveTo(() => ({ status: 403, url: 'x', headers: {}, body: 'forbidden', cached: false }))
+  const summary = await runPump(host)
+  assert.deepEqual(summary.completed, [])
+  assert.equal(host.calls.files.find((c) => c.operation === 'remove'), undefined, '非 2xx 宿主不落文件，不应 remove')
+  assert.equal(host.calls.http.filter((c) => c.save_to).length, 1, '非 2xx 不回落暂存重下')
+  const stored = await loadTask(createKv(host.ctx), task.id)
+  assert.equal(stored.status, 'queued')
+  assert.match(stored.error, /HTTP 403/)
+})
+
+test('直写遇到网络错误不回落暂存（避免同一轮重复下载）；能力缺失才回落', async () => {
+  const host = makeHost()
+  const { task } = await seedEnqueued(host)
+  host.setSaveTo(() => { throw new Error('POST /api/extensions/v3/music.rs/http: connection reset') })
+  await runPump(host)
+  assert.equal(host.calls.http.filter((c) => c.save_to).length, 1)
+  const stored = await loadTask(createKv(host.ctx), task.id)
+  assert.equal(stored.status, 'queued')
+  assert.match(stored.error, /connection reset/)
+
+  const host2 = makeHost({ refuseDirectWrite: true })
+  const seeded = await seedEnqueued(host2)
+  const summary2 = await runPump(host2)
+  assert.deepEqual(summary2.completed, [seeded.task.id])
+  assert.equal(host2.calls.http.filter((c) => c.save_to).length, 2, '能力缺失：直写失败后暂存重下一次')
+})
+
+test('直写返回空文件：删掉本任务写出的空文件并回队', async () => {
+  const host = makeHost()
+  const { task } = await seedEnqueued(host)
+  host.setSaveTo((options) => {
+    host.files.set(options.save_to, 0)
+    return { status: 200, url: 'x', headers: {}, body: '', cached: false, path: options.save_to, size: 0 }
+  })
+  await runPump(host)
+  const target = `${normalizeSettings(null).target_dir}/周杰伦 - 晴天.flac`
+  assert.equal(host.files.has(target), false)
+  const stored = await loadTask(createKv(host.ctx), task.id)
+  assert.equal(stored.status, 'queued')
+  assert.match(stored.error, /空文件/)
+})
+
+test('回落路径：move 失败后下一轮用已定名的暂存路径入库（不再找 .part）', async () => {
+  const host = makeHost({ hostApi: '3.5' })
+  const { task } = await seedEnqueued(host)
+  host.failMoveFor.add('周杰伦 - 晴天.flac')
+  await runPump(host)
+  const kv = createKv(host.ctx)
+  const stored = await loadTask(kv, task.id)
+  assert.equal(stored.status, 'copying')
+  assert.equal(stored.staged_path, `${STAGING_SUBDIR}/周杰伦 - 晴天.flac`, '定名后立即落盘新暂存路径')
+  host.failMoveFor.clear()
+  const second = await runPump(host)
+  assert.deepEqual(second.completed, [task.id])
+  const moves = host.calls.files.filter((c) => c.operation === 'move')
+  assert.equal(moves.at(-1).path, `${STAGING_SUBDIR}/周杰伦 - 晴天.flac`)
+  assert.equal(moves.at(-1).overwrite, false)
+})
+
+test('回落路径：目标目录已有同名文件时定名为「 (2)」再 move', async () => {
+  const host = makeHost({ hostApi: '3.5' })
+  const dir = normalizeSettings(null).target_dir
+  host.files.set(`${dir}/周杰伦 - 晴天.flac`, 1)
+  const { task } = await seedEnqueued(host)
+  const summary = await runPump(host)
+  assert.deepEqual(summary.completed, [task.id])
+  assert.equal(host.files.get(`${dir}/周杰伦 - 晴天.flac`), 1)
+  assert.ok(host.files.has(`${dir}/周杰伦 - 晴天 (2).flac`))
+})
+
+test('copying 残留：暂存文件已不在但目标已在 → 视为上轮 move 已成功', async () => {
+  const host = makeHost()
+  const { task } = await seedEnqueued(host)
+  const kv = createKv(host.ctx)
+  const stored = await loadTask(kv, task.id)
+  stored.status = 'copying'
+  stored.staged_path = `${STAGING_SUBDIR}/周杰伦 - 晴天.flac`
+  stored.out_name = '周杰伦 - 晴天.flac'
+  await persistTask(kv, stored)
+  host.files.set(`${normalizeSettings(null).target_dir}/周杰伦 - 晴天.flac`, 4321)
+  const summary = await runPump(host)
+  assert.deepEqual(summary.completed, [task.id])
+  assert.equal(host.calls.files.find((c) => c.operation === 'move'), undefined)
+  // 两边都不在 → 回队重新下载。
+  const host2 = makeHost()
+  const seeded = await seedEnqueued(host2)
+  const kv2 = createKv(host2.ctx)
+  const residue = await loadTask(kv2, seeded.task.id)
+  residue.status = 'copying'
+  residue.staged_path = `${STAGING_SUBDIR}/${seeded.task.id}.part`
+  residue.out_name = '周杰伦 - 晴天.flac'
+  await persistTask(kv2, residue)
+  await runPump(host2)
+  const after = await loadTask(kv2, seeded.task.id)
+  assert.equal(after.status, 'done', '回队后本轮 ③ 重新下载完成')
+  assert.ok(host2.calls.http.some((c) => c.save_to))
+})
+
+test('宿主不支持 files.exists 时仍能完成（存在性未知按原名继续）', async () => {
+  const host = makeHost({ withExists: false })
+  const { task } = await seedEnqueued(host)
+  const summary = await runPump(host)
+  assert.deepEqual(summary.completed, [task.id])
+})
+
+test('pump 上报任务级计数 total/done/failed', async () => {
+  const host = makeHost()
+  const updates = []
+  host.ctx.task.update = async (value) => { updates.push(value) }
+  await seedEnqueued(host, { song_id: '1' })
+  await seedEnqueued(host, { song_id: '2' })
+  await runPump(host)
+  assert.ok(updates.length >= 2)
+  const last = updates.at(-1)
+  assert.deepEqual({ total: last.total, done: last.done, failed: last.failed }, { total: 2, done: 2, failed: 0 })
+  assert.ok(updates.every((u) => u.total === 2))
+})
+
+test('channelSummary 优先读 deliveries，其次 suppressed / channels', () => {
+  assert.equal(channelSummary({ deliveries: [
+    { channel: 'telegram', status: 'sent' },
+    { channel: 'wecom', status: 'skipped', reason: 'quiet_hours' },
+    { channel: 'bark', status: 'failed', error: '超时' },
+  ] }), 'telegram 已送达 · wecom 跳过:quiet_hours · bark 失败:超时')
+  assert.equal(channelSummary({ suppressed: true, suppression_reason: 'no_channel_enabled' }), '无(no_channel_enabled)')
+  assert.equal(channelSummary({ channels: [{ channel: 'telegram', dropped: ['buttons'] }] }), 'telegram(丢:buttons)')
+  assert.equal(channelSummary({}), null)
+})
+
+test('looksLikeDirectWriteUnsupported 不把普通网络错误当成能力缺失', () => {
+  assert.equal(looksLikeDirectWriteUnsupported(new Error('POST /api/extensions/v3/music.rs/http: timeout')), false)
+  assert.equal(looksLikeDirectWriteUnsupported(new Error('save_to 写绝对路径需要宿主插件 API 3.9')), true)
+  assert.equal(looksLikeDirectWriteUnsupported(Object.assign(new Error('x'), { status: 403 })), true)
+  assert.equal(looksLikeDirectWriteUnsupported(new Error('目标路径不允许写入')), true)
+})
+
+test('targetName 与 outName 同一套清洗规则', () => {
+  assert.equal(targetName({ singers: 'A/B', name: 'C' }, '.MP3'), 'A_B - C.mp3')
+  assert.equal(targetName({ singers: '', name: 'C' }, ''), '未知 - C.flac')
 })

@@ -11,7 +11,7 @@ import { useMusicStore } from '../store'
 import type { TaskEntry } from '../types'
 
 const store = useMusicStore()
-const { tasks, pendingTasks, failedTasks, busy, settings, queueBusyNotice } = store
+const { tasks, allTasks, attentionRun, pendingTasks, failedTasks, busy, settings, queueBusyNotice } = store
 
 const adoptId = ref('')
 
@@ -24,10 +24,10 @@ const STATUS_META: Record<string, { label: string; type: 'default' | 'info' | 's
   failed: { label: '下载失败', type: 'error' },
 }
 
-/** 排队位置（第几位）。 */
+/** 排队位置（第几位）：按完整索引算，不受列表展示上限影响。 */
 const queuePosition = computed(() => {
   const map = new Map<string, number>()
-  tasks.value
+  allTasks.value
     .filter((task) => task.status === 'queued')
     .forEach((task, index) => map.set(task.id, index + 1))
   return map
@@ -62,18 +62,41 @@ async function adopt(): Promise<void> {
     <NTag size="small" :bordered="false" :type="pendingTasks.length ? 'success' : 'default'">
       {{ pendingTasks.length ? '队列自动推进中' : '队列空闲' }}
     </NTag>
-    <NTag size="small" :bordered="false" type="default">共 {{ tasks.length }} 条</NTag>
+    <NTag size="small" :bordered="false" type="default">共 {{ allTasks.length }} 条</NTag>
     <NTag v-if="failedTasks.length" size="small" :bordered="false" type="error">失败 {{ failedTasks.length }}</NTag>
     <span class="spacer" />
-    <NButton size="small" secondary :loading="busy === 'pump'" @click="store.pumpQueue()">
+    <NButton size="small" secondary :loading="busy === 'pump'" :disabled="!!busy && busy !== 'pump'" @click="store.pumpQueue()">
       <template #icon><RefreshIcon :size="13" /></template>
       推进队列
     </NButton>
-    <NButton size="small" secondary :loading="busy === 'clear'" @click="store.clearAllFinished()">
+    <NButton
+      v-if="failedTasks.length"
+      size="small"
+      secondary
+      type="error"
+      :loading="busy === 'retry-all'"
+      :disabled="!!busy && busy !== 'retry-all'"
+      @click="store.retryAllFailed()"
+    >
+      <template #icon><RetryIcon :size="13" /></template>
+      重试全部失败
+    </NButton>
+    <NButton size="small" secondary :loading="busy === 'clear'" :disabled="!!busy && busy !== 'clear'" @click="store.clearAllFinished()">
       <template #icon><TrashIcon :size="13" /></template>
-      清空已完成
+      清空已结束
     </NButton>
   </div>
+
+  <NAlert v-if="attentionRun" type="warning" :show-icon="false">
+    <div class="bar">
+      <p>
+        上一轮「推进下载队列」被宿主重启打断，需要核对；核对前定时推进不会再运行。{{ attentionRun.message ? `（${attentionRun.message}）` : '' }}
+      </p>
+      <NButton size="tiny" type="warning" secondary :loading="busy === 'attention'" :disabled="!!busy && busy !== 'attention'" @click="store.retryAttentionRun()">
+        核对并继续
+      </NButton>
+    </div>
+  </NAlert>
 
   <NAlert v-if="queueBusyNotice" type="warning" :show-icon="false">
     <div class="bar">
@@ -83,8 +106,15 @@ async function adopt(): Promise<void> {
   </NAlert>
 
   <div class="row adopt-row">
-    <NInput v-model:value="adoptId" size="small" class="grow" placeholder="任务 id（如 2gexs25y）" />
-    <NButton size="small" secondary :loading="busy === 'adopt'" @click="adopt">
+    <NInput
+      v-model:value="adoptId"
+      size="small"
+      class="grow"
+      placeholder="任务 id（如 2gexs25y）"
+      :input-props="{ 'aria-label': '要对账的任务 id' }"
+      @keyup.enter="adopt"
+    />
+    <NButton size="small" secondary :loading="busy === 'adopt'" :disabled="!!busy && busy !== 'adopt'" @click="adopt">
       <template #icon><RetryIcon :size="13" /></template>
       索引对账
     </NButton>
@@ -97,7 +127,7 @@ async function adopt(): Promise<void> {
       </div>
       <div class="task-main">
         <div class="task-title">{{ task.name || '—' }}{{ task.singers ? ` · ${task.singers}` : '' }}</div>
-        <div class="task-sub">
+        <div class="task-sub" :title="task.error || undefined">
           {{ store.qualityLabel(task.quality) }} · {{ store.sourceName(task.source ?? '') }}{{ task.error ? ` · ${task.error}` : '' }}
         </div>
       </div>
@@ -110,7 +140,9 @@ async function adopt(): Promise<void> {
         quaternary
         circle
         type="error"
-        title="重试(task-retry)"
+        title="重新排队重试"
+        aria-label="重新排队重试"
+        :disabled="!!busy"
         @click="store.retryTask(task)"
       >
         <template #icon><RetryIcon :size="14" /></template>
@@ -118,17 +150,20 @@ async function adopt(): Promise<void> {
       <NTag size="small" :bordered="false" :type="statusOf(task).type">{{ statusOf(task).label }}</NTag>
     </div>
   </div>
-  <NEmpty v-else description="暂无任务。去「搜索」页选一首歌点下载。">
+  <p v-if="allTasks.length > tasks.length" class="hint">
+    仅显示最近 {{ tasks.length }} 条（共 {{ allTasks.length }} 条）；点「清空已结束」可收起已完成/失败的任务。
+  </p>
+  <NEmpty v-else-if="!tasks.length" description="暂无任务。去「搜索」页选一首歌点下载。">
     <template #icon><InboxIcon :size="30" /></template>
   </NEmpty>
 
   <p class="hint">
-    任务由后台定时任务（每 5 分钟）推进；想立刻推一轮点「推进队列」（同一入口）。失败任务最多自动重试 3 次，
-    用尽后可在这行点重试，或从 Telegram 失败通知的「重试」按钮重试。若重启后任务「消失」（分片还在、索引丢了），
+    任务由后台定时任务（每 5 分钟）推进，每轮最多新开「设置」里的下载数；想立刻推一轮点「推进队列」（同一入口）。
+    失败任务最多自动重试 3 次（每轮一次），用尽后可在这行点重试、点「重试全部失败」，或从 Telegram 失败通知的「重试」按钮重试。若重启后任务「消失」（分片还在、索引丢了），
     把它的 id 填进输入框点「索引对账」挂回。
   </p>
   <p class="hint">
-    下载目录: {{ settings.target_dir }} · 命名: {歌手} - {歌名}.{格式} · 失败任务保留完整 error
+    下载目录: {{ settings.target_dir }} · 命名: {歌手} - {歌名}.{格式}（目录里已有同名文件时加「 (2)」等后缀，不覆盖）· 鼠标悬停可看完整错误
   </p>
 </template>
 
