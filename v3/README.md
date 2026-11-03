@@ -163,8 +163,8 @@ dist/                   构建产物 .dian115p（本地生成，不提交；现�
 - 16 个任务（定时刷新、想看同步、刷新、同步、订阅、海报、通知自检、维护动作、TG 指令），
   均带 `recover`；页面用 Vue 3 重写（源码 `v3-ui/src/douban-rs/`）：榜单/海报墙、观察队列/想看、
   历史日志、设置表单四个面板。
-- 130 个 `node --test` 用例通过（新增 `recover` 11 / `manifest` 2 / `poster-chain` 5 项，`jobs-flow` +10、
-  `poster-core` +2；fixtures 复用旧仓库脱敏样本）。
+- 150 个 `node --test` 用例通过（1.1.5 的 117 项基础上新增 `recover` 12 / `manifest` 2 / `poster-chain` 6 项，
+  `jobs-flow` +11、`poster-core` +2；fixtures 复用旧仓库脱敏样本）。
 
 **Gaps**
 
@@ -345,7 +345,7 @@ node scripts/v3-pack-check.mjs dist/chase-rs-0.1.14.dian115p v3/chase-rs   # 查
 # 4) 纯逻辑单测（Node 24 下要传文件 glob，不能只传目录）
 (cd v3/tests/chase-rs  && node --test *.test.mjs)   # 129 pass
 (cd v3/tests/music-rs  && node --test *.test.js)    # 199 用例
-(cd v3/tests/douban-rs && node --test *.test.mjs)   # 130 pass
+(cd v3/tests/douban-rs && node --test *.test.mjs)   # 150 pass
 
 # 5) 语法检查
 find v3/chase-rs v3/music-rs v3/douban-rs -name '*.js' -exec node --check {} +
@@ -458,7 +458,7 @@ v3 索引 schema。仓库内旧 `plugin-market/index.json` 是 v1 格式，v3 �
 | --- | --- | --- |
 | 三个插件结构检查 | `node v3-kit/conformance/project-check.mjs v3/<plugin>` | 3/3 通过：`chase.rs 0.1.14`、`music.rs 1.3.0`、`douban.rs 1.2.0`（本轮复跑） |
 | 全部 JS 语法 | `find v3/... -name '*.js' -exec node --check {} +` | 通过：chase 16 / music 22 / douban 38 个文件（本轮复跑） |
-| 纯逻辑单测 | `(cd v3/tests/<plugin> && node --test *.test.*)` | chase 129 pass / music 199 pass / douban 130 pass，0 fail（本轮复跑） |
+| 纯逻辑单测 | `(cd v3/tests/<plugin> && node --test *.test.*)` | chase 129 pass / music 199 pass / douban 150 pass，0 fail（本轮复跑） |
 | 打包 | `bash scripts/v3-build.sh`（连跑两次） | 上一轮实跑：两次 sha256 完全一致；产物 193844 / 284582 / 263162 字节（本轮改版后**未重跑**，发布时由发版脚本执行） |
 | 索引 JSON | `node -e 'JSON.parse(...)'` | 通过（本轮复跑；索引内容本身按约定不由文档轮次修改） |
 | 索引字段与摘要 | 本地校验脚本（必填/id/sha256/delivery/homepage，sha256 对 dist 实算） | 上一轮实跑通过；仅 `source_url` 相对路径为已知偏差（本轮**未重跑**） |
