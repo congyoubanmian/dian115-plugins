@@ -169,8 +169,8 @@ async function save(): Promise<void> {
 
 .card-title {
   margin: 0;
-  font-size: 16px;
-  font-weight: 600;
+  font-size: 17px;
+  font-weight: 700;
 }
 
 .sub {
@@ -187,8 +187,17 @@ async function save(): Promise<void> {
 
 .field {
   display: grid;
-  gap: 5px;
+  gap: 6px;
   align-content: start;
+  padding: 14px;
+  border-radius: 14px;
+  border: 1px solid color-mix(in srgb, var(--app-border, #e0e4ea) 80%, transparent);
+  background: color-mix(in srgb, var(--app-bg, transparent) 45%, transparent);
+  transition: border-color 0.2s ease;
+}
+
+.field:focus-within {
+  border-color: color-mix(in srgb, var(--mx-accent, #2080f0) 55%, var(--app-border, #e0e4ea));
 }
 
 .label {
@@ -203,8 +212,14 @@ async function save(): Promise<void> {
   line-height: 1.6;
 }
 
+.sel:focus-visible,
+.input:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--mx-accent, #2080f0) 60%, transparent);
+  outline-offset: 1px;
+}
+
 .sel {
-  padding: 5px 8px;
+  padding: 6px 8px;
   border-radius: 8px;
   border: 1px solid var(--app-border, #e0e4ea);
   background: var(--app-bg, transparent);
@@ -223,6 +238,19 @@ async function save(): Promise<void> {
 }
 
 .divider {
-  border-top: 1px solid var(--app-border, #e0e4ea);
+  height: 1px;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    var(--app-border, #e0e4ea) 15%,
+    var(--app-border, #e0e4ea) 85%,
+    transparent
+  );
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .field {
+    transition: none;
+  }
 }
 </style>

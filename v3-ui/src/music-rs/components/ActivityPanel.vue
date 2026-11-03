@@ -50,12 +50,19 @@ function dotClass(level: string): string {
 <style scoped>
 .music-card {
   border: 1px solid var(--app-border, #e0e4ea);
-  border-radius: 12px;
+  border-radius: 16px;
   background: var(--app-surface, #fff);
   padding: 20px 24px;
   display: grid;
   gap: 12px;
   min-width: 0;
+  box-shadow: var(--mx-shadow, none);
+}
+
+@container music-page (max-width: 560px) {
+  .music-card {
+    padding: 14px;
+  }
 }
 
 .row {
@@ -71,8 +78,8 @@ function dotClass(level: string): string {
 
 .card-title {
   margin: 0;
-  font-size: 16px;
-  font-weight: 600;
+  font-size: 17px;
+  font-weight: 700;
 }
 
 .hint {
@@ -88,17 +95,25 @@ function dotClass(level: string): string {
 }
 
 .log-list {
+  position: relative;
   display: grid;
-  gap: 4px;
+  gap: 2px;
   max-height: 260px;
   overflow: auto;
 }
 
 .log-row {
+  position: relative;
   display: flex;
   align-items: baseline;
-  gap: 8px;
+  gap: 10px;
   font-size: 12px;
+  padding: 5px 8px;
+  border-radius: 8px;
+}
+
+.log-row:hover {
+  background: color-mix(in srgb, var(--app-text, #000) 4%, transparent);
 }
 
 .log-time {
@@ -108,24 +123,25 @@ function dotClass(level: string): string {
 }
 
 .log-dot {
-  width: 7px;
-  height: 7px;
+  width: 8px;
+  height: 8px;
   border-radius: 50%;
   background: currentColor;
+  box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 18%, transparent);
   flex: none;
   align-self: center;
 }
 
 .dot-muted {
-  color: var(--app-border, #c8cdd6);
+  color: color-mix(in srgb, var(--mx-accent, #2080f0) 55%, var(--app-border, #c8cdd6));
 }
 
 .dot-warning {
-  color: #f0a020;
+  color: var(--mx-warn, #f0a020);
 }
 
 .dot-error {
-  color: #d03050;
+  color: var(--mx-err, #d03050);
 }
 
 .log-msg {
