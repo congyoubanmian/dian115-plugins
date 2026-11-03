@@ -11,7 +11,7 @@ import { refreshNow } from '../../douban-rs/jobs/charts.js'
 import { runWishSyncJob, syncWishList } from '../../douban-rs/jobs/wish.js'
 import { processDue, subscribeQueueItem, subscribeQueueNow, subscribeFromSnapshot } from '../../douban-rs/jobs/subscribe-engine.js'
 import { getPoster } from '../../douban-rs/jobs/poster.js'
-import { run as runTgCommand, parseCommand } from '../../douban-rs/jobs/tg-command.js'
+import { run as runTgCommand, parseCommand, clipReply } from '../../douban-rs/jobs/tg-command.js'
 import { parseStateDoc, defaultSettings, newWishItem } from '../../douban-rs/lib/model.js'
 import { setFixedNow } from '../../douban-rs/lib/clock.js'
 import { base64Decode } from '../../douban-rs/lib/base64.js'
@@ -1231,4 +1231,12 @@ test('榜单刷新：抓取失败的启用榜单沿用上一轮条目展示', as
   assert.equal(session.doc.snapshot.lists.hot.length, 6)
   assert.ok(result.message.startsWith('榜单刷新完成：2 榜'), result.message)
   assert.ok(!session.doc.queue.items.some((item) => item.douban_ref === 'db:subj:old'), '沿用条目只展示不重新入队')
+})
+
+test('TG 回执按 Telegram 4096 字上限截断', () => {
+  assert.equal(clipReply('完成'), '完成')
+  assert.equal(clipReply(undefined), '')
+  const clipped = clipReply('x'.repeat(5000))
+  assert.equal(clipped.length, 4000)
+  assert.ok(clipped.endsWith('…'))
 })

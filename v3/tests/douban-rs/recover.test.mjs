@@ -300,3 +300,23 @@ test('queryPoolIntent：与 hostIntentExists 不同，读不到时不按「不�
   const bad = makeCtx({ poolStatus: 503 })
   assert.deepEqual(await queryPoolIntent(bad, 1234, 'tv'), { ok: false, exists: false, id: 0 })
 })
+
+test('queryPoolIntent：按 media_type 分页读完订阅池；截断且未命中按读不到处理', async () => {
+  const filler = Array.from({ length: 200 }, (_, index) => ({ id: index + 1, tmdb_id: 90000 + index, media_type: 'movie', title: `f${index}`, state: 'pending' }))
+  const pages = []
+  const ctx = {
+    api: {
+      get: async (path) => {
+        pages.push(path)
+        if (path.includes('offset=200')) return { code: 'ok', data: [{ id: 777, tmdb_id: 11, media_type: 'movie', title: '奥德赛', state: 'pending' }] }
+        return { code: 'ok', data: filler }
+      },
+    },
+  }
+  assert.deepEqual(await queryPoolIntent(ctx, 11, 'movie'), { ok: true, exists: true, id: 777 })
+  assert.ok(pages.every((path) => path.includes('media_type=movie')), '按 media_type 过滤分页')
+  assert.ok(pages.length >= 2, '第一页满 200 条要翻页')
+
+  const endless = { api: { get: async () => ({ code: 'ok', data: filler }) } }
+  assert.deepEqual(await queryPoolIntent(endless, 11, 'movie'), { ok: false, exists: false, id: 0 }, '翻到上限仍未命中 → 证明不了没有')
+})

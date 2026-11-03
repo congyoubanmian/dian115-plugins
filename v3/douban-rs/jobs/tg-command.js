@@ -35,10 +35,19 @@ export function parseCommand(text) {
   return match[1].toLowerCase()
 }
 
+/** Telegram 单条消息上限 4096 字；回执留余量截断。 */
+const MAX_REPLY_CHARS = 4000
+
+/** 回执文本按 Telegram 上限截断（超长时末尾补省略号）。 */
+export function clipReply(text) {
+  const body = String(text ?? '')
+  return body.length > MAX_REPLY_CHARS ? `${body.slice(0, MAX_REPLY_CHARS - 1)}…` : body
+}
+
 /** messaging.reply 回执：吞错（未授权/渠道失败不影响业务结果）。 */
 async function reply(session, ctx, input, text) {
   try {
-    await ctx.messaging?.reply?.(input, { text })
+    await ctx.messaging?.reply?.(input, { text: clipReply(text) })
   } catch (error) {
     session.log('warning', `TG 回执发送失败: ${error?.message ?? error}`)
   }

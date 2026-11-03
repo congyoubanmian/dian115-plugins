@@ -30,6 +30,8 @@ export interface PosterLoader {
   request(url: string, el?: Element | null): void
   /** 取消对某个元素的懒加载登记。 */
   release(el: Element | null | undefined): void
+  /** 丢掉某个 URL 的缓存结果（<img> 加载失败时用，下次 request 重走取图链路）。 */
+  forget(url: string): void
   dispose(): void
 }
 
@@ -67,6 +69,7 @@ export function createPosterLoader(
     invokeJob,
     findPosterFile,
     fetchImpl: (globalThis as { fetch?: typeof fetch }).fetch,
+    signal: ctx.signal,
   })
   const entries = reactive(new Map<string, PosterState>())
   const cache = new Map<string, string>()
@@ -113,6 +116,9 @@ export function createPosterLoader(
     }
     const cached = cache.get(clean)
     if (cached !== undefined) {
+      // LRU：命中挪到末尾，淘汰总是最久没用到的那张
+      cache.delete(clean)
+      cache.set(clean, cached)
       const entry = ensureEntry(clean)
       entry.status = cached ? 'ready' : 'error'
       entry.src = cached
@@ -132,6 +138,13 @@ export function createPosterLoader(
     if (!el) return
     observed.delete(el)
     observer?.unobserve(el)
+  }
+
+  function forget(url: string): void {
+    const clean = typeof url === 'string' ? url.trim() : ''
+    if (clean === '' || inflight.has(clean)) return
+    cache.delete(clean)
+    entries.delete(clean)
   }
 
   function enqueue(url: string): void {
@@ -157,13 +170,15 @@ export function createPosterLoader(
         .load(url)
         .then((srcUrl: string) => {
           // 缓存条目只存 URL 字符串（downloadURL 或 data:），不再塞 base64 大块头
+          if (disposed) return
           cache.set(url, srcUrl || '')
-          if (cache.size > POSTER_CACHE_LIMIT) {
-            for (const key of cache.keys()) {
-              if (key === url) continue
-              cache.delete(key)
-              break
-            }
+          // 缓存与响应式 entries 一起封顶：被淘汰的 URL 两边都删，避免 entries 无限增长
+          // 拖着 data: 大字符串不放（仍挂在页面上的海报会在 PosterImg 里按需重取）
+          for (const key of cache.keys()) {
+            if (cache.size <= POSTER_CACHE_LIMIT) break
+            if (key === url) continue
+            cache.delete(key)
+            entries.delete(key)
           }
           const target = ensureEntry(url)
           target.status = srcUrl ? 'ready' : 'error'
@@ -188,5 +203,5 @@ export function createPosterLoader(
     entries.clear()
   }
 
-  return { entries, request, release, dispose }
+  return { entries, request, release, forget, dispose }
 }

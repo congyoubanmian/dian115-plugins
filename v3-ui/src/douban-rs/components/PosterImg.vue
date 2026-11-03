@@ -26,6 +26,8 @@ const emit = defineEmits<{
 const loader = usePosterLoader()
 const root = ref<HTMLElement | null>(null)
 const broken = ref(false)
+// <img> 出错时先丢缓存重取一次（文件缓存可能刚被淘汰），再错才显示失败
+let retried = false
 
 const key = computed(() => (typeof props.url === 'string' ? props.url.trim() : ''))
 const valid = computed(() => /^https?:\/\//i.test(key.value))
@@ -58,13 +60,33 @@ function requestPoster(): void {
   loader.request(props.url ?? '', root.value)
 }
 
+function onImgError(): void {
+  if (!retried && valid.value) {
+    retried = true
+    loader.forget(key.value)
+    requestPoster()
+    return
+  }
+  broken.value = true
+}
+
 function onZoom(): void {
   if (!props.zoomable || !src.value) return
   emit('zoom', { url: src.value, title: props.title ?? '' })
 }
 
 onMounted(requestPoster)
-watch(() => props.url, requestPoster)
+watch(
+  () => props.url,
+  () => {
+    retried = false
+    requestPoster()
+  },
+)
+// 加载器内存缓存封顶淘汰了本海报的条目：仍在页面上就按需重取（懒加载，离屏不发请求）
+watch(entry, (now, before) => {
+  if (before && !now && valid.value) requestPoster()
+})
 onBeforeUnmount(() => loader.release(root.value))
 </script>
 
@@ -84,7 +106,7 @@ onBeforeUnmount(() => loader.release(root.value))
       :src="src"
       :alt="props.title ? `${props.title} 海报` : '海报'"
       decoding="async"
-      @error="broken = true"
+      @error="onImgError"
     />
     <span v-else-if="pending" class="db-poster__ph db-poster__ph--shimmer">
       <span class="db-poster__sr">{{ placeholder }}</span>
