@@ -95,6 +95,8 @@ export interface ChaseStore {
   probeOpen: boolean
   /** 设置抽屉是否打开。 */
   drawerOpen: boolean
+  /** 设置保存中（防重复提交）。 */
+  saving: boolean
   /** 顶部浮出的提示。 */
   toasts: ToastItem[]
 
@@ -180,6 +182,7 @@ export function createChaseStore(ctx: HostContext): ChaseStore {
   const filter = ref<AlignFilter>('all')
   const probeOpen = ref(false)
   const drawerOpen = ref(false)
+  const saving = ref(false)
   const toasts = ref<ToastItem[]>([])
 
   let disposed = false
@@ -234,13 +237,15 @@ export function createChaseStore(ctx: HostContext): ChaseStore {
 
   async function loadData(): Promise<void> {
     let next: StateDoc | null = null
+    let failed = false
     try {
       next = await readState()
     } catch {
-      next = null
+      failed = true
     }
     if (disposed) return
-    state.value = next
+    // 读失败时保留已经显示的状态（stateError 会提示），不把整页打回「状态不可用」。
+    if (!failed || state.value === null) state.value = next
     loading.value = false
     try {
       const raw = (await ctx.settings.get()) ?? {}
@@ -284,6 +289,17 @@ export function createChaseStore(ctx: HostContext): ChaseStore {
       toast('warning', '任务已取消')
       return
     }
+    if (run?.status === 'attention_required') {
+      const message = String(run?.error ?? run?.message ?? '任务需要人工处理，请到宿主任务队列查看')
+      if (name === 'align-now') result.value = { ok: false, text: message }
+      toast('warning', message)
+      return
+    }
+    if (run?.status === 'running' || run?.status === 'queued') {
+      // 轮询超时：任务仍在后台跑，不能报成「完成: 补订 0 条」。
+      toast('info', String(run?.message ?? '任务仍在运行，可在宿主任务队列查看'))
+      return
+    }
     if (name === 'align-now') {
       const absent = num(taskResult.absent, 0)
       const note = taskResult.budget_hit ? ' · 达时间预算提前结束' : ''
@@ -311,8 +327,9 @@ export function createChaseStore(ctx: HostContext): ChaseStore {
         toast('error', message)
       }
     } finally {
-      if (!disposed) busy.value = ''
+      // 先重读状态再解除忙碌：避免按钮已可点、页面还显示动作前的旧数据。
       if (!disposed) await loadData()
+      if (!disposed) busy.value = ''
     }
   }
 
@@ -329,6 +346,8 @@ export function createChaseStore(ctx: HostContext): ChaseStore {
       toast('info', '没有改动')
       return
     }
+    if (saving.value) return
+    saving.value = true
     try {
       // 白名单逐键合并（绝不整块替换：表单之外有未知键时也要保留）。
       const merged = mergeFlat(settings.value, payload) as { flat: FlatSettings }
@@ -339,6 +358,8 @@ export function createChaseStore(ctx: HostContext): ChaseStore {
       await loadData()
     } catch (error) {
       toast('error', String((error as { message?: string } | null)?.message ?? error))
+    } finally {
+      if (!disposed) saving.value = false
     }
   }
 
@@ -471,13 +492,23 @@ export function createChaseStore(ctx: HostContext): ChaseStore {
   const dailyCapsule = computed<Capsule>(() => {
     const today = localDateOf(num(settings.value.report_tz_offset_minutes, 480))
     if (settings.value.report_enabled !== true) {
-      return { label: '日报 · 已关闭', type: 'default', title: '设置里未开启 TG 日报' }
+      return { label: '日报 · 已关闭', type: 'default', title: '设置里未开启「发送每日报告」' }
     }
     if (text(daily.value.last_sent_date, '') === today) {
       return {
         label: '日报 · 今日已发',
         type: 'success',
         title: `${today} · 累计 ${num(daily.value.sent_total, 0)} 次`,
+      }
+    }
+    const lastResult = text(daily.value.last_result, '')
+    const lastAtDate = localDateOf(num(settings.value.report_tz_offset_minutes, 480), text(daily.value.last_at, ''))
+    if ((lastResult === 'failed' || lastResult === 'suppressed') && lastAtDate === today) {
+      const reason = text(daily.value.last_error, '') || (lastResult === 'suppressed' ? '宿主没有可投递的渠道' : '发送失败')
+      return {
+        label: lastResult === 'failed' ? '日报 · 发送失败' : '日报 · 未送达',
+        type: lastResult === 'failed' ? 'error' : 'warning',
+        title: `${formatAt(daily.value.last_at)} · ${reason} · 下一次整点运行会重试`,
       }
     }
     return {
@@ -605,6 +636,7 @@ export function createChaseStore(ctx: HostContext): ChaseStore {
     lines.push(`# 最近消息: ${text(doc?.last_message, '—')}`)
     lines.push(`# 探测更新于: ${formatAt(debug.value.updated_at)}`)
     const snapshots: [string, ProbePanel['snapshot']][] = [
+      ['emby/instances', debug.value.emby_instances ?? {}],
       ['emby/episodes', debug.value.emby_episodes ?? {}],
       ['subscribe/air-calendar', debug.value.air_calendar ?? {}],
       ['subscribe/pool/intents', debug.value.pool_intents ?? {}],
@@ -659,6 +691,7 @@ export function createChaseStore(ctx: HostContext): ChaseStore {
     filter,
     probeOpen,
     drawerOpen,
+    saving,
     toasts,
     tiles,
     alignRows,

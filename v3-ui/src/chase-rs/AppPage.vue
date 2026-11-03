@@ -66,17 +66,26 @@ onBeforeUnmount(() => {
     </section>
 
     <section v-else-if="!store.state" class="card">
-      <div class="alert alert-error">
+      <div v-if="store.stateError" class="alert alert-error">
         <strong>状态不可用</strong>
         <p>
-          宿主还没有返回本插件的状态文档{{ store.stateError ? `（${store.stateError}）` : '' }}。常见原因：插件刚安装还没有跑过整点任务（存储键尚不存在时这里是空的），或插件存储暂不可读。
+          读取本插件的状态文档失败（{{ store.stateError }}）：插件存储暂不可读。
+        </p>
+      </div>
+      <div v-else class="alert alert-info">
+        <strong>还没有状态</strong>
+        <p>
+          插件刚安装、还没有跑过任何任务，所以存储里没有状态文档；跑完一轮后这里会显示指标与对齐结果。
         </p>
       </div>
       <p class="next-line">
         下一步：点「立即对齐」或「刷新」先跑一轮；仍然失败就把宿主机上插件的运行日志贴给作者。
       </p>
       <div class="c-inline-actions">
-        <NButton size="small" type="primary" @click="store.loadData()">重新读取状态</NButton>
+        <NButton size="small" :disabled="store.busy !== ''" @click="store.loadData()">重新读取状态</NButton>
+        <NButton size="small" type="primary" :disabled="store.busy !== ''" @click="store.runAction('align-now')">
+          立即对齐
+        </NButton>
       </div>
     </section>
 
@@ -85,6 +94,10 @@ onBeforeUnmount(() => {
         <StatTile v-for="tile in store.tiles" :key="tile.key" :tile="tile" />
       </section>
 
+      <AlertBox
+        kind="warning"
+        :text="store.stateError ? `重新读取状态失败（${store.stateError}），下面显示的是上一次读到的数据。` : ''"
+      />
       <AlertBox kind="warning" :text="store.instanceAlert" />
       <AlertBox kind="error" :text="store.storageAlert" />
       <AlertBox kind="warning" :text="store.probeAlert" />
@@ -100,7 +113,7 @@ onBeforeUnmount(() => {
       <LogCard />
 
       <footer class="c-foot">
-        状态文档来自插件存储（ctx.storage）· 页面宽度跟随宿主可用宽度，双栏在 900–1000px 回落单栏 · 表格在 ≤640px 退化为卡片
+        状态文档来自插件存储（ctx.storage）· 页面宽度跟随宿主可用宽度，双栏在 ≤1000px 回落单栏 · 表格在窄屏可横向滚动
       </footer>
     </div>
 

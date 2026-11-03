@@ -12,7 +12,7 @@ https://github.com/congyoubanmian/dian115-plugins
 
 | 插件 ID | 名称 | 干什么 | 版本 |
 | --- | --- | --- | --- |
-| `chase.rs` | 追剧管家 | 小时级对齐「订阅池剧集订阅」与「Emby 已有集数」：只增 PATCH `total_episodes`，产出追剧日历与每日一次的 Telegram 日报；已核实无缺口的条目 5 小时窗口内复用缓存，Emby 查询量压一个数量级 | 0.1.13 |
+| `chase.rs` | 追剧管家 | 小时级对齐「订阅池剧集订阅」与「Emby 已有集数」：只增 PATCH `total_episodes`，产出追剧日历与每日一次的 Telegram 日报；已核实无缺口的条目 5 小时窗口内复用缓存，Emby 查询量压一个数量级 | 0.1.14 |
 | `music.rs` | 音乐下载 | 网易云 / QQ 音乐扫码登录、搜索与歌单、按时下音质取链；宿主代下载（API 3.9 直写目标目录）并交 CloudDrive2 入库，任务队列落 KV，支持 Telegram 按钮重试 | 1.2.1 |
 | `douban.rs` | 豆瓣中心 | 豆瓣榜单抓取 → 黑名单过滤 → 观察队列 → 聚合订阅；登录态用手动粘贴的浏览器 Cookie，自动追订「我的想看」 | 1.1.4 |
 

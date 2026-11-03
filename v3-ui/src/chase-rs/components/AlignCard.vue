@@ -45,6 +45,7 @@ const filtered = computed(() =>
           type="button"
           class="pill"
           :class="{ active: store.filter === option.key }"
+          :aria-pressed="store.filter === option.key"
           @click="store.setFilter(option.key)"
         >
           {{ option.label }} {{ option.count }}

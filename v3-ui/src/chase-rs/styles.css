@@ -251,6 +251,12 @@
 .chase3 .c-table-wrap {
   overflow-x: auto;
 }
+/* 窄屏：表格保持可读列宽，在卡片内横向滚动，不把「原因」列挤成一字一行。 */
+@media (max-width: 640px) {
+  .chase3 .c-table {
+    min-width: 640px;
+  }
+}
 .chase3 .c-table {
   width: 100%;
   border-collapse: collapse;
@@ -581,6 +587,7 @@
 }
 .chase3 .c-inline-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
 }
 

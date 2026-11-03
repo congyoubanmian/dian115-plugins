@@ -19,6 +19,7 @@ const STATUS_MAP: Record<string, [string, string]> = {
   ok: ['已识别', 'badge-success'],
   unparsed: ['结构未识别', 'badge-warning'],
   http_error: ['HTTP 错误', 'badge-error'],
+  transport_error: ['请求失败', 'badge-error'],
   skipped: ['本轮跳过', 'badge-neutral'],
   never: ['从未探测', 'badge-neutral'],
 }
@@ -115,7 +116,13 @@ onBeforeUnmount(() => {
             {{ copied ? '已复制' : '复制' }}
           </NButton>
         </div>
-        <textarea class="c-diag-text" readonly rows="10" :value="store.diagnosticsText" />
+        <textarea
+          class="c-diag-text"
+          readonly
+          rows="10"
+          aria-label="完整诊断文本"
+          :value="store.diagnosticsText"
+        />
       </div>
     </div>
   </section>

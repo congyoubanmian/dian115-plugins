@@ -4,7 +4,7 @@
 
 | 插件 | v3 源码目录 | 版本 | 任务数 | 旧实现 |
 | --- | --- | --- | --- | --- |
-| 追剧管家 `chase.rs` | `v3/chase-rs/` | 0.1.13 | 4 | 旧 schema 1 Rust 版 0.1.9（源码已删除） |
+| 追剧管家 `chase.rs` | `v3/chase-rs/` | 0.1.14 | 4 | 旧 schema 1 Rust 版 0.1.9（源码已删除） |
 | 音乐下载 `music.rs` | `v3/music-rs/` | 1.2.1 | 2 + 1 event | 旧 schema 1 Rust 版 0.3.19（源码已删除） |
 | 豆瓣中心 `douban.rs` | `v3/douban-rs/` | 1.1.4 | 16 | 旧 schema 1 Rust 版 0.2.4（源码已删除） |
 
@@ -64,7 +64,7 @@ dist/                   构建产物 .dian115p（本地生成，不提交；现�
 
 ## 各插件 covered / gaps
 
-### 追剧管家（`v3/chase-rs`，chase.rs 0.1.13）
+### 追剧管家（`v3/chase-rs`，chase.rs 0.1.14）
 
 **Covered（离线可验证）**
 
@@ -78,7 +78,7 @@ dist/                   构建产物 .dian115p（本地生成，不提交；现�
 - 旧页面 12 个用户配置项现在都在页面设置抽屉里（清单不再声明 `settings[]`）；页面用 Vue 3 重写（源码 `v3-ui/src/chase-rs/`），
   保留指标瓦片（`StatTile.vue`）、看板（`AlignCard.vue`）与移动端单栏（`styles.css` 里
   `@media (max-width: 1000px)` 收成单列）。
-- 117 个 `node --test` 用例通过。
+- 126 个 `node --test` 用例通过。
 
 **Gaps**
 
@@ -299,7 +299,7 @@ bash scripts/v3-build.sh      # 再 project-check → pack → 打印 sha256
 相同的包；已有包会被覆盖。产物：
 
 ```
-dist/chase-rs-0.1.13.dian115p
+dist/chase-rs-0.1.14.dian115p
 dist/music-rs.dian115p
 dist/douban-rs.dian115p
 ```
@@ -318,13 +318,13 @@ node v3-kit/conformance/project-check.mjs v3/music-rs
 node v3-kit/conformance/project-check.mjs v3/douban-rs
 
 # 3) 打包（输出必须在源码目录之外；后缀必须是 .dian115p）
-node v3-kit/conformance/pack.mjs v3/chase-rs dist/chase-rs-0.1.13.dian115p
+node v3-kit/conformance/pack.mjs v3/chase-rs dist/chase-rs-0.1.14.dian115p
 node v3-kit/conformance/pack.mjs v3/music-rs dist/music-rs.dian115p
 node v3-kit/conformance/pack.mjs v3/douban-rs dist/douban-rs.dian115p
-node scripts/v3-pack-check.mjs dist/chase-rs-0.1.13.dian115p v3/chase-rs   # 查包
+node scripts/v3-pack-check.mjs dist/chase-rs-0.1.14.dian115p v3/chase-rs   # 查包
 
 # 4) 纯逻辑单测（Node 24 下要传文件 glob，不能只传目录）
-(cd v3/tests/chase-rs  && node --test *.test.mjs)   # 119 pass
+(cd v3/tests/chase-rs  && node --test *.test.mjs)   # 126 pass
 (cd v3/tests/music-rs  && node --test *.test.js)    # 170 用例
 (cd v3/tests/douban-rs && node --test *.test.mjs)   # 100 pass
 
