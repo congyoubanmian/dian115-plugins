@@ -245,7 +245,10 @@ async function adopt(): Promise<void> {
 
 .task-list {
   position: relative;
-  display: grid;
+  /* 纵向 flex 而不是 grid：grid 在 max-height 约束下会把 auto 行压到 min-content
+     （实测 20 行被压成 22px），行内容溢出互相压盖；flex 列配合 flex:none 不会。 */
+  display: flex;
+  flex-direction: column;
   gap: 8px;
   max-height: 480px;
   overflow: auto;
@@ -256,6 +259,7 @@ async function adopt(): Promise<void> {
   --tone: var(--app-text-secondary, #8a919c);
   position: relative;
   display: flex;
+  flex: none;
   align-items: center;
   gap: 12px;
   padding: 10px 12px 10px 14px;

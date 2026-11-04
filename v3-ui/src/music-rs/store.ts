@@ -1057,11 +1057,12 @@ export function createMusicStore(ctx: HostContext) {
   )
   const failedTasks = computed(() => allTasks.value.filter((task) => task.status === 'failed'))
 
-  /** 任务页有进行中任务时每 5 秒跟随队列刷新（原生版 ensureTaskTimer）。 */
+  /** 有进行中任务时每 5 秒跟随队列刷新（原生版 ensureTaskTimer）。
+      pump 推进期间也允许读刷新——它是只读的，正是实时进度的来源。 */
   function setTaskRefresh(enabled: boolean): void {
     if (enabled && taskTimer === null) {
       taskTimer = setInterval(() => {
-        if (!busy.value) void refresh()
+        if (!busy.value || busy.value === 'pump') void refresh()
       }, TASK_REFRESH_MS)
     } else if (!enabled && taskTimer !== null) {
       clearInterval(taskTimer)

@@ -73,7 +73,8 @@ const trackStyle = computed(() => ({
 .rider {
   position: relative;
   margin-top: 12px;
-  padding-top: 4px;
+  /* 车顶上方要预留车身高度，否则绝对定位的鹈鹕会盖住上方的阶段胶囊。 */
+  padding-top: 56px;
   color: var(--mx-accent, var(--app-accent, #2080f0));
 }
 

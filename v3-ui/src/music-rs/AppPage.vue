@@ -112,11 +112,12 @@ function openCookiePanel(): void {
   if (opening) loginCardRef.value?.scrollIntoView({ behavior: 'smooth', block: 'start' })
 }
 
-// 任务页有进行中任务时每 5 秒跟随队列刷新（原生版 ensureTaskTimer）。
+// 只要有进行中任务就每 5 秒跟随队列刷新：「正在下载」主视觉在搜索/歌单页也显示，
+// 不能只限任务页，否则在别的页点下载后界面一直停在旧状态。
 watch(
-  [tab, pendingTasks],
+  pendingTasks,
   () => {
-    store.setTaskRefresh(tab.value === 'tasks' && pendingTasks.value.length > 0)
+    store.setTaskRefresh(pendingTasks.value.length > 0)
   },
   { immediate: true },
 )
