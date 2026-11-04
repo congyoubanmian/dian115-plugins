@@ -86,6 +86,14 @@ gh release create "$TAG" "${RELEASE_FILES[@]}" \
 echo "draft Release 已创建：$TAG（${#RELEASE_FILES[@]} 个资产）"
 
 echo "== 4) 更新市场索引（正式包）→ 提交 → 打 tag → 推送 =="
+# 当期 changelog 从 v3/CHANGLOG.json 读（发版前在这里写好每个 id 一条；
+# 文件不存在时新条目沿用被复制条目的文案，提醒一句别忘写）。
+CHANGELOG_FILE="v3/CHANGELOG.json"
+if [ -f "$CHANGELOG_FILE" ]; then
+  export CHANGELOG="$(cat "$CHANGELOG_FILE")"
+else
+  echo "提示：$CHANGELOG_FILE 不存在，新条目会沿用旧 changelog 文案 —— 建议先写好当期说明" >&2
+fi
 TAG="$TAG" REPO="$REPO" node scripts/update-v3-index.mjs
 cp v3-market-index.release.json v3-market-index.json
 mkdir -p plugin-market/v3
