@@ -12,8 +12,8 @@
       "version": "0.1.15",
       "description": "小时级对齐「订阅池里的剧集订阅」与「Emby 已有集数」：只对可解析的条目做只增 PATCH total_episodes，并产出追剧日历与当天一次的日报；减方向只给建议，从不写。已核实无缺口的条目在 5 小时窗口内复用缓存，不重复探测 Emby。每次 PATCH 前后落任务检查点，中断恢复先查订阅池里该条目的真实集数，已确认写到位才记 complete、确认没写才 resume、核对不上记 attention（整点入口把 attention 收敛为 resume，靠只增守卫保证重跑不重复写）。界面按统一设计稿重绘：指标瓦片、徽标胶囊、双栏看板与移动端单栏适配。",
       "author": "镜头的蒙太奇",
-      "source_url": "https://github.com/congyoubanmian/dian115-plugins/releases/download/v3-2026.11.04-4/chase.rs-2889a39b-0dc0-4823-9eef-ae274ab94a82.dian115p",
-      "sha256": "263e6e1b40b8e06346d032ace9325e94f0c0cb52cb69c55f47a008d0697cad9e",
+      "source_url": "https://github.com/congyoubanmian/dian115-plugins/releases/download/v3-2026.11.04-5/chase.rs-3d92e281-6f08-4f42-abb3-a594cc00c321.dian115p",
+      "sha256": "99dfa6766a2376b5efc2fa6e64664e2acd0ebe296b289f7518066325157d4a4d",
       "delivery": "protected-v4",
       "declared_usage": {
         "apis": [
@@ -37,11 +37,11 @@
     {
       "id": "music.rs",
       "name": "音乐下载",
-      "version": "1.3.5",
+      "version": "1.3.6",
       "description": "网易云 / QQ 音乐搜索、扫码登录（网易云 unikey 二维码；QQ 官方二维码 + graph.qq.com OAuth 授权换音乐凭据）与手动粘贴 Cookie 回退、我的歌单（网易云与 QQ 都能读我创建的与收藏的歌单；QQ 另有「每日推荐」与「我喜欢」两个入口）、按音质逐级取链；单曲与整张歌单入队后由后台任务自动推进：取链接 → API 3.9 起 save_to 优先直写目标目录（宿主不开放该能力时回落「暂存 → 定名 → move」，CD2 挂载由宿主自动分流）→ 失败通知带「重试」按钮。下载与入库前后落任务检查点，中断恢复先核对目标目录里的真实文件再决定 complete / resume / attention；入库前做同名预检，目标已有同名文件直接终态失败不进重试循环。Telegram 机器人提供只读查询命令（/music 队列|状态|帮助、/queue、/status），不触发下载与删除，回复走来源渠道、未授权 telegram.bot 时回退普通通知；每天 08:30 发一条下载日报（dedupe_key 按天，当天送达不重发，发送失败换新键）。旧 schema 1 WASM 插件（plugins/music-rs 0.3.19）的 v3 迁移版。",
       "author": "镜头的蒙太奇",
-      "source_url": "https://github.com/congyoubanmian/dian115-plugins/releases/download/v3-2026.11.04-4/music.rs-70b8382e-0064-41c1-80c8-7125cafe1bda.dian115p",
-      "sha256": "7e42be42102e41a904a339f657bdc198694e1c9b51e0853c53690ad9e803197f",
+      "source_url": "https://github.com/congyoubanmian/dian115-plugins/releases/download/v3-2026.11.04-5/music.rs-7d9117b9-2203-438e-836b-4c407b364a17.dian115p",
+      "sha256": "b206b3dfbe6c78c08afcb8c6f685a1fae9642ad1a923e84c0167233f66ad7ef9",
       "delivery": "protected-v4",
       "declared_usage": {
         "apis": [
@@ -67,7 +67,7 @@
         "risk": "把网易云/QQ 音乐直链下载到插件暂存目录并复制进用户配置的宿主目录（可能经 CD2 上传网盘）；失败时发送带重试按钮的通知；每日一条下载日报（TG）；Telegram 机器人命令（/music、/queue、/status）只读查询队列与状态，回复走来源渠道（需要 telegram.bot 授权），不触发下载/删除；按宿主新规约不读取 CookieCloud，登录态只来自扫码或用户手动粘贴的 Cookie；扫码登录在本插件 KV 里保存网易云/QQ 音乐登录凭据（QQ 还保存账号标识 encryptUin，用于读收藏的歌单与「我喜欢」；QQ 扫码登录期间会访问 graph.qq.com 的 OAuth 授权端点换凭据）。"
       },
       "homepage": "https://github.com/congyoubanmian/dian115-plugins",
-      "changelog": "v3 迁移首个发布：plugins/music-rs 0.3.19（Rust WASM）迁移为宿主内 ESM；搜索/登录/取链/歌单入队/下载队列保留，暂存改插件自有 downloads/，入库交给宿主 move（移除 CD2 直送），CookieCloud 走宿主内置服务，Telegram 重试改为清单 events 回调任务。1.0.1：页面改写为 Vue 3；QQ 取链对齐参考客户端 Lilt：先取 media_mid，登录态按 F000/M800/M500 逐档请求 vkey，相对 purl 用 sip 域名拼接，匿名仅请求 M500。1.0.2：网易云与 QQ 音乐扫码登录都在单插件内实现；QQ 走官方二维码 + graph.qq.com OAuth 授权换 musicid/musickey，登录 Cookie 只写插件 KV，保留手动粘贴回退。1.1.0：QQ 音乐内容能力补齐——我的歌单（我创建的 + 收藏的）、每日推荐、我喜欢、歌单歌曲分页与整单入队；musicu 请求带 authst，登录时保存 encryptUin。；本版起按宿主「编译 MCP」出正式包（protected-v4），署名取签名绑定的会员昵称。；1.2.0：requires.api 提到 3.9，下载直写目标目录（宿主不支持时回落暂存→move）；设置做在页面里。；1.2.1：直写目标目录的能力判断改用宿主上报的 host_api（不再靠错误信息猜测）。\"；1.3.0：下载与入库前后落任务检查点，中断恢复先核对目标目录里的真实文件再判定 complete/resume/attention；修正队列并发与取链流程，API 3.9 起 save_to 直写优先、否则回落暂存→定名→move；新增每日下载日报与 /music、/queue、/status 三个只读 TG 命令（回执走 ctx.messaging.reply）；任务页与界面视觉改版。；1.3.1：迁移到共享 PageHeader/StatTiles/ToastHost/Skeleton 与统一圆角间距令牌，保留均衡器品牌、数字递增、下载卡与音质标签；响应式统一为容器查询。；1.3.2：下载主视觉新增分阶段指示（下载/入库/完成）与鹈鹕骑车进度动画；入库阶段展示宿主真实字节进度（x GiB/y GiB）并换算百分比，无字节回调时按本轮计数或往返动画展示，不编造进度；保留旋转唱片、封面背景与波形。；1.3.3：修复下载中队列不自动刷新（原先仅任务页签开启定时刷新，现任意页签有进行中任务即每 5 秒刷新，推进期间也可读）；修复任务列表行重叠（grid 在 max-height 下把行压到 22px，改纵向 flex 且行不收缩，已经桌面与 390px 真渲染验证）；修复鹈鹕骑车动画遮挡阶段胶囊。；1.3.4：登录卡新增会员区（网易 vip/info 实测：SVIP/黑胶 VIP/音乐包 + 等级 + 官方图标 + 到期时间悬停，QQ 会员字段未识别时不显示不编造）；搜索与歌单歌曲按 fee/pay 显示 VIP/SVIP/付费专辑标签；下载进度字节解析放宽到任意阶段。；1.3.5：QQ 会员请求补 comm.uin 与 g_tk（hash33(p_skey)），并兼容 req_0/req/result 数据路径；字段未识别时在「最近动作」记一条只含字段名的诊断日志，便于按真实响应适配；未识别结果缓存缩短到 5 分钟。",
+      "changelog": "v3 迁移首个发布：plugins/music-rs 0.3.19（Rust WASM）迁移为宿主内 ESM；搜索/登录/取链/歌单入队/下载队列保留，暂存改插件自有 downloads/，入库交给宿主 move（移除 CD2 直送），CookieCloud 走宿主内置服务，Telegram 重试改为清单 events 回调任务。1.0.1：页面改写为 Vue 3；QQ 取链对齐参考客户端 Lilt：先取 media_mid，登录态按 F000/M800/M500 逐档请求 vkey，相对 purl 用 sip 域名拼接，匿名仅请求 M500。1.0.2：网易云与 QQ 音乐扫码登录都在单插件内实现；QQ 走官方二维码 + graph.qq.com OAuth 授权换 musicid/musickey，登录 Cookie 只写插件 KV，保留手动粘贴回退。1.1.0：QQ 音乐内容能力补齐——我的歌单（我创建的 + 收藏的）、每日推荐、我喜欢、歌单歌曲分页与整单入队；musicu 请求带 authst，登录时保存 encryptUin。；本版起按宿主「编译 MCP」出正式包（protected-v4），署名取签名绑定的会员昵称。；1.2.0：requires.api 提到 3.9，下载直写目标目录（宿主不支持时回落暂存→move）；设置做在页面里。；1.2.1：直写目标目录的能力判断改用宿主上报的 host_api（不再靠错误信息猜测）。\"；1.3.0：下载与入库前后落任务检查点，中断恢复先核对目标目录里的真实文件再判定 complete/resume/attention；修正队列并发与取链流程，API 3.9 起 save_to 直写优先、否则回落暂存→定名→move；新增每日下载日报与 /music、/queue、/status 三个只读 TG 命令（回执走 ctx.messaging.reply）；任务页与界面视觉改版。；1.3.1：迁移到共享 PageHeader/StatTiles/ToastHost/Skeleton 与统一圆角间距令牌，保留均衡器品牌、数字递增、下载卡与音质标签；响应式统一为容器查询。；1.3.2：下载主视觉新增分阶段指示（下载/入库/完成）与鹈鹕骑车进度动画；入库阶段展示宿主真实字节进度（x GiB/y GiB）并换算百分比，无字节回调时按本轮计数或往返动画展示，不编造进度；保留旋转唱片、封面背景与波形。；1.3.3：修复下载中队列不自动刷新（原先仅任务页签开启定时刷新，现任意页签有进行中任务即每 5 秒刷新，推进期间也可读）；修复任务列表行重叠（grid 在 max-height 下把行压到 22px，改纵向 flex 且行不收缩，已经桌面与 390px 真渲染验证）；修复鹈鹕骑车动画遮挡阶段胶囊。；1.3.4：登录卡新增会员区（网易 vip/info 实测：SVIP/黑胶 VIP/音乐包 + 等级 + 官方图标 + 到期时间悬停，QQ 会员字段未识别时不显示不编造）；搜索与歌单歌曲按 fee/pay 显示 VIP/SVIP/付费专辑标签；下载进度字节解析放宽到任意阶段。；1.3.5：QQ 会员请求补 comm.uin 与 g_tk（hash33(p_skey)），并兼容 req_0/req/result 数据路径；字段未识别时在「最近动作」记一条只含字段名的诊断日志，便于按真实响应适配；未识别结果缓存缩短到 5 分钟。；1.3.6：QQ 会员请求补 comm.auth（qqmusic_key）与 platform/notice/needNewCode，修复 500003 权限错误；未识别时在「最近动作」记录原始响应（不含凭据）便于适配。",
       "permissions": [
         "telegram.bot"
       ]
@@ -78,8 +78,8 @@
       "version": "1.2.1",
       "description": "豆瓣榜单抓取 + 黑名单过滤 + 观察队列 + 聚合订阅；按宿主新规约不再读取 CookieCloud；登录态由用户手动粘贴浏览器里的豆瓣 Cookie 提供，自动追订「我的想看」；TMDB 匹配失败时用豆瓣详情（原名/又名）回退重搜；支持最低评分/年份/地区订阅过滤与「已删除不重订」墓碑集。创建聚合订阅前后落任务检查点，中断恢复先查宿主订阅池里该 (tmdb_id, media_type) 的真实状态再决定 complete / resume / attention。海报抓回后落插件文件缓存 posters/<sha256>.<ext>（超 64 张按 modified 淘汰最旧，卸载即清空），页面用 downloadURL 取图，files 不可用时降级 dataURL。Telegram 机器人接收 /refresh、/wish 两条指令并回执执行结果（指令触发不需要授权，回执走 ctx.messaging.reply 需要用户授权 telegram.bot）。旧 schema 1 WASM 插件（plugins/douban-rs 0.2.4）的 v3 迁移版；页面提供榜单海报墙、观察队列/我的想看、历史日志与设置。",
       "author": "镜头的蒙太奇",
-      "source_url": "https://github.com/congyoubanmian/dian115-plugins/releases/download/v3-2026.11.04-4/douban.rs-156b32c8-0950-4a34-ae7b-c2a3f2f12689.dian115p",
-      "sha256": "b4698d8bc3a2b59c4a211eae0437236efa3f120ba1132e3405a2a3da0a70badc",
+      "source_url": "https://github.com/congyoubanmian/dian115-plugins/releases/download/v3-2026.11.04-5/douban.rs-6e51e099-2612-4b44-8c18-483fec541cde.dian115p",
+      "sha256": "087db0f9c47894d92433b848a195ca9ff523cc2cf3d8197f9fe5f7771110e5f0",
       "delivery": "protected-v4",
       "declared_usage": {
         "apis": [
