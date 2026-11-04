@@ -50,12 +50,15 @@ export function parseNeteaseVip(body, nowMs = Date.now()) {
   }
 }
 
-/** 档位文案：SVIP 7 / 黑胶 VIP 7 / 音乐包 / 免费 / 已登录。 */
-export function vipLabel(info) {
+/** 档位文案：SVIP 7 / 黑胶 VIP 7（网易）/ 绿钻 7（QQ）/ 音乐包 / 免费 / 已登录。 */
+export function vipLabel(info, source = 'netease') {
   if (!info) return ''
   const level = Number(info.level ?? 0) || 0
   if (info.tier === 'svip') return `SVIP${level ? ` ${level}` : ''}`
-  if (info.tier === 'vip') return `黑胶 VIP${level ? ` ${level}` : ''}`
+  if (info.tier === 'vip') {
+    const name = source === 'qq' ? '绿钻' : '黑胶 VIP'
+    return `${name}${level ? ` ${level}` : ''}`
+  }
   if (info.tier === 'music_package') return '音乐包'
   if (info.tier === 'none') return '免费'
   return '已登录'
@@ -84,16 +87,28 @@ export async function fetchNeteaseVip(deps) {
   return parseNeteaseVip(body)
 }
 
-/** QQ 用户信息 → 会员档位。字段名以实际响应为准，识别不到就是 unknown。 */
+/** QQ 用户信息 → 会员档位。字段结构对齐 YAQMC（qqmusic-api get_vip_info）：
+ *  vip_login_base 的 data 形如
+ *  {svip, star, ystar, identity:{vip,HugeVip,yearflag,GroupVipFlag,ChildVip,ExpVip,AdVipFlag}, userinfo:{expire}}
+ *  —— svip>0 是超级会员；identity 里的标志是绿钻等会员；userinfo.expire 是秒级到期时间。 */
 export function parseQqVip(body) {
   const data = asObject(body?.req_1?.data) ?? asObject(body?.req_0?.data) ?? asObject(body?.req?.data)
     ?? asObject(body?.data) ?? asObject(body?.result) ?? asObject(body)
   if (!data) return { tier: 'unknown', level: 0, expire_ms: 0, icon: '', secondary: [] }
-  const svip = pickNumber(data, ['svip', 'is_svip', 'isSvip', 'svipFlag', 'super_vip', 'superVip'])
-  const vip = pickNumber(data, ['vip', 'isvip', 'is_vip', 'vip_status', 'vipStatus', 'green_vip', 'greenVip'])
-  const level = pickNumber(data, ['svip_level', 'svipLevel', 'vip_level', 'vipLevel', 'level', 'lv'])
-  // 到期时间可能是秒或毫秒，统一成毫秒。
-  let expire = pickNumber(data, ['svip_end_time', 'vip_end_time', 'vipEndTime', 'end_time', 'endTime', 'expireTime'])
+  const identity = asObject(data.identity) ?? {}
+  const userinfo = asObject(data.userinfo) ?? {}
+  const svip = pickNumber(data, ['svip'])
+  const vip = pickNumber(data, ['vip', 'isvip', 'is_vip'])
+    + pickNumber(identity, [
+      'vip', 'HugeVip', 'huge_vip', 'ExpVip', 'exp_vip',
+      'GroupVipFlag', 'group_vip_flag', 'CPLoverFlag', 'cp_lover_flag', 'ChildVip', 'AdVipFlag',
+    ])
+  const level = pickNumber(identity, ['level'])
+    || pickNumber(userinfo, ['music_level'])
+    || pickNumber(data, ['svip_level', 'svipLevel', 'vip_level', 'vipLevel', 'level', 'lv'])
+  // userinfo.expire 是秒；其它字段可能秒或毫秒，统一成毫秒。
+  let expire = pickNumber(userinfo, ['expire'])
+    || pickNumber(data, ['svip_end_time', 'vip_end_time', 'vipEndTime', 'end_time', 'endTime', 'expireTime', 'expire'])
   if (expire > 0 && expire < 10_000_000_000) expire *= 1000
   const tier = svip ? 'svip' : vip ? 'vip' : 'unknown'
   return { tier, level, expire_ms: expire, icon: '', secondary: [] }
@@ -121,7 +136,7 @@ export async function fetchQqVip(deps) {
   if (auth) comm.auth = auth
   const body = JSON.stringify({
     comm,
-    req_1: { module: 'UserInfo.UserInfoServer', method: 'GetUserInfo', param: {} },
+    req_1: { module: 'VipLogin.VipLoginInter', method: 'vip_login_base', param: {} },
   })
   const response = await httpRequest(deps, {
     method: 'POST',

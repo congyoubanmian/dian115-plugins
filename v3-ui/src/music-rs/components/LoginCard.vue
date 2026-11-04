@@ -179,7 +179,7 @@ const cookiePlaceholder = computed(
             :title="vipExpireTitle(item.member)"
           >
             <img v-if="item.member.icon" class="member__icon" :src="item.member.icon" alt="" />
-            {{ vipLabel(item.member) }}
+            {{ vipLabel(item.member, item.key) }}
             <span v-if="item.member.secondary.length" class="member__sub">
               {{ item.member.secondary.join(' · ') }}
             </span>

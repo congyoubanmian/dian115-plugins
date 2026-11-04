@@ -59,8 +59,31 @@ test('QQ：svip/svip_level 字段 → SVIP 等级；识别不到 → unknown', (
   assert.equal(vipLabel(parseQqVip({})), '已登录')
 })
 
-test('QQ 到期时间支持秒与毫秒', () => {
-  const sec = parseQqVip({ data: { vip: 1, vip_end_time: Math.floor(FUTURE / 1000) } })
+test('QQ vip_login_base：identity.level 与 HugeVip 绿钻标志', () => {
+  const svip = parseQqVip({ req_1: { data: { svip: 1, identity: { level: 7 } } } })
+  assert.equal(svip.tier, 'svip')
+  assert.equal(svip.level, 7)
+  const vip = parseQqVip({ req_1: { data: { identity: { HugeVip: 1 }, userinfo: { music_level: 5 } } } })
+  assert.equal(vip.tier, 'vip')
+  assert.equal(vip.level, 5)
+  assert.equal(vipLabel(vip, 'qq'), '绿钻 5')
+})
+
+test('QQ vip_login_base：YAQMC 真实样本（req_0 + identity/userinfo.expire）', () => {
+  // 样本取自 YAQMC entitlement.rs 的 VIP_OK 夹具。
+  const green = parseQqVip({
+    code: 0,
+    req_0: { code: 0, data: { svip: 0, star: 0, ystar: 0, identity: { vip: 1, HugeVip: 0, yearflag: 1, GroupVipFlag: 1 }, userinfo: { expire: 4102444800 } } },
+  })
+  assert.equal(green.tier, 'vip')
+  assert.equal(vipLabel(green, 'qq'), '绿钻')
+  assert.equal(green.expire_ms, 4102444800000)
+  const svip = parseQqVip({ req_0: { data: { svip: 1, identity: { level: 7 }, userinfo: { expire: 4102444800 } } } })
+  assert.equal(svip.tier, 'svip')
+  assert.equal(vipLabel(svip, 'qq'), 'SVIP 7')
+})
+
+test('QQ 到期时间支持秒与毫秒', () => {  const sec = parseQqVip({ data: { vip: 1, vip_end_time: Math.floor(FUTURE / 1000) } })
   assert.equal(sec.expire_ms, FUTURE - (FUTURE % 1000))
   const ms = parseQqVip({ data: { vip: 1, vip_end_time: FUTURE } })
   assert.equal(ms.expire_ms, FUTURE)
