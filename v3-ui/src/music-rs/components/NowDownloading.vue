@@ -36,9 +36,9 @@ function toBytes(value: string, unit: string): number {
   return n * scale
 }
 
-/** 从 pump 任务 message 里解析「移动 a.flac 1.2 GiB/4.0 GiB」这类真实进度。 */
-const copyProgress = computed(() => {
-  if (!copying.value) return null
+/** 从 pump 任务 message 里解析真实字节进度（入库「移动 a.flac 1.2 GiB/4.0 GiB」；
+ *  宿主若在下载阶段也写字节，同样能识别）。 */
+const byteProgress = computed(() => {
   const message = store.pumpRun.value?.message ?? ''
   const match = /([\d.]+)\s*(KiB|MiB|GiB|B)\s*\/\s*([\d.]+)\s*(KiB|MiB|GiB|B)/.exec(message)
   if (!match) return null
@@ -46,7 +46,7 @@ const copyProgress = computed(() => {
   const total = toBytes(match[3] ?? '0', match[4] ?? 'B')
   if (total <= 0) return null
   return {
-    text: `入库 ${match[1]} ${match[2]} / ${match[3]} ${match[4]}`,
+    text: `${copying.value ? '入库' : '下载'} ${match[1]} ${match[2]} / ${match[3]} ${match[4]}`,
     percent: (loaded / total) * 100,
   }
 })
@@ -58,9 +58,9 @@ const overallPercent = computed(() => {
   return ((run.done + run.failed) / run.total) * 100
 })
 
-const ridePercent = computed(() => copyProgress.value?.percent ?? overallPercent.value)
+const ridePercent = computed(() => byteProgress.value?.percent ?? overallPercent.value)
 const progressText = computed(() => {
-  if (copyProgress.value) return copyProgress.value.text
+  if (byteProgress.value) return byteProgress.value.text
   const run = store.pumpRun.value
   if (run && run.total > 0) return `本轮 ${run.done + run.failed} / ${run.total} 首`
   return ''

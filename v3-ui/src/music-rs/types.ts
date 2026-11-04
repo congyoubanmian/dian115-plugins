@@ -19,6 +19,21 @@ export interface Song {
   qualities?: string[]
   /** 默认音质。 */
   quality?: string
+  /** 会员/付费标识：'' | 'vip' | 'svip' | 'paid'（付费专辑）。 */
+  vip?: string
+}
+
+/** 会员档位信息（lib/vip.js）。 */
+export interface VipInfo {
+  /** svip / vip / music_package / none / unknown（QQ 字段未识别时）。 */
+  tier: string
+  level: number
+  /** 到期时间（毫秒），0 表示未知。 */
+  expire_ms: number
+  /** 官方会员图标 URL，无则空串。 */
+  icon: string
+  /** 次级会员包标签（如黑胶 VIP、音乐包）。 */
+  secondary: string[]
 }
 
 /** 任务索引条目。 */

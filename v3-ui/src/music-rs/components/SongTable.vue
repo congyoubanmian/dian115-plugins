@@ -11,6 +11,7 @@ import { useMusicStore } from '../store'
 import type { Song } from '../types'
 import { hashOf, useCovers } from '../ui-kit'
 import QualityTag from './QualityTag.vue'
+import VipBadge from './VipBadge.vue'
 
 const props = defineProps<{ songs: Song[]; withCovers?: boolean }>()
 const emit = defineEmits<{ (event: 'download', song: Song): void }>()
@@ -41,7 +42,10 @@ function initialOf(song: Song): string {
         <span v-else>{{ initialOf(song) }}</span>
       </span>
       <span class="song__main">
-        <span class="song__name" :title="song.name">{{ song.name || '—' }}</span>
+        <span class="song__title">
+          <span class="song__name" :title="song.name">{{ song.name || '—' }}</span>
+          <VipBadge :tag="song.vip" />
+        </span>
         <span class="song__by">
           {{ song.singers || '—' }}<template v-if="song.album"> · {{ song.album }}</template>
         </span>
@@ -139,6 +143,13 @@ function initialOf(song: Song): string {
 .song__main {
   display: grid;
   gap: 2px;
+  min-width: 0;
+}
+
+.song__title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   min-width: 0;
 }
 

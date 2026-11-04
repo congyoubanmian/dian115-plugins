@@ -12,7 +12,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { NButton, NInput, NTag } from 'naive-ui'
 import { ClipboardPaste as ClipboardIcon, QrCode as QrCodeIcon } from '@lucide/vue'
 import { ALL_QUALITIES, SOURCES, useMusicStore } from '../store'
-import { encodeQr, qrSvgPath } from '../plugin-api'
+import { encodeQr, qrSvgPath, vipLabel, vipExpireTitle } from '../plugin-api'
 import QualityTag from './QualityTag.vue'
 
 const store = useMusicStore()
@@ -87,6 +87,14 @@ const loginTags = computed(() => [
   { key: 'qq', name: 'QQ音乐', info: login.qq },
 ])
 
+/** 登录标签 + 会员档位：QQ 字段未识别（unknown）时不显示会员区，不编造档位。 */
+const memberTags = computed(() =>
+  loginTags.value.map((item) => ({
+    ...item,
+    member: item.key === 'qq' ? store.vip.qq : store.vip.netease,
+  })),
+)
+
 const cookiePlaceholder = computed(
   () =>
     `浏览器登录 ${loginSource.value === 'qq' ? 'y.qq.com' : 'music.163.com'} 后，` +
@@ -155,16 +163,28 @@ const cookiePlaceholder = computed(
         <NButton v-if="qr" size="small" secondary @click="store.resetQr()">关闭</NButton>
         <span class="spacer" />
         <span class="hint-inline">当前登录状态:</span>
-        <NTag
-          v-for="item in loginTags"
-          :key="item.key"
-          size="small"
-          :bordered="false"
-          :type="item.info.logged_in ? 'success' : 'default'"
-        >
-          {{ item.name }} {{ item.info.logged_in ? '已登录' : '未登录' }}
-          <template v-if="item.info.logged_in && item.info.uin"> · uin {{ item.info.uin }}</template>
-        </NTag>
+        <template v-for="item in memberTags" :key="item.key">
+          <NTag
+            size="small"
+            :bordered="false"
+            :type="item.info.logged_in ? 'success' : 'default'"
+          >
+            {{ item.name }} {{ item.info.logged_in ? '已登录' : '未登录' }}
+            <template v-if="item.info.logged_in && item.info.uin"> · uin {{ item.info.uin }}</template>
+          </NTag>
+          <span
+            v-if="item.info.logged_in && item.member && item.member.tier !== 'unknown'"
+            class="member"
+            :class="`member--${item.member.tier}`"
+            :title="vipExpireTitle(item.member)"
+          >
+            <img v-if="item.member.icon" class="member__icon" :src="item.member.icon" alt="" />
+            {{ vipLabel(item.member) }}
+            <span v-if="item.member.secondary.length" class="member__sub">
+              {{ item.member.secondary.join(' · ') }}
+            </span>
+          </span>
+        </template>
       </div>
 
       <!-- 四步 stepper：按扫码状态机真实点亮 -->
@@ -623,5 +643,45 @@ const cookiePlaceholder = computed(
   .step-dot {
     transition: none;
   }
+}
+
+/* 会员区：官方图标 + 档位（SVIP/黑胶 VIP/音乐包），悬停显示到期时间 */
+.member {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 10px 2px 6px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+  color: #a16207;
+  background: linear-gradient(135deg, color-mix(in srgb, #f59e0b 22%, transparent), color-mix(in srgb, #f59e0b 8%, transparent));
+  border: 1px solid color-mix(in srgb, #f59e0b 38%, transparent);
+}
+
+.member--svip {
+  color: #c2410c;
+  background: linear-gradient(135deg, color-mix(in srgb, #f97316 26%, transparent), color-mix(in srgb, #ef4444 14%, transparent));
+  border-color: color-mix(in srgb, #f97316 45%, transparent);
+}
+
+.member--music_package,
+.member--none {
+  color: var(--app-text-secondary, #6b7280);
+  background: color-mix(in srgb, var(--app-text-secondary, #6b7280) 10%, transparent);
+  border-color: var(--app-border, #e0e4ea);
+}
+
+.member__icon {
+  width: 18px;
+  height: 18px;
+  object-fit: contain;
+}
+
+.member__sub {
+  font-size: 11px;
+  font-weight: 500;
+  opacity: 0.75;
 }
 </style>

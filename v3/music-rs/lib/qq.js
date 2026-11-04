@@ -7,6 +7,7 @@
 // 旧版（plugins/music-rs/src/qq.rs）的纯逻辑移植仍保留，供微信扫码等旧链路使用。
 
 import { queryEncode, queryEscape, parseQuery, hash33 } from './encoding.js'
+import { songVipTag } from './vip-tag.js'
 
 /** Go main.go:15 的 chromeUA。 */
 export const CHROME_UA =
@@ -1200,6 +1201,8 @@ export function mapQqSong(entry) {
   if (qqFileSize(file, source, ['size_320mp3', 'size320']) > 0) qualities.push('320')
   if (qqFileSize(file, source, ['size_128mp3', 'size128']) > 0) qualities.push('128')
   const albumMid = textField(album, 'mid', 'albummid', 'album_mid')
+  // 无付费/会员标识时不输出 vip 键，保持原有对象形状。
+  const vip = songVipTag({ pay: source.pay })
   return {
     id: mid,
     name: textField(source, 'title', 'name', 'songname'),
@@ -1209,6 +1212,7 @@ export function mapQqSong(entry) {
     duration_ms: numberField(source, 'interval') * 1000,
     source: 'qq',
     qualities,
+    ...(vip ? { vip } : {}),
   }
 }
 

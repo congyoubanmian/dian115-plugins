@@ -3,6 +3,7 @@
 
 import { qualitiesForLevel } from './eapi.js'
 import { queryEscape } from './encoding.js'
+import { songVipTag } from './vip-tag.js'
 
 /** 单曲搜索结果的一条歌 → 插件契约形状（Go neteaseSearch 的逐条映射）：
  *  id 是数字（不是 sidecar 的字符串）。 */
@@ -11,6 +12,10 @@ export function mapSearchSong(song) {
   const singers = (Array.isArray(song?.ar) ? song.ar : [])
     .map((artist) => (typeof artist?.name === 'string' ? artist.name : ''))
     .join('/')
+  const privilege = song?.privilege && typeof song.privilege === 'object' ? song.privilege : null
+  const maxLevel = String(privilege?.maxBrLevel || privilege?.downloadMaxBrLevel || '')
+  // 非会员/付费歌曲不输出 vip 键，保持原有对象形状（契约测试逐键比对）。
+  const vip = songVipTag({ fee: song?.fee ?? privilege?.fee, maxLevel })
   return {
     id: song?.id ?? 0,
     name: song?.name ?? '',
@@ -19,6 +24,7 @@ export function mapSearchSong(song) {
     cover: album.picUrl ?? '',
     duration_ms: song?.dt ?? 0,
     source: 'netease',
+    ...(vip ? { vip } : {}),
   }
 }
 
@@ -60,6 +66,7 @@ export function playlistSongFromValue(song) {
     ? privilege.downloadMaxBrLevel
     : ''
   const maxLevel = maxBr || downloadMax
+  const vipTag = songVipTag({ fee: song?.fee ?? privilege?.fee, maxLevel })
   const id = typeof song?.id === 'number'
     ? JSON.stringify(song.id) // Go number.to_string：整数无小数点
     : typeof song?.id === 'string' ? song.id : ''
@@ -73,6 +80,7 @@ export function playlistSongFromValue(song) {
     source: 'netease',
     max_level: maxLevel,
     qualities: qualitiesForLevel(maxLevel),
+    ...(vipTag ? { vip: vipTag } : {}),
   }
 }
 

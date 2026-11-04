@@ -53,4 +53,10 @@ export { PLAYLIST_PAGE_SIZE } from '../../../v3/music-rs/lib/constants.js'
 export { addLog, loadLogs } from '../../../v3/music-rs/lib/logs.js'
 export { stateView, sortIndex, STATUS_QUEUED, MAX_ATTEMPTS } from '../../../v3/music-rs/lib/tasks-core.js'
 export { channelSummary } from '../../../v3/music-rs/lib/notify-summary.js'
+export {
+  fetchNeteaseVip,
+  fetchQqVip,
+  vipLabel,
+  vipExpireTitle,
+} from '../../../v3/music-rs/lib/vip.js'
 export { encodeQr, qrSvgPath } from '../../../v3/music-rs/ui/qr.js'

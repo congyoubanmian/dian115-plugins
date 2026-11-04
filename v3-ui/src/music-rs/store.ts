@@ -29,6 +29,7 @@ import type {
   Song,
   TaskEntry,
   Toast,
+  VipInfo,
 } from './types'
 
 /** 组件树里取 store 的注入键。 */
@@ -38,6 +39,8 @@ export const MUSIC_STORE_KEY = 'musicStore'
 const POLL_INTERVAL_MS = 2000
 /** 任务页跟随刷新的间隔（毫秒）——与原生版一致。 */
 const TASK_REFRESH_MS = 5000
+/** 会员信息缓存：6 小时。会员档位不常变，避免每次 5 秒刷新都打外部接口。 */
+const VIP_CACHE_MS = 6 * 3600 * 1000
 /** 未登录时的引导文案关键字。 */
 const MUSIC_NOT_LOGIN_HINT = '未登录'
 /** 二维码有效期（毫秒）：QQ 官方二维码 120 秒（与 lib/qq.js QQ_QR_TTL_SECS 一致），
@@ -145,6 +148,8 @@ export function createMusicStore(ctx: HostContext) {
     netease: { logged_in: false },
     qq: { logged_in: false },
   })
+  /** 会员档位（网易 vip/info 实测字段；QQ 识别不到时为 unknown，只显示已登录）。 */
+  const vip = reactive<{ netease: VipInfo | null; qq: VipInfo | null }>({ netease: null, qq: null })
   const logs = ref<LogEntry[]>([])
   const lastPump = ref<PumpState | null>(null)
   /** 当前正在执行的动作名（空串 = 空闲）；非空时相关按钮禁用（同原生版 setBusy）。 */
@@ -353,6 +358,7 @@ export function createMusicStore(ctx: HostContext) {
       loading.value = false
     }
     await refreshAttention()
+    void refreshVip()
   }
 
   /** 查最近的 queue-pump 运行里有没有「需要核对」的（宿主重启打断时产生）。读不到就当没有。 */
@@ -377,6 +383,31 @@ export function createMusicStore(ctx: HostContext) {
         : null
     } catch {
       // 任务列表只用于提示，读失败不打扰。
+    }
+  }
+
+  /** 会员档位：登录后才取，6 小时缓存进插件 KV；失败只影响会员区显示，不影响登录卡。 */
+  async function refreshVip(): Promise<void> {
+    if (disposed.value) return
+    for (const source of ['netease', 'qq'] as const) {
+      const logged = source === 'netease' ? login.netease.logged_in : login.qq.logged_in
+      if (!logged) {
+        vip[source] = null
+        continue
+      }
+      const cacheKey = `vip.${source}`
+      try {
+        const cached = await deps.kv.get(cacheKey)
+        if (cached && Date.now() - Number(cached.fetched_ms ?? 0) < VIP_CACHE_MS) {
+          vip[source] = (cached.info ?? null) as VipInfo | null
+          continue
+        }
+        const info = source === 'netease' ? await api.fetchNeteaseVip(deps) : await api.fetchQqVip(deps)
+        vip[source] = info
+        await deps.kv.set(cacheKey, { fetched_ms: Date.now(), info })
+      } catch {
+        // 会员接口失败/未识别：保留旧值（没有就是 null），不打扰页面。
+      }
     }
   }
 
@@ -1094,6 +1125,7 @@ export function createMusicStore(ctx: HostContext) {
     attentionRun,
     pumpRun,
     login,
+    vip,
     logs,
     lastPump,
     busy,

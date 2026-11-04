@@ -96,6 +96,12 @@
       "rule": "destructive-file",
       "file": "jobs/poster.js",
       "reason": "淘汰的是插件自有海报缓存目录 posters/ 下的旧文件。删除路径由代码自己拼成 posters/<文件名>（只取文件名，不含分隔符、不含 ..，宿主即使返回绝对路径也会被还原成插件相对路径），经宿主 files API 删除，只落在插件自有目录内，不触碰宿主目录。命中的是 evictPosterFiles 的缓存淘汰（受 POSTER_CACHE_LIMIT 约束）。可读源码：v3/douban-rs/jobs/poster.js。"
+    },
+    {
+      "plugin": "music-rs",
+      "rule": "combo-obfuscated-network",
+      "file": "ui/page.js",
+      "reason": "混淆来自自打包 Vue 3.5 + naive-ui 运行时的构建压缩；联网是网易云/QQ 公开 API 与会员接口（music.163.com、interface.music.163.com、u.y.qq.com 等，declared_usage.sites 已声明），新增会员查询见 v3/music-rs/lib/vip.js。没有隐藏外发通道，可读源码在 v3-ui/src/music-rs/。"
     }
   ]
 }
