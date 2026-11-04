@@ -78,18 +78,20 @@ const loginCardRef = ref<HTMLElement | null>(null)
 const headLogin = computed(() => (loginSource.value === 'qq' ? login.qq : login.netease))
 
 /**
- * 页头统计：进行中 / 排队中 / 已完成 / 失败（按完整任务索引计数）。
+ * 页头统计：进行中 / 排队中 / 已完成 / 失败（按完整任务索引计数，一遍 reduce）。
  * 原 components/StatTiles.vue 的 count/tiles 计算迁到这里，展示交给共享 StatTiles。
  */
-function countTasks(...statuses: string[]): number {
-  return allTasks.value.filter((task) => statuses.includes(task.status)).length
-}
-
 const statItems = computed<StatTileItem[]>(() => {
-  const active = countTasks('downloading', 'copying')
-  const queued = countTasks('queued')
-  const done = countTasks('done')
-  const failed = countTasks('failed')
+  let active = 0
+  let queued = 0
+  let done = 0
+  let failed = 0
+  for (const task of allTasks.value) {
+    if (task.status === 'downloading' || task.status === 'copying') active += 1
+    else if (task.status === 'queued') queued += 1
+    else if (task.status === 'done') done += 1
+    else if (task.status === 'failed') failed += 1
+  }
   return [
     { key: 'active', label: '进行中', value: active, icon: ActiveIcon, tone: 'accent', live: active > 0 },
     { key: 'queued', label: '排队中', value: queued, icon: QueueIcon, tone: 'muted', live: queued > 0 },

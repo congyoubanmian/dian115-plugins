@@ -8,7 +8,7 @@
 // 两个来源都是拿到二维码后每 2 秒轮询一次登录状态，页面文案只反映后端回的状态：
 // 等待扫码 / 已扫码待确认 / 已过期 / 登录成功；手动粘贴 Cookie 始终保留为回退。
 
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { NButton, NInput, NTag } from 'naive-ui'
 import { ClipboardPaste as ClipboardIcon, QrCode as QrCodeIcon } from '@lucide/vue'
 import { ALL_QUALITIES, SOURCES, useMusicStore } from '../store'
@@ -47,11 +47,22 @@ const qrRemaining = computed<number>(() => {
   return Math.max(0, Math.ceil((expiresAt - Math.max(tick, Date.now())) / 1000))
 })
 
-onMounted(() => {
-  ticker = setInterval(() => {
-    now.value = Date.now()
-  }, 1000)
-})
+// 倒计时秒表只在有二维码时跑：平时常驻一个 1s interval 没有东西要刷新。
+watch(
+  qr,
+  (session) => {
+    if (session && ticker === null) {
+      now.value = Date.now()
+      ticker = setInterval(() => {
+        now.value = Date.now()
+      }, 1000)
+    } else if (!session && ticker !== null) {
+      clearInterval(ticker)
+      ticker = null
+    }
+  },
+  { immediate: true },
+)
 
 onBeforeUnmount(() => {
   if (ticker !== null) {
@@ -655,13 +666,14 @@ const cookiePlaceholder = computed(
   font-size: 12px;
   font-weight: 700;
   white-space: nowrap;
-  color: #a16207;
+  /* 文字色向 --app-text 混一档，明/暗主题都有可读对比度（同 VipBadge/QualityTag）。 */
+  color: color-mix(in srgb, #f59e0b 65%, var(--app-text, #1f2329));
   background: linear-gradient(135deg, color-mix(in srgb, #f59e0b 22%, transparent), color-mix(in srgb, #f59e0b 8%, transparent));
   border: 1px solid color-mix(in srgb, #f59e0b 38%, transparent);
 }
 
 .member--svip {
-  color: #c2410c;
+  color: color-mix(in srgb, #f97316 62%, var(--app-text, #1f2329));
   background: linear-gradient(135deg, color-mix(in srgb, #f97316 26%, transparent), color-mix(in srgb, #ef4444 14%, transparent));
   border-color: color-mix(in srgb, #f97316 45%, transparent);
 }

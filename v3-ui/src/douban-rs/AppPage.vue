@@ -158,6 +158,14 @@ onBeforeUnmount(() => {
           <p v-if="busy" class="db-progress" role="status">
             <span class="db-spinner" />
             <span>{{ busyText }}</span>
+            <button
+              v-if="busy === 'subscribe-now'"
+              type="button"
+              class="db-progress__cancel"
+              @click="store.cancelBatch()"
+            >
+              取消
+            </button>
             <span class="db-progress__bar" aria-hidden="true" />
           </p>
         </Transition>
@@ -358,6 +366,21 @@ onBeforeUnmount(() => {
   to {
     transform: translateX(300%);
   }
+}
+
+.db-progress__cancel {
+  flex: none;
+  border: 1px solid color-mix(in srgb, var(--db-accent) 40%, transparent);
+  border-radius: 999px;
+  padding: 2px 10px;
+  font-size: 12px;
+  color: var(--db-accent);
+  background: transparent;
+  cursor: pointer;
+}
+
+.db-progress__cancel:hover {
+  background: color-mix(in srgb, var(--db-accent) 12%, transparent);
 }
 
 .db-spinner {

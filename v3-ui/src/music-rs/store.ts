@@ -176,6 +176,10 @@ export function createMusicStore(ctx: HostContext) {
   const notifyResult = ref('')
 
   // ── 搜索 ──────────────────────────────────────────────
+  // 搜索与歌单各持有一份来源：两个 Tab 的分段控件互不干扰。
+  // 旧版共用一个 source：在「搜索」页切到 QQ 后再进「我的歌单」，
+  // 分段显示 QQ 但列表还是网易云的，specialPlaylists 凭 source==='qq' 渲染
+  // 「每日推荐/我喜欢」——点了按错接口请求（详见 PlaylistPanel 的注释）。
   const source = ref('netease')
   const query = ref('')
   const searchResults = ref<Song[]>([])
@@ -183,6 +187,7 @@ export function createMusicStore(ctx: HostContext) {
   const searchTotal = ref<number | null>(null)
 
   // ── 歌单 ──────────────────────────────────────────────
+  const playlistSource = ref('netease')
   const playlists = ref<PlaylistItem[]>([])
   const playlistView = ref<PlaylistView | null>(null)
   const playlistSongs = ref<Song[]>([])
@@ -240,14 +245,14 @@ export function createMusicStore(ctx: HostContext) {
 
   /** QQ 歌单分段：我创建的（kind = created；「我喜欢」是伪歌单，单独走特殊入口）。 */
   const playlistCreated = computed<PlaylistItem[]>(() =>
-    source.value === 'qq'
+    playlistSource.value === 'qq'
       ? playlists.value.filter((item) => (item.kind ?? 'created') === 'created')
       : playlists.value,
   )
 
   /** QQ 歌单分段：收藏的（kind = fav）。 */
   const playlistFavorites = computed<PlaylistItem[]>(() =>
-    source.value === 'qq'
+    playlistSource.value === 'qq'
       ? playlists.value.filter((item) => item.kind === 'fav' || item.kind === 'saved')
       : [],
   )
@@ -257,7 +262,7 @@ export function createMusicStore(ctx: HostContext) {
    * （qqDailyRecommendations / qqLikedSongs）。网易云后端没有对应接口，故只对 QQ 出现。
    */
   const specialPlaylists = computed<PlaylistItem[]>(() => {
-    if (source.value !== 'qq') return []
+    if (playlistSource.value !== 'qq') return []
     const liked = playlists.value.find((item) => item.kind === 'liked')
     return [
       { id: 'daily', name: '每日推荐', cover: '', count: 0, creator: '', kind: 'special', special: 'daily' },
@@ -341,8 +346,29 @@ export function createMusicStore(ctx: HostContext) {
   }
 
   // ── 读状态 ────────────────────────────────────────────
+  // 在途合并：定时刷新、动作收尾刷新、进度收尾刷新可能叠在一起，叠了只跑一次。
+  let refreshing = false
+  let refreshQueued = false
   async function refresh(): Promise<void> {
     if (disposed.value) return
+    if (refreshing) {
+      refreshQueued = true
+      return
+    }
+    refreshing = true
+    try {
+      await doRefresh()
+    } finally {
+      refreshing = false
+      // 在途期间又有人来要刷新：补跑一次，拿到最新状态。
+      if (refreshQueued && !disposed.value) {
+        refreshQueued = false
+        void refresh()
+      }
+    }
+  }
+
+  async function doRefresh(): Promise<void> {
     loading.value = true
     try {
       const [settingsRaw, index, logList, neteaseJar, qqJar, pumpState] = await Promise.all([
@@ -373,11 +399,14 @@ export function createMusicStore(ctx: HostContext) {
     void refreshVip()
   }
 
-  /** 查最近的 queue-pump 运行里有没有「需要核对」的（宿主重启打断时产生）。读不到就当没有。 */
+  /** 查最近的 queue-pump 运行里有没有「需要核对」的（宿主重启打断时产生）。读不到就当没有。
+   *  窗口 200：只查前 20 条时，queue-pump 一旦被后续任务（文件移动等）挤出窗口，
+   *  核对卡片就不出现、但宿主仍拒绝新 pump —— 入口成死路。接口没有 job 过滤参数，
+   *  放大窗口是现有契约下最便宜的兜底。 */
   async function refreshAttention(): Promise<void> {
     if (disposed.value || typeof ctx.tasks?.list !== 'function') return
     try {
-      const runs = await ctx.tasks.list(20)
+      const runs = await ctx.tasks.list(200)
       const list = Array.isArray(runs) ? runs : []
       const hit = list.find((run) => run.job_id === 'queue-pump' && run.status === 'attention_required')
       attentionRun.value = hit ? { id: String(hit.id), message: String(hit.message || hit.error || '') } : null
@@ -434,8 +463,19 @@ export function createMusicStore(ctx: HostContext) {
     }
   }
 
-  /** 会员档位：登录后才取，6 小时缓存进插件 KV；失败只影响会员区显示，不影响登录卡。 */
+  /** 会员档位：登录后才取，6 小时缓存进插件 KV；失败只影响会员区显示，不影响登录卡。
+   *  在途去重：5 秒定时刷新期间上一次还没回来就再发一组，两个来源各飞一份请求。 */
+  let vipInflight: Promise<void> | null = null
   async function refreshVip(): Promise<void> {
+    if (disposed.value) return
+    if (vipInflight) return vipInflight
+    vipInflight = doRefreshVip().finally(() => {
+      vipInflight = null
+    })
+    return vipInflight
+  }
+
+  async function doRefreshVip(): Promise<void> {
     if (disposed.value) return
     for (const source of ['netease', 'qq'] as const) {
       const logged = source === 'netease' ? login.netease.logged_in : login.qq.logged_in
@@ -461,9 +501,13 @@ export function createMusicStore(ctx: HostContext) {
     }
   }
 
-  /** 统一的「忙碌 + 失败提示 + 收尾刷新」包装（原生版 withBusy）。 */
+  /** 统一的「忙碌 + 失败提示 + 收尾刷新」包装（原生版 withBusy）。
+   *  busy 时不静默吞掉：点一下没反应用户会再点，提示一句知道是互斥不是坏了。 */
   async function withBusy<T>(name: string, label: string, fn: () => Promise<T>): Promise<T | undefined> {
-    if (busy.value) return undefined
+    if (busy.value) {
+      toast('warning', '有操作正在进行，请稍候再试')
+      return undefined
+    }
     busy.value = name
     try {
       return await fn()
@@ -477,10 +521,19 @@ export function createMusicStore(ctx: HostContext) {
   }
 
   // ── 音质选择 ──────────────────────────────────────────
+  /** 歌曲的所属来源：song.source 缺失时按「当前打开的视图」猜（歌单详情里跟着歌单走，
+   *  搜索结果里跟着搜索来源走）—— 比无条件拿「当前 UI 来源」过户更不容易串台。 */
+  function songSource(song: Song): string {
+    const own = String(song?.source ?? '').trim()
+    if (own) return own
+    if (playlistView.value) return playlistView.value.source
+    return source.value
+  }
+
   function qualitiesFor(song: Song): string[] {
     const own = Array.isArray(song?.qualities) && song.qualities.length ? song.qualities : null
     if (own) return own
-    return SOURCES.find((item) => item.id === (song.source || source.value))?.qualities ?? ['flac', '320', '128']
+    return SOURCES.find((item) => item.id === songSource(song))?.qualities ?? ['flac', '320', '128']
   }
 
   function qualityOf(song: Song): string {
@@ -523,8 +576,8 @@ export function createMusicStore(ctx: HostContext) {
 
   /** 切换歌单来源（原生版歌单段控件：清空歌单并回列表，再按新来源重新拉取）。 */
   function switchPlaylistSource(next: string): void {
-    if (source.value === next) return
-    source.value = next
+    if (playlistSource.value === next) return
+    playlistSource.value = next
     playlists.value = []
     playlistNotice.value = ''
     playlistError.value = ''
@@ -538,7 +591,8 @@ export function createMusicStore(ctx: HostContext) {
 
   // ── 单曲入队 ──────────────────────────────────────────
   /** 会员/付费歌曲确认：返回用户是否仍然入队。批量模式下确认一次，后续同类不再弹。 */
-  function askVipGate(items: Song[], mode: 'single' | 'batch'): Promise<boolean> {    return new Promise<boolean>((resolve) => {
+  function askVipGate(items: Song[], mode: 'single' | 'batch'): Promise<boolean> {
+    return new Promise<boolean>((resolve) => {
       vipGateResolver = resolve
       vipGate.value = { open: true, items, mode }
     })
@@ -571,13 +625,22 @@ export function createMusicStore(ctx: HostContext) {
   function vipAllows(song: Song): boolean {
     if (!song.vip) return true
     if (song.vip === 'paid') return false
-    const src = song.source || source.value
+    const src = songSource(song)
     const info = src === 'qq' ? vip.qq : vip.netease
     if (!info) return false
     return tierRank(info.tier) >= requiredRank(song.vip)
   }
 
+  /** 单曲入队的在途集合（source|song_id|quality）：连点两下时第二次直接拦下，
+   *  两个并发 enqueue 各自读后写索引，去重可能互相看不到 → 重复任务。 */
+  const enqueuingSongs = new Set<string>()
+
   async function downloadSong(song: Song): Promise<void> {
+    const quality = qualityOf(song)
+    const src = songSource(song)
+    const dedupeKey = `${src}|${String(song.id ?? '').trim()}|${quality}`
+    if (enqueuingSongs.has(dedupeKey)) return
+    enqueuingSongs.add(dedupeKey)
     try {
       if (!vipAllows(song)) {
         const ok = await askVipGate([song], 'single')
@@ -587,12 +650,12 @@ export function createMusicStore(ctx: HostContext) {
         }
       }
       const outcome = await api.enqueue(deps.kv, {
-        source: song.source || source.value,
+        source: src,
         song_id: String(song.id ?? '').trim(),
         name: song.name ?? '',
         singers: song.singers ?? '',
         album: song.album ?? '',
-        quality: qualityOf(song),
+        quality,
       })
       if (outcome.deduped) {
         toast('info', `队列里已有同一首（${qualityLabel(outcome.task.quality)}），已复用任务 ${outcome.task.id}`)
@@ -607,6 +670,7 @@ export function createMusicStore(ctx: HostContext) {
     } catch (error) {
       toast('error', loginHint(errorText(error)))
     } finally {
+      enqueuingSongs.delete(dedupeKey)
       await refresh()
     }
   }
@@ -619,6 +683,7 @@ export function createMusicStore(ctx: HostContext) {
   function stopQrPolling(): void {
     if (qrTimer !== null) {
       clearTimeout(qrTimer)
+      timers.delete(qrTimer)
       qrTimer = null
     }
   }
@@ -626,6 +691,7 @@ export function createMusicStore(ctx: HostContext) {
   function scheduleQrPoll(): void {
     stopQrPolling()
     qrTimer = setTimeout(() => {
+      if (qrTimer !== null) timers.delete(qrTimer)
       qrTimer = null
       void pollQr()
     }, POLL_INTERVAL_MS)
@@ -827,7 +893,7 @@ export function createMusicStore(ctx: HostContext) {
     playlistError.value = ''
     await withBusy('playlists', '歌单获取失败', async () => {
       try {
-        if (source.value === 'qq') {
+        if (playlistSource.value === 'qq') {
           const result = await api.qqPlaylists(deps)
           playlists.value = Array.isArray(result?.playlists) ? result.playlists : []
           // 后端提示（如缺 encryptUin 读不到收藏）原样展示。
@@ -853,11 +919,17 @@ export function createMusicStore(ctx: HostContext) {
   async function openPlaylist(playlist: PlaylistItem): Promise<void> {
     const id = String(playlist.id ?? '')
     if (!id) return
+    // busy 时先拦在入口：否则面板已经打开、取曲目被 withBusy 互斥吞掉，
+    // 用户看到的是「这个歌单还没有取到曲目」—— 把互斥误报成空歌单。
+    if (busy.value) {
+      toast('warning', '有操作正在进行，稍后再打开歌单')
+      return
+    }
     const special = String(playlist.special ?? '')
     playlistView.value = {
       id,
       name: String(playlist.name || ''),
-      source: source.value,
+      source: playlistSource.value,
       // 特殊入口用 'daily' / 'liked' 当目标（后端按目标分派）；普通歌单用歌单 id。
       target: special || id,
       special,
@@ -867,7 +939,7 @@ export function createMusicStore(ctx: HostContext) {
     playlistTotal.value = Number(playlist.count) || 0
     playlistPage.value = 1
     // 统一音质按来源换档（当前档位对这个来源无效时才换）。
-    playlistQuality.value = qualityForSource(source.value, playlistQuality.value)
+    playlistQuality.value = qualityForSource(playlistSource.value, playlistQuality.value)
     await fetchPlaylistSongs(1)
   }
 
@@ -1207,6 +1279,8 @@ export function createMusicStore(ctx: HostContext) {
   /** 卸载：停定时器、退订、标记已释放。 */
   function dispose(): void {
     disposed.value = true
+    // 挂起的 VIP 确认弹窗：页面都没了，等它的 Promise 永远等不到答案 —— 按「取消」放行。
+    resolveVipGate(false)
     stopQrPolling()
     if (taskTimer !== null) {
       clearInterval(taskTimer)
@@ -1248,6 +1322,7 @@ export function createMusicStore(ctx: HostContext) {
     searchResults,
     searchPage,
     searchTotal,
+    playlistSource,
     playlists,
     playlistView,
     playlistSongs,

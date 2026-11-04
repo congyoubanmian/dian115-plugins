@@ -82,6 +82,10 @@ export interface DoubanStore {
   activeTab: Ref<TabKey>
   toasts: Ref<ToastItem[]>
   busyText: ComputedRef<string>
+  /** 批量订阅进度（进行中时非 null）。 */
+  batchProgress: Ref<{ done: number; total: number } | null>
+  /** 请求取消批量订阅（当前条目收尾后生效）。 */
+  cancelBatch(): void
   docSettings: ComputedRef<DocSettings>
   queueItems: ComputedRef<QueueItem[]>
   wishItems: ComputedRef<WishItem[]>
@@ -180,7 +184,24 @@ export function createDoubanStore(ctx: HostContext): DoubanStore {
     return index
   })
   const dueItems = computed<QueueItem[]>(() => queueItems.value.filter((item) => isDueItem(item)))
-  const busyText = computed(() => (busy.value === '' ? '' : BUSY_TEXT[busy.value] || '正在执行…'))
+  /** 批量订阅的进度（done/total）；非批量时段为 null。 */
+  const batchProgress = ref<{ done: number; total: number } | null>(null)
+  /** 批量订阅取消标记：置 true 后当前条目处理完就停（已提交的任务撤不回）。 */
+  let batchCancelled = false
+  const busyText = computed(() => {
+    if (busy.value === '') return ''
+    const base = BUSY_TEXT[busy.value] || '正在执行…'
+    const progress = batchProgress.value
+    if (busy.value === 'subscribe-now' && progress) {
+      return `${base}（${progress.done}/${progress.total}）`
+    }
+    return base
+  })
+
+  /** 请求取消进行中的批量订阅（等当前这条跑完才生效，已经提交的任务撤不回）。 */
+  function cancelBatch(): void {
+    batchCancelled = true
+  }
 
   function isDueItem(item: QueueItem): boolean {
     // 已订阅 / 被过滤 / 墓碑拦下的是终态，不算「到期待订阅」（批量订阅也不能把它们捞回来）
@@ -270,6 +291,9 @@ export function createDoubanStore(ctx: HostContext): DoubanStore {
     )
     if (run?.status === 'running') {
       toast('info', message || `${label}仍在后台运行`)
+    } else if (run?.status === 'attention_required') {
+      // 宿主重启打断、需要人工核对：绝不能落到成功分支（否则用户不会去核对）。
+      toast('warning', message || `${label}需要核对（宿主任务队列中标记为 attention_required）`)
     } else if (run?.status === 'failed' || result.status === 'failed') {
       toast('error', message || `${label}失败`)
     } else if (run?.status === 'cancelled') {
@@ -454,12 +478,16 @@ export function createDoubanStore(ctx: HostContext): DoubanStore {
       '继续吗？'
     if (!confirm(question)) return
     busy.value = 'subscribe-now'
+    batchCancelled = false
+    batchProgress.value = { done: 0, total: list.length }
     let done = 0
     let failed = 0
     let running = 0
+    let processed = 0
     try {
       for (const item of list) {
-        if (disposed) break
+        // 取消请求等当前条目收尾后生效；disposed 直接放手（页面已关，别再发新任务）。
+        if (disposed || batchCancelled) break
         try {
           const finished = await invokeJob('subscribe-now', { douban_ref: item.douban_ref })
           const raw = finished?.result
@@ -470,17 +498,21 @@ export function createDoubanStore(ctx: HostContext): DoubanStore {
         } catch {
           failed += 1
         }
+        processed += 1
+        batchProgress.value = { done: processed, total: list.length }
       }
       if (!disposed) {
         const runningText = running > 0 ? `，${running} 条仍在后台运行` : ''
+        const skippedText = processed < list.length ? `，已跳过剩余 ${list.length - processed} 条` : ''
         toast(
           failed === 0 && running === 0 ? 'success' : 'warning',
-          `批量订阅完成：成功 ${done} 条，失败 ${failed} 条${runningText}`,
+          `批量订阅${batchCancelled ? '已取消：' : '完成：'}成功 ${done} 条，失败 ${failed} 条${runningText}${skippedText}`,
         )
       }
     } finally {
       if (!disposed) {
         busy.value = ''
+        batchProgress.value = null
         await refreshUi()
       }
     }
@@ -515,6 +547,8 @@ export function createDoubanStore(ctx: HostContext): DoubanStore {
     activeTab,
     toasts,
     busyText,
+    batchProgress,
+    cancelBatch,
     docSettings,
     queueItems,
     wishItems,

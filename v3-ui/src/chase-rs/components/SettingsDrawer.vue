@@ -5,7 +5,7 @@
 // 「管理」页那份表单的同一份数据，不另存一份，免得两处不一致。
 // 保存只提交被改动的键（白名单逐键合并在插件 lib/settings.js 里做）。
 
-import { computed, reactive, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import { NButton } from 'naive-ui'
 import { X } from '@lucide/vue'
 import { useChaseStore } from '../use-chase'
@@ -57,20 +57,63 @@ function syncForm(): void {
   Object.assign(baseline, store.settings)
 }
 
+/** 打开前的焦点位置：关闭后还原（宿主页面同 tab 顺序里来回不迷路）。 */
+let restoreFocusTo: HTMLElement | null = null
+const drawerEl = ref<HTMLElement | null>(null)
+
+function onKeydown(event: KeyboardEvent): void {
+  if (event.key === 'Escape') store.closeSettings()
+}
+
 watch(
   () => store.drawerOpen,
   (open) => {
-    if (open) syncForm()
+    if (open) {
+      syncForm()
+      // Esc 关抽屉要挂 window：焦点一开始不在抽屉里（还在「设置」按钮上），
+      // 挂在遮罩上的 keydown 收不到这个键。打开时同时把焦点移进抽屉。
+      restoreFocusTo = document.activeElement instanceof HTMLElement ? document.activeElement : null
+      window.addEventListener('keydown', onKeydown)
+      void nextTick(() => {
+        const first = drawerEl.value?.querySelector<HTMLElement>('input, select, button')
+        first?.focus()
+      })
+    } else {
+      window.removeEventListener('keydown', onKeydown)
+      restoreFocusTo?.focus()
+      restoreFocusTo = null
+    }
   },
 )
 
+onBeforeUnmount(() => {
+  window.removeEventListener('keydown', onKeydown)
+})
+
 // 实例列表变了以后，保留仍然存在的选择；原来的实例没了就回到「跟随宿主默认」。
+// 例外：实例列表整体读空（只剩 -1/0 两个默认项）多半是「这一轮解析失败」，
+// 这时把用户的选择改成 -1 并可能被顺手保存 —— 读到实例才做存在性校验。
 watch(
   () => store.instanceOptions.map((option) => option.value),
   (values) => {
+    if (values.length <= 2) return
     if (!values.includes(form.emby_proxy_id)) form.emby_proxy_id = -1
   },
 )
+
+/** 当前选中的实例在选项里没有（列表读空或实例已删）时给 select 补一个占位项，
+ *  否则 select 显示成空白、用户看不出表单里还留着旧值。 */
+const embySelectOptions = computed(() => {
+  const options = [...store.instanceOptions]
+  if (!options.some((option) => option.value === form.emby_proxy_id)) {
+    options.push({
+      label: `实例 #${form.emby_proxy_id}（当前选择，列表里暂时没有）`,
+      value: form.emby_proxy_id,
+      disabled: false,
+    })
+  }
+  return options
+})
 
 /** 只提交被改动的键。 */
 const changedKeys = computed(() => {
@@ -117,9 +160,8 @@ async function save(): Promise<void> {
     v-if="store.drawerOpen"
     class="c-overlay"
     @click.self="store.closeSettings()"
-    @keydown.esc="store.closeSettings()"
   >
-    <div class="c-drawer" role="dialog" aria-modal="true" aria-label="追剧管家设置">
+    <div ref="drawerEl" class="c-drawer" role="dialog" aria-modal="true" aria-label="追剧管家设置">
       <div class="c-drawer-head">
         <h3>追剧管家设置</h3>
         <NButton class="c-icon-btn" quaternary circle aria-label="关闭" title="关闭" @click="store.closeSettings()">
@@ -148,7 +190,7 @@ async function save(): Promise<void> {
             v-model.number="form.emby_proxy_id"
           >
             <option
-              v-for="option in store.instanceOptions"
+              v-for="option in embySelectOptions"
               :key="option.value"
               :value="option.value"
               :disabled="option.disabled"

@@ -51,6 +51,26 @@ const keyword = ref('')
 
 const listKeys = computed(() => Object.keys(form.lists))
 
+/**
+ * 表单快照：resetForm 写一次 = 「干净」基准；用户动过表单后与基准不同 = 有未保存改动。
+ * 用快照比对而不是逐字段 edited 标记，是因为表单字段多（含嵌套 lists），
+ * 逐个挂 onchange 会漏（checkbox、开关）——跟 music 的 SettingsPanel 一个思路。
+ */
+function formSnapshot(): string {
+  const lists: Record<string, ListForm> = {}
+  for (const key of Object.keys(form.lists).sort()) lists[key] = { ...form.lists[key] }
+  return JSON.stringify({
+    ...form,
+    lists,
+  })
+}
+
+// 初始值与表单初值一致，保证 immediate watch 的首次运行走的是「干净 → 填充」分支。
+const cleanSnapshot = ref(formSnapshot())
+
+/** 有未保存改动：后台刷新不能覆盖用户输入（粘贴中的 Cookie 会直接丢）。 */
+const dirty = computed(() => formSnapshot() !== cleanSnapshot.value)
+
 /** 数据重读后把表单刷回当前值（与原生版每次 render 重建表单一致）。 */
 function resetForm(): void {
   const f = flat.value
@@ -84,9 +104,24 @@ function resetForm(): void {
     }
   }
   form.lists = lists
+  cleanSnapshot.value = formSnapshot()
 }
 
-watch([() => flat.value, () => docSettings.value], resetForm, { immediate: true })
+watch(
+  [() => flat.value, () => docSettings.value],
+  () => {
+    // 用户在编辑中时不跟随刷新（与 music SettingsPanel 的 edited 标记一致）：
+    // 后台的任意一次状态重读（动作收尾、榜单刷新）都不该把未保存的输入抹掉。
+    if (dirty.value) return
+    resetForm()
+  },
+  { immediate: true },
+)
+
+/** 放弃未保存的改动，表单刷回当前生效值。 */
+function revert(): void {
+  resetForm()
+}
 
 /** 数字字段读取与校验（错误文案与原生版一致）。 */
 function readNumber(
@@ -594,7 +629,12 @@ function onKeywordInput(event: Event): void {
 
     <!-- 保存栏 -->
     <div class="db-savebar">
-      <span class="db-save-hint">改完点保存；账号口令留空 = 保持原值，勾选「清除」才会删除。</span>
+      <span class="db-save-hint">
+        {{ dirty ? '有未保存的改动（后台刷新不会覆盖）' : '改完点保存；账号口令留空 = 保持原值，勾选「清除」才会删除。' }}
+      </span>
+      <NButton size="small" quaternary :disabled="locked || !dirty" data-busy-lock="1" @click="revert">
+        撤销改动
+      </NButton>
       <NButton size="small" quaternary :disabled="locked" data-busy-lock="1" @click="store.refreshUi()">
         重新读取
       </NButton>

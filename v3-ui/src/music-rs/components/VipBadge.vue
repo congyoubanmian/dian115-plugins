@@ -13,7 +13,10 @@ const label = computed(() => ({ svip: 'SVIP', vip: 'VIP', paid: '付费专辑' }
 </template>
 
 <style scoped>
+/* 文字色与 QualityTag 同思路：向 --app-text 混一档，明/暗主题都有可读对比度
+   （之前是固定深色系 #a16207/#c2410c，深色背景下糊成一团）。 */
 .vip-tag {
+  --q: var(--app-text-secondary, #6b7280);
   flex: none;
   font-size: 10px;
   font-weight: 700;
@@ -22,16 +25,17 @@ const label = computed(() => ({ svip: 'SVIP', vip: 'VIP', paid: '付费专辑' }
   border-radius: 5px;
   letter-spacing: 0.02em;
   white-space: nowrap;
+  color: var(--q);
 }
 
 .vip-tag--vip {
-  color: #a16207;
+  --q: color-mix(in srgb, #f59e0b 65%, var(--app-text, #1f2329));
   background: color-mix(in srgb, #f59e0b 18%, transparent);
   border: 1px solid color-mix(in srgb, #f59e0b 35%, transparent);
 }
 
 .vip-tag--svip {
-  color: #c2410c;
+  --q: color-mix(in srgb, #f97316 62%, var(--app-text, #1f2329));
   background: linear-gradient(
     135deg,
     color-mix(in srgb, #f97316 24%, transparent),
@@ -41,7 +45,7 @@ const label = computed(() => ({ svip: 'SVIP', vip: 'VIP', paid: '付费专辑' }
 }
 
 .vip-tag--paid {
-  color: #7c3aed;
+  --q: color-mix(in srgb, #8b5cf6 68%, var(--app-text, #1f2329));
   background: color-mix(in srgb, #8b5cf6 16%, transparent);
   border: 1px solid color-mix(in srgb, #8b5cf6 32%, transparent);
 }

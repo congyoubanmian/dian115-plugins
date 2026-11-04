@@ -20,7 +20,7 @@ import Skeleton from '../../shared/components/Skeleton.vue'
 
 const store = useMusicStore()
 const {
-  source,
+  playlistSource,
   playlists,
   playlistView,
   playlistSongs,
@@ -42,12 +42,14 @@ const {
 const coverFailed = reactive(new Set<string>())
 
 /** 详情区的音质档位：按打开时那个歌单的来源取（别跟着搜索页的来源漂）。 */
-const detailQualities = computed<string[]>(() => qualitiesOfSource(playlistView.value?.source ?? source.value))
+const detailQualities = computed<string[]>(() =>
+  qualitiesOfSource(playlistView.value?.source ?? playlistSource.value),
+)
 
 /** 歌单分段：QQ 分「我创建的 / 收藏的」；网易云只有一张列表（不分段）。
  *  empty 是该分区的空态文案（空数组时显示；空串 = 不显示）。 */
 const sections = computed<{ key: string; title: string; items: PlaylistItem[]; empty: string }[]>(() => {
-  if (source.value !== 'qq') {
+  if (playlistSource.value !== 'qq') {
     return playlists.value.length ? [{ key: 'all', title: '', items: playlists.value, empty: '' }] : []
   }
   return [
@@ -96,7 +98,7 @@ function onQualityChange(event: Event): void {
           v-for="item in SOURCES"
           :key="item.id"
           type="button"
-          :class="{ on: source === item.id }"
+          :class="{ on: playlistSource === item.id }"
           @click="store.switchPlaylistSource(item.id)"
         >
           {{ item.name }}
@@ -162,7 +164,7 @@ function onQualityChange(event: Event): void {
       <p v-else-if="!playlistError && section.empty" class="hint">{{ section.empty }}</p>
     </section>
 
-    <p v-if="source === 'netease' && !playlists.length && !playlistError" class="hint">
+    <p v-if="playlistSource === 'netease' && !playlists.length && !playlistError" class="hint">
       第一次进这个页签会拉取网易云「我的歌单」（需登录）。
     </p>
   </div>

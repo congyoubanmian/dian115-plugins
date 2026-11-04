@@ -70,9 +70,14 @@ const cover = computed<string>(() => {
   const task = current.value
   if (!task?.song_id) return ''
   const id = String(task.song_id)
-  const match = [...searchResults.value, ...playlistSongs.value].find(
-    (song) => String(song.id) === id && (!task.source || !song.source || song.source === task.source),
-  )
+  // 两次 find 而不是先复制拼接整份歌单：歌单上千首时每次计算都建一遍大数组。
+  const match =
+    searchResults.value.find(
+      (song) => String(song.id) === id && (!task.source || !song.source || song.source === task.source),
+    ) ??
+    playlistSongs.value.find(
+      (song) => String(song.id) === id && (!task.source || !song.source || song.source === task.source),
+    )
   return match?.cover ? covers.get(match.cover) : ''
 })
 

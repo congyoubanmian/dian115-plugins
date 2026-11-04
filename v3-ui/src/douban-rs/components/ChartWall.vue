@@ -35,31 +35,50 @@ const layouts = [
 
 const listKeys = computed(() => sortListKeys(Object.keys(snapshotLists.value)))
 
-function itemsOf(key: string): ChartItem[] {
-  const items = snapshotLists.value[key]
-  return Array.isArray(items) ? items : []
-}
-
-/** 带稳定 key 的条目（同一豆瓣条目在榜单里重复出现时追加序号，避免 key 冲突）。 */
-function keyedItems(key: string): Array<{ id: string; item: ChartItem; position: number }> {
-  const seen = new Set<string>()
-  return itemsOf(key).map((item, index) => {
-    let id = item.douban_ref ? `ref:${item.douban_ref}` : `idx:${index}`
-    if (seen.has(id)) id = `${id}#${index}`
-    seen.add(id)
-    return { id, item, position: index + 1 }
-  })
-}
-
-function hintOf(key: string): string {
-  return `${listHint(key, docSettings.value.lists?.[key])} · ${itemsOf(key).length} 条`
-}
-
 function stateOf(item: ChartItem): { label: string; tone: string; state: string } {
   const queued = item.douban_ref ? queueIndex.value.get(item.douban_ref) : undefined
   if (!queued) return { label: '', tone: 'muted', state: '' }
   const meta = QUEUE_STATE_META[queued.state ?? ''] ?? { label: queued.state || '在队列', cls: 'muted' }
   return { label: meta.label, tone: meta.cls, state: queued.state ?? '' }
+}
+
+/** 榜单 → 带稳定 key 与队列状态的条目（一次 computed 算完：
+ *  之前渲染时每张卡片调 3 次 stateOf + 每次重建 keyedItems 数组，
+ *  100 张卡的墙一次状态变化就是几百次对象分配）。 */
+interface WallEntry {
+  id: string
+  item: ChartItem
+  position: number
+  label: string
+  tone: string
+  state: string
+}
+
+const wallItems = computed<Map<string, WallEntry[]>>(() => {
+  const walls = new Map<string, WallEntry[]>()
+  for (const [key, items] of Object.entries(snapshotLists.value)) {
+    if (!Array.isArray(items)) continue
+    const seen = new Set<string>()
+    walls.set(
+      key,
+      items.map((item, index) => {
+        let id = item.douban_ref ? `ref:${item.douban_ref}` : `idx:${index}`
+        if (seen.has(id)) id = `${id}#${index}`
+        seen.add(id)
+        const state = stateOf(item)
+        return { id, item, position: index + 1, ...state }
+      }),
+    )
+  }
+  return walls
+})
+
+function itemsOf(key: string): WallEntry[] {
+  return wallItems.value.get(key) ?? []
+}
+
+function hintOf(key: string): string {
+  return `${listHint(key, docSettings.value.lists?.[key])} · ${itemsOf(key).length} 条`
 }
 
 function onZoom(item: ChartItem, payload: { url: string; title: string }): void {
@@ -178,15 +197,15 @@ function scrollTrack(key: string, direction: 1 | -1): void {
         role="list"
       >
         <PosterCard
-          v-for="entry in keyedItems(key)"
+          v-for="entry in itemsOf(key)"
           :key="entry.id"
           role="listitem"
           class="db-wall__cell"
           :item="entry.item"
           :position="entry.position"
-          :queue-label="stateOf(entry.item).label"
-          :queue-tone="stateOf(entry.item).tone"
-          :queue-state="stateOf(entry.item).state"
+          :queue-label="entry.label"
+          :queue-tone="entry.tone"
+          :queue-state="entry.state"
           :locked="locked"
           @zoom="onZoom(entry.item, $event)"
           @subscribe="subscribe(entry.item)"

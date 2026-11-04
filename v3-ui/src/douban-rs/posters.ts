@@ -12,7 +12,7 @@
 
 import { inject, provide, reactive, type InjectionKey } from 'vue'
 import type { HostContext } from '../shared/types'
-import { POSTER_CACHE_LIMIT, POSTER_CONCURRENCY } from './constants'
+import { POSTER_CACHE_LIMIT, POSTER_CONCURRENCY, POSTER_FAILURE_RETRY_MS } from './constants'
 // @ts-ignore -- 纯 JS 模块，没有类型声明（与 lib-bridge.ts 引 v3/lib/*.js 同一模式）
 import { createPosterFetcher } from './poster-chain.js'
 import type { TaskRun } from './store'
@@ -73,6 +73,8 @@ export function createPosterLoader(
   })
   const entries = reactive(new Map<string, PosterState>())
   const cache = new Map<string, string>()
+  /** 取图失败的时刻（缓存里的 '' 条目）：过冷却窗口后允许重试。 */
+  const failures = new Map<string, number>()
   const queue: string[] = []
   const queued = new Set<string>()
   const inflight = new Set<string>()
@@ -119,10 +121,16 @@ export function createPosterLoader(
       // LRU：命中挪到末尾，淘汰总是最久没用到的那张
       cache.delete(clean)
       cache.set(clean, cached)
-      const entry = ensureEntry(clean)
-      entry.status = cached ? 'ready' : 'error'
-      entry.src = cached
-      return
+      // 失败条目（''）只在冷却窗口内按 error 展示：过后放回去重试，否则一次
+      // 网络抖动就把这张海报永久锁死在「不可用」上。
+      if (cached === '' && Date.now() - (failures.get(clean) ?? 0) > POSTER_FAILURE_RETRY_MS) {
+        cache.delete(clean)
+      } else {
+        const entry = ensureEntry(clean)
+        entry.status = cached ? 'ready' : 'error'
+        entry.src = cached
+        return
+      }
     }
     const entry = ensureEntry(clean)
     if (entry.status === 'loading') return
@@ -145,6 +153,7 @@ export function createPosterLoader(
     if (clean === '' || inflight.has(clean)) return
     cache.delete(clean)
     entries.delete(clean)
+    failures.delete(clean)
   }
 
   function enqueue(url: string): void {
@@ -172,6 +181,8 @@ export function createPosterLoader(
           // 缓存条目只存 URL 字符串（downloadURL 或 data:），不再塞 base64 大块头
           if (disposed) return
           cache.set(url, srcUrl || '')
+          if (srcUrl) failures.delete(url)
+          else failures.set(url, Date.now())
           // 缓存与响应式 entries 一起封顶：被淘汰的 URL 两边都删，避免 entries 无限增长
           // 拖着 data: 大字符串不放（仍挂在页面上的海报会在 PosterImg 里按需重取）
           for (const key of cache.keys()) {
@@ -179,6 +190,7 @@ export function createPosterLoader(
             if (key === url) continue
             cache.delete(key)
             entries.delete(key)
+            failures.delete(key)
           }
           const target = ensureEntry(url)
           target.status = srcUrl ? 'ready' : 'error'
@@ -201,6 +213,7 @@ export function createPosterLoader(
     inflight.clear()
     cache.clear()
     entries.clear()
+    failures.clear()
   }
 
   return { entries, request, release, forget, dispose }

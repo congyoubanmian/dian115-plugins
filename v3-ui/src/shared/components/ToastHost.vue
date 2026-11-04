@@ -42,7 +42,14 @@ const layerStyle = computed<Record<string, string | number>>(() => {
     role="status"
     aria-live="polite"
   >
-    <div v-for="item in items" :key="item.id" class="ui-toast" :class="`ui-toast--${item.kind}`" role="status">
+    <!-- error 用 role=alert（assertive，读屏立即播报）；其余仍是外层 status（polite）。 -->
+    <div
+      v-for="item in items"
+      :key="item.id"
+      class="ui-toast"
+      :class="`ui-toast--${item.kind}`"
+      :role="item.kind === 'error' ? 'alert' : undefined"
+    >
       {{ item.message }}
     </div>
   </TransitionGroup>

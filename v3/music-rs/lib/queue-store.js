@@ -57,55 +57,75 @@ export async function deleteTask(kv, taskId) {
  * 入队（去重：同 source+song_id+quality 的 queued/downloading/copying 任务直接复用）。
  * 去重走索引（索引带 source/song_id/quality），存储调用数与队列长度无关。
  * 返回 `{task, deduped}`。
+ *
+ * 写入顺序：先分片 task.<id>、后索引。两步之间被宿主中断时留下的是「有分片、
+ * 索引里没有」的孤儿分片 —— 「索引对账」(adopt) 能把它找回；反过来（先索引后分片）
+ * 留下的是「索引指向缺失分片」，pump 读到只能停下报错（lib/pump.js 的一致性检查），
+ * 是不可自愈的形态。分片先写即使 index CAS 最终失败，孤儿也不影响泵推进。
  */
 export async function enqueue(kv, request) {
   if (!String(request.source ?? '').trim()) throw new Error('缺少音乐来源')
   if (!String(request.song_id ?? '').trim()) throw new Error('缺少歌曲标识')
   if (!String(request.quality ?? '').trim()) throw new Error('缺少音质')
   const millis = nowMs()
-  const plan = (currentIndex) => {
+  const seed = `${request.source}|${request.song_id}|${request.quality}|${millis}`
+
+  // ① 先按当前索引去重（命中就结束，不产生任何写）。
+  const current = await loadIndex(kv)
+  const existing = current.find((entry) =>
+    (entry.status === STATUS_QUEUED || entry.status === STATUS_DOWNLOADING || entry.status === STATUS_COPYING) &&
+    entry.source === request.source &&
+    entry.song_id === request.song_id &&
+    entry.quality === request.quality)
+  if (existing) {
+    const task = await loadTask(kv, existing.id)
+    if (!task) throw new Error(`去重命中但分片缺失: ${existing.id}`)
+    return { task, deduped: true }
+  }
+
+  // ② 新任务 id 避开全队列已有的 id（不只进行中的），暂存文件名靠它唯一。
+  //    真实扩展名要等取链才知道；这里先按 flac 兜底，pump 取链后用真实扩展名更新。
+  const id = allocateId(current.map((entry) => entry.id), seed)
+  const task = {
+    id,
+    source: request.source,
+    song_id: request.song_id,
+    name: request.name ?? '',
+    singers: request.singers ?? '',
+    album: request.album ?? '',
+    quality: request.quality,
+    out_name: outName(request.singers ?? '', request.name ?? '', 'flac'),
+    staged_path: '',
+    status: STATUS_QUEUED,
+    job_ref: '',
+    cd2_ref: '',
+    attempts: 0,
+    retry_round: 0,
+    error: '',
+    created_ms: millis,
+    updated_ms: millis,
+  }
+
+  // ③ 先落分片，再 CAS 挂索引；CAS 期间别人抢建了同 key 的进行中任务 →
+  //    复用对方任务（本分片成为孤儿，等「索引对账」或过期清理）。
+  await kv.set(taskKey(task.id), task)
+  const { hit } = await casWrite(kv, TASKS_IDX_KEY, (currentIndex) => {
     const index = Array.isArray(currentIndex) ? [...currentIndex] : []
-    const hit = index.find((entry) =>
+    const dup = index.find((entry) =>
       (entry.status === STATUS_QUEUED || entry.status === STATUS_DOWNLOADING || entry.status === STATUS_COPYING) &&
       entry.source === request.source &&
       entry.song_id === request.song_id &&
       entry.quality === request.quality)
-    if (hit) return { next: index, result: { hit } }
-    // 新建：id 必须避开全队列已有的 id（不只进行中的），暂存文件名靠它唯一。
-    const seed = `${request.source}|${request.song_id}|${request.quality}|${millis}`
-    const taken = index.map((entry) => entry.id)
-    const id = allocateId(taken, seed)
-    // 真实扩展名要等取链才知道；这里先按 flac 兜底，pump 取链后用真实扩展名更新。
-    const task = {
-      id,
-      source: request.source,
-      song_id: request.song_id,
-      name: request.name ?? '',
-      singers: request.singers ?? '',
-      album: request.album ?? '',
-      quality: request.quality,
-      out_name: outName(request.singers ?? '', request.name ?? '', 'flac'),
-      staged_path: '',
-      status: STATUS_QUEUED,
-      job_ref: '',
-      cd2_ref: '',
-      attempts: 0,
-      retry_round: 0,
-      error: '',
-      created_ms: millis,
-      updated_ms: millis,
-    }
+    if (dup) return { next: index, result: { hit: dup } }
     index.push(indexEntryOf(task))
     sortIndex(index)
-    return { next: index, result: { task } }
-  }
-  const { hit, task } = await casWrite(kv, TASKS_IDX_KEY, plan)
+    return { next: index, result: { hit: null } }
+  })
   if (hit) {
-    const existing = await loadTask(kv, hit.id)
-    if (!existing) throw new Error(`去重命中但分片缺失: ${hit.id}`)
-    return { task: existing, deduped: true }
+    const winner = await loadTask(kv, hit.id)
+    if (!winner) throw new Error(`去重命中但分片缺失: ${hit.id}`)
+    return { task: winner, deduped: true }
   }
-  await kv.set(taskKey(task.id), task)
   return { task, deduped: false }
 }
 
