@@ -398,7 +398,9 @@ export function createMusicStore(ctx: HostContext) {
       const cacheKey = `vip.${source}`
       try {
         const cached = await deps.kv.get(cacheKey)
-        if (cached && Date.now() - Number(cached.fetched_ms ?? 0) < VIP_CACHE_MS) {
+        // 未识别的档位（QQ 字段待适配）只缓存 5 分钟，避免升级后仍卡在旧结果。
+        const ttl = cached?.info?.tier === 'unknown' ? 5 * 60 * 1000 : VIP_CACHE_MS
+        if (cached && Date.now() - Number(cached.fetched_ms ?? 0) < ttl) {
           vip[source] = (cached.info ?? null) as VipInfo | null
           continue
         }

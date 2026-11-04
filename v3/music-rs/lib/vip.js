@@ -8,9 +8,11 @@
 //   识别不到会员字段时返回 tier='unknown'，界面只显示「已登录」，不编造档位。
 
 import { CHROME_UA } from './eapi.js'
-import { neteaseCookieHeader, qqCookieHeader } from './cookies.js'
+import { neteaseCookieHeader, qqCookieHeader, uinFromCookies } from './cookies.js'
 import { loadCookies, httpRequest } from './music-api.js'
 import { pickNumber } from './vip-tag.js'
+import { hash33 } from './encoding.js'
+import { addLog } from './logs.js'
 
 export { songVipTag, NETEASE_SVIP_QUALITY } from './vip-tag.js'
 
@@ -84,7 +86,8 @@ export async function fetchNeteaseVip(deps) {
 
 /** QQ 用户信息 → 会员档位。字段名以实际响应为准，识别不到就是 unknown。 */
 export function parseQqVip(body) {
-  const data = asObject(body?.req_1?.data) ?? asObject(body?.data) ?? asObject(body)
+  const data = asObject(body?.req_1?.data) ?? asObject(body?.req_0?.data) ?? asObject(body?.req?.data)
+    ?? asObject(body?.data) ?? asObject(body?.result) ?? asObject(body)
   if (!data) return { tier: 'unknown', level: 0, expire_ms: 0, icon: '', secondary: [] }
   const svip = pickNumber(data, ['svip', 'is_svip', 'isSvip', 'svipFlag', 'super_vip', 'superVip'])
   const vip = pickNumber(data, ['vip', 'isvip', 'is_vip', 'vip_status', 'vipStatus', 'green_vip', 'greenVip'])
@@ -101,8 +104,17 @@ export async function fetchQqVip(deps) {
   const jar = await loadCookies(deps.kv, 'qq')
   const cookie = qqCookieHeader(jar)
   if (!cookie) return null
+  // musicu 的用户数据需要 comm.uin 与 g_tk（g_tk = hash33(p_skey)），否则可能只回空壳。
+  const uin = Number(uinFromCookies(jar)) || 0
+  const pSkey = String(jar.p_skey ?? jar.p_skey_enc ?? '')
+  const gtk = pSkey ? String(hash33(pSkey)) : ''
+  const comm = { ct: 24, cv: 0, format: 'json', inCharset: 'utf-8', outCharset: 'utf-8', uin }
+  if (gtk) {
+    comm.g_tk = gtk
+    comm.g_tk_new_20200303 = gtk
+  }
   const body = JSON.stringify({
-    comm: { ct: 24, cv: 0, format: 'json', inCharset: 'utf-8', outCharset: 'utf-8' },
+    comm,
     req_1: { module: 'UserInfo.UserInfoServer', method: 'GetUserInfo', param: {} },
   })
   const response = await httpRequest(deps, {
@@ -118,5 +130,18 @@ export async function fetchQqVip(deps) {
     timeoutSeconds: 20,
   })
   if (response.status !== 200) throw new Error(`QQ 用户信息 HTTP ${response.status}`)
-  return parseQqVip(JSON.parse(response.text || '{}'))
+  const parsed = JSON.parse(response.text || '{}')
+  const info = parseQqVip(parsed)
+  if (info.tier === 'unknown') {
+    // 诊断只记字段名，不记任何值：便于后续按真实响应适配，不泄露账号信息。
+    const data = parsed?.req_1?.data ?? parsed?.data ?? parsed
+    const keys = data && typeof data === 'object' ? Object.keys(data).slice(0, 30) : []
+    const code = parsed?.req_1?.code ?? parsed?.code
+    await addLog(
+      deps.kv,
+      'info',
+      `QQ 会员字段待适配（仅字段名，code=${code ?? '未知'}）：${keys.join(',') || '空响应'}`,
+    )
+  }
+  return info
 }
