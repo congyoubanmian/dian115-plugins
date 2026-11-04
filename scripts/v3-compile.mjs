@@ -287,6 +287,19 @@ if (command === 'tools') {
       console.error(`SHA256 校验失败：返回值 ${expected || '(缺失)'}，实算 ${sha256} —— 产物不可信，丢弃。`)
       process.exit(1)
     }
+    // 编译返回的版本号必须等于清单版本：索引/host 校验都以包内真实 version 为准，
+    // 对不上说明签发链路与源码漂移（比如拿旧清单编的包）。
+    const manifestVersion = (() => {
+      try {
+        return JSON.parse(readFileSync(resolve(directory, 'plugin.json'), 'utf8')).version ?? ''
+      } catch {
+        return ''
+      }
+    })()
+    if (manifestVersion && structured.version && structured.version !== manifestVersion) {
+      console.error(`版本不一致：清单 ${manifestVersion}，签发结果 ${structured.version} —— 请确认 plugin.json 与签发链路。`)
+      process.exit(1)
+    }
     const rawName = String(structured.filename ?? structured.file_name ?? structured.name ?? '')
     // filename 是服务端返回值：只做 basename + 白名单后缀校验，
     // 拒绝绝对路径/../（resolve(root, outDir, '/etc/…') 会盖掉前缀写出仓库根）。
