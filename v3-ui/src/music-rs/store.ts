@@ -538,8 +538,7 @@ export function createMusicStore(ctx: HostContext) {
 
   // ── 单曲入队 ──────────────────────────────────────────
   /** 会员/付费歌曲确认：返回用户是否仍然入队。批量模式下确认一次，后续同类不再弹。 */
-  function askVipGate(items: Song[], mode: 'single' | 'batch'): Promise<boolean> {
-    return new Promise<boolean>((resolve) => {
+  function askVipGate(items: Song[], mode: 'single' | 'batch'): Promise<boolean> {    return new Promise<boolean>((resolve) => {
       vipGateResolver = resolve
       vipGate.value = { open: true, items, mode }
     })
@@ -553,9 +552,34 @@ export function createMusicStore(ctx: HostContext) {
     if (resolve) resolve(ok)
   }
 
+  /** 会员档位权重：免费 0 / 音乐包 1 / 黑胶（绿钻）2 / SVIP 3。 */
+  function tierRank(tier: string | undefined): number {
+    if (tier === 'svip') return 3
+    if (tier === 'vip') return 2
+    if (tier === 'music_package') return 1
+    return 0
+  }
+
+  /** 这首歌需要多少档会员：VIP=2、SVIP=3；付费专辑不属于会员权益，始终要确认。 */
+  function requiredRank(tag: string | undefined): number {
+    if (tag === 'svip') return 3
+    if (tag === 'vip') return 2
+    return 0
+  }
+
+  /** 用户当前会员是否能直接下载这首歌：付费专辑/未登录/档位未知 → 需要确认。 */
+  function vipAllows(song: Song): boolean {
+    if (!song.vip) return true
+    if (song.vip === 'paid') return false
+    const src = song.source || source.value
+    const info = src === 'qq' ? vip.qq : vip.netease
+    if (!info) return false
+    return tierRank(info.tier) >= requiredRank(song.vip)
+  }
+
   async function downloadSong(song: Song): Promise<void> {
     try {
-      if (song.vip) {
+      if (!vipAllows(song)) {
         const ok = await askVipGate([song], 'single')
         if (!ok) {
           toast('info', `已取消入队: ${song.name ?? ''}`)
@@ -952,7 +976,7 @@ export function createMusicStore(ctx: HostContext) {
         const result = await api.queuePlaylistPages(
           async (song: Song) => {
             if (cancelled()) throw new Error('页面已关闭')
-            if (song.vip && !vipApproved) {
+            if (!vipAllows(song) && !vipApproved) {
               vipApproved = await askVipGate([song], 'batch')
               if (!vipApproved) throw new Error('用户未确认会员歌曲')
             }
