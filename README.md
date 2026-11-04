@@ -2,10 +2,10 @@
 
 DIAN115 自定义插件市场仓库：**当前只维护 v3（schema 3）插件**——宿主内 ESM 运行时 + 自打包 Vue 3 界面 + 编译 MCP 签发的 `protected-v4` 正式包。
 
-宿主「插件中心 → 管理仓库」填下面这个地址（索引在 `main` 分支，随发版自动更新）：
+宿主「插件中心 → 管理仓库」填下面这个 **raw 索引 JSON 地址**（不是 GitHub 仓库网页地址；索引在 `main` 分支，随发版自动更新）：
 
 ```text
-https://github.com/congyoubanmian/dian115-plugins
+https://raw.githubusercontent.com/congyoubanmian/dian115-plugins/main/plugin-market/v3/index.json
 ```
 
 ## 插件一览
@@ -48,7 +48,7 @@ wecom-cards/                  宿主企业微信卡片组素材
 
 ## 安装与使用
 
-- **市场源**：宿主「插件中心 → 管理仓库」填 `https://github.com/congyoubanmian/dian115-plugins`，用户主动刷新索引后选版本安装（正式包由宿主本地验签）。
+- **市场源**：宿主「插件中心 → 管理仓库」填 `https://raw.githubusercontent.com/congyoubanmian/dian115-plugins/main/plugin-market/v3/index.json`，用户主动刷新索引后选版本安装（正式包由宿主本地验签）。
 - **手动安装**：从 Release 下载 `*.dian115p`，宿主「插件中心 → 从本地文件安装」。
 - **本机调试包**：Release 上同时挂可读源码包（`.dian115p`），只用于本机调试，不能上架、不能覆盖正式安装。
 
