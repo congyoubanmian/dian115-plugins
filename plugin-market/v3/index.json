@@ -12,8 +12,8 @@
       "version": "0.1.16",
       "description": "小时级对齐「订阅池里的剧集订阅」与「Emby 已有集数」：只对可解析的条目做只增 PATCH total_episodes，并产出追剧日历与当天一次的日报；减方向只给建议，从不写。已核实无缺口的条目在 5 小时窗口内复用缓存，不重复探测 Emby。每次 PATCH 前后落任务检查点，中断恢复先查订阅池里该条目的真实集数，已确认写到位才记 complete、确认没写才 resume、核对不上记 attention（整点入口把 attention 收敛为 resume，靠只增守卫保证重跑不重复写）。界面按统一设计稿重绘：指标瓦片、徽标胶囊、双栏看板与移动端单栏适配。",
       "author": "镜头的蒙太奇",
-      "source_url": "https://github.com/congyoubanmian/dian115-plugins/releases/download/v3-2026.11.04-9/chase.rs-98b77c5b-4286-49d7-950a-4f4f8173f128.dian115p",
-      "sha256": "d512375045c85a8ff3e0b448cdae89eea7d4ea61c2cfeac9b4543fa6abc48a3b",
+      "source_url": "https://github.com/congyoubanmian/dian115-plugins/releases/download/v3-2026.11.04-10/chase.rs-82519e9a-8109-4d5a-871c-f6fb6762a1a3.dian115p",
+      "sha256": "800be26ee9e5eacfe7e1b6f81a161bbee5cecdd6392db2ae4e7f9ce9ef9064df",
       "delivery": "protected-v4",
       "declared_usage": {
         "apis": [
@@ -108,6 +108,84 @@
       },
       "homepage": "https://github.com/congyoubanmian/dian115-plugins",
       "changelog": "1.2.2：设置页表单改为快照比对——后台刷新（动作收尾/榜单重读）不再覆盖未保存的输入，粘贴中的 Cookie 不再丢，保存栏新增「撤销改动」；任务报告补 attention_required 分支（被宿主中断需要核对时不再误报「完成」）；批量「订阅全部到期」显示进度并支持取消；海报内存缓存 160→480，取图失败条目 2 分钟冷却后可重试（不再永久锁死）；海报墙一次算完全部队列状态（渲染开销大减）；错误 toast 改用 assertive 播报。",
+      "permissions": [
+        "telegram.bot"
+      ]
+    },
+    {
+      "id": "music.rs",
+      "name": "音乐下载",
+      "version": "1.3.11",
+      "description": "网易云 / QQ 音乐搜索、扫码登录（网易云 unikey 二维码；QQ 官方二维码 + graph.qq.com OAuth 授权换音乐凭据）与手动粘贴 Cookie 回退、我的歌单（网易云与 QQ 都能读我创建的与收藏的歌单；QQ 另有「每日推荐」与「我喜欢」两个入口）、按音质逐级取链；单曲与整张歌单入队后由后台任务自动推进：取链接 → API 3.9 起 save_to 优先直写目标目录（宿主不开放该能力时回落「暂存 → 定名 → move」，CD2 挂载由宿主自动分流）→ 失败通知带「重试」按钮。下载与入库前后落任务检查点，中断恢复先核对目标目录里的真实文件再决定 complete / resume / attention；入库前做同名预检，目标已有同名文件直接终态失败不进重试循环。Telegram 机器人提供只读查询命令（/music 队列|状态|帮助、/queue、/status），不触发下载与删除，回复走来源渠道、未授权 telegram.bot 时回退普通通知；每天 08:30 发一条下载日报（dedupe_key 按天，当天送达不重发，发送失败换新键）。旧 schema 1 WASM 插件（plugins/music-rs 0.3.19）的 v3 迁移版。",
+      "author": "镜头的蒙太奇",
+      "source_url": "https://github.com/congyoubanmian/dian115-plugins/releases/download/v3-2026.11.04-10/music.rs-11ed97df-b26f-4632-b60d-f8a3339e6e9a.dian115p",
+      "sha256": "75839dfb21ad6400ab3d55df187b96e8824158434b230a83e9c9c1ba9e802179",
+      "delivery": "protected-v4",
+      "declared_usage": {
+        "apis": [
+          "GET/PUT/DELETE /api/extensions/v3/{id}/storage*",
+          "GET /api/extensions/v3/{id}/settings",
+          "PUT /api/extensions/v3/{id}/settings",
+          "POST /api/extensions/v3/{id}/notify",
+          "POST /api/extensions/v3/{id}/messaging/reply",
+          "POST /api/extensions/v3/{id}/http",
+          "POST /api/extensions/v3/{id}/files",
+          "POST /api/extensions/v3/{id}/jobs/{job}"
+        ],
+        "sites": [
+          "music.163.com / interface.music.163.com / interface3.music.163.com（网易云搜索、扫码、eapi 取链）",
+          "c.y.qq.com / u.y.qq.com / y.qq.com（QQ 音乐搜索与取链；歌单 / 每日推荐 / 我喜欢走 u.y.qq.com 的 musicu.fcg；y.qq.com 作 Referer/页面域）",
+          "xui.ptlogin2.qq.com / ssl.ptlogin2.graph.qq.com / graph.qq.com / open.weixin.qq.com / lp.open.weixin.qq.com（QQ 扫码登录：取二维码、轮询、微信扫码态与 OAuth 授权换凭据）",
+          "*.music.126.net / *.gtimg.cn（歌单封面与会员图标 CDN）",
+          "*.qqmusic.qq.com / *.126.net（音频直链下载：CDN 域名由上游接口返回，不固定）"
+        ],
+        "files": [
+          "downloads/*（插件自有暂存目录：直链下载、定名，再由宿主 move 到用户配置的目标目录）",
+          "目标目录里本插件刚直写出的 0 字节空文件（预检确认原本不存在时才 remove；下载失败绝不删除目录里原有文件）"
+        ],
+        "notifications": true,
+        "risk": "把网易云/QQ 音乐直链下载到插件暂存目录并复制进用户配置的宿主目录（可能经 CD2 上传网盘）；失败时发送带重试按钮的通知；每日一条下载日报（TG）；Telegram 机器人命令（/music、/queue、/status）只读查询队列与状态，回复走来源渠道（需要 telegram.bot 授权），不触发下载/删除；按宿主新规约不读取 CookieCloud，登录态只来自扫码或用户手动粘贴的 Cookie；扫码登录在本插件 KV 里保存网易云/QQ 音乐登录凭据（QQ 还保存账号标识 encryptUin，用于读收藏的歌单与「我喜欢」；QQ 扫码登录期间会访问 graph.qq.com 的 OAuth 授权端点换凭据）。"
+      },
+      "homepage": "https://github.com/congyoubanmian/dian115-plugins",
+      "changelog": "1.3.11：下载进度「鹈鹕骑车」升级——翅膀滑翔中扑翼、脖子加红领巾、车尾飘音符、速度线与地面投影、牙盘跟转；不定进度往返时会真的掉头（不再是倒着滑回去）；进度条加扫光。减少动效时全部静止。",
+      "permissions": [
+        "telegram.bot"
+      ]
+    },
+    {
+      "id": "douban.rs",
+      "name": "豆瓣中心（Rust 版）",
+      "version": "1.2.3",
+      "description": "豆瓣榜单抓取 + 黑名单过滤 + 观察队列 + 聚合订阅；按宿主新规约不再读取 CookieCloud；登录态由用户手动粘贴浏览器里的豆瓣 Cookie 提供，自动追订「我的想看」；TMDB 匹配失败时用豆瓣详情（原名/又名）回退重搜；支持最低评分/年份/地区订阅过滤与「已删除不重订」墓碑集。创建聚合订阅前后落任务检查点，中断恢复先查宿主订阅池里该 (tmdb_id, media_type) 的真实状态再决定 complete / resume / attention。海报抓回后落插件文件缓存 posters/<sha256>.<ext>（超 64 张按 modified 淘汰最旧，卸载即清空），页面用 downloadURL 取图，files 不可用时降级 dataURL。Telegram 机器人接收 /refresh、/wish 两条指令并回执执行结果（指令触发不需要授权，回执走 ctx.messaging.reply 需要用户授权 telegram.bot）。旧 schema 1 WASM 插件（plugins/douban-rs 0.2.4）的 v3 迁移版；页面提供榜单海报墙、观察队列/我的想看、历史日志与设置。",
+      "author": "镜头的蒙太奇",
+      "source_url": "https://github.com/congyoubanmian/dian115-plugins/releases/download/v3-2026.11.04-10/douban.rs-2b9e8e4d-79ec-48e7-8395-6f5e3bcecb71.dian115p",
+      "sha256": "680122e640b8b4e1bfa884d81b06e50d1be486b4631694588e4606c32f18984f",
+      "delivery": "protected-v4",
+      "declared_usage": {
+        "apis": [
+          "GET/PUT/DELETE /api/extensions/v3/{id}/storage*",
+          "GET /api/extensions/v3/{id}/settings",
+          "POST /api/extensions/v3/{id}/notify",
+          "POST /api/extensions/v3/{id}/http",
+          "POST /api/extensions/v3/{id}/jobs/{job}",
+          "POST /api/extensions/v3/{id}/files*",
+          "GET /api/extensions/v3/{id}/files/download*",
+          "POST /api/extensions/v3/{id}/messaging/*",
+          "GET /api/tmdb/search",
+          "GET/POST /api/subscribe/pool/intents",
+          "GET /api/subscribe/records"
+        ],
+        "sites": [
+          "movie.douban.com（榜单抓取：j/search_subjects、/chart、/cinema/later/、j/subject_suggest）",
+          "m.douban.com（想看列表与条目详情：rexxar api v2）",
+          "*.doubanio.com（豆瓣海报 CDN，需带豆瓣 Referer 防盗链）"
+        ],
+        "files": "只读写插件自有相对路径 posters/<sha256>.<ext>（海报缓存，超过 64 张按 modified 淘汰删除最旧；卸载即清空），不写宿主文件",
+        "notifications": true,
+        "risk": "定期抓取豆瓣榜单与想看列表，按黑名单/过滤器入观察队列；到期条目经 TMDB 匹配（失配时回查豆瓣详情重搜）后创建宿主聚合订阅（宿主负责检索并投递 115 离线）；登录态只来自用户手动粘贴的豆瓣 Cookie（不读取 CookieCloud）；订阅结果发送通知。Telegram 机器人只接收 /refresh、/wish 两条命令并回执执行结果（需用户授权 telegram.bot）。海报缓存写插件自有 data/files 的 posters/ 目录，超量时删除其中最旧的缓存文件（只限 posters/ 内）。不写宿主文件，不触碰 115 账号。"
+      },
+      "homepage": "https://github.com/congyoubanmian/dian115-plugins",
+      "changelog": "1.2.3：修复榜单海报「成批不可用、要刷页面才恢复」——取图失败现在自动重试（120 秒起步、最多 3 次，CDN 风控是时间窗问题大多自愈），失败卡片点击即可手动重取；「海报不可用」占位悬停可见真实原因（HTTP 418/海报过大等），不再是黑盒；get-poster 镜像重试间隔 200ms→800ms。",
       "permissions": [
         "telegram.bot"
       ]
