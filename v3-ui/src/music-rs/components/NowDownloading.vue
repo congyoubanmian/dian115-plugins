@@ -10,6 +10,7 @@ import { useMusicStore } from '../store'
 import type { TaskEntry } from '../types'
 import { hashOf, useCovers } from '../ui-kit'
 import QualityTag from './QualityTag.vue'
+import PelicanRider from './PelicanRider.vue'
 
 const store = useMusicStore()
 const { allTasks, searchResults, playlistSongs } = store
@@ -22,6 +23,48 @@ const active = computed<TaskEntry[]>(() =>
 )
 const current = computed<TaskEntry | undefined>(() => active.value[0])
 const copying = computed(() => current.value?.status === 'copying')
+
+// ── 进度数据 ────────────────────────────────────────────
+// 入库（move/copy）有宿主每秒写入的真实字节进度；单首 HTTP 下载没有字节回调，
+// 此时 ridePercent 为 null，鹈鹕往返骑行表示进行中，不编造百分比。
+const stageIndex = computed(() => (copying.value ? 1 : 0))
+
+function toBytes(value: string, unit: string): number {
+  const n = Number(value)
+  if (!Number.isFinite(n)) return 0
+  const scale = unit === 'GiB' ? 1024 ** 3 : unit === 'MiB' ? 1024 ** 2 : unit === 'KiB' ? 1024 : 1
+  return n * scale
+}
+
+/** 从 pump 任务 message 里解析「移动 a.flac 1.2 GiB/4.0 GiB」这类真实进度。 */
+const copyProgress = computed(() => {
+  if (!copying.value) return null
+  const message = store.pumpRun.value?.message ?? ''
+  const match = /([\d.]+)\s*(KiB|MiB|GiB|B)\s*\/\s*([\d.]+)\s*(KiB|MiB|GiB|B)/.exec(message)
+  if (!match) return null
+  const loaded = toBytes(match[1] ?? '0', match[2] ?? 'B')
+  const total = toBytes(match[3] ?? '0', match[4] ?? 'B')
+  if (total <= 0) return null
+  return {
+    text: `入库 ${match[1]} ${match[2]} / ${match[3]} ${match[4]}`,
+    percent: (loaded / total) * 100,
+  }
+})
+
+/** 本轮计数进度（宿主任务上报的 total/done/failed）。 */
+const overallPercent = computed(() => {
+  const run = store.pumpRun.value
+  if (!run || run.total <= 0) return null
+  return ((run.done + run.failed) / run.total) * 100
+})
+
+const ridePercent = computed(() => copyProgress.value?.percent ?? overallPercent.value)
+const progressText = computed(() => {
+  if (copyProgress.value) return copyProgress.value.text
+  const run = store.pumpRun.value
+  if (run && run.total > 0) return `本轮 ${run.done + run.failed} / ${run.total} 首`
+  return ''
+})
 
 const cover = computed<string>(() => {
   const task = current.value
@@ -76,6 +119,19 @@ const bars = computed<number[]>(() => {
           <QualityTag :quality="current.quality" />
           <span class="hero__src">{{ store.sourceName(current.source ?? '') }}</span>
         </div>
+
+        <div class="stages" aria-label="下载阶段">
+          <span
+            v-for="(stage, index) in ['下载', '入库', '完成']"
+            :key="stage"
+            class="stages__item"
+            :class="{ 'stages__item--active': index === stageIndex, 'stages__item--past': index < stageIndex }"
+          >{{ stage }}</span>
+        </div>
+
+        <PelicanRider :percent="ridePercent" :active="true" />
+        <p v-if="progressText" class="hero__progress">{{ progressText }}</p>
+
         <div
           class="wave"
           role="progressbar"
@@ -306,6 +362,46 @@ const bars = computed<number[]>(() => {
 .hero__src {
   font-size: 12px;
   color: var(--app-text-secondary, #6b7280);
+}
+
+/* 阶段指示：下载 → 入库 → 完成 */
+.stages {
+  display: flex;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.stages__item {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 10px;
+  border-radius: 999px;
+  color: var(--app-text-secondary, #6b7280);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  transition: color 0.25s ease, background 0.25s ease;
+}
+
+.stages__item--active {
+  color: var(--app-surface, #fff);
+  background: var(--accent);
+}
+
+.stages__item--past {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+.hero__progress {
+  margin: 6px 0 0;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--app-text-secondary, #6b7280);
+}
+
+@container page (max-width: 719.98px) {
+  .stages {
+    justify-content: center;
+  }
 }
 
 /* 波形进度：柱高固定（按 id 生成），一道亮光从左扫到右表示「仍在推进」 */

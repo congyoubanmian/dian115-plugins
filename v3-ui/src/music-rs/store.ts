@@ -139,6 +139,8 @@ export function createMusicStore(ctx: HostContext) {
   const allTasks = ref<TaskEntry[]>([])
   /** 需要核对（attention_required）的 queue-pump 运行：核对前宿主不再接受新的推进（含定时）。 */
   const attentionRun = ref<{ id: string; message: string } | null>(null)
+  /** 正在运行的 queue-pump 宿主任务：message 里有宿主每秒写入的入库字节进度，total/done/failed 是本轮计数。 */
+  const pumpRun = ref<{ message: string; total: number; done: number; failed: number } | null>(null)
   const login = reactive<{ netease: LoginInfo; qq: LoginInfo }>({
     netease: { logged_in: false },
     qq: { logged_in: false },
@@ -358,10 +360,21 @@ export function createMusicStore(ctx: HostContext) {
     if (disposed.value || typeof ctx.tasks?.list !== 'function') return
     try {
       const runs = await ctx.tasks.list(20)
-      const hit = (Array.isArray(runs) ? runs : []).find(
-        (run) => run.job_id === 'queue-pump' && run.status === 'attention_required',
-      )
+      const list = Array.isArray(runs) ? runs : []
+      const hit = list.find((run) => run.job_id === 'queue-pump' && run.status === 'attention_required')
       attentionRun.value = hit ? { id: String(hit.id), message: String(hit.message || hit.error || '') } : null
+      // 进行中的 pump：读取宿主任务上的实时进度（入库时宿主每秒写“移动 x 1.2 GiB/4.0 GiB”）。
+      const running = list.find(
+        (run) => run.job_id === 'queue-pump' && ['running', 'pending', 'queued'].includes(String(run.status)),
+      )
+      pumpRun.value = running
+        ? {
+            message: String(running.message ?? ''),
+            total: Number(running.total ?? 0) || 0,
+            done: Number(running.done ?? 0) || 0,
+            failed: Number(running.failed ?? 0) || 0,
+          }
+        : null
     } catch {
       // 任务列表只用于提示，读失败不打扰。
     }
@@ -1078,6 +1091,7 @@ export function createMusicStore(ctx: HostContext) {
     tasks,
     allTasks,
     attentionRun,
+    pumpRun,
     login,
     logs,
     lastPump,
