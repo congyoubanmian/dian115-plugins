@@ -64,7 +64,8 @@ export async function moviePoster(session, ctx, title, wantId) {
  * poster.rs get_poster：action `get-poster`。
  * 成功返回 {status:'succeeded', path, sha256, size, source_url}（文件缓存命中/新写）；
  * files 写不进去时降级 {status:'succeeded', url:<dataURL>, source_url, degraded:true}；
- * 失败返回 {status:'failed', message}。镜像候选每个最多 2 次（第二次前 sleep 200ms）。
+ * 失败返回 {status:'failed', message}。镜像候选每个最多 2 次（第二次前 sleep 800ms：
+ * CDN 风控是时间窗问题，200ms 几乎等同立刻重打）。
  */
 export async function getPoster(session, ctx, input) {
   const posterUrl = String(input?.poster_url ?? '').trim()
@@ -81,7 +82,7 @@ export async function getPoster(session, ctx, input) {
   for (const alt of candidates) {
     const url = withMirrorHost(posterUrl, alt)
     for (let attempt = 0; attempt < 2; attempt += 1) {
-      if (attempt > 0) await sleep(ctx, 200)
+      if (attempt > 0) await sleep(ctx, 800)
       const got = await doubanGet(ctx, url, IMAGE_ACCEPT)
       if (got.error) {
         lastErr = `HTTP ${got.status}`

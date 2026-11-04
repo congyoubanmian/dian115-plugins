@@ -117,7 +117,7 @@ test('快路径：state 有 poster_file → downloadURL 直接可用，直连/jo
     findPosterFile: () => 'posters/abc.jpg',
     fetchImpl: ctx.fetchImpl,
   })
-  const src = await fetcher.load('https://img1.doubanio.com/p1.jpg')
+  const { src } = await fetcher.load('https://img1.doubanio.com/p1.jpg')
   assert.equal(src, 'https://host.test/api/extensions/v3/douban.rs/files/download?path=posters%2Fabc.jpg&inline=1')
   assert.equal(ctx.httpCalls.length, 0, '快路径命中不发直连请求')
   assert.deepEqual(ctx.downloads, [{ path: 'posters/abc.jpg', url: src, inline: true }])
@@ -135,7 +135,7 @@ test('快路径 404（文件被淘汰/卸载）→ 回退原有直连链', async
     findPosterFile: () => 'posters/gone.jpg',
     fetchImpl: ctx.fetchImpl,
   })
-  const src = await fetcher.load('https://img1.doubanio.com/p2.jpg')
+  const { src } = await fetcher.load('https://img1.doubanio.com/p2.jpg')
   assert.ok(src.startsWith('data:image/jpeg;base64,'), '回退直连拿到 dataURL')
   assert.equal(ctx.httpCalls.length, 1)
   assert.equal(ctx.httpCalls[0].headers.Referer, 'https://movie.douban.com/', '直连带防盗链 Referer')
@@ -145,7 +145,7 @@ test('直连成功 → dataURL；直连失败 → job 的 path 拼 downloadURL�
   // ① 直连成功
   let ctx = makePageCtx()
   let fetcher = createPosterFetcher({ http: ctx.http, files: ctx.files, invokeJob: async () => { throw new Error('x') }, findPosterFile: () => '', fetchImpl: ctx.fetchImpl })
-  let src = await fetcher.load('https://img1.doubanio.com/p3.jpg')
+  let { src } = await fetcher.load('https://img1.doubanio.com/p3.jpg')
   assert.ok(src.startsWith('data:image/jpeg;base64,'))
   assert.equal(ctx.downloads.length, 0)
 
@@ -162,7 +162,7 @@ test('直连成功 → dataURL；直连失败 → job 的 path 拼 downloadURL�
     findPosterFile: () => '',
     fetchImpl: ctx.fetchImpl,
   })
-  src = await fetcher.load('https://img1.doubanio.com/p4.jpg')
+  src = (await fetcher.load('https://img1.doubanio.com/p4.jpg')).src
   assert.equal(src, 'https://host.test/api/extensions/v3/douban.rs/files/download?path=posters%2Fk1.jpg&inline=1')
   assert.ok(!src.startsWith('data:'), 'job 路径不再变成 dataURL')
 
@@ -175,7 +175,7 @@ test('直连成功 → dataURL；直连失败 → job 的 path 拼 downloadURL�
     findPosterFile: () => '',
     fetchImpl: ctx.fetchImpl,
   })
-  src = await fetcher.load('https://img1.doubanio.com/p5.jpg')
+  src = (await fetcher.load('https://img1.doubanio.com/p5.jpg')).src
   assert.equal(src, 'data:image/jpeg;base64,AAAA')
 
   // ④ 全链失败 → 空串（页面按 error 占位）
@@ -187,11 +187,11 @@ test('直连成功 → dataURL；直连失败 → job 的 path 拼 downloadURL�
     findPosterFile: () => '',
     fetchImpl: ctx.fetchImpl,
   })
-  src = await fetcher.load('https://img1.doubanio.com/p6.jpg')
+  src = (await fetcher.load('https://img1.doubanio.com/p6.jpg')).src
   assert.equal(src, '')
 
   // ⑤ 非 http(s) 的 poster_url → 空串
-  src = await fetcher.load('ftp://x/y.jpg')
+  src = (await fetcher.load('ftp://x/y.jpg')).src
   assert.equal(src, '')
 })
 
@@ -284,7 +284,7 @@ test('端到端：真实 getPoster 写文件 + state 回填 → 页面回退拿 
     findPosterFile: () => '',
     fetchImpl: page.fetchImpl,
   })
-  const src = await fetcher.load(posterUrl)
+  const { src } = await fetcher.load(posterUrl)
   assert.ok(page.fileStore.has(expectedPath), `后端把海报写进了 ${expectedPath}`)
   assert.equal(page.fileStore.get(expectedPath)[0], 0xff, '文件内容是真实字节（base64 编码写入）')
   assert.equal(
@@ -311,7 +311,7 @@ test('端到端：真实 getPoster 写文件 + state 回填 → 页面回退拿 
     findPosterFile: () => doc.queue.items[0].poster_file,
     fetchImpl: fastCtx.fetchImpl,
   })
-  const fastSrc = await fastFetcher.load(posterUrl)
+  const { src: fastSrc } = await fastFetcher.load(posterUrl)
   assert.equal(fastSrc, `https://host.test/api/extensions/v3/douban.rs/files/download?path=${encodeURIComponent(expectedPath)}&inline=1`)
   assert.equal(fastCtx.httpCalls.length, 0, '快路径不发直连请求')
 })
@@ -336,7 +336,7 @@ test('页面已关闭（signal.aborted）→ 不再发起探测 / 直连 / 回�
     },
     signal: controller.signal,
   })
-  assert.equal(await fetcher.load('https://img1.doubanio.com/closed.jpg'), '')
+  assert.equal((await fetcher.load('https://img1.doubanio.com/closed.jpg')).src, '')
   assert.deepEqual([probes, ctx.httpCalls.length, jobs], [0, 0, 0])
 
   let seen = null

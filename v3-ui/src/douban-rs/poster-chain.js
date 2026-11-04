@@ -126,22 +126,24 @@ export function createPosterFetcher({ http, files, invokeJob, findPosterFile, fe
     throw new Error(String(result.message || '海报获取失败'))
   }
 
-  /** 完整取图链路；全部失败返回空串（调用方按 error 展示占位）。 */
+  /** 完整取图链路；返回 {src, reason}——全部失败时 src='' 且 reason 带最后那条错误
+   *  （job 的 message 最具体：海报抓取失败: HTTP 418 之类），页面拿它做占位提示与日志。 */
   return {
     async load(url) {
       const clean = typeof url === 'string' ? url.trim() : ''
-      if (!/^https?:\/\//i.test(clean) || aborted()) return ''
+      if (!/^https?:\/\//i.test(clean) || aborted()) return { src: '', reason: '' }
       const fromFiles = await loadFromFiles(clean)
-      if (fromFiles !== '') return fromFiles
-      if (aborted()) return ''
+      if (fromFiles !== '') return { src: fromFiles, reason: '' }
+      if (aborted()) return { src: '', reason: '' }
       try {
-        return await fetchPosterDirect(clean)
-      } catch {
-        if (aborted()) return ''
+        return { src: await fetchPosterDirect(clean), reason: '' }
+      } catch (directError) {
+        if (aborted()) return { src: '', reason: '' }
         try {
-          return await fetchPosterViaJob(clean)
-        } catch {
-          return ''
+          return { src: await fetchPosterViaJob(clean), reason: '' }
+        } catch (jobError) {
+          const reason = String(jobError?.message || directError?.message || '海报获取失败')
+          return { src: '', reason }
         }
       }
     },

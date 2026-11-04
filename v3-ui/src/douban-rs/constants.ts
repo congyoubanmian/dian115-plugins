@@ -13,8 +13,12 @@ export const POSTER_CONCURRENCY = 4
 /** 页面内存海报缓存条数（条目只存 URL 字符串：downloadURL 或 data:，不再是 base64 大块头）。
  *  榜单+队列+想看很容易超过 160，过小会把已加载好的海报淘汰掉、回看时闪回占位并重取。 */
 export const POSTER_CACHE_LIMIT = 480
-/** 取图失败的冷却窗口：冷却内按 error 展示不刷屏；过后允许重试（网络抖动会自愈）。 */
+/** 取图失败的冷却窗口：冷却内按 error 展示不刷屏；过后允许重试（网络抖动会自愈）。
+ *  同时作为自动重试的基础间隔（第 n 次重试等 n × 这个窗口）。 */
 export const POSTER_FAILURE_RETRY_MS = 120_000
+/** 每张海报的自动重试次数上限：豆瓣 CDN 风控是时间窗问题，重试几轮大多自愈；
+ *  真 404/被删的图不该无限重试刷任务记录。 */
+export const POSTER_AUTO_RETRY_LIMIT = 3
 /** 页面直连海报的 base64 上限挪到了 poster-chain.js（取图链路 own 它，node 测试同源）。 */
 /** 批量「订阅全部到期条目」单次最多处理多少条（避免一次刷屏提交上百个任务）。 */
 export const BATCH_SUBSCRIBE_LIMIT = 20

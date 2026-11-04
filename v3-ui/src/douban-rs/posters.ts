@@ -12,7 +12,7 @@
 
 import { inject, provide, reactive, type InjectionKey } from 'vue'
 import type { HostContext } from '../shared/types'
-import { POSTER_CACHE_LIMIT, POSTER_CONCURRENCY, POSTER_FAILURE_RETRY_MS } from './constants'
+import { POSTER_AUTO_RETRY_LIMIT, POSTER_CACHE_LIMIT, POSTER_CONCURRENCY, POSTER_FAILURE_RETRY_MS } from './constants'
 // @ts-ignore -- 纯 JS 模块，没有类型声明（与 lib-bridge.ts 引 v3/lib/*.js 同一模式）
 import { createPosterFetcher } from './poster-chain.js'
 import type { TaskRun } from './store'
@@ -21,6 +21,8 @@ import type { TaskRun } from './store'
 export interface PosterState {
   status: 'idle' | 'loading' | 'ready' | 'error'
   src: string
+  /** 最近一次失败的原因（get-poster 的 message 或直连错误），只读展示用。 */
+  reason?: string
 }
 
 /** 海报加载器。 */
@@ -75,6 +77,9 @@ export function createPosterLoader(
   const cache = new Map<string, string>()
   /** 取图失败的时刻（缓存里的 '' 条目）：过冷却窗口后允许重试。 */
   const failures = new Map<string, number>()
+  /** 已安排的自动重试次数（有上限：真 404/被删的图不该无限重试）。 */
+  const retries = new Map<string, number>()
+  const retryTimers = new Set<ReturnType<typeof setTimeout>>()
   const queue: string[] = []
   const queued = new Set<string>()
   const inflight = new Set<string>()
@@ -154,6 +159,22 @@ export function createPosterLoader(
     cache.delete(clean)
     entries.delete(clean)
     failures.delete(clean)
+    retries.delete(clean)
+  }
+
+  /** 失败后自动重试一次起：CDN 风控/网络抖动是时间窗问题，用户不该手动刷页面。
+   *  次数封顶（永久失败的 URL 不会无限刷任务）；定时器登记在 retryTimers，dispose 全清。 */
+  function scheduleRetry(url: string): void {
+    const count = retries.get(url) ?? 0
+    if (disposed || count >= POSTER_AUTO_RETRY_LIMIT) return
+    retries.set(url, count + 1)
+    const timer = setTimeout(() => {
+      retryTimers.delete(timer)
+      if (disposed) return
+      cache.delete(url)
+      enqueue(url)
+    }, POSTER_FAILURE_RETRY_MS * (count + 1))
+    retryTimers.add(timer)
   }
 
   function enqueue(url: string): void {
@@ -177,12 +198,17 @@ export function createPosterLoader(
       entry.status = 'loading'
       void fetcher
         .load(url)
-        .then((srcUrl: string) => {
+        .then(({ src: srcUrl, reason }: { src: string; reason: string }) => {
           // 缓存条目只存 URL 字符串（downloadURL 或 data:），不再塞 base64 大块头
           if (disposed) return
           cache.set(url, srcUrl || '')
-          if (srcUrl) failures.delete(url)
-          else failures.set(url, Date.now())
+          if (srcUrl) {
+            failures.delete(url)
+            retries.delete(url)
+          } else {
+            failures.set(url, Date.now())
+            scheduleRetry(url)
+          }
           // 缓存与响应式 entries 一起封顶：被淘汰的 URL 两边都删，避免 entries 无限增长
           // 拖着 data: 大字符串不放（仍挂在页面上的海报会在 PosterImg 里按需重取）
           for (const key of cache.keys()) {
@@ -191,10 +217,12 @@ export function createPosterLoader(
             cache.delete(key)
             entries.delete(key)
             failures.delete(key)
+            retries.delete(key)
           }
           const target = ensureEntry(url)
           target.status = srcUrl ? 'ready' : 'error'
           target.src = srcUrl
+          target.reason = srcUrl ? '' : reason
         })
         .finally(() => {
           inflight.delete(url)
@@ -214,6 +242,9 @@ export function createPosterLoader(
     cache.clear()
     entries.clear()
     failures.clear()
+    retries.clear()
+    for (const timer of retryTimers) clearTimeout(timer)
+    retryTimers.clear()
   }
 
   return { entries, request, release, forget, dispose }

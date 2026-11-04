@@ -55,6 +55,13 @@ const placeholder = computed(() => {
   }
 })
 
+/** 悬停/无障碍能看到真实原因（HTTP 418、海报过大…），不再是黑盒「不可用」。 */
+const tip = computed(() => {
+  if (status.value !== 'error' && status.value !== 'broken') return ''
+  const reason = entry.value?.reason ?? ''
+  return reason ? `${placeholder.value}：${reason}（点击重试）` : `${placeholder.value}（点击重试）`
+})
+
 function requestPoster(): void {
   broken.value = false
   loader.request(props.url ?? '', root.value)
@@ -71,6 +78,14 @@ function onImgError(): void {
 }
 
 function onZoom(): void {
+  // 失败态点击 = 手动重试（丢缓存重走取图链路）；成功态才是放大。
+  if (status.value === 'error' || status.value === 'broken') {
+    retried = false
+    broken.value = false
+    loader.forget(key.value)
+    requestPoster()
+    return
+  }
   if (!props.zoomable || !src.value) return
   emit('zoom', { url: src.value, title: props.title ?? '' })
 }
@@ -98,6 +113,7 @@ onBeforeUnmount(() => loader.release(root.value))
     :class="[`db-poster--${props.variant}`, { 'db-poster--link': props.zoomable }]"
     :type="props.zoomable ? 'button' : undefined"
     :aria-label="props.zoomable ? `放大查看${props.title || '海报'}` : undefined"
+    :title="tip || undefined"
     @click="onZoom"
   >
     <img
