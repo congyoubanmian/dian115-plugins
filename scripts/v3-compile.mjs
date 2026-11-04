@@ -24,8 +24,9 @@
 //   node scripts/v3-compile.mjs check  <插件目录>            # 结构/敏感调用检查（不出包、不安装）
 //   node scripts/v3-compile.mjs compile <插件目录> [--account <id>] [--out dist]
 import { readFileSync, existsSync, readdirSync, statSync, writeFileSync, mkdirSync } from 'node:fs'
-import { resolve, relative, sep, join } from 'node:path'
+import { resolve, relative, sep, join, basename } from 'node:path'
 import { createHash } from 'node:crypto'
+import { execFileSync } from 'node:child_process'
 
 const root = resolve(new URL('..', import.meta.url).pathname)
 
@@ -126,10 +127,36 @@ async function callTool(name, args) {
 }
 
 // ── 收集插件目录文件 ───────────────────────────────────────────────────────
+// 只收 git 跟踪的文件（git ls-files）：未跟踪的本地文件（.env、data/、
+// sessions.json、*.log……）不该进正式包 —— 密钥扫描也只覆盖跟踪文件，
+// 两边口径一致才有「扫过 = 包里没有」的保证。非 git 环境退回目录遍历 + 敏感名拦截。
 const SKIP_DIRS = new Set(['.git', 'node_modules', '.vite', 'dist', '.cache'])
+/** 敏感文件名/模式：即使误跟踪也拦（兜底，正常到不了这里）。 */
+const SENSITIVE_NAME = /(^|\/)(\.env|\.env\..+|data|sessions\.json|tasks\.json|[^/]*\.log|.*\.pem|.*\.key)$/i
+
+function trackedFiles(directory) {
+  try {
+    const out = execFileSync('git', ['-C', root, 'ls-files', '-z', '--', relative(root, resolve(directory))], {
+      encoding: 'utf8',
+      maxBuffer: 16 * 1024 * 1024,
+    })
+    const dirPrefix = relative(root, resolve(directory)).split(sep).join('/') + '/'
+    return new Set(
+      out
+        .split('\0')
+        .filter(Boolean)
+        .filter((name) => name.startsWith(dirPrefix))
+        .map((name) => name.slice(dirPrefix.length)),
+    )
+  } catch {
+    return null // 非 git 环境：退回目录遍历 + 敏感名拦截
+  }
+}
 
 function collectFiles(directory) {
+  const tracked = trackedFiles(directory)
   const files = {}
+  const skipped = []
   let binary = false
   const walk = (current) => {
     for (const entry of readdirSync(current, { withFileTypes: true })) {
@@ -141,13 +168,24 @@ function collectFiles(directory) {
         continue
       }
       if (!entry.isFile()) continue
-      const bytes = readFileSync(absolute)
       const name = relative(directory, absolute).split(sep).join('/')
+      if (tracked && !tracked.has(name)) {
+        skipped.push(name)
+        continue
+      }
+      if (SENSITIVE_NAME.test(name)) {
+        console.error(`拦截敏感文件进包：${name}`)
+        process.exit(1)
+      }
+      const bytes = readFileSync(absolute)
       if (bytes.includes(0)) binary = true
       files[name] = bytes
     }
   }
   walk(resolve(directory))
+  if (skipped.length) {
+    console.log(`已跳过 ${skipped.length} 个未跟踪文件（不进包）：${skipped.slice(0, 5).join('、')}${skipped.length > 5 ? ' …' : ''}`)
+  }
   return { files, binary }
 }
 
@@ -237,15 +275,32 @@ if (command === 'tools') {
       nickname = verify?.structured?.identity?.nickname ?? ''
     }
     const bytes = Buffer.from(base64, 'base64')
-    const sha256 = createHash('sha256').update(bytes).digest('hex')
-    const expected = structured.sha256 ?? structured.sha256_hex
-    if (expected && expected !== sha256) {
-      console.error(`SHA256 不一致：返回值 ${expected}，实算 ${sha256} —— 产物不可信，丢弃。`)
+    const MAX_PACKAGE_BYTES = 64 * 1024 * 1024
+    if (bytes.length === 0 || bytes.length > MAX_PACKAGE_BYTES) {
+      console.error(`包大小异常：${bytes.length} 字节（上限 ${MAX_PACKAGE_BYTES}），丢弃。`)
       process.exit(1)
     }
-    const filename = structured.filename ?? structured.file_name ?? structured.name ?? 'plugin.dian115p'
+    const sha256 = createHash('sha256').update(bytes).digest('hex')
+    const expected = structured.sha256 ?? structured.sha256_hex
+    // sha256 必填：服务端没返回就没法校验产物完整性，不能按「没给就信」处理。
+    if (!expected || expected !== sha256) {
+      console.error(`SHA256 校验失败：返回值 ${expected || '(缺失)'}，实算 ${sha256} —— 产物不可信，丢弃。`)
+      process.exit(1)
+    }
+    const rawName = String(structured.filename ?? structured.file_name ?? structured.name ?? '')
+    // filename 是服务端返回值：只做 basename + 白名单后缀校验，
+    // 拒绝绝对路径/../（resolve(root, outDir, '/etc/…') 会盖掉前缀写出仓库根）。
+    const filename = basename(rawName)
+    if (!filename || filename !== rawName || !filename.endsWith('.dian115p')) {
+      console.error(`非法包文件名：${JSON.stringify(rawName)}（只允许 *.dian115p，不能带路径），丢弃。`)
+      process.exit(1)
+    }
     mkdirSync(resolve(root, outDir), { recursive: true })
     const target = resolve(root, outDir, filename)
+    if (relative(resolve(root, outDir), target).startsWith('..')) {
+      console.error(`包文件落点越界：${target}，丢弃。`)
+      process.exit(1)
+    }
     writeFileSync(target, bytes)
     // 记进 dist/official-packages.json：市场索引要用正式包的文件名与 sha256（作者取会员昵称）
     const ledgerPath = resolve(root, outDir, 'official-packages.json')

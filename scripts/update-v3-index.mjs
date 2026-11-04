@@ -58,8 +58,9 @@ for (const plugin of index.plugins ?? []) {
   plugin.source_url = `https://github.com/${repo}/releases/download/${tag}/${pkgName}`
   delete plugin.source_url_note
 
-  // 索引的 permissions 必须覆盖清单申请的全部权限（宿主安装/更新时按索引校验，
-  // 缺项会被拒绝：source requests permission <x> not declared by the release）。
+  // 索引的 permissions / version / declared_usage 一律以清单为准（安装/更新时按索引校验，
+  // 缺权限会被拒绝：source requests permission <x> not declared by the release；
+  // version 不回写会让市场一直显示旧版本 —— 之前靠手工同步，容易漏）。
   const manifestPath = `v3/${plugin.id.replace(/\./g, '-')}/plugin.json`
   if (existsSync(manifestPath)) {
     const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'))
@@ -68,8 +69,15 @@ for (const plugin of index.plugins ?? []) {
     } else {
       delete plugin.permissions
     }
+    if (typeof manifest.version === 'string' && manifest.version !== '') plugin.version = manifest.version
+    if (manifest.declared_usage && typeof manifest.declared_usage === 'object') {
+      plugin.declared_usage = manifest.declared_usage
+    }
+    if (typeof manifest.description === 'string' && manifest.description !== '') {
+      plugin.description = manifest.description
+    }
   } else {
-    console.warn(`- ${plugin.id}: 缺少清单 ${manifestPath}，permissions 未同步`)
+    console.warn(`- ${plugin.id}: 缺少清单 ${manifestPath}，permissions/version 未同步`)
   }
 
   changed += 1

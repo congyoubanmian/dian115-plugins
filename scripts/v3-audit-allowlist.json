@@ -8,6 +8,12 @@
       "reason": "页面把 Vue 3.5 + naive-ui 自打包进 ui/page.js（页面契约要求自打包，不能依赖宿主共享单例）。命中的是 Vue 运行时取 globalThis 的 Function('return this')() 形态。可读源码在 v3-ui/src/chase-rs/，逐行可审。"
     },
     {
+      "plugin": "chase-rs",
+      "rule": "host-page-tamper",
+      "file": "ui/page.js",
+      "reason": "命中的是设置抽屉的 Esc 键监听（window.addEventListener('keydown', ...)），只作用于插件自己的 iframe 窗口，不改写宿主界面，也不监听粘贴/按键输入。源码：v3-ui/src/chase-rs/components/SettingsDrawer.vue。"
+    },
+    {
       "plugin": "music-rs",
       "rule": "dynamic-eval",
       "file": "ui/page.js",

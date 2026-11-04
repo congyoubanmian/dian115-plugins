@@ -2,12 +2,13 @@
 # 本地发版（正式包 protected-v4）—— 编译 MCP 只能连到**可达的 DIAN115 实例**，
 # 所以签发必须在开发者自己机器上做；CI 只跑检查与可读包构建。
 #
-# 流程：
+# 流程（先 Release 后索引：避免出现「索引指向不存在的资产」的中间态）：
+#   0) 单测 + 密钥扫描 + 工作区干净检查
 #   1) 构建 + 官方审查闸门 + 可读源码包（本机调试用）
 #   2) 逐个插件走编译 MCP 出正式包（dist/<id>-<release_id>.dian115p）+ 写正式包清单
-#   3) 用正式包更新市场索引（delivery=protected-v4，author=会员昵称）
-#   4) 提交索引 → 打 tag → 推 tag → 创建 Release 并上传正式包（+可读调试包）
-#   5) 把最终索引回写 main
+#   3) 先把正式包上传成 draft Release（资产已就位，索引此刻还指向旧 tag 也不会 404）
+#   4) 用正式包更新市场索引 → 提交 → 打 tag → 推送
+#   5) 发布 draft → 完成
 #
 # 用法：
 #   bash scripts/release-v3-local.sh v3-2026.11.02
@@ -37,13 +38,32 @@ if [ ! -f .env.local ]; then
   exit 1
 fi
 
-echo "== 0) 密钥扫描（凭据没漏进仓库）=="
+# sha256sum 的 macOS 兜底（BSD 没有 -sum 版）。
+sha256_of() {
+  if command -v sha256sum >/dev/null 2>&1; then sha256sum "$@"
+  else shasum -a 256 "$@"; fi
+}
+
+echo "== 0) 单测 + 密钥扫描（凭据没漏进仓库）=="
+bash scripts/v3-test.sh
 node scripts/v3-secret-scan.mjs
 
 echo "== 1) 构建 + 审查 + 可读调试包 =="
 # 先清掉历史产物：dist/ 里留着上一轮的可读包与正式包，上传时会混进 Release
 rm -f dist/*.dian115p dist/official-packages.json
 bash scripts/v3-build.sh
+# 构建可能改写入库的 ui/page.js 等产物：发版前必须比对一致性，
+# 不一致则先把产物提交（CI 的 verify-ui-artifacts 也是同一道闸）。
+if ! bash scripts/v3-verify-ui-artifacts.sh >/dev/null 2>&1; then
+  echo "构建改动了入库的 UI 产物，先 bash scripts/v3-build-ui.sh 并提交后再发版" >&2
+  bash scripts/v3-verify-ui-artifacts.sh >&2 || true
+  exit 1
+fi
+if [ -n "$(git status --porcelain)" ]; then
+  echo "构建产生了未跟踪/未提交的改动，先处理再发版" >&2
+  git status --short >&2
+  exit 1
+fi
 
 echo "== 2) 编译 MCP 签发正式包 =="
 rm -f dist/official-packages.json
@@ -51,29 +71,33 @@ for plugin in "${PLUGINS[@]}"; do
   node scripts/v3-compile.mjs compile "v3/$plugin" --out dist
 done
 
-echo "== 3) 更新市场索引（正式包）=="
+echo "== 3) 先创建 draft Release 并上传正式包（资产就位后再动索引）=="
+RELEASE_FILES=()
+while IFS= read -r file; do RELEASE_FILES+=("$file"); done < <(ls -1 dist/*.dian115p)
+if [ "${#RELEASE_FILES[@]}" -eq 0 ]; then
+  echo "dist/ 里没有 .dian115p 产物" >&2
+  exit 1
+fi
+# tag 还不存在：gh release create --draft 允许指定未来 tag 名（发布时才建立 tag）。
+gh release create "$TAG" "${RELEASE_FILES[@]}" \
+  --draft \
+  --title "v3 插件 $TAG" \
+  --notes-file <(cd dist && sha256_of *.dian115p)
+echo "draft Release 已创建：$TAG（${#RELEASE_FILES[@]} 个资产）"
+
+echo "== 4) 更新市场索引（正式包）→ 提交 → 打 tag → 推送 =="
 TAG="$TAG" REPO="$REPO" node scripts/update-v3-index.mjs
 cp v3-market-index.release.json v3-market-index.json
 mkdir -p plugin-market/v3
 cp v3-market-index.release.json plugin-market/v3/index.json
 git add v3-market-index.json plugin-market/v3/index.json
 git commit -m "chore(release): 市场索引指向正式包 ${TAG}（protected-v4）"
-
-echo "== 4) 打 tag 并推送 =="
 git tag -a "$TAG" -m "dian115 v3 插件发布 $TAG"
 git push origin "$BRANCH"
 git push origin "$TAG"
 
-echo "== 5) 创建 Release 并上传资产 =="
-RELEASE_FILES=()
-while IFS= read -r file; do RELEASE_FILES+=("$file"); done < <(ls -1 dist/*.dian115p)
-if gh release view "$TAG" >/dev/null 2>&1; then
-  gh release upload "$TAG" "${RELEASE_FILES[@]}" --clobber
-else
-  gh release create "$TAG" "${RELEASE_FILES[@]}" \
-    --title "v3 插件 $TAG" \
-    --notes-file <(cd dist && sha256sum *.dian115p)
-fi
+echo "== 5) 发布 Release（tag 已存在，gh 会把它挂到刚推的 tag 上）=="
+gh release edit "$TAG" --draft=false --latest
 
 echo "== 完成 =="
 echo "Release: https://github.com/$REPO/releases/tag/$TAG"
