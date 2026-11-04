@@ -108,11 +108,17 @@ export async function fetchQqVip(deps) {
   const uin = Number(uinFromCookies(jar)) || 0
   const pSkey = String(jar.p_skey ?? jar.p_skey_enc ?? '')
   const gtk = pSkey ? String(hash33(pSkey)) : ''
-  const comm = { ct: 24, cv: 0, format: 'json', inCharset: 'utf-8', outCharset: 'utf-8', uin }
+  const comm = {
+    ct: 24, cv: 0, format: 'json', inCharset: 'utf-8', outCharset: 'utf-8',
+    notice: 0, platform: 'yqq.json', needNewCode: 1, uin,
+  }
   if (gtk) {
     comm.g_tk = gtk
     comm.g_tk_new_20200303 = gtk
   }
+  // musicu 的鉴权凭据：qqmusic_key 走 comm.auth，缺了会返回 500003 这类权限错误。
+  const auth = String(jar.qqmusic_key ?? '')
+  if (auth) comm.auth = auth
   const body = JSON.stringify({
     comm,
     req_1: { module: 'UserInfo.UserInfoServer', method: 'GetUserInfo', param: {} },
@@ -133,15 +139,9 @@ export async function fetchQqVip(deps) {
   const parsed = JSON.parse(response.text || '{}')
   const info = parseQqVip(parsed)
   if (info.tier === 'unknown') {
-    // 诊断只记字段名，不记任何值：便于后续按真实响应适配，不泄露账号信息。
-    const data = parsed?.req_1?.data ?? parsed?.data ?? parsed
-    const keys = data && typeof data === 'object' ? Object.keys(data).slice(0, 30) : []
-    const code = parsed?.req_1?.code ?? parsed?.code
-    await addLog(
-      deps.kv,
-      'info',
-      `QQ 会员字段待适配（仅字段名，code=${code ?? '未知'}）：${keys.join(',') || '空响应'}`,
-    )
+    // 诊断写进本机插件日志（「最近动作」可见）：记录完整响应以便一次适配到位；
+    // 响应是账号的会员资料，不含 Cookie/凭据。
+    await addLog(deps.kv, 'info', `QQ 会员待适配，原始响应: ${JSON.stringify(parsed).slice(0, 900)}`)
   }
   return info
 }
