@@ -6,11 +6,10 @@
 //   - sha256 一律用实算值。
 // 输出 v3-market-index.release.json（不直接改仓库里的源文件，由发布流程决定是否回写）。
 //
-// 条目按 (id, version) upsert（market.md：「每个版本是一条记录」「同一 id 下不可重复」）：
-//   - 同 id 同 version 已存在 → 更新那条（同版本重发）；
-//   - 只有旧 version → 复制旧条目改成新 version 追加（历史版本保留在货架上）；
-//   - 索引里没有这个 id → 按清单造一条新条目（首次上架）。
-// 历史版本下架就是把对应条目从 plugins[] 里删掉。
+// 条目按 id upsert，同 id 永远只有一条（最新版本）：宿主的「更新」入口会把同
+// id 的每条记录都列出来，多版本陈列等于满屏同名插件，所以不做多版本货架。
+// （market.md 允许多版本并存——「每个版本是一条记录」——但那是给真要保留历史
+// 版本的场景；这里要回滚就去 Releases 拿旧包。）
 //
 // changelog 按条目 version 当期写（不是累计历史）：传 CHANGELOG 环境变量（JSON，
 // {"music.rs": "1.3.10：…"}）按 id 覆盖；不传则新条目沿用被复制条目的文案。
@@ -96,23 +95,20 @@ for (const id of ids) {
   const sum = sha256(distPath)
   const url = `https://github.com/${repo}/releases/download/${tag}/${pkgName}`
 
-  // 同 id 同 version → 就地更新；否则找同 id 最新条目克隆一条新的（历史版本保留）。
-  let entry = plugins.find((item) => item.id === id && item.version === version)
+  // 同 id 只留最新一条：有就就地更新（version 一并换成当期），没有就按清单造新的。
+  let entry = plugins.find((item) => item.id === id)
   let isNew = false
   if (!entry) {
-    const prev = [...plugins].reverse().find((item) => item.id === id)
-    entry = prev
-      ? { ...prev }
-      : {
-          id,
-          name: manifest.name ?? id,
-          description: manifest.description ?? '',
-          homepage: manifest.homepage ?? `https://github.com/${repo}`,
-        }
-    entry.version = version
+    entry = {
+      id,
+      name: manifest.name ?? id,
+      description: manifest.description ?? '',
+      homepage: manifest.homepage ?? `https://github.com/${repo}`,
+    }
     isNew = true
     plugins.push(entry)
   }
+  entry.version = version
 
   entry.source_url = url
   entry.sha256 = sum
