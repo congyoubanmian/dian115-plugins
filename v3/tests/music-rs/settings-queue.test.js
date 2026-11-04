@@ -58,7 +58,7 @@ function fakeKv() {
 // ─────────────────────────── settings ───────────────────────────
 
 test('settings defaults and normalization', () => {
-  assert.equal(DEFAULT_TARGET_DIR, '/CloudNAS/115open/音乐/音乐下载')
+  assert.equal(DEFAULT_TARGET_DIR, '/CloudNAS/CloudDrive/115open/音乐/音乐下载')
   assert.equal(DEFAULT_QUALITY, 'jymaster')
   assert.equal(DEFAULT_MAX_ACTIVE, 2)
   assert.equal(MAX_ACTIVE_CAP, 16)
@@ -66,6 +66,11 @@ test('settings defaults and normalization', () => {
     target_dir: DEFAULT_TARGET_DIR, quality: DEFAULT_QUALITY, max_active: 2, notify_on_fail: true,
   })
   assert.equal(normalizeSettings({ target_dir: '  ' }).target_dir, DEFAULT_TARGET_DIR)
+  assert.equal(
+    normalizeSettings({ target_dir: '/CloudNAS/115open/音乐/音乐下载' }).target_dir,
+    DEFAULT_TARGET_DIR,
+    '旧默认路径（少 CloudDrive 层）自动迁移',
+  )
   assert.equal(normalizeSettings({ max_active: 0 }).max_active, 2, '0 回默认')
   assert.equal(normalizeSettings({ max_active: 99 }).max_active, 2, '超上限回默认')
   assert.equal(normalizeSettings({ max_active: 5 }).max_active, 5)

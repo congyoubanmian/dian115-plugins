@@ -43,6 +43,7 @@ import TaskPanel from './components/TaskPanel.vue'
 import SettingsPanel from './components/SettingsPanel.vue'
 import ActivityPanel from './components/ActivityPanel.vue'
 import NowDownloading from './components/NowDownloading.vue'
+import VipGateDialog from './components/VipGateDialog.vue'
 
 type TabId = 'search' | 'playlists' | 'tasks' | 'settings'
 
@@ -243,6 +244,7 @@ onBeforeUnmount(() => {
 
     <!-- 提示条：fixed 相对视口，放在滚动壳外面 -->
     <ToastHost :items="toasts" position="bottom-right" :z-index="50" />
+    <VipGateDialog />
   </div>
 </template>
 

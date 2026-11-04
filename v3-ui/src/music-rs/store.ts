@@ -39,6 +39,8 @@ export const MUSIC_STORE_KEY = 'musicStore'
 const POLL_INTERVAL_MS = 2000
 /** 任务页跟随刷新的间隔（毫秒）——与原生版一致。 */
 const TASK_REFRESH_MS = 5000
+/** 字节进度的轻量轮询间隔：只查当前这一个宿主任务，不读 KV。 */
+const PROGRESS_REFRESH_MS = 500
 /** 会员信息缓存：6 小时。会员档位不常变，避免每次 5 秒刷新都打外部接口。 */
 const VIP_CACHE_MS = 6 * 3600 * 1000
 /** 未登录时的引导文案关键字。 */
@@ -144,6 +146,13 @@ export function createMusicStore(ctx: HostContext) {
   const attentionRun = ref<{ id: string; message: string } | null>(null)
   /** 正在运行的 queue-pump 宿主任务：message 里有宿主每秒写入的入库字节进度，total/done/failed 是本轮计数。 */
   const pumpRun = ref<{ message: string; total: number; done: number; failed: number } | null>(null)
+  /** VIP/付费歌曲入队确认弹窗：单首或批量共用一个，确认后继续入队。 */
+  const vipGate = ref<{ open: boolean; items: Song[]; mode: 'single' | 'batch' }>({
+    open: false,
+    items: [],
+    mode: 'single',
+  })
+  let vipGateResolver: ((ok: boolean) => void) | null = null
   const login = reactive<{ netease: LoginInfo; qq: LoginInfo }>({
     netease: { logged_in: false },
     qq: { logged_in: false },
@@ -287,6 +296,9 @@ export function createMusicStore(ctx: HostContext) {
   const sleepers = new Set<() => void>()
   let qrTimer: ReturnType<typeof setTimeout> | null = null
   let taskTimer: ReturnType<typeof setInterval> | null = null
+  /** 进行中的 pump 任务 id 与它的轻量进度轮询定时器。 */
+  let pumpRunId = ''
+  let progressTimer: ReturnType<typeof setInterval> | null = null
   let toastSeq = 0
 
   /** 页面已释放或宿主中止 signal —— 长流程在每次进出 await 时用它自检。 */
@@ -373,16 +385,52 @@ export function createMusicStore(ctx: HostContext) {
       const running = list.find(
         (run) => run.job_id === 'queue-pump' && ['running', 'pending', 'queued'].includes(String(run.status)),
       )
-      pumpRun.value = running
-        ? {
-            message: String(running.message ?? ''),
-            total: Number(running.total ?? 0) || 0,
-            done: Number(running.done ?? 0) || 0,
-            failed: Number(running.failed ?? 0) || 0,
-          }
-        : null
+      pumpRun.value = running ? pumpRunOf(running) : null
+      pumpRunId = running ? String(running.id ?? '') : ''
+      setProgressRefresh(Boolean(pumpRunId))
     } catch {
       // 任务列表只用于提示，读失败不打扰。
+    }
+  }
+
+  /** 宿主任务 → 进度快照。 */
+  function pumpRunOf(run: Record<string, unknown>): { message: string; total: number; done: number; failed: number } {
+    return {
+      message: String(run.message ?? ''),
+      total: Number(run.total ?? 0) || 0,
+      done: Number(run.done ?? 0) || 0,
+      failed: Number(run.failed ?? 0) || 0,
+    }
+  }
+
+  /** 字节进度单独走 0.5 秒轮询：只查这一个任务，不读插件 KV。 */
+  function setProgressRefresh(enabled: boolean): void {
+    if (enabled && progressTimer === null) {
+      progressTimer = setInterval(() => {
+        void tickProgress()
+      }, PROGRESS_REFRESH_MS)
+    } else if (!enabled && progressTimer !== null) {
+      clearInterval(progressTimer)
+      progressTimer = null
+    }
+  }
+
+  async function tickProgress(): Promise<void> {
+    if (disposed.value || !pumpRunId) return
+    try {
+      const run = await ctx.tasks.get(pumpRunId)
+      const status = String(run?.status ?? '')
+      if (!['running', 'pending', 'queued'].includes(status)) {
+        // 任务结束：停掉快进轮询，并拉一次完整状态（任务列表要刷新）。
+        pumpRun.value = null
+        pumpRunId = ''
+        setProgressRefresh(false)
+        void refresh()
+        return
+      }
+      pumpRun.value = pumpRunOf(run)
+    } catch {
+      // 单次读失败不影响页面，下一拍重试。
     }
   }
 
@@ -489,8 +537,31 @@ export function createMusicStore(ctx: HostContext) {
   }
 
   // ── 单曲入队 ──────────────────────────────────────────
+  /** 会员/付费歌曲确认：返回用户是否仍然入队。批量模式下确认一次，后续同类不再弹。 */
+  function askVipGate(items: Song[], mode: 'single' | 'batch'): Promise<boolean> {
+    return new Promise<boolean>((resolve) => {
+      vipGateResolver = resolve
+      vipGate.value = { open: true, items, mode }
+    })
+  }
+
+  /** 弹窗回调：确定 = 强行入队，取消 = 跳过。 */
+  function resolveVipGate(ok: boolean): void {
+    vipGate.value = { open: false, items: [], mode: vipGate.value.mode }
+    const resolve = vipGateResolver
+    vipGateResolver = null
+    if (resolve) resolve(ok)
+  }
+
   async function downloadSong(song: Song): Promise<void> {
     try {
+      if (song.vip) {
+        const ok = await askVipGate([song], 'single')
+        if (!ok) {
+          toast('info', `已取消入队: ${song.name ?? ''}`)
+          return
+        }
+      }
       const outcome = await api.enqueue(deps.kv, {
         source: song.source || source.value,
         song_id: String(song.id ?? '').trim(),
@@ -870,6 +941,8 @@ export function createMusicStore(ctx: HostContext) {
       let skipped = ''
       // 整批只拉一次 v6 全量索引（0.3.15 形态），各页纯本地切片。
       let index: unknown = null
+      /** 整单入队时 VIP/付费歌只确认一次：确认后同类一律照常入队，取消则跳过。 */
+      let vipApproved = false
       playlistProgress.value = '正在整单入队…'
       for (;;) {
         if (cancelled()) {
@@ -879,6 +952,10 @@ export function createMusicStore(ctx: HostContext) {
         const result = await api.queuePlaylistPages(
           async (song: Song) => {
             if (cancelled()) throw new Error('页面已关闭')
+            if (song.vip && !vipApproved) {
+              vipApproved = await askVipGate([song], 'batch')
+              if (!vipApproved) throw new Error('用户未确认会员歌曲')
+            }
             const outcome = await api.enqueue(deps.kv, {
               source: view.source,
               song_id: String(song.id ?? '').trim(),
@@ -1111,6 +1188,10 @@ export function createMusicStore(ctx: HostContext) {
       clearInterval(taskTimer)
       taskTimer = null
     }
+    if (progressTimer !== null) {
+      clearInterval(progressTimer)
+      progressTimer = null
+    }
     for (const done of Array.from(sleepers)) done()
     sleepers.clear()
     for (const timer of timers) {
@@ -1126,6 +1207,8 @@ export function createMusicStore(ctx: HostContext) {
     allTasks,
     attentionRun,
     pumpRun,
+    vipGate,
+    resolveVipGate,
     login,
     vip,
     logs,

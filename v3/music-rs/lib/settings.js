@@ -4,8 +4,11 @@
 // - CookieCloud 三项移除：宿主新规约下插件不读 CookieCloud，登录态只来自扫码或手动粘贴；
 // - CD2 直送五项移除：v3 宿主文件操作自动按 CD2 挂载前缀分流，不再需要插件直连 gRPC-Web。
 
-/** 最终落点默认值（与 sidecar MUSIC_MOUNT + DL_SUBDIR 一致）。 */
-export const DEFAULT_TARGET_DIR = '/CloudNAS/115open/音乐/音乐下载'
+/** 最终落点默认值：CD2 的 115 挂载在 CloudDrive/ 下，少了这一层会落到宿主本地目录，
+ *  网盘里看不到。 */
+export const DEFAULT_TARGET_DIR = '/CloudNAS/CloudDrive/115open/音乐/音乐下载'
+/** 旧默认值（少了 CloudDrive 层）：存量设置若仍是它，读的时候自动迁到新默认。 */
+const LEGACY_TARGET_DIRS = new Set(['/CloudNAS/115open/音乐/音乐下载'])
 /** 默认音质（网易档位；QQ 用 master/flac/320/128 裁剪取链阶梯）。 */
 export const DEFAULT_QUALITY = 'jymaster'
 /** 默认并发（与 sidecar MAX_CONCURRENT_DOWNLOADS 默认一致；v3 里是「单轮最多新开几首」）。 */
@@ -24,9 +27,11 @@ function trimTrailingSlash(dir) {
 /** 读取设置（ctx.settings.get() 的结果叠加默认值；缺失/类型不符回默认）。 */
 export function normalizeSettings(saved) {
   const raw = saved && typeof saved === 'object' ? saved : {}
-  const targetDir = typeof raw.target_dir === 'string' && raw.target_dir.trim() !== ''
+  const savedDir = typeof raw.target_dir === 'string' && raw.target_dir.trim() !== ''
     ? trimTrailingSlash(raw.target_dir.trim())
     : DEFAULT_TARGET_DIR
+  // 旧默认值自动迁移（用户没改过就还是旧路径，落到宿主本地目录、网盘看不到）。
+  const targetDir = LEGACY_TARGET_DIRS.has(savedDir) ? DEFAULT_TARGET_DIR : savedDir
   const quality = typeof raw.quality === 'string' && raw.quality.trim() !== ''
     ? raw.quality.trim()
     : DEFAULT_QUALITY

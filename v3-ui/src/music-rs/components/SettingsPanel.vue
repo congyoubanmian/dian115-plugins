@@ -115,7 +115,7 @@ async function save(): Promise<void> {
       <NInput
         v-model:value="targetDir"
         size="small"
-        placeholder="/CloudNAS/115open/音乐/音乐下载"
+        placeholder="/CloudNAS/CloudDrive/115open/音乐/音乐下载"
         @update:value="markEdited"
       />
       <span class="hint">
