@@ -1093,6 +1093,22 @@ export async function runHourlyAlign(ctx) {
           reason: '同一剧集本轮已探测失败, 不重复消耗预算',
         }, now, targetUpperUnknown('同一剧集本轮已探测失败')))
         continue
+      } else if (intent.total_known <= 0) {
+        // 宿主 emby/episodes 要求 total_episodes 必填（2026-11-05 实测裸请求
+        // 必 400「tmdb_id and total_episodes are required」）；订阅池该条
+        // total_known=0 意味着目标集数没算出来，问「缺几集」本身无意义——
+        // 直接跳过，既不发必败请求也不消耗探测预算。
+        counters.skipped += 1
+        pushAlignItem(items, itemOf(intent, {
+          action: ACTION_SKIPPED,
+          from_total: intent.total_known,
+          to_total: intent.total_known,
+          have_max: -1,
+          have_count: -1,
+          gap_max: 0,
+          reason: '订阅池该条 total_episodes_known=0：目标集数未知，跳过覆盖探测（宿主要求 total_episodes 必填）',
+        }, now, targetUpperUnknown('目标集数未知')))
+        continue
       } else {
         const booked = book.get(key)
         if (booked && booked.emby === 'failed' && isFresh(booked.at, PROBE_NEGATIVE_TTL_SECS)) {
