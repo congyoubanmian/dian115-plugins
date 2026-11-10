@@ -32,7 +32,15 @@
         "risk": "每小时读取订阅池与 Emby 覆盖，并按只增原则 PATCH 订阅集数（从不缩小）；发送每日追剧报告通知；读写插件自有存储；界面从 image.tmdb.org 加载 TMDB 海报缩略图（后端只读宿主 TMDB 详情，不直接请求该站点）。不触碰宿主文件。"
       },
       "homepage": "https://github.com/congyoubanmian/dian115-plugins",
-      "changelog": "0.1.18：显示名去掉「Rust 版」后缀（插件本就是纯 JS/TS，-rs 只是移植标记）。"
+      "changelog": "0.1.18：显示名去掉「Rust 版」后缀（插件本就是纯 JS/TS，-rs 只是移植标记）。",
+      "icon": "https://raw.githubusercontent.com/congyoubanmian/dian115-plugins/main/v3/chase-rs/icon.svg",
+      "repository_url": "https://github.com/congyoubanmian/dian115-plugins",
+      "keywords": [
+        "追剧",
+        "订阅",
+        "Emby",
+        "剧集"
+      ]
     },
     {
       "id": "douban.rs",
@@ -70,6 +78,14 @@
       "changelog": "1.2.4：显示名去掉「Rust 版」后缀（插件本就是纯 JS/TS，-rs 只是移植标记）。",
       "permissions": [
         "telegram.bot"
+      ],
+      "icon": "https://raw.githubusercontent.com/congyoubanmian/dian115-plugins/main/v3/douban-rs/icon.svg",
+      "repository_url": "https://github.com/congyoubanmian/dian115-plugins",
+      "keywords": [
+        "豆瓣",
+        "榜单",
+        "想看",
+        "订阅"
       ]
     },
     {
@@ -110,6 +126,14 @@
       "changelog": "1.3.12：显示名规范化。",
       "permissions": [
         "telegram.bot"
+      ],
+      "icon": "https://raw.githubusercontent.com/congyoubanmian/dian115-plugins/main/v3/music-rs/icon.svg",
+      "repository_url": "https://github.com/congyoubanmian/dian115-plugins",
+      "keywords": [
+        "音乐下载",
+        "网易云",
+        "QQ音乐",
+        "歌单"
       ]
     },
     {

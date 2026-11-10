@@ -29,6 +29,9 @@ const entries = index.plugins.map((plugin) => ({
   declared_usage: plugin.declared_usage,
   homepage: plugin.homepage,
   changelog: plugin.changelog,
+  icon: plugin.icon,
+  repository_url: plugin.repository_url,
+  keywords: plugin.keywords,
 }))
 
 const storeIndex = {
