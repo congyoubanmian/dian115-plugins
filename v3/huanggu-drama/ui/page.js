@@ -12531,7 +12531,7 @@ function Nv(a, e) {
   const i = Ch(t.getAttribute("href") || "", hl);
   i && e && e(i);
 }
-const tl = "0.1.0", Ov = (a) => a, Mv = (a) => /\.m3u8(\?|$)/i.test(a), Pv = (a) => {
+const tl = "0.1.1", Ov = (a) => a, Mv = (a) => /\.m3u8(\?|$)/i.test(a), Pv = (a) => {
   {
     console.debug("[hghub]", a);
     return;
@@ -35041,7 +35041,7 @@ async function Cu() {
 }
 function _E() {
   return mv ??= Iu.status().then((a) => {
-    ol({ ...a, ready: !0 }), kr("app.start", { version: "0.1.0", platform: navigator.platform, user_agent: navigator.userAgent, hls_version: ut.version, media_source: !!window.MediaSource, managed_media_source: "ManagedMediaSource" in window });
+    ol({ ...a, ready: !0 }), kr("app.start", { version: "0.1.1", platform: navigator.platform, user_agent: navigator.userAgent, hls_version: ut.version, media_source: !!window.MediaSource, managed_media_source: "ManagedMediaSource" in window });
   }).catch(() => {
     mv = void 0, ol({ error: "无法读取诊断日志设置" });
   });
@@ -35052,7 +35052,7 @@ async function Pk(a) {
   try {
     await Cu();
     const e = await Iu.set(a);
-    ol({ ...e, pending: !1 }), kr("app.snapshot", { version: "0.1.0", platform: navigator.platform, user_agent: navigator.userAgent, hls_version: ut.version, media_source: !!window.MediaSource, managed_media_source: "ManagedMediaSource" in window });
+    ol({ ...e, pending: !1 }), kr("app.snapshot", { version: "0.1.1", platform: navigator.platform, user_agent: navigator.userAgent, hls_version: ut.version, media_source: !!window.MediaSource, managed_media_source: "ManagedMediaSource" in window });
   } finally {
     Gn.pending && ol({ pending: !1 });
   }
