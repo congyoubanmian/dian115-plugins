@@ -32,12 +32,13 @@ PLUGINS=(
   "chase.rs|v3/chase-rs|chase-rs.dian115p"
   "music.rs|v3/music-rs|music-rs.dian115p"
   "douban.rs|v3/douban-rs|douban-rs.dian115p"
+  "huanggu.drama|v3/hghub|hghub.dian115p"
 )
 
 mkdir -p "$DIST"
 
-# ── 1) 界面：先构建 Vue 界面 ───────────────────────────────────────────────
-echo "== 构建 Vue 界面（v3-ui/src/<plugin> → v3/<plugin>/ui/）=="
+# ── 1) 界面：先构建 Vue 界面（含 hghub 的 React 自打包界面）──────────────
+echo "== 构建界面（v3-ui/src/<plugin> 与 v3/hghub-ui → v3/<plugin>/ui/）=="
 bash "$ROOT/scripts/v3-build-ui.sh"
 
 # ── 2) 官方审查闸门（结构 + 恶意特征扫描）──────────────────────────────

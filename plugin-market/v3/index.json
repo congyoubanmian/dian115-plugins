@@ -35,6 +35,67 @@
       "changelog": "0.1.18：显示名去掉「Rust 版」后缀（插件本就是纯 JS/TS，-rs 只是移植标记）。"
     },
     {
+      "id": "douban.rs",
+      "name": "豆瓣中心",
+      "version": "1.2.4",
+      "description": "豆瓣榜单抓取 + 黑名单过滤 + 观察队列 + 聚合订阅；按宿主新规约不再读取 CookieCloud；登录态由用户手动粘贴浏览器里的豆瓣 Cookie 提供，自动追订「我的想看」；TMDB 匹配失败时用豆瓣详情（原名/又名）回退重搜；支持最低评分/年份/地区订阅过滤与「已删除不重订」墓碑集。创建聚合订阅前后落任务检查点，中断恢复先查宿主订阅池里该 (tmdb_id, media_type) 的真实状态再决定 complete / resume / attention。海报抓回后落插件文件缓存 posters/<sha256>.<ext>（超 64 张按 modified 淘汰最旧，卸载即清空），页面用 downloadURL 取图，files 不可用时降级 dataURL。Telegram 机器人接收 /refresh、/wish 两条指令并回执执行结果（指令触发不需要授权，回执走 ctx.messaging.reply 需要用户授权 telegram.bot）。旧 schema 1 WASM 插件（plugins/douban-rs 0.2.4）的 v3 迁移版；页面提供榜单海报墙、观察队列/我的想看、历史日志与设置。",
+      "author": "镜头的蒙太奇",
+      "source_url": "https://github.com/congyoubanmian/dian115-plugins/releases/download/v3-2026.11.05-1/douban.rs-b7bf6063-45b3-42d9-a568-6dcec65b69bb.dian115p",
+      "sha256": "15eb498a6682fbfa9b9b947ed7cb07921030f81156d6e6cb1090a1eedc9cb76d",
+      "delivery": "protected-v4",
+      "declared_usage": {
+        "apis": [
+          "GET/PUT/DELETE /api/extensions/v3/{id}/storage*",
+          "GET /api/extensions/v3/{id}/settings",
+          "POST /api/extensions/v3/{id}/notify",
+          "POST /api/extensions/v3/{id}/http",
+          "POST /api/extensions/v3/{id}/jobs/{job}",
+          "POST /api/extensions/v3/{id}/files*",
+          "GET /api/extensions/v3/{id}/files/download*",
+          "POST /api/extensions/v3/{id}/messaging/*",
+          "GET /api/tmdb/search",
+          "GET/POST /api/subscribe/pool/intents",
+          "GET /api/subscribe/records"
+        ],
+        "sites": [
+          "movie.douban.com（榜单抓取：j/search_subjects、/chart、/cinema/later/、j/subject_suggest）",
+          "m.douban.com（想看列表与条目详情：rexxar api v2）",
+          "*.doubanio.com（豆瓣海报 CDN，需带豆瓣 Referer 防盗链）"
+        ],
+        "files": "只读写插件自有相对路径 posters/<sha256>.<ext>（海报缓存，超过 64 张按 modified 淘汰删除最旧；卸载即清空），不写宿主文件",
+        "notifications": true,
+        "risk": "定期抓取豆瓣榜单与想看列表，按黑名单/过滤器入观察队列；到期条目经 TMDB 匹配（失配时回查豆瓣详情重搜）后创建宿主聚合订阅（宿主负责检索并投递 115 离线）；登录态只来自用户手动粘贴的豆瓣 Cookie（不读取 CookieCloud）；订阅结果发送通知。Telegram 机器人只接收 /refresh、/wish 两条命令并回执执行结果（需用户授权 telegram.bot）。海报缓存写插件自有 data/files 的 posters/ 目录，超量时删除其中最旧的缓存文件（只限 posters/ 内）。不写宿主文件，不触碰 115 账号。"
+      },
+      "homepage": "https://github.com/congyoubanmian/dian115-plugins",
+      "changelog": "1.2.4：显示名去掉「Rust 版」后缀（插件本就是纯 JS/TS，-rs 只是移植标记）。",
+      "permissions": [
+        "telegram.bot"
+      ]
+    },
+    {
+      "id": "huanggu.drama",
+      "name": "黄果短剧",
+      "version": "0.1.0",
+      "description": "黄果短剧浏览与播放：首页发现、搜索分类、榜单吃瓜、详情选集、评论收藏与观看记录。edge 信封直连上游站点（Referer/Bearer）、WebCrypto 解密 AES-128-CBC 封面、hls.js 自定义 loader 走宿主 HTTP 规避防盗链与 CORS。",
+      "author": "congyoubanmian",
+      "source_url": "https://github.com/congyoubanmian/dian115-plugins/releases/download/hghub-v0.1.0/hghub.dian115p",
+      "sha256": "e8be870a45618b9a5ad54e1515ebd50aa16a5e6a8f1e02a60abc3e4ca179a92e",
+      "delivery": "source",
+      "declared_usage": {
+        "apis": [],
+        "sites": [
+          "huangguoai.com",
+          "huangguoai.ai",
+          "huangguoai.pages.dev",
+          "api.github.com"
+        ],
+        "risk": "浏览黄果短剧内容并播放：全部业务请求走上游站点 edge 信封（POST /api/edge/request，带 Referer 与登录 Bearer）；封面经宿主代拉后在页面内用 WebCrypto 解密；HLS 分片/key 经宿主 HTTP 代拉；收藏/观看记录/搜索历史/登录 token 只存插件 KV；不含通知、不触碰宿主文件。",
+        "audit_note": "静态扫描的高危项为打包后 minified React 产物的固有特征，均属误报：(1) 联网调用与插件 KV 读写是播放器/持久层所需；(2) /api/account/loginByPassword 等是上游站点的登录接口路径（edge 信封内 path 字段），不是宿主凭据接口；(3) 操作宿主页面命中的是 React 挂载到宿主元素与全局 keydown 监听（返回/搜索快捷键）；(4) 零宽字符来自 React 生产构建 performance.mark 标记；(5) minified 是 esbuild 压缩产物，可读源码在 v3/hghub-ui/ 可逐行审。安装时宿主重新分析实际代码。"
+      },
+      "homepage": "https://github.com/congyoubanmian/dian115-plugins",
+      "changelog": "0.1.0：黄果短剧浏览与播放（首页发现/搜索分类/榜单吃瓜/详情选集/评论收藏/观看记录）；edge 信封直连上游 + AES 封面解密 + HLS 代理加载。"
+    },
+    {
       "id": "music.rs",
       "name": "音乐下载",
       "version": "1.3.12",
@@ -70,44 +131,6 @@
       },
       "homepage": "https://github.com/congyoubanmian/dian115-plugins",
       "changelog": "1.3.12：显示名规范化。",
-      "permissions": [
-        "telegram.bot"
-      ]
-    },
-    {
-      "id": "douban.rs",
-      "name": "豆瓣中心",
-      "version": "1.2.4",
-      "description": "豆瓣榜单抓取 + 黑名单过滤 + 观察队列 + 聚合订阅；按宿主新规约不再读取 CookieCloud；登录态由用户手动粘贴浏览器里的豆瓣 Cookie 提供，自动追订「我的想看」；TMDB 匹配失败时用豆瓣详情（原名/又名）回退重搜；支持最低评分/年份/地区订阅过滤与「已删除不重订」墓碑集。创建聚合订阅前后落任务检查点，中断恢复先查宿主订阅池里该 (tmdb_id, media_type) 的真实状态再决定 complete / resume / attention。海报抓回后落插件文件缓存 posters/<sha256>.<ext>（超 64 张按 modified 淘汰最旧，卸载即清空），页面用 downloadURL 取图，files 不可用时降级 dataURL。Telegram 机器人接收 /refresh、/wish 两条指令并回执执行结果（指令触发不需要授权，回执走 ctx.messaging.reply 需要用户授权 telegram.bot）。旧 schema 1 WASM 插件（plugins/douban-rs 0.2.4）的 v3 迁移版；页面提供榜单海报墙、观察队列/我的想看、历史日志与设置。",
-      "author": "镜头的蒙太奇",
-      "source_url": "https://github.com/congyoubanmian/dian115-plugins/releases/download/v3-2026.11.05-1/douban.rs-b7bf6063-45b3-42d9-a568-6dcec65b69bb.dian115p",
-      "sha256": "15eb498a6682fbfa9b9b947ed7cb07921030f81156d6e6cb1090a1eedc9cb76d",
-      "delivery": "protected-v4",
-      "declared_usage": {
-        "apis": [
-          "GET/PUT/DELETE /api/extensions/v3/{id}/storage*",
-          "GET /api/extensions/v3/{id}/settings",
-          "POST /api/extensions/v3/{id}/notify",
-          "POST /api/extensions/v3/{id}/http",
-          "POST /api/extensions/v3/{id}/jobs/{job}",
-          "POST /api/extensions/v3/{id}/files*",
-          "GET /api/extensions/v3/{id}/files/download*",
-          "POST /api/extensions/v3/{id}/messaging/*",
-          "GET /api/tmdb/search",
-          "GET/POST /api/subscribe/pool/intents",
-          "GET /api/subscribe/records"
-        ],
-        "sites": [
-          "movie.douban.com（榜单抓取：j/search_subjects、/chart、/cinema/later/、j/subject_suggest）",
-          "m.douban.com（想看列表与条目详情：rexxar api v2）",
-          "*.doubanio.com（豆瓣海报 CDN，需带豆瓣 Referer 防盗链）"
-        ],
-        "files": "只读写插件自有相对路径 posters/<sha256>.<ext>（海报缓存，超过 64 张按 modified 淘汰删除最旧；卸载即清空），不写宿主文件",
-        "notifications": true,
-        "risk": "定期抓取豆瓣榜单与想看列表，按黑名单/过滤器入观察队列；到期条目经 TMDB 匹配（失配时回查豆瓣详情重搜）后创建宿主聚合订阅（宿主负责检索并投递 115 离线）；登录态只来自用户手动粘贴的豆瓣 Cookie（不读取 CookieCloud）；订阅结果发送通知。Telegram 机器人只接收 /refresh、/wish 两条命令并回执执行结果（需用户授权 telegram.bot）。海报缓存写插件自有 data/files 的 posters/ 目录，超量时删除其中最旧的缓存文件（只限 posters/ 内）。不写宿主文件，不触碰 115 账号。"
-      },
-      "homepage": "https://github.com/congyoubanmian/dian115-plugins",
-      "changelog": "1.2.4：显示名去掉「Rust 版」后缀（插件本就是纯 JS/TS，-rs 只是移植标记）。",
       "permissions": [
         "telegram.bot"
       ]

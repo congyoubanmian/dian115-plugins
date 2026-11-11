@@ -12,11 +12,12 @@ https://raw.githubusercontent.com/congyoubanmian/dian115-plugins/main/plugin-mar
 
 | 插件 ID | 名称 | 干什么 | 版本 |
 | --- | --- | --- | --- |
-| `chase.rs` | 追剧管家 | 小时级对齐「订阅池剧集订阅」与「Emby 已有集数」：只增 PATCH `total_episodes`，产出追剧日历与每日一次的 Telegram 日报；已核实无缺口的条目 5 小时窗口内复用缓存，Emby 查询量压一个数量级；外部写操作前后存检查点，中断后按订阅池真实状态恢复，不重复 PATCH | 0.1.14 |
-| `music.rs` | 音乐下载 | 网易云 / QQ 音乐扫码登录、搜索与歌单、按时下音质取链；宿主代下载（API 3.9 直写目标目录）并交 CloudDrive2 入库，任务队列落 KV，支持 Telegram 按钮重试；新增 TG 消息命令（/queue /status）、目标目录同名预检、下载 sha256 记录与每日 TG 日报 | 1.3.0 |
-| `douban.rs` | 豆瓣中心 | 豆瓣榜单抓取 → 黑名单过滤 → 观察队列 → 聚合订阅；登录态用手动粘贴的浏览器 Cookie，自动追订「我的想看」；新增 TG 命令（/refresh /wish）与海报文件缓存（状态不再塞 base64，改走 downloadURL） | 1.2.0 |
+| `chase.rs` | 追剧管家 | 小时级对齐「订阅池剧集订阅」与「Emby 已有集数」：只增 PATCH `total_episodes`，产出追剧日历与每日一次的 Telegram 日报；已核实无缺口的条目 5 小时窗口内复用缓存，Emby 查询量压一个数量级；外部写操作前后存检查点，中断后按订阅池真实状态恢复，不重复 PATCH | 0.1.18 |
+| `music.rs` | 音乐下载 | 网易云 / QQ 音乐扫码登录、搜索与歌单、按时下音质取链；宿主代下载（API 3.9 直写目标目录）并交 CloudDrive2 入库，任务队列落 KV，支持 Telegram 按钮重试；新增 TG 消息命令（/queue /status）、目标目录同名预检、下载 sha256 记录与每日 TG 日报 | 1.3.12 |
+| `douban.rs` | 豆瓣中心 | 豆瓣榜单抓取 → 黑名单过滤 → 观察队列 → 聚合订阅；登录态用手动粘贴的浏览器 Cookie，自动追订「我的想看」；新增 TG 命令（/refresh /wish）与海报文件缓存（状态不再塞 base64，改走 downloadURL） | 1.2.4 |
+| `huanggu.drama` | 黄果短剧 | 黄果短剧浏览与播放：首页发现、搜索分类、榜单吃瓜、详情选集、评论收藏与观看记录。edge 信封直连上游（Referer/Bearer）、WebCrypto 解密 AES-128-CBC 封面、hls.js 自定义 loader 走宿主 HTTP 规避防盗链与 CORS | 0.1.0 |
 
-三个插件都是**页面 + 后台任务**，页面自带设置面板（按宿主规范，有页面的插件不在清单里声明 `settings[]`），数据只走 `ctx.storage` / `ctx.api`，不读 CookieCloud、不向第三方上报。
+三个老插件都是**页面 + 后台任务**，页面自带设置面板（按宿主规范，有页面的插件不在清单里声明 `settings[]`），数据只走 `ctx.storage` / `ctx.api`，不读 CookieCloud、不向第三方上报。`huanggu.drama` 是纯 UI 插件（无后台 job），React 自打包进 `ui/page.js`（不依赖宿主框架单例），持久层与主题走 `ctx.storage` / `ctx.theme`。
 
 ## 仓库结构
 
@@ -25,8 +26,10 @@ v3/                          v3 插件源码（每个插件：plugin.json + jobs
 ├── chase-rs/                 追剧管家
 ├── music-rs/                 音乐下载
 ├── douban-rs/                豆瓣中心
+├── hghub/                    黄果短剧（纯 UI 插件：plugin.json + ui/page.js）
+├── hghub-ui/                 hghub 的 React 界面源码与构建（npm run build → ../hghub/ui）
 └── tests/<plugin>/           离线单测与夹具（在插件目录之外，不进 .dian115p 包）
-v3-ui/                        三个插件的 Vue 3 界面源码、共享构建底座与构建脚本
+v3-ui/                        三个 Vue 插件的 Vue 3 界面源码、共享构建底座与构建脚本
   ├── src/<plugin>/           页面源码（Vue SFC + TS）
   ├── shared/                 主题/挂载等共享层
   ├── legacy/<plugin>/       改造前的原生 JS 页面（行为基准，构建脚本据此回滚）

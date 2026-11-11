@@ -1,0 +1,229 @@
+import React, { useEffect, useRef, useState } from "react";
+import Hls from "hls.js";
+import { fmtTime, isHlsUrl, isLocalMedia, playlist } from "../api";
+import { hlsOptions, resolveDirectMedia } from "../plugin/media";
+import { mediaResource, observeHls, usePlayerDiagnostics } from "../playbackDiagnostics";
+import { usePlaybackActivity } from "../usePlaybackActivity";
+import { useSeekInput } from "../useSeekInput";
+import PlaybackLock from "./PlaybackLock";
+import { ICompress, IExpand, ILockF, IPauseF, IPlayF, IVol, IVolMute } from "../icons";
+
+type Props = {
+  src: string;              // 原始 m3u8 地址
+  poster?: string;          // 已处理好的封面地址（本地协议）
+  autoPlay?: boolean;
+  active?: boolean;
+  muted?: boolean;
+  loop?: boolean;
+  onEnded?: () => void;
+  onPlaying?: () => void;
+  onTogglePlay?: (playing: boolean) => void;
+  onToggleMute?: () => void;
+  controls?: boolean;
+  className?: string;
+  diagnosticContext?: Record<string, unknown>;
+};
+
+export default function Player({
+  src, poster, autoPlay, active = true, muted = false, loop = false, onEnded, onPlaying,
+  onTogglePlay, onToggleMute, controls = true, className = "", diagnosticContext = {},
+}: Props) {
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const hlsRef = useRef<Hls | null>(null);
+  const { trace, requestSeek } = usePlayerDiagnostics(videoRef, hlsRef, { view: "post_detail", ...diagnosticContext, active, resource: mediaResource(src) });
+  const activity = usePlaybackActivity(videoRef, hlsRef, { active, autoPlay: !!autoPlay, src, trace });
+  const [playing, setPlaying] = useState(false);
+  const [waiting, setWaiting] = useState(false);
+  const [time, setTime] = useState(0);
+  const [duration, setDuration] = useState(0);
+  const [full, setFull] = useState(false);
+  const [rate, setRate] = useState(1);
+  const [errMsg, setErrMsg] = useState<string>("");
+  const [controlsLocked, setControlsLocked] = useState(false);
+  const seek = useSeekInput({ time, duration, enabled: active && !controlsLocked, resetKey: src,
+    onInteraction: (phase, input, target, pointerTarget) => trace(`seek.input.${phase}`, { input, target, pointer_target: pointerTarget }),
+    onSeek: (target, input) => {
+      const video = videoRef.current;
+      if (!video || !activity.isActive()) return;
+      requestSeek(target, `legacy_${input}`);
+      video.currentTime = target;
+      trace("seek.assigned", { target });
+      setTime(video.currentTime);
+    },
+  });
+
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video || !src) return;
+    const proxied = isLocalMedia(src);
+    const url = proxied ? src : playlist(src);
+    const useHls = proxied ? !url.includes("/seg?u=") : isHlsUrl(src);
+    trace("source.load", { engine: useHls && Hls.isSupported() ? "hls.js" : "native", auto_play: autoPlay });
+
+    if (hlsRef.current) { hlsRef.current.destroy(); hlsRef.current = null; }
+
+    let alive = true;
+    if (useHls && Hls.isSupported()) {
+      const hls = new Hls({
+        // 禁用从插播/内容引导 JSON 派生直连 URL 的可选功能。
+        interstitialsController: undefined,
+        contentSteeringController: undefined,
+        enableInterstitialPlayback: false,
+        enableWorker: true,
+        // Keep the same macOS seek workaround as the shared player.
+        preferManagedMediaSource: false,
+        autoStartLoad: false,
+        lowLatencyMode: false,
+        maxBufferLength: 24,
+        backBufferLength: 30,
+        manifestLoadingTimeOut: 20000,
+        manifestLoadingMaxRetry: 3,
+        fragLoadingMaxRetry: 4,
+        // 插件模式：分片/key/清单走宿主 HTTP（防盗链 + 无 CORS）；宿主内禁 worker
+        ...(hlsOptions() as Record<string, unknown>),
+      });
+      hlsRef.current = hls;
+      observeHls(hls, trace);
+      hls.loadSource(url);
+      hls.attachMedia(video);
+      hls.on(Hls.Events.MANIFEST_PARSED, () => {
+        if (activity.isActive()) hls.startLoad();
+        if (autoPlay) activity.play("manifest_autoplay", true);
+      });
+      hls.on(Hls.Events.ERROR, (_e, data) => {
+        if (!data.fatal) return;
+        const detail = `${data.type}/${data.details}/${data.response?.code ?? ""}/${String(data.reason ?? "").slice(0, 80)}`;
+        (window as unknown as { __hlsErr?: string }).__hlsErr = detail;
+        setErrMsg(detail);
+        if (!activity.isActive()) return;
+        if (data.type === Hls.ErrorTypes.NETWORK_ERROR) hls.startLoad();
+        else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) hls.recoverMediaError();
+        else { hls.destroy(); hlsRef.current = null; }
+      });
+    } else if (!proxied) {
+      // 非 m3u8（mp4 等）：插件模式经宿主代拉转 blob；桌面走本地透传
+      resolveDirectMedia(url).then((blobUrl) => {
+        if (!alive || !videoRef.current) return;
+        videoRef.current.src = blobUrl;
+        if (autoPlay) activity.play("native_autoplay", true);
+      }).catch((e) => setErrMsg(String((e as Error).message || e)));
+    } else {
+      // Safari / 部分 WebView 原生支持 HLS
+      video.src = url;
+      if (autoPlay) activity.play("native_autoplay", true);
+    }
+
+    return () => {
+      alive = false;
+      trace("source.cleanup");
+      if (hlsRef.current) { hlsRef.current.destroy(); hlsRef.current = null; }
+    };
+  }, [src, autoPlay]);
+
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    video.muted = muted;
+  }, [muted]);
+
+  useEffect(() => {
+    const onFs = () => setFull(!!document.fullscreenElement);
+    document.addEventListener("fullscreenchange", onFs);
+    return () => document.removeEventListener("fullscreenchange", onFs);
+  }, []);
+
+  const toggle = () => {
+    const video = videoRef.current;
+    if (!video) return;
+    trace("toggle.request");
+    if (video.paused) activity.play("toggle");
+    else activity.pause("toggle");
+  };
+
+  const cycleRate = () => {
+    const video = videoRef.current;
+    if (!video) return;
+    const next = rate === 1 ? 1.25 : rate === 1.25 ? 1.5 : rate === 1.5 ? 2 : 1;
+    video.playbackRate = next;
+    setRate(next);
+  };
+
+  const toggleFull = () => {
+    const el = wrapRef.current;
+    if (!el) return;
+    if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+    else el.requestFullscreen().catch(() => {});
+  };
+
+  const pct = duration > 0 ? (seek.time / duration) * 100 : 0;
+
+  return (
+    <div ref={wrapRef} className={`relative bg-black overflow-hidden group ${className}`}>
+      <div className="absolute inset-0" inert={controlsLocked}>
+      <video
+        ref={videoRef}
+        poster={poster}
+        playsInline
+        muted={muted}
+        loop={loop}
+        className="w-full h-full object-contain bg-black"
+        onClick={toggle}
+        onPlay={() => { if (activity.isActive()) { setPlaying(true); onTogglePlay?.(true); } }}
+        onPause={() => { setPlaying(false); onTogglePlay?.(false); }}
+        onWaiting={() => setWaiting(true)}
+        onPlaying={() => { if (activity.isActive()) { setWaiting(false); onPlaying?.(); } }}
+        onTimeUpdate={(e) => setTime((e.target as HTMLVideoElement).currentTime)}
+        onLoadedMetadata={(e) => setDuration((e.target as HTMLVideoElement).duration || 0)}
+        onEnded={() => { if (activity.isActive()) onEnded?.(); }}
+      />
+
+      {errMsg && (
+        <div className="absolute left-2 top-2 z-30 max-w-[80%] rounded bg-black/70 px-2 py-1 text-[10px] leading-tight text-red-300 break-all">
+          {errMsg}
+        </div>
+      )}
+
+      {waiting && (
+        <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+          <div className="w-9 h-9 spinner" />
+        </div>
+      )}
+
+      {!playing && !waiting && (
+        <button onClick={toggle} aria-label="播放"
+          className="absolute inset-0 flex items-center justify-center">
+          <span className="w-16 h-16 rounded-full bg-black/45 backdrop-blur-sm flex items-center justify-center elev-2 pressable">
+            <IPlayF size={26} className="text-white ml-0.5" />
+          </span>
+        </button>
+      )}
+
+      {controls && (
+        <div className="absolute inset-x-0 bottom-0 px-3 pb-2 pt-8 bg-gradient-to-t from-black/80 to-transparent opacity-0 group-hover:opacity-100 transition-opacity">
+          <input aria-label="播放进度" type="range" {...seek.inputProps}
+            className="hg-range w-full" style={{ ...seek.inputProps.style, "--fill": `${pct}%` } as React.CSSProperties} />
+          <div className="flex items-center gap-3 mt-1 text-white">
+            <button onClick={toggle} aria-label={playing ? "暂停" : "播放"} className="pressable">
+              {playing ? <IPauseF size={16} /> : <IPlayF size={16} />}
+            </button>
+            <button onClick={() => onToggleMute?.()} aria-label={muted ? "取消静音" : "静音"} className="pressable">
+              {muted ? <IVolMute size={16} /> : <IVol size={16} />}
+            </button>
+            <span className="text-[11px] tabular-nums text-white/85">{fmtTime(seek.time)} / {fmtTime(duration)}</span>
+            <div className="flex-1" />
+            <button onClick={() => setControlsLocked(true)} aria-label="锁定播放控制" title="锁定播放控制" aria-pressed={false} className="pressable">
+              <ILockF size={16} />
+            </button>
+            <button onClick={cycleRate} className="text-[11px] font-bold text-white/85 pressable tabular-nums">{rate}x</button>
+            <button onClick={toggleFull} aria-label="全屏" className="pressable">
+              {full ? <ICompress size={16} /> : <IExpand size={16} />}
+            </button>
+          </div>
+        </div>
+      )}
+      </div>
+      {controlsLocked && <PlaybackLock active={active} onUnlock={() => setControlsLocked(false)} />}
+    </div>
+  );
+}

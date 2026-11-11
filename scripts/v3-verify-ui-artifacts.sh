@@ -23,6 +23,7 @@ UI_DIRS=(
   "v3/chase-rs/ui"
   "v3/music-rs/ui"
   "v3/douban-rs/ui"
+  "v3/hghub/ui"
 )
 
 if ! git rev-parse --git-dir >/dev/null 2>&1; then
