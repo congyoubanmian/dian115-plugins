@@ -97,11 +97,15 @@ export const DEFAULT_BASE = "https://huangguoai.com";
 
 export const FIXED_LINES: { name: string; url: string }[] = [
   { name: "固定线路 1", url: "https://huangguoai.com" },
-  { name: "固定线路 2", url: "https://huangguoai.ai" },
+  { name: "固定线路 2", url: "https://thu.adihsppe.cc" },
+  { name: "固定线路 3", url: "https://pku.adihsppe.cc" },
 ];
 
 const PUBLISH_PAGE = "https://huangguoai.pages.dev/";
 const MIRROR_MAX = 60;
+
+/** 已失效线路：KV 里残留时自动回落默认线路（2026-11 起 .ai 域名的 API 全部 404）。 */
+const DEAD_LINES = new Set(["https://huangguoai.ai"]);
 
 let baseCache = DEFAULT_BASE;
 let baseLoaded = false;
@@ -128,7 +132,7 @@ export async function loadLine(): Promise<void> {
     const saved = (await ctx?.storage.get("lines")) as { base?: string } | null;
     if (saved?.base) {
       const next = normalizeBase(saved.base);
-      if (next) baseCache = next;
+      if (next && !DEAD_LINES.has(next)) baseCache = next;
     }
   } catch {
     /* KV 不可用时保持默认线路 */
@@ -257,13 +261,18 @@ export async function edge(
     body: encoded,
     content_type: body === undefined ? "" : "application/json",
   };
-  const headers: Record<string, string> = { Accept: "application/json", Referer: `${cur}/` };
+  const headers: Record<string, string> = {
+    Accept: "application/json",
+    Referer: `${cur}/`,
+    "User-Agent": UA,
+    "Content-Type": "application/json",
+  };
   if (token) headers.Authorization = `Bearer ${token}`;
   const r = await httpRequest({
     url: `${cur}/api/edge/request`,
     method: "POST",
     headers,
-    json: envelope,
+    body: JSON.stringify(envelope),
     timeout_seconds: 45,
   });
   if (r.status === 401 || r.status === 403) throw new Error("401");
@@ -300,13 +309,14 @@ export async function directApi(
     Accept: "application/json",
     Referer: `${cur}/`,
     "User-Agent": UA,
+    "Content-Type": "application/json",
   };
   if (token) headers.Authorization = `Bearer ${token}`;
   const r = await httpRequest({
     url: `${cur}${path}`,
     method,
     headers,
-    json: body === undefined ? {} : body,
+    body: JSON.stringify(body === undefined ? {} : body),
     timeout_seconds: 45,
   });
   if (r.status === 401 || r.status === 403) throw new Error("401");
