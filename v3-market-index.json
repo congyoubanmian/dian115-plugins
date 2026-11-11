@@ -12,8 +12,8 @@
       "version": "0.1.18",
       "description": "小时级对齐「订阅池里的剧集订阅」与「Emby 已有集数」：只对可解析的条目做只增 PATCH total_episodes，并产出追剧日历与当天一次的日报；减方向只给建议，从不写。已核实无缺口的条目在 5 小时窗口内复用缓存，不重复探测 Emby。每次 PATCH 前后落任务检查点，中断恢复先查订阅池里该条目的真实集数，已确认写到位才记 complete、确认没写才 resume、核对不上记 attention（整点入口把 attention 收敛为 resume，靠只增守卫保证重跑不重复写）。界面按统一设计稿重绘：指标瓦片、徽标胶囊、双栏看板与移动端单栏适配。",
       "author": "镜头的蒙太奇",
-      "source_url": "https://github.com/congyoubanmian/dian115-plugins/releases/download/v3-2026.11.11-3/chase.rs-d0f67851-ec1a-46f2-ab15-b694efbb21a6.dian115p",
-      "sha256": "b9004a58be186d5a67741b960a891a8a0ac7efeae75a7eb661ba1ddd73ceafe2",
+      "source_url": "https://github.com/congyoubanmian/dian115-plugins/releases/download/v3-2026.11.11-4/chase.rs-50b0ca78-6471-46a1-b0d2-d8264b06f741.dian115p",
+      "sha256": "354c602a4269a94b9d9405a12dc6097e8a61d33ee7aad9d9513e118acea39047",
       "delivery": "protected-v4",
       "declared_usage": {
         "apis": [
@@ -40,8 +40,8 @@
       "version": "1.2.4",
       "description": "豆瓣榜单抓取 + 黑名单过滤 + 观察队列 + 聚合订阅；按宿主新规约不再读取 CookieCloud；登录态由用户手动粘贴浏览器里的豆瓣 Cookie 提供，自动追订「我的想看」；TMDB 匹配失败时用豆瓣详情（原名/又名）回退重搜；支持最低评分/年份/地区订阅过滤与「已删除不重订」墓碑集。创建聚合订阅前后落任务检查点，中断恢复先查宿主订阅池里该 (tmdb_id, media_type) 的真实状态再决定 complete / resume / attention。海报抓回后落插件文件缓存 posters/<sha256>.<ext>（超 64 张按 modified 淘汰最旧，卸载即清空），页面用 downloadURL 取图，files 不可用时降级 dataURL。Telegram 机器人接收 /refresh、/wish 两条指令并回执执行结果（指令触发不需要授权，回执走 ctx.messaging.reply 需要用户授权 telegram.bot）。旧 schema 1 WASM 插件（plugins/douban-rs 0.2.4）的 v3 迁移版；页面提供榜单海报墙、观察队列/我的想看、历史日志与设置。",
       "author": "镜头的蒙太奇",
-      "source_url": "https://github.com/congyoubanmian/dian115-plugins/releases/download/v3-2026.11.11-3/douban.rs-c4cc2734-a504-43b5-93af-bd95d42c575f.dian115p",
-      "sha256": "6d1721854c79588584c7917283dbea320fc9cb1c73b6a1950c16577b2eec2984",
+      "source_url": "https://github.com/congyoubanmian/dian115-plugins/releases/download/v3-2026.11.11-4/douban.rs-2f81e12e-4880-4d3a-84b1-ba7a6e14a04d.dian115p",
+      "sha256": "726aafa52b3c05eef7d8572818860975460cee54fbce0decf081c4295839d727",
       "delivery": "protected-v4",
       "declared_usage": {
         "apis": [
@@ -78,8 +78,8 @@
       "version": "1.3.12",
       "description": "网易云 / QQ 音乐搜索、扫码登录（网易云 unikey 二维码；QQ 官方二维码 + graph.qq.com OAuth 授权换音乐凭据）与手动粘贴 Cookie 回退、我的歌单（网易云与 QQ 都能读我创建的与收藏的歌单；QQ 另有「每日推荐」与「我喜欢」两个入口）、按音质逐级取链；单曲与整张歌单入队后由后台任务自动推进：取链接 → API 3.9 起 save_to 优先直写目标目录（宿主不开放该能力时回落「暂存 → 定名 → move」，CD2 挂载由宿主自动分流）→ 失败通知带「重试」按钮。下载与入库前后落任务检查点，中断恢复先核对目标目录里的真实文件再决定 complete / resume / attention；入库前做同名预检，目标已有同名文件直接终态失败不进重试循环。Telegram 机器人提供只读查询命令（/music 队列|状态|帮助、/queue、/status），不触发下载与删除，回复走来源渠道、未授权 telegram.bot 时回退普通通知；每天 08:30 发一条下载日报（dedupe_key 按天，当天送达不重发，发送失败换新键）。旧 schema 1 WASM 插件（plugins/music-rs 0.3.19）的 v3 迁移版。",
       "author": "镜头的蒙太奇",
-      "source_url": "https://github.com/congyoubanmian/dian115-plugins/releases/download/v3-2026.11.11-3/music.rs-2262e869-1057-4bfb-8e35-86be022118ce.dian115p",
-      "sha256": "05af56676e11353ad035ce7c2baa05fdd8f56f9d8308357a303290d942086407",
+      "source_url": "https://github.com/congyoubanmian/dian115-plugins/releases/download/v3-2026.11.11-4/music.rs-6e47d87a-5eeb-4b7a-8276-d3797e89cea1.dian115p",
+      "sha256": "e951f60798bd9fc89fe0df7d48ab15f464dca86a0eb03144bf4f46896460e4ab",
       "delivery": "protected-v4",
       "declared_usage": {
         "apis": [
@@ -117,17 +117,17 @@
       "name": "黄果短剧",
       "description": "黄果短剧浏览与播放：首页发现、搜索分类、榜单吃瓜、详情选集、评论收藏与观看记录。edge 信封直连上游站点（Referer/Bearer），播放取址走上游新版 /playback 接口并附 CDN 校验头，WebCrypto 解密 AES-128-CBC 封面，hls.js 自定义 loader 走宿主 HTTP 规避防盗链与 CORS。",
       "homepage": "https://github.com/congyoubanmian/dian115-plugins",
-      "version": "0.1.2",
-      "source_url": "https://github.com/congyoubanmian/dian115-plugins/releases/download/v3-2026.11.11-3/huanggu.drama-f885b458-716f-4ff8-b05a-60722cc3f889.dian115p",
-      "sha256": "31c9f6c37420b4105cebb082ff56f5ff8c8ede94d508faa1bb3b9e9b4eb664c9",
+      "version": "0.1.3",
+      "source_url": "https://github.com/congyoubanmian/dian115-plugins/releases/download/v3-2026.11.11-4/huanggu.drama-a3c4f0b1-66d2-4dc9-bed3-05aac8f885ee.dian115p",
+      "sha256": "01172d7573d75282b76896f789372498f847cab3cd7a43cd493523f94dee8c94",
       "delivery": "protected-v4",
       "author": "镜头的蒙太奇",
-      "changelog": "0.1.2：适配上游新版取址协议——播放地址改走 POST /api/videos/{id}/episodes/{ep}/playback 与 /api/posts/{id}/playback（旧 /play 与详情 video_url 已返回空值），并附带 CDN 校验头（x-cdn-auth/x-cdn-app）；修复吃瓜帖视频播放。0.1.1：修复宿主内 process is not defined；构建产物防回归检查。",
+      "changelog": "0.1.3：修复部分宿主首页 HTTP 400——上游对空/畸形请求体返回 {\"error\":\"请求无法处理\"} 400，请求体改用最兼容的 body 字符串+显式 Content-Type（不再依赖 json 字段）；edge 信封补 User-Agent（无 UA 会上游 403）；剔除已失效固定线路 huangguoai.ai（API 全线 404），新增 adihsppe.cc 镜像固定线路，KV 残留失效线路自动回落默认。",
       "declared_usage": {
         "apis": [],
         "sites": [
           "huangguoai.com",
-          "huangguoai.ai",
+          "adihsppe.cc",
           "huangguoai.pages.dev",
           "api.github.com"
         ],
