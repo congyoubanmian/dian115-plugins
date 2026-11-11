@@ -283,6 +283,50 @@ export async function edge(
   throw new Error((v.msg || "接口返回失败").toString());
 }
 
+/**
+ * 直连 REST：不经 edge 信封（上游 2026-11 新版取址/播放接口是明文 REST，
+ * 如 POST /api/videos/{id}/episodes/{ep}/playback）。响应外壳与信封一致：{status:1,data}。
+ */
+export async function directApi(
+  origin: string,
+  method: string,
+  path: string,
+  body?: unknown,
+  token?: string,
+): Promise<unknown> {
+  const cur = normalizeBase(origin);
+  if (!cur) throw new Error("业务请求必须使用安全 HTTPS 线路");
+  const headers: Record<string, string> = {
+    Accept: "application/json",
+    Referer: `${cur}/`,
+    "User-Agent": UA,
+  };
+  if (token) headers.Authorization = `Bearer ${token}`;
+  const r = await httpRequest({
+    url: `${cur}${path}`,
+    method,
+    headers,
+    json: body === undefined ? {} : body,
+    timeout_seconds: 45,
+  });
+  if (r.status === 401 || r.status === 403) throw new Error("401");
+  if (r.status >= 400) {
+    throw new Error(`HTTP ${r.status}: ${String(r.body || r.error || "").slice(0, 160)}`);
+  }
+  const text = r.body ?? "";
+  if (!text.trim()) return null;
+  let value: unknown;
+  try {
+    value = JSON.parse(text);
+  } catch (e) {
+    throw new Error(`${(e as Error).message}: ${text.slice(0, 160)}`);
+  }
+  const v = value as { status?: number; code?: number; data?: unknown; msg?: string };
+  if (v.status === 1 || v.code === 200) return v.data ?? null;
+  if (v.status === undefined && v.code === undefined && v.data !== undefined) return v.data;
+  throw new Error((v.msg || "接口返回失败").toString());
+}
+
 /* ── 通用 HTTP（宿主代发 / 预览桥） ───────────────────────── */
 
 export async function httpRequest(opts: DianHttpRequestOptions): Promise<DianHttpResponse> {

@@ -16,15 +16,24 @@ async function devHttp(opts: DianHttpRequestOptions): Promise<DianHttpResponse> 
     });
     return { status: r.status, body: await r.text() };
   }
+  const forward = {
+    url: opts.url,
+    method: opts.method || "GET",
+    body: opts.body ?? (opts.json !== undefined ? JSON.stringify(opts.json) : undefined),
+    headers: opts.headers,
+  };
+  const r = await fetch("/__hg/raw", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(forward),
+  });
   if (opts.response_type === "base64") {
-    const r = await fetch(`/__hg/raw?u=${encodeURIComponent(opts.url)}`);
     if (r.status >= 400) return { status: r.status, body: await r.text() };
     const buf = new Uint8Array(await r.arrayBuffer());
     let bin = "";
     for (let i = 0; i < buf.length; i++) bin += String.fromCharCode(buf[i]);
     return { status: r.status, body_base64: btoa(bin) };
   }
-  const r = await fetch(`/__hg/raw?u=${encodeURIComponent(opts.url)}`);
   return { status: r.status, body: await r.text() };
 }
 

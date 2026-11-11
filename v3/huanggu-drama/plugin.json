@@ -3,8 +3,8 @@
   "schema_version": 3,
   "id": "huanggu.drama",
   "name": "黄果短剧",
-  "version": "0.1.1",
-  "description": "黄果短剧浏览与播放：首页发现、搜索分类、榜单吃瓜、详情选集、评论收藏与观看记录。edge 信封直连上游站点（Referer/Bearer）、WebCrypto 解密 AES-128-CBC 封面、hls.js 自定义 loader 走宿主 HTTP 规避防盗链与 CORS。",
+  "version": "0.1.2",
+  "description": "黄果短剧浏览与播放：首页发现、搜索分类、榜单吃瓜、详情选集、评论收藏与观看记录。edge 信封直连上游站点（Referer/Bearer），播放取址走上游新版 /playback 接口并附 CDN 校验头，WebCrypto 解密 AES-128-CBC 封面，hls.js 自定义 loader 走宿主 HTTP 规避防盗链与 CORS。",
   "author": "congyoubanmian",
   "homepage": "https://github.com/congyoubanmian/dian115-plugins",
   "requires": {

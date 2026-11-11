@@ -50,6 +50,41 @@ function mediaHeaders(): Record<string, string> {
   return { Referer: `${base()}/`, "User-Agent": UA };
 }
 
+/* ── CDN 校验头（上游新版取址接口下发，与官网前端 xhrSetup 同规则） ── */
+
+export type CdnAuth = {
+  m3u8Enabled?: boolean;
+  otherEnabled?: boolean;
+  authKey?: string;
+  authValue?: string;
+  app?: string;
+  imgEnabled?: boolean;
+  imgAuthKey?: string;
+  imgAuthValue?: string;
+};
+
+let mediaCdn: CdnAuth | null = null;
+
+/** 记录取址接口下发的 CDN 校验配置；随后 m3u8/分片/key 请求按规则附带。 */
+export function setMediaCdn(cdn: CdnAuth | null | undefined): void {
+  mediaCdn = cdn && cdn.authKey && cdn.authValue && cdn.app ? cdn : null;
+}
+
+/** forManifest=true 对应 .m3u8；false 对应分片/key/直连媒体。 */
+function cdnHeaders(forManifest: boolean): Record<string, string> {
+  const c = mediaCdn;
+  if (!c) return {};
+  const hit = (c.m3u8Enabled && forManifest) || (c.otherEnabled && !forManifest);
+  if (!hit) return {};
+  return { [c.authKey as string]: c.authValue as string, "x-cdn-app": c.app as string };
+}
+
+function coverAuthHeaders(): Record<string, string> {
+  const c = mediaCdn;
+  if (c?.imgEnabled && c.imgAuthKey && c.imgAuthValue) return { [c.imgAuthKey]: c.imgAuthValue };
+  return {};
+}
+
 /** 拉取并解密一张封面，返回 blob URL（带缓存）。 */
 export async function resolveCover(raw: string): Promise<string> {
   const key = raw;
@@ -59,7 +94,7 @@ export async function resolveCover(raw: string): Promise<string> {
   const r = await httpRequest({
     url: raw,
     method: "GET",
-    headers: mediaHeaders(),
+    headers: { ...mediaHeaders(), ...coverAuthHeaders() },
     response_type: "base64",
     timeout_seconds: 30,
   } as DianHttpRequestOptions);
@@ -111,7 +146,7 @@ export async function resolveDirectMedia(url: string): Promise<string> {
   const r = await httpRequest({
     url,
     method: "GET",
-    headers: mediaHeaders(),
+    headers: { ...mediaHeaders(), ...cdnHeaders(false) },
     response_type: "base64",
     timeout_seconds: 60,
   } as DianHttpRequestOptions);
@@ -190,7 +225,7 @@ export class DianLoader {
     const opts: DianHttpRequestOptions = {
       url,
       method: "GET",
-      headers: mediaHeaders(),
+      headers: { ...mediaHeaders(), ...cdnHeaders(isManifest) },
       timeout_seconds: 45,
     };
     if (!isManifest) opts.response_type = "base64";

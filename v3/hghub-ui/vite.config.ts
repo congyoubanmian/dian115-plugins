@@ -50,14 +50,35 @@ function devProxy(): Plugin {
           return;
         }
         if (url.startsWith("/__hg/raw")) {
-          const u = new URL(url, "http://localhost");
-          const target = u.searchParams.get("u") || "";
           try {
+            // POST {url, method, body, headers}：转发方法/正文/自定义头（新版取址接口是 POST）
+            let target = "";
+            let method = "GET";
+            let body: string | undefined;
+            let headers: Record<string, string> = {};
+            if (req.method === "POST") {
+              let raw = "";
+              for await (const chunk of req) raw += chunk;
+              const fwd = JSON.parse(raw || "{}") as {
+                url?: string; method?: string; body?: string; headers?: Record<string, string>;
+              };
+              target = fwd.url || "";
+              method = fwd.method || "GET";
+              body = fwd.body;
+              headers = fwd.headers || {};
+            } else {
+              const u = new URL(url, "http://localhost");
+              target = u.searchParams.get("u") || "";
+            }
             const r = await fetch(target, {
+              method,
               headers: {
                 referer: "https://huangguoai.com/",
                 "user-agent": UA,
+                ...(body !== undefined ? { "content-type": "application/json" } : {}),
+                ...headers,
               },
+              body: method === "GET" || method === "HEAD" ? undefined : body,
               signal: AbortSignal.timeout(30000),
             });
             const buf = Buffer.from(await r.arrayBuffer());

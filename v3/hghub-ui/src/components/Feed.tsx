@@ -109,10 +109,10 @@ export default function Feed({ videoIds, startIndex = 0, title = "", mode, kind 
   const detail = details[curId];
   const curEp = epMap[curId] || 1;
   const playKey = `${curId}:${curEp}`;
-  const playUrl = playUrls[playKey] || "";
+  const post = posts[curId];
+  const playUrl = kind === "post" ? (post?.video_url || "") : (playUrls[playKey] || "");
   useEffect(() => { videoRef.current?.trace("page.active", { active, view: mode, video_id: curId, episode: curEp }); }, [active, mode, curId, curEp]);
   const episodes = detail?.episodes || [];
-  const post = posts[curId];
 
   /* 观看进度：onTime 里每 5 秒落一次；退出播放页时再用 liveRef 兜一次 */
   const onTimeTick = (t: number) => {
@@ -235,9 +235,9 @@ export default function Feed({ videoIds, startIndex = 0, title = "", mode, kind 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [kind, index, videoIds]);
 
-  /* 拉播放地址 */
+  /* 拉播放地址（帖子地址由 api.post 附带，不走 videos/play） */
   useEffect(() => {
-    if (!curId) return;
+    if (kind === "post" || !curId) return;
     if (playUrls[playKey]) return;
     let alive = true;
     api.play(curId, curEp)

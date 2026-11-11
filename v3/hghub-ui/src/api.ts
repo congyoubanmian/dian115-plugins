@@ -3,11 +3,14 @@ import type {
 } from "./types";
 import { isStrictSecurity as htmlStrict, setStrictSecurity as setHtmlStrictSecurity } from "./html";
 import {
-  base, DEFAULT_BASE, edge, FIXED_LINES, lineMirrors as fetchMirrors, lineProbe as probeLines,
+  base, DEFAULT_BASE, directApi, edge, FIXED_LINES, lineMirrors as fetchMirrors, lineProbe as probeLines,
   loadLine, loadSession, saveSession, sessionToken, sessionUser, setBase,
   httpRequest, pluginCtx, b64decode, UA,
 } from "./plugin/ctx";
-import { clearCoverCache, clearDirectCache, COVER_PREFIX, isCoverMarker, stripCoverMarker, resolveCover } from "./plugin/media";
+import {
+  clearCoverCache, clearDirectCache, COVER_PREFIX, isCoverMarker, stripCoverMarker,
+  resolveCover, setMediaCdn, type CdnAuth,
+} from "./plugin/media";
 
 /* ── 运行环境（转发自 env.ts，保持原有导出面） ────────────── */
 
@@ -56,6 +59,41 @@ async function call<T>(cmd: string, args?: Record<string, unknown>): Promise<T> 
 }
 
 /* ── 插件分发：命令名 → 桥接实现（替代原 Tauri invoke） ──── */
+
+/** 上游 2026-11 新版取址响应：签名流地址 + CDN 校验头（时效短，不落盘）。 */
+type PlaybackPayload = {
+  mode?: number;
+  manifest_method?: string;
+  cdn?: CdnAuth;
+  streams?: { main?: string; hevc?: string; preview?: string };
+  videos?: { index?: number; url?: string }[];
+};
+
+/**
+ * 播放取址（与官网 services/playback.js 同协议）：
+ * 短剧 POST /api/videos/{id}/episodes/{ep}/playback，吃瓜帖 POST /api/posts/{id}/playback。
+ * 拿到响应顺手把 cdn 校验头交给媒体管线（media.ts 里的 loader 按规则附带）。
+ */
+async function playbackRequest(
+  origin: string,
+  kind: "video" | "post",
+  id: unknown,
+  ep: unknown,
+  token?: string,
+): Promise<PlaybackPayload | null> {
+  const seg = encodeURIComponent(String(id));
+  const path = kind === "video"
+    ? (ep !== undefined && ep !== null && String(ep) !== ""
+        ? `/api/videos/${seg}/episodes/${encodeURIComponent(String(ep))}/playback`
+        : `/api/videos/${seg}/playback`)
+    : `/api/posts/${seg}/playback`;
+  const data = (await directApi(origin, "POST", path, {}, token)) as PlaybackPayload | null;
+  if (data?.cdn) setMediaCdn(data.cdn);
+  if (data?.manifest_method && data.manifest_method !== "GET") {
+    throw new Error(`暂不支持的取址方式（${data.manifest_method}）`);
+  }
+  return data;
+}
 
 async function pluginDispatch(cmd: string, args?: Record<string, unknown>): Promise<unknown> {
   const origin = base();
@@ -124,13 +162,45 @@ async function pluginDispatch(cmd: string, args?: Record<string, unknown>): Prom
       return edge(origin, "GET", `/api/search?q=${encodeURIComponent(String(args?.q ?? ""))}&page=${args?.page}&size=${args?.size}`, undefined, token);
     case "api_posts":
       return edge(origin, "GET", `/api/posts?page=${args?.page}&size=${args?.size}`, undefined, token);
-    case "api_post":
-      return edge(origin, "GET", `/api/posts/${args?.id}`, undefined, token);
+    case "api_post": {
+      const post = (await edge(origin, "GET", `/api/posts/${args?.id}`, undefined, token)) as (Post & {
+        video_url?: string;
+      }) | null;
+      // 新版上游：帖子详情不再带 video_url，播放地址走 /api/posts/{id}/playback
+      if (post && !post.video_url) {
+        try {
+          const data = await playbackRequest(origin, "post", args?.id, undefined, token);
+          const vids = (data?.videos || []).slice().sort((a, b) => (a.index ?? 0) - (b.index ?? 0));
+          const url = vids.find((v) => v.url)?.url || data?.streams?.main || "";
+          if (url) post.video_url = url;
+        } catch { /* 纯图文帖没有视频，静默 */ }
+      }
+      return post;
+    }
 
     case "api_video":
       return edge(origin, "GET", `/api/videos/${args?.id}`, undefined, token);
-    case "api_play":
+    case "api_play": {
+      // 新版取址：POST /api/videos/{id}/episodes/{ep}/playback → streams.main/hevc + cdn 校验头
+      try {
+        const data = await playbackRequest(origin, "video", args?.id, args?.ep, token);
+        const s = data?.streams;
+        const url = s?.main || s?.preview || "";
+        if (url) {
+          return {
+            id: Number(args?.id) || 0,
+            ep_num: Number(args?.ep) || 1,
+            duration: 0,
+            title: "",
+            video_url: url,
+            video_url_hevc: s?.hevc || "",
+          } satisfies PlayInfo;
+        }
+      } catch {
+        /* 旧版镜像没有 playback 端点，走老协议回落 */
+      }
       return edge(origin, "GET", `/api/videos/${args?.id}/play?ep=${args?.ep}&page_texts=0`, undefined, token);
+    }
 
     case "api_comments":
       return edge(origin, "GET", `/api/videos/${args?.id}/comments?ep=${args?.ep}&page=${args?.page}&size=${args?.size}`, undefined, token);
