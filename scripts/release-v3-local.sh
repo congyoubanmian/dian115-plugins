@@ -22,7 +22,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 REPO="${DIAN115_REPO:-congyoubanmian/dian115-plugins}"
 BRANCH="${2:-main}"
-PLUGINS=(chase-rs music-rs douban-rs)
+PLUGINS=(chase-rs music-rs douban-rs hghub)
 
 if [ -n "$(git status --porcelain)" ]; then
   echo "工作区不干净，先提交或清理再发版" >&2

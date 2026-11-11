@@ -31,7 +31,7 @@ v3/douban-rs/
 v3/hghub/               黄果短剧（纯 UI 插件：plugin.json + icon.svg + ui/page.js）
 v3/hghub-ui/            hghub 的 React 界面源码与构建（依赖在 v3/hghub-ui/node_modules，不入库）
 v3-ui/                  三个 Vue 插件的 Vue 3 界面源码 + 共享构建底座（依赖在 v3-ui/node_modules，不入库）
-v3-market-index.json    v3 市场索引（schema_version 3，四个插件）
+v3-market-index.json    v3 市场索引（schema_version 3；huanggu.drama 待编译 MCP 签发后由 release-v3-local.sh 写入）
 scripts/v3-build-ui.sh  一键构建界面（Vue → v3/<plugin>/ui/；hghub → v3/hghub/ui/，幂等）
 scripts/v3-build.sh     一键 构建界面 → 官方审查 → project-check → pack → sha256（幂等）
 dist/                   构建产物 .dian115p（本地生成，不提交；.gitignore 的 *.dian115p 覆盖）
