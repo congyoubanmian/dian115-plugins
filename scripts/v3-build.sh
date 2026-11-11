@@ -32,7 +32,7 @@ PLUGINS=(
   "chase.rs|v3/chase-rs|chase-rs.dian115p"
   "music.rs|v3/music-rs|music-rs.dian115p"
   "douban.rs|v3/douban-rs|douban-rs.dian115p"
-  "huanggu.drama|v3/hghub|hghub.dian115p"
+  "huanggu.drama|v3/huanggu-drama|huanggu-drama.dian115p"
 )
 
 mkdir -p "$DIST"

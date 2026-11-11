@@ -98,7 +98,7 @@ export default defineConfig({
       formats: ["es"],
       fileName: () => "page.js",
     },
-    outDir: "../hghub/ui",
+    outDir: "../huanggu-drama/ui",
     emptyOutDir: true,
     target: "es2021",
     minify: "esbuild",

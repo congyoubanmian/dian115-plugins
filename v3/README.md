@@ -7,7 +7,7 @@
 | 追剧管家 `chase.rs` | `v3/chase-rs/` | 0.1.14 | 4 | 旧 schema 1 Rust 版 0.1.9（源码已删除） |
 | 音乐下载 `music.rs` | `v3/music-rs/` | 1.3.0 | 4 jobs + 2 events | 旧 schema 1 Rust 版 0.3.19（源码已删除） |
 | 豆瓣中心 `douban.rs` | `v3/douban-rs/` | 1.2.0 | 16 | 旧 schema 1 Rust 版 0.2.4（源码已删除） |
-| 黄果短剧 `huanggu.drama` | `v3/hghub/` | 0.1.0 | 0（纯 UI） | 无旧实现：直接 v3 形态新增（React 自打包页面） |
+| 黄果短剧 `huanggu.drama` | `v3/huanggu-drama/` | 0.1.0 | 0（纯 UI） | 无旧实现：直接 v3 形态新增（React 自打包页面） |
 
 约定：宿主插件 API 为 **3.5**（chase.rs 的 `requires.api`）；**douban.rs 为 `"3.6"`**——TG 指令回执用
 `ctx.messaging.reply`（消息渠道能力 3.6 起）；**music.rs 为 `"3.9"`**——它要用 `save_to` 直写用户目标
@@ -28,17 +28,17 @@ v3/chase-rs/            v3 插件源码（plugin.json + jobs/ + lib/ + ui/；**�
 v3/tests/<plugin>/      各插件的离线单测与夹具（在插件目录之外，不进 .dian115p 包）
 v3/music-rs/
 v3/douban-rs/
-v3/hghub/               黄果短剧（纯 UI 插件：plugin.json + icon.svg + ui/page.js）
-v3/hghub-ui/            hghub 的 React 界面源码与构建（依赖在 v3/hghub-ui/node_modules，不入库）
+v3/huanggu-drama/               黄果短剧（纯 UI 插件：plugin.json + icon.svg + ui/page.js）
+v3/huanggu-drama-ui/            hghub 的 React 界面源码与构建（依赖在 v3/huanggu-drama-ui/node_modules，不入库）
 v3-ui/                  三个 Vue 插件的 Vue 3 界面源码 + 共享构建底座（依赖在 v3-ui/node_modules，不入库）
 v3-market-index.json    v3 市场索引（schema_version 3；huanggu.drama 待编译 MCP 签发后由 release-v3-local.sh 写入）
-scripts/v3-build-ui.sh  一键构建界面（Vue → v3/<plugin>/ui/；hghub → v3/hghub/ui/，幂等）
+scripts/v3-build-ui.sh  一键构建界面（Vue → v3/<plugin>/ui/；hghub → v3/huanggu-drama/ui/，幂等）
 scripts/v3-build.sh     一键 构建界面 → 官方审查 → project-check → pack → sha256（幂等）
 dist/                   构建产物 .dian115p（本地生成，不提交；.gitignore 的 *.dian115p 覆盖）
 ```
 
 各插件目录的 `package.json` 只声明 `{"type":"module"}`，让该目录 `.js` 按 ESM 解析；插件目录里
-没有 npm 依赖——界面依赖都打在 `ui/page.js` 里（Vue 插件的构建见「界面（Vue 3）」；hghub 的 React 界面构建见 `v3/hghub-ui/README.md`）。
+没有 npm 依赖——界面依赖都打在 `ui/page.js` 里（Vue 插件的构建见「界面（Vue 3）」；hghub 的 React 界面构建见 `v3/huanggu-drama-ui/README.md`）。
 
 ## 旧 → 新映射
 

@@ -1,6 +1,6 @@
 # hghub-ui — 黄果短剧 DIAN115 插件前端（构建源）
 
-本目录是 **v3 插件** `v3/hghub` 的 React 构建源。构建产物输出到 `../hghub/ui/`。
+本目录是 **v3 插件** `v3/huanggu-drama` 的 React 构建源。构建产物输出到 `../huanggu-drama/ui/`。
 插件目录只发布三样东西（`plugin.json` / `icon.svg` / `ui/page.js`），**源码不进插件包**。
 
 ## 架构
@@ -39,22 +39,22 @@ hghub-ui/
 ```sh
 npm install
 npm run dev        # 浏览器预览（上游经 dev proxy 转发，绕 CORS）
-npm run build      # tsc 类型检查 + vite lib 构建 → ../hghub/ui/page.js
+npm run build      # tsc 类型检查 + vite lib 构建 → ../huanggu-drama/ui/page.js
 ```
 
 ## 打包与安装（仓库级）
 
 ```sh
-bash scripts/v3-build.sh            # 构建全部界面 → 官方审查(白名单已登记 hghub 误报) → project-check → pack
+bash scripts/v3-build.sh            # 构建全部界面 → 官方审查(白名单已登记 huanggu-drama 误报) → project-check → pack
                                    # 产物 dist/hghub.dian115p，末尾打印 sha256
 ```
 
-或只看 hghub：`node scripts/v3-check-official.mjs hghub` + `node v3-kit/conformance/pack.mjs v3/hghub dist/hghub.dian115p`。
+或只看本插件：`node scripts/v3-check-official.mjs huanggu-drama` + `node v3-kit/conformance/pack.mjs v3/huanggu-drama dist/huanggu-drama.dian115p`。
 市场索引条目由 `v3-market-index.json`（同步到 `plugin-market/v3/index.json`）维护，发版见仓库 `scripts/release-v3.sh` / `release-v3-local.sh`（正式 protected-v4 包走编译 MCP）。
 
 ## 版本
 
-- 插件版本只维护 `v3/hghub/plugin.json` 的 `version`；构建前把 `v3/hghub-ui/package.json`
+- 插件版本只维护 `v3/huanggu-drama/plugin.json` 的 `version`；构建前把 `v3/hghub-ui/package.json`
   的 `version` 同步过去（`__APP_VERSION__` 由构建注入，设置页展示用）。
 - 更新检查对比本仓库 `hghub-v*` 前缀 tag（`api.ts` 的 `checkUpdate`）。
 

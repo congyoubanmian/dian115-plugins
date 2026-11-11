@@ -110,37 +110,37 @@
       "reason": "混淆来自自打包 Vue 3.5 + naive-ui 运行时的构建压缩；联网是网易云/QQ 公开 API 与会员接口（music.163.com、interface.music.163.com、u.y.qq.com 等，declared_usage.sites 已声明），新增会员查询见 v3/music-rs/lib/vip.js。没有隐藏外发通道，可读源码在 v3-ui/src/music-rs/。"
     },
     {
-      "plugin": "hghub",
+      "plugin": "huanggu-drama",
       "rule": "combo-credential-exfil",
       "file": "ui/page.js",
       "reason": "「读凭据」命中插件 KV（session token 存 ctx.storage）；「外部地址」是上游站点 edge 信封与 GitHub Release 更新检查。token 只发往用户所选线路的 huangguoai.com/.ai（declared_usage.sites 已声明），不外发第三方。可读源码 v3/hghub-ui/src/plugin/ctx.ts。"
     },
     {
-      "plugin": "hghub",
+      "plugin": "huanggu-drama",
       "rule": "combo-credential-network",
       "file": "ui/page.js",
       "reason": "同上：KV 登录态 + 联网调用（edge 信封/封面/分片）是播放器与登录必需；网络目标全部来自固定线路与地址发布页（huangguoai.*）。"
     },
     {
-      "plugin": "hghub",
+      "plugin": "huanggu-drama",
       "rule": "combo-obfuscated-network",
       "file": "ui/page.js",
       "reason": "「混淆」命中 esbuild minify 的 React 产物（无理由混淆的形态）；「联网」是播放器业务必需。可读源码 v3/hghub-ui/ 可逐行审。"
     },
     {
-      "plugin": "hghub",
+      "plugin": "huanggu-drama",
       "rule": "zero-width",
       "file": "ui/page.js",
       "reason": "零宽字符是 React 生产构建 performance.mark 的 \\u200B 前缀标记（React 官方行为，用于命名内部性能事件），不是隐藏数据。"
     },
     {
-      "plugin": "hghub",
+      "plugin": "huanggu-drama",
       "rule": "host-page-tamper",
       "file": "ui/page.js",
       "reason": "命中的是 (a) React 挂载到宿主元素与开发期 window.top 自检、(b) 全局 keydown 监听（Escape 返回/搜索快捷键/播放器锁），只作用于插件自己的页面与窗口，不改写宿主界面。"
     },
     {
-      "plugin": "hghub",
+      "plugin": "huanggu-drama",
       "rule": "credential-api",
       "file": "ui/page.js",
       "reason": "命中的 /api/account/loginByPassword、registerByPassword 是**上游站点**黄果短剧的登录接口路径（edge 信封的 path 字段），不是宿主接口；插件对宿主的调用只有 ctx.http/ctx.storage。"

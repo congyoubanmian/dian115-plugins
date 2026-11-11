@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # 构建 v3 插件的界面：v3-ui/src/<plugin>/ → v3/<plugin>/ui/page.js（Vue 3）；
-# hghub（React 自打包）单独在 v3/hghub-ui 里构建 → v3/hghub/ui/page.js。
+# hghub（React 自打包）单独在 v3/huanggu-drama-ui 里构建 → v3/huanggu-drama/ui/page.js。
 #
 # 用法（任意目录）：
 #   bash scripts/v3-build-ui.sh
@@ -89,17 +89,17 @@ done
 # ── hghub（React 自打包，独立构建空间）─────────────────────────────────────
 # React 运行时需要完整 DOM（mini-dom 垫片不够），冒烟只做语法 + 导出检查；
 # 真实挂载由宿主完成（与其它插件一样，安装后宿主再次解析实际代码）。
-echo "== 构建 hghub（npm run build in v3/hghub-ui → v3/hghub/ui/）=="
-if [ ! -d "$ROOT/v3/hghub-ui/node_modules" ]; then
-  if [ ! -f "$ROOT/v3/hghub-ui/package-lock.json" ]; then
-    echo "缺少 $ROOT/v3/hghub-ui/package-lock.json：无法按锁文件安装依赖。" >&2
+echo "== 构建 hghub（npm run build in v3/huanggu-drama-ui → v3/huanggu-drama/ui/）=="
+if [ ! -d "$ROOT/v3/huanggu-drama-ui/node_modules" ]; then
+  if [ ! -f "$ROOT/v3/huanggu-drama-ui/package-lock.json" ]; then
+    echo "缺少 $ROOT/v3/huanggu-drama-ui/package-lock.json：无法按锁文件安装依赖。" >&2
     exit 1
   fi
-  echo "缺少 $ROOT/v3/hghub-ui/node_modules，按入库的 package-lock.json 执行 npm ci ..."
-  (cd "$ROOT/v3/hghub-ui" && npm ci)
+  echo "缺少 $ROOT/v3/huanggu-drama-ui/node_modules，按入库的 package-lock.json 执行 npm ci ..."
+  (cd "$ROOT/v3/huanggu-drama-ui" && npm ci)
 fi
-(cd "$ROOT/v3/hghub-ui" && npm run --silent build)
-entry="$ROOT/v3/hghub/ui/page.js"
+(cd "$ROOT/v3/huanggu-drama-ui" && npm run --silent build)
+entry="$ROOT/v3/huanggu-drama/ui/page.js"
 node --check "$entry"
 # 模块顶层会挂页面事件监听（document/navigator），用 mini-dom 垫片导入；
 # mini-dom 的 Document 没有 addEventListener（Vue 不需要），这里补空实现；
@@ -122,4 +122,4 @@ echo "== UI 构建完成 =="
 for plugin in "${PLUGINS[@]}"; do
   printf '  %-10s %s\n' "$plugin" "v3/$plugin/ui/page.js"
 done
-printf '  %-10s %s\n' "hghub" "v3/hghub/ui/page.js"
+printf '  %-10s %s\n' "hghub" "v3/huanggu-drama/ui/page.js"
