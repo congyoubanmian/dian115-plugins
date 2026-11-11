@@ -86,6 +86,11 @@ export default defineConfig({
   define: {
     __APP_VERSION__: JSON.stringify(version),
     __PLUGIN_MODE__: JSON.stringify(true),
+    // Vite lib 模式不会默认替换 process.env.NODE_ENV：React 的 dev/prod 双包选择器
+    // （process.env.NODE_ENV === "production" ? prod : dev）会在宿主浏览器里执行，
+    // 而宿主页面运行时没有 Node 的 process 全局 → ReferenceError: process is not defined。
+    // 这里静态替换成生产值，dev 分支随之被 tree-shake 掉。
+    "process.env.NODE_ENV": JSON.stringify("production"),
   },
   server: {
     port: 1420,

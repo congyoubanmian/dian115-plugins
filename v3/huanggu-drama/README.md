@@ -8,14 +8,14 @@
 - 无 Tauri / 本地协议，改为：
   - `ctx.http.request`（宿主代发，无浏览器 CORS、可带 Referer/UA）发信封、拉封面/分片/key；
   - 封面：`WebCrypto` AES-128-CBC 页面内解密 → blob URL（LRU 240）；
-  - HLS：hls.js 自定义 loader（`v3/huanggu-drama-ui/src/plugin/media.ts`）；
+  - HLS：hls.js 自定义 loader（`v3/hghub-ui/src/plugin/media.ts`）；
   - 持久层：收藏/历史/搜索历史/设置/token 落 `ctx.storage`（加密 KV）；
   - 主题：初始取宿主 `ctx.theme`，宿主切换时跟随，设置里手动改过后不再跟随。
 
 ## 构建
 
 ```sh
-cd v3/huanggu-drama-ui
+cd v3/hghub-ui
 npm ci
 npm run build        # → ../hghub/ui/page.js
 ```
@@ -29,9 +29,9 @@ bash scripts/v3-build.sh
 ## 验证边界
 
 - 本机无法稳定直连上游站点，真实接口链路（信封/封面解密/HLS 防盗链）需在可访问
-  huangguoai.com 的宿主上实测（与桌面客户端同机制的移植，风险点见 `v3/huanggu-drama-ui/README.md`）。
+  huangguoai.com 的宿主上实测（与桌面客户端同机制的移植，风险点见 `v3/hghub-ui/README.md`）。
 - 播放全屏：宿主内容区若为 iframe(srcdoc)，`requestFullscreen` 可能被宿主限制，
   已退化为页内沉浸播放（Feed 自带 `fs` 全屏态）。
 - hls.js 已禁用 worker（srcdoc 内 blob worker 不可靠），分片走宿主 HTTP 桥。
 
-界面源码、设计与实现说明见 [`v3/huanggu-drama-ui/README.md`](../hghub-ui/README.md)。
+界面源码、设计与实现说明见 [`v3/hghub-ui/README.md`](../hghub-ui/README.md)。

@@ -29,7 +29,7 @@ v3/tests/<plugin>/      各插件的离线单测与夹具（在插件目录之�
 v3/music-rs/
 v3/douban-rs/
 v3/huanggu-drama/               黄果短剧（纯 UI 插件：plugin.json + icon.svg + ui/page.js）
-v3/huanggu-drama-ui/            hghub 的 React 界面源码与构建（依赖在 v3/huanggu-drama-ui/node_modules，不入库）
+v3/hghub-ui/            hghub 的 React 界面源码与构建（依赖在 v3/hghub-ui/node_modules，不入库）
 v3-ui/                  三个 Vue 插件的 Vue 3 界面源码 + 共享构建底座（依赖在 v3-ui/node_modules，不入库）
 v3-market-index.json    v3 市场索引（schema_version 3；huanggu.drama 待编译 MCP 签发后由 release-v3-local.sh 写入）
 scripts/v3-build-ui.sh  一键构建界面（Vue → v3/<plugin>/ui/；hghub → v3/huanggu-drama/ui/，幂等）
@@ -38,7 +38,7 @@ dist/                   构建产物 .dian115p（本地生成，不提交；.git
 ```
 
 各插件目录的 `package.json` 只声明 `{"type":"module"}`，让该目录 `.js` 按 ESM 解析；插件目录里
-没有 npm 依赖——界面依赖都打在 `ui/page.js` 里（Vue 插件的构建见「界面（Vue 3）」；hghub 的 React 界面构建见 `v3/huanggu-drama-ui/README.md`）。
+没有 npm 依赖——界面依赖都打在 `ui/page.js` 里（Vue 插件的构建见「界面（Vue 3）」；hghub 的 React 界面构建见 `v3/hghub-ui/README.md`）。
 
 ## 旧 → 新映射
 

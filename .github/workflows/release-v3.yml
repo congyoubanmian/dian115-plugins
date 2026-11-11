@@ -68,14 +68,14 @@ jobs:
         run: npm run build
 
       # ── 构建 hghub UI（React 自打包，独立工作区）────────────────────────
-      # v3/huanggu-drama-ui 有自己的锁文件；产物 v3/huanggu-drama/ui/page.js 同样入库。
+      # v3/hghub-ui 有自己的锁文件；产物 v3/huanggu-drama/ui/page.js 同样入库。
       # （v3-build.sh 内部也会兜底跑一次 v3-build-ui.sh 的 hghub 步骤，幂等同样字节。）
       - name: 安装 hghub UI 依赖（npm ci）
-        working-directory: v3/huanggu-drama-ui
+        working-directory: v3/hghub-ui
         run: npm ci
 
       - name: 构建 hghub UI（npm run build → v3/huanggu-drama/ui/）
-        working-directory: v3/huanggu-drama-ui
+        working-directory: v3/hghub-ui
         run: npm run build
 
       # v3-build.sh 内部会再跑一次 scripts/v3-build-ui.sh（幂等，同样字节），
