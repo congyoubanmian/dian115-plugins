@@ -1,7 +1,7 @@
 {
   "name": "hghub-plugin-ui",
   "private": true,
-  "version": "0.1.3",
+  "version": "0.1.4",
   "type": "module",
   "description": "黄果短剧 DIAN115 v3 插件前端（React 应用构建源，产物输出到 ../hghub/ui）",
   "scripts": {

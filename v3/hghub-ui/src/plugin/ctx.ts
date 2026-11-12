@@ -101,17 +101,47 @@ export const FIXED_LINES: { name: string; url: string }[] = [
   { name: "固定线路 3", url: "https://pku.adihsppe.cc" },
 ];
 
+/** 官方发布页的国内备用入口（2026-11 抓取）：可直连，适合大陆网络。 */
+export const DOMESTIC_LINES: { name: string; url: string }[] = [
+  { name: "国内备用 01", url: "https://boazcf.rlhjeyuvw.cc" },
+  { name: "国内备用 02", url: "https://uyq06.rlhjeyuvw.cc" },
+  { name: "国内备用 03", url: "https://y3vg73.rlhjeyuvw.cc" },
+];
+
 const PUBLISH_PAGE = "https://huangguoai.pages.dev/";
 const MIRROR_MAX = 60;
+const CUSTOM_MAX = 30;
 
 /** 已失效线路：KV 里残留时自动回落默认线路（2026-11 起 .ai 域名的 API 全部 404）。 */
 const DEAD_LINES = new Set(["https://huangguoai.ai"]);
 
 let baseCache = DEFAULT_BASE;
 let baseLoaded = false;
+let customCache: string[] = [];
+
+type LineStore = { base?: string; custom?: unknown };
 
 export function base(): string {
   return baseCache;
+}
+
+/** 用户自定义线路（KV 持久化，顺序即添加顺序）。 */
+export function customLines(): { name: string; url: string }[] {
+  return customCache.map((url, i) => ({ name: `自定义线路 ${i + 1}`, url }));
+}
+
+function sanitizeCustom(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  const out: string[] = [];
+  for (const entry of raw) {
+    if (typeof entry !== "string") continue;
+    const next = normalizeBase(entry);
+    if (!next || DEAD_LINES.has(next)) continue;
+    if (FIXED_LINES.some((line) => line.url === next) || DOMESTIC_LINES.some((line) => line.url === next)) continue;
+    if (!out.includes(next)) out.push(next);
+    if (out.length >= CUSTOM_MAX) break;
+  }
+  return out;
 }
 
 export function normalizeBase(raw: string): string | null {
@@ -124,12 +154,13 @@ export function normalizeBase(raw: string): string | null {
   }
 }
 
-/** 启动时从 KV 恢复上次线路（在首屏渲染前 await）。 */
+/** 启动时从 KV 恢复上次线路与自定义线路（在首屏渲染前 await）。 */
 export async function loadLine(): Promise<void> {
   if (baseLoaded) return;
   baseLoaded = true;
   try {
-    const saved = (await ctx?.storage.get("lines")) as { base?: string } | null;
+    const saved = (await ctx?.storage.get("lines")) as LineStore | null;
+    customCache = sanitizeCustom(saved?.custom);
     if (saved?.base) {
       const next = normalizeBase(saved.base);
       if (next && !DEAD_LINES.has(next)) baseCache = next;
@@ -144,15 +175,53 @@ export async function setBase(url: string): Promise<string> {
   if (!next) throw new Error("线路地址无效（需要纯 HTTPS 站点地址）");
   const previous = baseCache;
   baseCache = next;
-  if (previous !== next) await saveLine();
+  // 切换线路本身不因 KV 写入失败而回退（与会话内生效语义一致）。
+  if (previous !== next) {
+    try {
+      await saveLine();
+    } catch {
+      /* 忽略持久化失败 */
+    }
+  }
   return next;
+}
+
+/** 添加自定义线路：只接受纯 HTTPS origin，内置线路/重复项/超限直接报错。 */
+export async function addCustomLine(raw: string): Promise<string> {
+  const next = normalizeBase(raw);
+  if (!next) throw new Error("线路地址无效（需要纯 HTTPS 站点地址，不能带路径/参数）");
+  if (FIXED_LINES.some((line) => line.url === next) || DOMESTIC_LINES.some((line) => line.url === next)) {
+    throw new Error("该地址已是内置线路");
+  }
+  if (customCache.includes(next)) throw new Error("该地址已添加过");
+  if (customCache.length >= CUSTOM_MAX) throw new Error(`自定义线路最多 ${CUSTOM_MAX} 条`);
+  customCache.push(next);
+  try {
+    await saveLine();
+  } catch (e) {
+    customCache = customCache.filter((url) => url !== next);
+    throw e;
+  }
+  return next;
+}
+
+/** 删除自定义线路；若删除的是当前线路，回落默认线路并返回新 base。 */
+export async function removeCustomLine(url: string): Promise<string> {
+  const next = normalizeBase(url);
+  if (!next) return baseCache;
+  const index = customCache.indexOf(next);
+  if (index < 0) return baseCache;
+  customCache.splice(index, 1);
+  if (baseCache === next) baseCache = DEFAULT_BASE;
+  await saveLine();
+  return baseCache;
 }
 
 async function saveLine(): Promise<void> {
   try {
-    await ctx?.storage.set("lines", { base: baseCache });
-  } catch {
-    /* 忽略持久化失败 */
+    await ctx?.storage.set("lines", { base: baseCache, custom: customCache });
+  } catch (e) {
+    throw e instanceof Error ? e : new Error("保存线路失败");
   }
 }
 

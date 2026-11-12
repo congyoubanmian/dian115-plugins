@@ -3,7 +3,8 @@ import type {
 } from "./types";
 import { isStrictSecurity as htmlStrict, setStrictSecurity as setHtmlStrictSecurity } from "./html";
 import {
-  base, DEFAULT_BASE, directApi, edge, FIXED_LINES, lineMirrors as fetchMirrors, lineProbe as probeLines,
+  base, DEFAULT_BASE, directApi, DOMESTIC_LINES, edge, FIXED_LINES, addCustomLine, customLines,
+  lineMirrors as fetchMirrors, lineProbe as probeLines, removeCustomLine,
   loadLine, loadSession, saveSession, sessionToken, sessionUser, setBase,
   httpRequest, pluginCtx, b64decode, UA,
 } from "./plugin/ctx";
@@ -249,9 +250,19 @@ async function pluginDispatch(cmd: string, args?: Record<string, unknown>): Prom
       };
 
     case "line_state":
-      return { base: origin, default: DEFAULT_BASE, fixed: FIXED_LINES };
+      return {
+        base: origin,
+        default: DEFAULT_BASE,
+        fixed: FIXED_LINES,
+        domestic: DOMESTIC_LINES,
+        custom: customLines(),
+      };
     case "line_set":
       return setBase(String(args?.url ?? ""));
+    case "line_add":
+      return addCustomLine(String(args?.url ?? ""));
+    case "line_remove":
+      return removeCustomLine(String(args?.url ?? ""));
     case "line_mirrors":
       return fetchMirrors();
     case "line_probe":
@@ -400,6 +411,8 @@ export const api = {
   /* 线路（数据源）：固定线路写死，镜像线路按需从地址发布页拉取 */
   lineState: () => call<LineState>("line_state"),
   lineSet: (url: string) => call<string>("line_set", { url }),
+  lineAdd: (url: string) => call<string>("line_add", { url }),
+  lineRemove: (url: string) => call<string>("line_remove", { url }),
   lineMirrors: () => call<LineMirrors>("line_mirrors"),
   lineProbe: (urls: string[]) => call<LineProbe[]>("line_probe", { urls }),
 
@@ -411,7 +424,15 @@ export const api = {
 /* ── 线路（数据源） ─────────────────────────────────────── */
 
 export type LineItem = { name?: string; url: string; host?: string };
-export type LineState = { base: string; default: string; fixed: LineItem[] };
+export type LineState = {
+  base: string;
+  default: string;
+  fixed: LineItem[];
+  /** 官方发布页的国内备用入口（可直连）。 */
+  domestic: LineItem[];
+  /** 用户自定义线路（KV 持久化）。 */
+  custom: LineItem[];
+};
 export type LineMirrors = { source: string; script?: string; items: LineItem[] };
 export type LineProbe = { url: string; ok: boolean; status?: number; ms: number; error?: string };
 

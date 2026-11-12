@@ -3,6 +3,8 @@
 黄果短剧浏览与播放：首页发现、搜索分类、榜单吃瓜、详情选集、评论收藏与观看记录。
 
 - 纯 UI 插件（无后台 job）：页面 `ui/page.js` 导出 `mount(el, ctx)`，宿主直接 import ESM 挂载。
+- 线路（数据源）：固定官方线路 + 国内备用线路（发布页 `rlhjeyuvw.cc` 三条）+ 用户自定义线路。
+  自定义线路接受纯 HTTPS origin，可添加/检测/切换/删除，只存插件 KV；切换站点后登录凭据需重新登录。
 - 上游交互与桌面客户端（HGhub）一致：全部请求收敛成 `POST {base}/api/edge/request` 信封
   （`Referer` + `Authorization: Bearer`），封面是 AES-128-CBC 密文，HLS 分片/key 带防盗链。
 - 无 Tauri / 本地协议，改为：

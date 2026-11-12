@@ -113,13 +113,13 @@
       "plugin": "huanggu-drama",
       "rule": "combo-credential-exfil",
       "file": "ui/page.js",
-      "reason": "「读凭据」命中插件 KV（session token 存 ctx.storage）；「外部地址」是上游站点 edge 信封与 GitHub Release 更新检查。token 只发往用户所选线路的 huangguoai.com/.ai（declared_usage.sites 已声明），不外发第三方。可读源码 v3/hghub-ui/src/plugin/ctx.ts。"
+      "reason": "「读凭据」命中插件 KV（session token 存 ctx.storage）；「外部地址」是上游站点 edge 信封、GitHub Release 更新检查，以及用户手动添加的自定义线路。token 只发往当前所选线路（内置 huangguoai.com/adihsppe.cc/rlhjeyuvw.cc 已声明；自定义线路由用户自己填写），不外发作者控制的地址。可读源码 v3/hghub-ui/src/plugin/ctx.ts。"
     },
     {
       "plugin": "huanggu-drama",
       "rule": "combo-credential-network",
       "file": "ui/page.js",
-      "reason": "同上：KV 登录态 + 联网调用（edge 信封/封面/分片）是播放器与登录必需；网络目标全部来自固定线路与地址发布页（huangguoai.*）。"
+      "reason": "同上：KV 登录态 + 联网调用（edge 信封/封面/分片）是播放器与登录必需；网络目标来自固定/国内备用线路与地址发布页，以及用户显式添加的自定义 HTTPS 线路（只存本机）。"
     },
     {
       "plugin": "huanggu-drama",
