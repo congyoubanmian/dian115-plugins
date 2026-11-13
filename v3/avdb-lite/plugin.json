@@ -1,0 +1,43 @@
+{
+  "schema_version": 3,
+  "id": "avdb.lite",
+  "name": "AVDB Lite",
+  "version": "0.1.0",
+  "author": "congyoubanmian",
+  "description": "X1080X 板块采集、文章浏览与一键 115 磁力离线。",
+  "requires": {
+    "api": "3.8"
+  },
+  "ui": {
+    "entry": "ui/page.js"
+  },
+  "menu": {
+    "title": "AVDB Lite",
+    "order": 50
+  },
+  "jobs": [
+    {
+      "id": "crawl-x1080x",
+      "entry": "jobs/crawl-x1080x.js",
+      "handler": "run",
+      "recover": "recover",
+      "title": "抓取 X1080X",
+      "timeout_seconds": 600
+    }
+  ],
+  "declared_usage": {
+    "purpose": "抓取 X1080X 板块文章，展示磁力/ED2K，并把选中的磁力提交到 115 离线下载。",
+    "sites": [
+      "x1080x.com"
+    ],
+    "apis": [
+      "/api/115/accounts/options",
+      "/api/115/offline/add",
+      "/api/115/offline/download-path",
+      "/api/115/offline/tasks",
+      "/api/115/browse-dirs"
+    ],
+    "paths": "仅插件自有 data/files；不读写宿主文件。",
+    "notifications": "当前版本不发送通知。"
+  }
+}
