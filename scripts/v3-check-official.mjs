@@ -20,7 +20,7 @@ const root = resolve(new URL('..', import.meta.url).pathname)
 const allowlist = JSON.parse(readFileSync(resolve(root, 'scripts/v3-audit-allowlist.json'), 'utf8'))
 const entries = allowlist.entries ?? []
 const plugins = process.argv.slice(2)
-const targets = plugins.length > 0 ? plugins : ['chase-rs', 'music-rs', 'douban-rs', 'huanggu-drama']
+const targets = plugins.length > 0 ? plugins : ['chase-rs', 'music-rs', 'douban-rs', 'huanggu-drama', 'avdb-lite']
 
 const key = (plugin, rule, file) => `${plugin}|${rule}|${file}`
 const allowed = new Set(entries.map((item) => key(item.plugin, item.rule, item.file)))

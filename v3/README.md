@@ -8,6 +8,7 @@
 | 音乐下载 `music.rs` | `v3/music-rs/` | 1.3.0 | 4 jobs + 2 events | 旧 schema 1 Rust 版 0.3.19（源码已删除） |
 | 豆瓣中心 `douban.rs` | `v3/douban-rs/` | 1.2.0 | 16 | 旧 schema 1 Rust 版 0.2.4（源码已删除） |
 | 黄果短剧 `huanggu.drama` | `v3/huanggu-drama/` | 0.1.0 | 0（纯 UI） | 无旧实现：直接 v3 形态新增（React 自打包页面） |
+| AVDB Lite `avdb.lite` | `v3/avdb-lite/` | 0.1.0 | 1（X1080X 抓取） | 无旧实现：直接 v3 形态新增（原生 JS 页面 + 后台 job） |
 
 约定：宿主插件 API 为 **3.5**（chase.rs 的 `requires.api`）；**douban.rs 为 `"3.6"`**——TG 指令回执用
 `ctx.messaging.reply`（消息渠道能力 3.6 起）；**music.rs 为 `"3.9"`**——它要用 `save_to` 直写用户目标

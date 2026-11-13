@@ -33,6 +33,7 @@ PLUGINS=(
   "music.rs|v3/music-rs|music-rs.dian115p"
   "douban.rs|v3/douban-rs|douban-rs.dian115p"
   "huanggu.drama|v3/huanggu-drama|huanggu-drama.dian115p"
+  "avdb.lite|v3/avdb-lite|avdb-lite.dian115p"
 )
 
 mkdir -p "$DIST"
