@@ -20,10 +20,11 @@ const BOARDS = {
 // 站点每个板块每页固定 20 条（另加 3 条置顶），所以要抓多少条就翻多少页。
 const PAGE_SIZE = 20
 const MAX_PAGES = 6
-// 详情之间歇多久（毫秒）：站点对游客有阅读频率上限，太快会被 turnstile_required。
-// 撞到上限会自动放慢（最多 15 秒一条），顺利了就慢慢收回来。
-const DETAIL_DELAY = 3000
-const DETAIL_DELAY_MAX = 15000
+// 详情之间的间隔：随机化（固定节奏容易被当成机器人），基准 1.2–5 秒。
+// 撞到站点的游客阅读上限会自动放慢（最多 15 秒一条），顺利了慢慢收回来。
+const DETAIL_DELAY_MIN = 1200
+const DETAIL_DELAY_MAX = 5000
+const DETAIL_DELAY_SLOW = 15000
 // 库里最多留多少条（含有磁力的）
 const RETAIN_LIMIT = 800
 // 没有磁力的条目最多留多少条（近的优先）
@@ -113,7 +114,7 @@ export async function run(ctx, input) {
   let skipped = 0
   let fetched = 0
   let rechecked = 0
-  let detailDelay = DETAIL_DELAY
+  let delayFloor = DETAIL_DELAY_MIN
 
   for (let page = 1; page <= settings.pages; page++) {
     for (const boardId of settings.boards) {
@@ -178,18 +179,19 @@ export async function run(ctx, input) {
             applyState(article, await fetchDetail(ctx, settings, net, statePath(article.id)))
             article.resolved = true
             fetched++
-            detailDelay = Math.max(DETAIL_DELAY, Math.round(detailDelay * 0.9))
+            delayFloor = Math.max(DETAIL_DELAY_MIN, Math.round(delayFloor * 0.9))
           } catch (error) {
             article.detail_error = error.message
             article.rate_limited = /turnstile_required/.test(String(error.message))
             article.resolved = resolved
             if (article.rate_limited) {
-              detailDelay = Math.min(DETAIL_DELAY_MAX, detailDelay * 2)
-              await log(ctx, `撞到站点游客阅读上限，之后放慢到每条 ${detailDelay / 1000} 秒`)
+              delayFloor = Math.min(DETAIL_DELAY_SLOW, delayFloor * 2)
+              await log(ctx, `撞到站点游客阅读上限，之后放慢到每条 ${delayFloor / 1000} 秒左右`)
             }
             await log(ctx, `详情失败 ${article.id}：${error.message}`)
           }
-          await ctx.sleep(detailDelay)
+          // 间隔随机化，别让固定节奏被当成机器人
+          await ctx.sleep(delayFloor + Math.floor(Math.random() * 1200))
         } else {
           article.resolved = resolved
           skipped++

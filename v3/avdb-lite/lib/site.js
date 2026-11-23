@@ -51,6 +51,8 @@ export function isChallengeHtml(html) {
  *  session 一旦状态不对（超时/仍是挑战页），就退回全新会话重试。 */
 async function fsSolve(ctx, settings, url) {
   const endpoint = settings.flaresolverr_url.replace(/\/+$/, '')
+  // 复用同一个 FS 会话：会话里还有放行 Cookie 时，1–2 秒就过；
+  // 复用不了才开全新会话（全新会话必遇 Cloudflare 挑战，要 30–120 秒）。
   const attempts = [
     { cmd: 'request.get', url, maxTimeout: 180000, session: FS_SESSION, session_ttl_minutes: 30 },
     { cmd: 'request.get', url, maxTimeout: 180000 }
@@ -64,7 +66,8 @@ async function fsSolve(ctx, settings, url) {
         headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
         body: JSON.stringify(attempts[index]),
         proxy: 'direct',
-        timeout_seconds: 240,
+        // 复用会话一般 2 秒内返回；全新会话要过 CF 挑战，给 150 秒。
+        timeout_seconds: index === 0 ? 60 : 200,
         response_type: 'json'
       })
       const data = res.data || {}
@@ -102,7 +105,7 @@ export async function solveChallenge(ctx, settings, path = '/') {
   let lastError = ''
   // 一次过盾要 1–2 分钟（CF 挑战 + 站点 JS），所以整体留 4 分钟，
   // 免得任务被拖到十几分钟还没结果。
-  const deadline = Date.now() + 240000
+  const deadline = Date.now() + 200000
   for (const host of HOSTS) {
     for (let attempt = 1; attempt <= 2; attempt++) {
       if (Date.now() > deadline) break
@@ -180,18 +183,36 @@ export async function fetchJSON(ctx, settings, net, path) {
 
 /** 带过盾 Cookie 调站点 JSON API。proxy 固定 direct，与 FlareSolverr 同一出口 IP。 */
 export async function httpJSON(ctx, net, path) {
-  const res = await ctx.http.request({
-    url: net.base + path,
-    method: 'GET',
-    headers: {
-      Accept: 'application/json',
-      'User-Agent': net.userAgent,
-      Cookie: net.cookieHeader
-    },
-    proxy: 'direct',
-    timeout_seconds: 45,
-    response_type: 'json'
-  })
+  let res = null
+  let lastError = null
+  // 连接偶尔会被对端直接掐断（拿不到 HTTP 状态码），重试两次。
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      res = await ctx.http.request({
+        url: net.base + path,
+        method: 'GET',
+        headers: {
+          Accept: 'application/json',
+          'User-Agent': net.userAgent,
+          Cookie: net.cookieHeader
+        },
+        proxy: 'direct',
+        timeout_seconds: 45,
+        response_type: 'json'
+      })
+      lastError = null
+      break
+    } catch (error) {
+      lastError = error
+      const text = String(error && error.message ? error.message : error)
+      // 明确的业务错误不用重试
+      if (/turnstile_required|browser_pass_required/.test(text)) throw error
+      await log(ctx, `请求失败（第 ${attempt} 次）${path}：${text.slice(0, 120)}`)
+      if (attempt >= 3) throw error
+      await ctx.sleep(1500 * attempt)
+    }
+  }
+  if (!res) throw lastError || new Error('请求失败')
   if (res.status !== 200) {
     const body = String(res.body || '').slice(0, 200)
     const code = (res.data && (res.data.error || res.data.code)) || ''
@@ -302,6 +323,11 @@ export async function syncOfflineState(ctx) {
 
 /** 站点限制游客阅读时的退避间隔（毫秒）。 */
 const RATE_BACKOFF = [0, 20000, 45000]
+
+/** 详情之间的间隔：随机化，避免固定节奏被当成机器人。 */
+function detailDelay() {
+  return 1200 + Math.floor(Math.random() * 3800)
+}
 
 /**
  * 取详情。站点对游客有阅读频率上限，超了会返回 turnstile_required；
