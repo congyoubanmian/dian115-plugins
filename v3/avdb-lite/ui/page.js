@@ -124,6 +124,7 @@ export function mount(element, ctx) {
         <div class="avdb-actions">
           <button type="button" data-action="toggle-settings">设置</button>
           <button type="button" data-action="offline">离线任务</button>
+          <button type="button" data-action="export">导出磁力库</button>
           <button type="button" data-action="diag">复制诊断</button>
           <button type="button" class="primary" data-action="crawl">立即抓取</button>
           <button type="button" data-action="reload">刷新</button>
@@ -377,7 +378,9 @@ export function mount(element, ctx) {
     renderList()
     renderDetail()
     ui.lastRun.textContent = state.lastRun
-      ? `上次：${esc(localTime(state.lastRun.at))} · ${state.lastRun.count || 0} 条 · ${state.lastRun.with_magnets || 0} 条有磁力 · 失败 ${state.lastRun.failed || 0}`
+      ? `上次：${esc(localTime(state.lastRun.at))} · 库内 ${state.lastRun.count || 0} 条 · ${state.lastRun.with_magnets || 0} 条有磁力`
+        + (state.lastRun.fetched != null ? ` · 本轮新取 ${state.lastRun.fetched} / 跳过已知 ${state.lastRun.skipped || 0}` : '')
+        + ` · 失败 ${state.lastRun.failed || 0}`
       : '尚未抓取'
   }
 
@@ -606,6 +609,49 @@ export function mount(element, ctx) {
     try { await ctx.storage.set(KEY_SENT, list) } catch (_) {}
   }
 
+
+  /** 把库里所有磁力/ED2K 导出成一份本地文件（插件自有目录，可下载）。 */
+  async function exportLibrary() {
+    const articles = Array.isArray(state.articles) ? state.articles : []
+    const rows = []
+    for (const article of articles) {
+      for (const magnet of article.magnets || []) rows.push({ kind: 'magnet', url: magnet, ...metaOf(article) })
+      for (const edk of article.edk || []) rows.push({ kind: 'ed2k', url: edk, ...metaOf(article) })
+    }
+    if (!rows.length) {
+      setStatus('库里还没有磁力链可导出', true)
+      return
+    }
+    const lines = rows.map(row => [row.kind, row.title, row.published_at, row.url].join('\t'))
+    const text = ['# kind\ttitle\tpublished\turl', ...lines].join('\n')
+    try {
+      await ctx.files.call({ operation: 'write', path: 'magnet-library.tsv', content: text })
+      const url = ctx.files.downloadURL('magnet-library.tsv')
+      let link = element.querySelector('[data-liblink]')
+      if (!link) {
+        link = document.createElement('a')
+        link.setAttribute('data-liblink', '')
+        link.style.cssText = 'font-size:12px;color:var(--app-link,#3b82f6)'
+        ui.status.parentElement.appendChild(link)
+      }
+      link.href = url
+      link.textContent = `下载 magnet-library.tsv（${rows.length} 条）`
+      link.setAttribute('download', 'magnet-library.tsv')
+      setStatus(`已导出 ${rows.length} 条链接到插件文件 magnet-library.tsv`)
+    } catch (error) {
+      setStatus('导出失败：' + apiErrorText(error), true)
+    }
+  }
+
+  function metaOf(article) {
+    return {
+      title: String(article.title || ''),
+      published_at: String(article.published_at || ''),
+      board: String(article.board_name || ''),
+      id: String(article.id || '')
+    }
+  }
+
   /**
    * 115 离线任务面板：直接读插件 KV（后台同步好的），打开就显示，不去拉 115。
    * 要最新状态点「同步状态」，由后台任务去查一次 115。
@@ -754,6 +800,10 @@ export function mount(element, ctx) {
       } catch (error) {
         setStatus(error.message, true)
       }
+      return
+    }
+    if (action === 'export') {
+      await exportLibrary()
       return
     }
     if (action === 'offline') {

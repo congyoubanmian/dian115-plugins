@@ -1,10 +1,11 @@
 // X1080X 采集（AVDB 路线）：
 //   1. FlareSolverr 过 Cloudflare，Cookie/UA 复用
-//   2. 普通 HTTP 拉列表 + 详情
-//   3. 游客身份就能拿到「無碼BT」「有碼BT」的下载地址，不需要账号
+//   2. 拉板块列表（很便宜）→ 和本地磁力库比对
+//   3. 只对「没抓过 / 值得再试」的条目取详情（贵，而且会撞站点的游客阅读上限）
 //
-// 站点的「BT綜合區」类帖子有 6 小时限时免费窗口，过期后要会员权益——
-// 插件不绕过站点的会员限制，只如实标出来。
+// 本地磁力库（插件 KV，avdb-articles）保存所有见过的条目：
+//   - 抓到过磁力的条目长期保留，过期的帖子也能从库里翻出链接单独送 115
+//   - 没抓到磁力的条目也留个记录，下一轮不重复去取详情（省配额）
 
 import {
   normalizeSettings as siteSettings,
@@ -16,10 +17,6 @@ const BOARDS = {
   '5PDZcHM9127Cbn21wUhl1q': '1080X-有碼BT'
 }
 
-function clamp(value, min, max) {
-  return Math.min(max, Math.max(min, value))
-}
-
 // 站点每个板块每页固定 20 条（另加 3 条置顶），所以要抓多少条就翻多少页。
 const PAGE_SIZE = 20
 const MAX_PAGES = 6
@@ -27,6 +24,17 @@ const MAX_PAGES = 6
 // 撞到上限会自动放慢（最多 15 秒一条），顺利了就慢慢收回来。
 const DETAIL_DELAY = 3000
 const DETAIL_DELAY_MAX = 15000
+// 库里最多留多少条（含有磁力的）
+const RETAIN_LIMIT = 800
+// 没有磁力的条目最多留多少条（近的优先）
+const KEEP_WITHOUT_MAGNET = 300
+// 6 小时限时窗口内的条目，隔一会儿再试一次（万一那时能拿到链接）
+const RECHECK_WINDOW_HOURS = 12
+const MAX_RECHECK_PER_ROUND = 10
+
+function clamp(value, min, max) {
+  return Math.min(max, Math.max(min, value))
+}
 
 function normalize(raw) {
   const value = raw && typeof raw === 'object' ? raw : {}
@@ -36,14 +44,13 @@ function normalize(raw) {
     ...siteSettings(value),
     boards: selected.length ? selected : Object.keys(BOARDS),
     max_items: maxItems,
-    // 页数由条数推出来（每页 20 条）；用户单独设的页数只当上限用。
+    // 页数由条数推出来（每页 20 条）
     pages: Math.min(MAX_PAGES, Math.max(1, Math.ceil(maxItems / PAGE_SIZE)))
   }
 }
 
 const statePath = id => '/api/resources/' + encodeURIComponent(id) + '/state'
-/** 库里最多保留的条目数（含已抓到磁力的旧帖）。 */
-const RETAIN_LIMIT = 500
+const articleKey = item => item.website + ':' + item.id
 
 function applyState(article, state) {
   const parsed = parseState(state)
@@ -64,6 +71,13 @@ function applyState(article, state) {
   return parsed
 }
 
+/** 是不是「6 小时窗口内」的帖子——这种隔一会儿值得再试一次。 */
+function isFresh(publishedAt) {
+  const time = Date.parse(String(publishedAt || ''))
+  if (!Number.isFinite(time)) return false
+  return Date.now() - time < RECHECK_WINDOW_HOURS * 3600 * 1000
+}
+
 export async function run(ctx, input) {
   const settings = normalize(await ctx.storage.get('avdb-settings'))
   if (!settings.boards.length) throw new Error('请至少选择一个 X1080X 板块')
@@ -74,8 +88,6 @@ export async function run(ctx, input) {
     await log(ctx, text)
   }
 
-  // 按页轮转各板块：先把每个板块的第 1 页都抓一遍，再抓第 2 页……
-  // 否则第一个板块就把总数用光，后面的板块一条都采不到。
   // max_items 是「每个板块」的上限：板块多了也不会互相抢配额。
   const perBoard = settings.max_items
   const boardCount = settings.boards.length
@@ -86,9 +98,21 @@ export async function run(ctx, input) {
   const net = await solveChallenge(ctx, settings)
   await note('过盾完成：' + net.base)
 
+  // 本地磁力库：抓过的条目都在这儿
+  const storedRaw = await ctx.storage.get('avdb-articles')
+  const known = new Map()
+  for (const item of Array.isArray(storedRaw) ? storedRaw : []) {
+    if (item && item.id) known.set(articleKey(item), item)
+  }
+  const now = new Date().toISOString()
+
   const articles = []
+  const seen = new Set()
   let done = 0
   let failed = 0
+  let skipped = 0
+  let fetched = 0
+  let rechecked = 0
   let detailDelay = DETAIL_DELAY
 
   for (let page = 1; page <= settings.pages; page++) {
@@ -111,36 +135,68 @@ export async function run(ctx, input) {
       }
       for (const item of items) {
         if ((boardDone.get(boardId) || 0) >= perBoard) break
+        const key = 'x1080x:' + String(item.id)
+        const old = known.get(key)
+        const hasMag = Boolean(old && Array.isArray(old.magnets) && old.magnets.length)
+        const resolved = Boolean(old && old.resolved)
+        // 已经抓过：有磁力的直接复用；没磁力的只在 6 小时窗口内才值得再试
+        let needDetail = !resolved
+        if (resolved && !hasMag && isFresh(old.published_at) && rechecked < MAX_RECHECK_PER_ROUND) {
+          needDetail = true
+          rechecked++
+        }
+
         const article = {
           id: String(item.id),
           website: 'x1080x',
           board_id: boardId,
           board_name: BOARDS[boardId] || boardId,
-          title: String(item.title || '').trim(),
-          published_at: String(item.published_at || ''),
-          category: String(item.category_name || ''),
+          title: String(item.title || (old && old.title) || '').trim(),
+          published_at: String(item.published_at || (old && old.published_at) || ''),
+          category: String(item.category_name || (old && old.category) || ''),
           detail_url: net.base + '/resources/' + encodeURIComponent(String(item.id)),
           cover: '',
-          cover_remote: String(item.cover_url || ''),
-          preview_images: [], magnets: [], edk: [], size: '',
-          archive_names: [], archive_passwords: [],
+          cover_remote: String(item.cover_url || (old && old.cover_remote) || ''),
+          preview_images: (old && old.preview_images) || [],
+          magnets: (old && old.magnets) || [],
+          edk: (old && old.edk) || [],
+          size: (old && old.size) || '',
+          archive_names: (old && old.archive_names) || [],
+          archive_passwords: (old && old.archive_passwords) || [],
           access_denied: Boolean(item.read_locked),
-          login_required: false, member_required: false, detail_error: ''
+          login_required: false,
+          member_required: Boolean(old && old.member_required),
+          detail_error: '',
+          resolved: false,
+          first_seen_at: (old && old.first_seen_at) || now,
+          last_seen_at: now,
+          magnets_seen_at: (old && old.magnets_seen_at) || ''
         }
-        try {
-          applyState(article, await fetchDetail(ctx, settings, net, statePath(article.id)))
-          detailDelay = Math.max(DETAIL_DELAY, Math.round(detailDelay * 0.9))
-        } catch (error) {
-          article.detail_error = error.message
-          article.rate_limited = /turnstile_required/.test(String(error.message))
-          if (article.rate_limited) {
-            detailDelay = Math.min(DETAIL_DELAY_MAX, detailDelay * 2)
-            await log(ctx, `撞到站点游客阅读上限，之后放慢到每条 ${detailDelay / 1000} 秒`)
+
+        if (needDetail) {
+          try {
+            applyState(article, await fetchDetail(ctx, settings, net, statePath(article.id)))
+            article.resolved = true
+            fetched++
+            detailDelay = Math.max(DETAIL_DELAY, Math.round(detailDelay * 0.9))
+          } catch (error) {
+            article.detail_error = error.message
+            article.rate_limited = /turnstile_required/.test(String(error.message))
+            article.resolved = resolved
+            if (article.rate_limited) {
+              detailDelay = Math.min(DETAIL_DELAY_MAX, detailDelay * 2)
+              await log(ctx, `撞到站点游客阅读上限，之后放慢到每条 ${detailDelay / 1000} 秒`)
+            }
+            await log(ctx, `详情失败 ${article.id}：${error.message}`)
           }
-          await log(ctx, `详情失败 ${article.id}：${error.message}`)
+          await ctx.sleep(detailDelay)
+        } else {
+          article.resolved = resolved
+          skipped++
         }
-        // 站点限制游客阅读频率，每条之间歇一下，别把自己撞上限
-        await ctx.sleep(detailDelay)
+
+        if (article.magnets.length) article.magnets_seen_at = (old && old.magnets_seen_at) || now
+        seen.add(key)
         articles.push(article)
         boardDone.set(boardId, (boardDone.get(boardId) || 0) + 1)
         done++
@@ -153,55 +209,35 @@ export async function run(ctx, input) {
   }
   await note('各板块采集量：' + settings.boards
     .map(id => `${BOARDS[id] || id} ${boardDone.get(id) || 0}`).join('，'))
+  await note(`本轮新取详情 ${fetched} 条、跳过已知的 ${skipped} 条、窗口内重试 ${rechecked} 条`)
 
-  const seen = new Set()
-  const unique = []
-  for (const article of articles) {
-    const key = article.website + ':' + article.id
+  // 合并进本地磁力库：库里出现过、这轮没翻到的旧条目也留着（磁力不能丢）
+  for (const item of known.values()) {
+    const key = articleKey(item)
     if (seen.has(key)) continue
+    articles.push({ ...item, last_seen_at: item.last_seen_at || now, stale: true })
     seen.add(key)
-    unique.push(article)
   }
 
-  // 新帖的下载地址只在发布后约 6 小时内可见，之后要会员才能看。
-  // 所以抓到过的磁力必须留住：本轮没取到时沿用上次结果，已经翻出最新列表的旧帖子也保留在库里。
-  const storedRaw = await ctx.storage.get('avdb-articles')
-  const stored = new Map()
-  for (const item of Array.isArray(storedRaw) ? storedRaw : []) {
-    if (item && item.id) stored.set(item.website + ':' + item.id, item)
-  }
-  const now = new Date().toISOString()
-  for (const article of unique) {
-    const old = stored.get(article.website + ':' + article.id)
-    article.first_seen_at = old && old.first_seen_at ? old.first_seen_at : now
-    if (!article.magnets.length && old && Array.isArray(old.magnets) && old.magnets.length) {
-      article.magnets = old.magnets
-      if (!article.edk.length && Array.isArray(old.edk)) article.edk = old.edk
-    }
-    article.magnets_seen_at = article.magnets.length
-      ? (old && old.magnets_seen_at ? old.magnets_seen_at : now)
-      : ''
-  }
-  // 本轮窗口之外的旧帖子：只留已经抓到磁力的，避免库无限增长
-  for (const item of stored.values()) {
-    const key = item.website + ':' + item.id
-    if (seen.has(key) || !Array.isArray(item.magnets) || !item.magnets.length) continue
-    seen.add(key)
-    unique.push(item)
-  }
-  unique.sort((a, b) => String(b.published_at || '').localeCompare(String(a.published_at || '')))
-  if (unique.length > RETAIN_LIMIT) unique.length = RETAIN_LIMIT
+  const withMagnets = articles.filter(article => article.magnets.length)
+  const withoutMagnets = articles.filter(article => !article.magnets.length)
+  withoutMagnets.sort((a, b) => String(b.published_at || '').localeCompare(String(a.published_at || '')))
+  if (withoutMagnets.length > KEEP_WITHOUT_MAGNET) withoutMagnets.length = KEEP_WITHOUT_MAGNET
+  const merged = withMagnets.concat(withoutMagnets)
+  merged.sort((a, b) => String(b.published_at || '').localeCompare(String(a.published_at || '')))
+  if (merged.length > RETAIN_LIMIT) merged.length = RETAIN_LIMIT
 
-  await ctx.storage.set('avdb-articles', unique)
-  const hidden = unique.filter(article => article.member_required).length
-  const withMagnets = unique.filter(article => article.magnets.length).length
+  await ctx.storage.set('avdb-articles', merged)
+  const hidden = merged.filter(article => article.member_required).length
   await ctx.storage.set('avdb-last-run', {
-    at: now, count: unique.length, done, failed, gated: hidden, with_magnets: withMagnets,
+    at: now, count: merged.length, done, failed,
+    fetched, skipped, gated: hidden, with_magnets: withMagnets.length,
     boards: settings.boards.map(id => ({ id, name: BOARDS[id] || id, count: boardDone.get(id) || 0 }))
   })
-  diag.count = unique.length
-  diag.with_magnets = withMagnets
-  diag.gated = hidden
+  diag.count = merged.length
+  diag.with_magnets = withMagnets.length
+  diag.fetched = fetched
+  diag.skipped = skipped
   diag.failed = failed
   await ctx.storage.set('avdb-diag', diag)
   // 顺带把送出去的磁力在 115 上的状态刷新一次（写进 KV，页面直接读，不用现拉）
@@ -210,11 +246,12 @@ export async function run(ctx, input) {
   }
   await ctx.task.update({
     stage: 'done',
-    message: `抓取完成，共 ${unique.length} 条，${withMagnets} 条有磁力` +
-      (hidden ? `，${hidden} 条帖子本身不公开下载地址（需会员权益）` : ''),
-    total: unique.length, done: unique.length, failed
+    message: `抓取完成：库内 ${merged.length} 条（${withMagnets.length} 条有磁力），`
+      + `本轮新取 ${fetched} 条、跳过已知 ${skipped} 条`
+      + (hidden ? `，${hidden} 条帖子本身不公开下载地址（需会员权益）` : ''),
+    total: merged.length, done: merged.length, failed
   })
-  return { count: unique.length, failed, gated: hidden, withMagnets }
+  return { count: merged.length, failed, fetched, skipped, withMagnets: withMagnets.length }
 }
 
 // 这个任务只写插件 KV；重启后重跑是幂等的。
