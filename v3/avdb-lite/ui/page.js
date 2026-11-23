@@ -105,6 +105,12 @@ export function mount(element, ctx) {
       .avdb-previews{display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:8px}
       .avdb-previews img{width:100%;border-radius:8px;border:1px solid var(--app-border);aspect-ratio:3/4;object-fit:cover}
       .avdb-empty{padding:28px;text-align:center;color:var(--app-text-secondary);border:1px dashed var(--app-border);border-radius:12px}
+      .avdb-offline{display:grid;gap:8px;margin:0 0 12px}
+      .avdb-offline-item{display:grid;grid-template-columns:1fr auto;gap:6px 10px;border:1px solid var(--app-border);border-radius:8px;padding:8px 10px;font-size:12px}
+      .avdb-offline-item .avdb-offline-name{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+      .avdb-offline-item .avdb-offline-meta{grid-column:1/-1;color:var(--app-text-secondary)}
+      .avdb-offline-bar{height:4px;border-radius:2px;background:var(--app-border);overflow:hidden}
+      .avdb-offline-bar>i{display:block;height:100%;background:#3b82f6}
       @media(max-width:640px){.avdb{padding:10px}.avdb-list{grid-template-columns:repeat(auto-fill,minmax(160px,1fr))}.avdb-magnet{grid-template-columns:1fr auto}}
     </style>
     <div class="avdb">
@@ -115,6 +121,7 @@ export function mount(element, ctx) {
         </div>
         <div class="avdb-actions">
           <button type="button" data-action="toggle-settings">设置</button>
+          <button type="button" data-action="offline">离线任务</button>
           <button type="button" data-action="diag">复制诊断</button>
           <button type="button" class="primary" data-action="crawl">立即抓取</button>
           <button type="button" data-action="reload">刷新</button>
@@ -165,6 +172,14 @@ export function mount(element, ctx) {
         <span class="avdb-muted" data-lastrun></span>
       </div>
       <div class="avdb-status" data-status></div>
+      <section class="avdb-panel avdb-offline" data-panel="offline" hidden>
+        <div class="avdb-actions">
+          <strong>115 离线任务</strong>
+          <button type="button" data-action="offline-refresh">刷新</button>
+          <button type="button" data-action="offline-close">关闭</button>
+        </div>
+        <div data-offlinelist class="avdb-muted">加载中…</div>
+      </section>
       <main class="avdb-list" data-list></main>
       <div data-detail></div>
     </div>`
@@ -178,7 +193,9 @@ export function mount(element, ctx) {
     lastRun: element.querySelector('[data-lastrun]'),
     query: element.querySelector('[data-filter="query"]'),
     board: element.querySelector('[data-filter="board"]'),
-    env: element.querySelector('[data-env]')
+    env: element.querySelector('[data-env]'),
+    offlinePanel: element.querySelector('[data-panel="offline"]'),
+    offlineList: element.querySelector('[data-offlinelist]')
   }
 
   ui.boards.innerHTML = Object.entries(BOARDS).map(([id, name]) => `
@@ -551,6 +568,43 @@ export function mount(element, ctx) {
     }
   }
 
+
+  /** 115 离线任务列表：提交后在这里看下载状态/速度/报错。 */
+  async function loadOfflineTasks() {
+    ui.offlinePanel.hidden = false
+    ui.offlineList.innerHTML = '加载中…'
+    try {
+      const res = await ctx.api.get('/api/115/offline/tasks?page=1&page_size=20&status=all')
+      const items = Array.isArray(res?.items) ? res.items : (Array.isArray(res) ? res : [])
+      if (!items.length) {
+        ui.offlineList.textContent = '没有离线任务（宿主里的 115 账号下没有任何离线记录）'
+        return
+      }
+      const statusText = {
+        downloading: '下载中', completed: '已完成', failed: '失败',
+        pending: '排队中', paused: '已暂停', running: '进行中'
+      }
+      ui.offlineList.innerHTML = items.map(item => {
+        const progress = Math.max(0, Math.min(1, Number(item.progress) || 0))
+        const rate = Number(item.download_rate) || 0
+        const meta = [
+          statusText[item.status] || item.status || '',
+          item.size ? (item.size / 1024 ** 3).toFixed(2) + ' GB' : '',
+          rate ? (rate / 1024).toFixed(0) + ' KB/s' : '',
+          item.error ? '报错：' + item.error : ''
+        ].filter(Boolean).join(' · ')
+        return `<div class="avdb-offline-item">
+          <div class="avdb-offline-name" title="${esc(item.name || item.info_hash || '')}">${esc(item.name || item.info_hash || '(未命名)')}</div>
+          <div>${esc(item.info_hash || '').slice(0, 12)}</div>
+          <div class="avdb-offline-meta">${esc(meta)}</div>
+          <div class="avdb-offline-bar"><i style="width:${Math.round(progress * 100)}%"></i></div>
+        </div>`
+      }).join('')
+    } catch (error) {
+      ui.offlineList.textContent = '读不到离线任务：' + apiErrorText(error)
+    }
+  }
+
   async function send115(article, kind, index, button) {
     const list = kind === 'edk' ? article.edk : article.magnets
     const url = Array.isArray(list) ? list[index] : ''
@@ -577,11 +631,19 @@ export function mount(element, ctx) {
           lastError = apiErrorText(error)
         }
       }
-      if (!result) throw new Error(lastError || '宿主拒绝了这次提交')
+      if (!result) {
+        // 宿主把 115 的错误简化成 "errno=0"：115 实际返回的是「种子获取失败」
+        //（errcode 10001，BT 没有做种者时 115 拿不到种子文件信息），这里翻译一下。
+        if (/errno=0/.test(lastError || '')) {
+          throw new Error('115 拿不到这个种子的文件信息（多半是已经没人做种了，115 取不到种子内容）；换一个种子试试，或者用 ED2K 链接')
+        }
+        throw new Error(lastError || '宿主拒绝了这次提交')
+      }
       if (!result || result.success !== true || !(Number(result.accepted) > 0)) {
         throw new Error('115 未接受该链接（' + JSON.stringify(result).slice(0, 160) + '）')
       }
       setStatus(`已提交 115，accepted=${result.accepted}`)
+      loadOfflineTasks()
     } catch (error) {
       setStatus('发送 115 失败：' + apiErrorText(error), true)
     } finally {
@@ -650,6 +712,18 @@ export function mount(element, ctx) {
       } catch (error) {
         setStatus(error.message, true)
       }
+      return
+    }
+    if (action === 'offline') {
+      await loadOfflineTasks()
+      return
+    }
+    if (action === 'offline-refresh') {
+      await loadOfflineTasks()
+      return
+    }
+    if (action === 'offline-close') {
+      ui.offlinePanel.hidden = true
       return
     }
     if (action === 'check-env') {
