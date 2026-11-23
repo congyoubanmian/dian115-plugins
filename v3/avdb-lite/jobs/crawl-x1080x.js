@@ -40,7 +40,7 @@ function normalize(raw) {
   const selected = Array.isArray(value.boards) ? value.boards.filter(id => BOARDS[id]) : []
   return {
     ...siteSettings(value),
-    boards: selected.length ? selected : ['7RHPO2w4jFUYiDhDsxz0wE'],
+    boards: selected.length ? selected : ['3zfPdYrZvRsB5MYMHwE70K', '5PDZcHM9127Cbn21wUhl1q'],
     pages: clamp(Number(value.pages) || 1, 1, 3),
     max_items: clamp(Number(value.max_items) || 40, 1, 100)
   }
@@ -57,7 +57,11 @@ function applyState(article, state) {
   article.edk = parsed.edk
   article.size = parsed.size
   article.access_denied = !parsed.allowed
-  article.login_required = parsed.gated
+  // 已登录还看不到下载地址＝会员权益/6 小时限时窗口，不是登录问题。
+  const authed = Boolean(state && state.authenticated === true)
+  article.authenticated = authed
+  article.member_required = Boolean(parsed.gated && authed)
+  article.login_required = Boolean(parsed.gated && !authed)
   if (parsed.gated) article.magnets = []
   const names = parsed.text.match(/[^\s<>"']+\.(?:zip|rar|7z|tar\.gz)/gi) || []
   article.archive_names = [...new Set(names)].slice(0, 20)

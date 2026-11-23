@@ -56,7 +56,7 @@ function normalizeSettings(raw) {
     login_service_url: /^https?:\/\//i.test(loginService) ? loginService.replace(/\/+$/, '') : '',
     username: String(value.username || ''),
     password: String(value.password || ''),
-    boards: selected.length ? selected : ['7RHPO2w4jFUYiDhDsxz0wE'],
+    boards: selected.length ? selected : ['3zfPdYrZvRsB5MYMHwE70K', '5PDZcHM9127Cbn21wUhl1q'],
     pages: clamp(Number(value.pages) || 1, 1, 3),
     max_items: clamp(Number(value.max_items) || 40, 1, 100),
     account_mode: value.account_mode === 'backup' ? 'backup' : 'main',
@@ -300,13 +300,14 @@ export function mount(element, ctx) {
             <div class="avdb-meta">
               <span>磁力 ${magnets}${article.magnets_seen_at ? `（${esc(localTime(article.magnets_seen_at))} 抓到）` : ''}</span>
               ${edk ? `<span>ED2K ${edk}</span>` : ''}
-              ${article.login_required ? '<span style="color:#e5484d">需登录/VIP 才能看下载地址</span>' : ''}
+              ${article.login_required ? '<span style="color:#e5484d">需登录才能看下载地址</span>' : ''}
+              ${article.member_required ? '<span style="color:#e5484d">该帖 6 小时限时已过，需会员权益才能看下载地址</span>' : ''}
               ${article.access_denied ? '<span style="color:#e5484d">需要登录/权限</span>' : ''}
               ${article.detail_error ? '<span style="color:#e5484d">详情失败</span>' : ''}
             </div>
             <div class="avdb-card-actions">
               <button type="button" data-action="detail" data-id="${esc(article.id)}">详情</button>
-              <button type="button" class="primary" data-action="send-first" data-id="${esc(article.id)}" ${magnets ? '' : 'disabled'}>${magnets ? '发送 115' : (article.login_required ? '需登录' : '无磁力')}</button>
+              <button type="button" class="primary" data-action="send-first" data-id="${esc(article.id)}" ${magnets ? '' : 'disabled'}>${magnets ? '发送 115' : (article.login_required ? '需登录' : (article.member_required ? '需会员' : '无磁力'))}</button>
             </div>
           </div>
         </article>`
@@ -347,6 +348,7 @@ export function mount(element, ctx) {
             <button type="button" data-action="close-detail">关闭</button>
           </div>
           ${article.login_required ? '<div style="color:#e5484d">该资源的下载地址需要登录（且账号有查看权限）才可见。可在设置里填账号后点「登录 X1080X」，再重新抓取。</div>' : ''}
+          ${article.member_required ? '<div style="color:#e5484d">已登录，但该帖的 6 小时限时免费查看已结束，下载地址需要会员权益。</div>' : ''}
           ${article.access_denied ? '<div style="color:#e5484d">该文章需要更高权限，正文/磁力可能不可见。</div>' : ''}
           ${cover ? `<div><img src="${esc(cover)}" alt="" style="max-width:220px;border-radius:10px" referrerpolicy="no-referrer"></div>` : ''}
           <div class="avdb-muted">磁力（${magnets.length}）</div>
