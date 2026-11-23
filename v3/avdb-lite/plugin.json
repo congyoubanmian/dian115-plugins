@@ -2,7 +2,7 @@
   "schema_version": 3,
   "id": "avdb.lite",
   "name": "AVDB Lite",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "author": "congyoubanmian",
   "description": "X1080X 板块采集、文章浏览与一键 115 磁力离线。0.3.0 起使用真实站点 1080xin.com / 1080xin.vip（x1080x.com 仅为占位跳转页），经宿主共享浏览器过 Cloudflare 安全验证后采集。",
   "requires": {
