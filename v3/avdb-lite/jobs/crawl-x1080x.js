@@ -1,32 +1,17 @@
 // X1080X 采集（AVDB 路线）：
-//   1. FlareSolverr 过 Cloudflare，Cookie/UA 存入插件 HTTP session
-//   2. 普通 HTTP 拉列表 + 详情（复用 Cookie，不逐页开浏览器）
-//   3. 下载地址需登录才可见：有账号时用共享浏览器登录，再在页面里取这些条目的详情
+//   1. FlareSolverr 过 Cloudflare，Cookie/UA 复用
+//   2. 普通 HTTP 拉列表 + 详情
+//   3. 游客身份就能拿到「無碼BT」「有碼BT」的下载地址，不需要账号
+//
+// 站点的「BT綜合區」类帖子有 6 小时限时免费窗口，过期后要会员权益——
+// 插件不绕过站点的会员限制，只如实标出来。
 
 import {
   normalizeSettings as siteSettings,
-  log, solveChallenge, fetchJSON, parseState,
-  openBrowser, isAuthenticated, browserLogin, browserFetchJSON, sampleResourceId,
-  serviceLogin, applySession, httpJSON
+  log, solveChallenge, fetchJSON, parseState, httpJSON
 } from '../lib/site.js'
 
 const BOARDS = {
-  '7RHPO2w4jFUYiDhDsxz0wE': '1080X-BT綜合區',
-  '3UKFoLtYJ7dVJH11Vhlhr0': '1080X-探花直播',
-  '4QObtALYl5lGgpGdZtpzSr': '1080X-直播精品',
-  '03j1fgCMP0OwIajgTgnUJP': '1080X-無碼破解',
-  '22OcW3dDpsqmxQDGUk9TM1': '1080X-GIGA / ZEN 特攝女英雄',
-  '1qkom8EvNlFV5hrXoHYgxF': '1080X-綜合資源',
-  '7cJesEOmwz37MUQcpa23tU': '1080X-訂閱精品',
-  '1TzKdT64tXQsh55bFLcP4B': '1080X-MGS素人 / DMM素人',
-  '4p9onvFrBhb4GoTJjvMEwm': '1080X-4K超清',
-  '14H7D8YbmYIK5gt84qR8mh': '1080X-VR視頻',
-  '2SeUSjSuXYiPAfTkWMNc9T': '1080X-高清有碼',
-  '0YB5HUwgTlLJnll5PR3Sxz': '1080X-外挂字幕',
-  '5Vq0rCx89xT1rMiJ6ZAw42': '1080X-亞洲SM',
-  '6Rj9of8m6shoqhAaXiXJje': '1080X-FC2視頻',
-  '1I2Kx6AghQua8kCRtGk120': '1080X-S-cute / Mywife',
-  '19jr2jN2gjuBwlIGlfoO4a': '1080X-歷史資源',
   '3zfPdYrZvRsB5MYMHwE70K': '1080X-無碼BT',
   '5PDZcHM9127Cbn21wUhl1q': '1080X-有碼BT'
 }
@@ -40,8 +25,8 @@ function normalize(raw) {
   const selected = Array.isArray(value.boards) ? value.boards.filter(id => BOARDS[id]) : []
   return {
     ...siteSettings(value),
-    boards: selected.length ? selected : ['3zfPdYrZvRsB5MYMHwE70K', '5PDZcHM9127Cbn21wUhl1q'],
-    pages: clamp(Number(value.pages) || 1, 1, 3),
+    boards: selected.length ? selected : Object.keys(BOARDS),
+    pages: clamp(Number(value.pages) || 2, 1, 3),
     max_items: clamp(Number(value.max_items) || 40, 1, 100)
   }
 }
@@ -57,11 +42,10 @@ function applyState(article, state) {
   article.edk = parsed.edk
   article.size = parsed.size
   article.access_denied = !parsed.allowed
-  // 已登录还看不到下载地址＝会员权益/6 小时限时窗口，不是登录问题。
-  const authed = Boolean(state && state.authenticated === true)
-  article.authenticated = authed
-  article.member_required = Boolean(parsed.gated && authed)
-  article.login_required = Boolean(parsed.gated && !authed)
+  // 游客拿到 magnet 就是真的拿到了；gated 说明这条帖子本身不公开下载地址。
+  article.authenticated = Boolean(state && state.authenticated === true)
+  article.member_required = Boolean(parsed.gated)
+  article.login_required = false
   if (parsed.gated) article.magnets = []
   const names = parsed.text.match(/[^\s<>"']+\.(?:zip|rar|7z|tar\.gz)/gi) || []
   article.archive_names = [...new Set(names)].slice(0, 20)
@@ -74,6 +58,12 @@ export async function run(ctx, input) {
   const settings = normalize(await ctx.storage.get('avdb-settings'))
   if (!settings.boards.length) throw new Error('请至少选择一个 X1080X 板块')
 
+  const diag = { at: new Date().toISOString(), steps: [] }
+  const note = async text => {
+    diag.steps.push(String(text))
+    await log(ctx, text)
+  }
+
   // 按页轮转各板块：先把每个板块的第 1 页都抓一遍，再抓第 2 页……
   // 否则第一个板块就把总数用光，后面的板块一条都采不到。
   // max_items 是「每个板块」的上限：板块多了也不会互相抢配额。
@@ -84,9 +74,9 @@ export async function run(ctx, input) {
 
   await ctx.task.update({ stage: 'cf', message: 'FlareSolverr 过 Cloudflare…', total, done: 0, failed: 0 })
   const net = await solveChallenge(ctx, settings)
+  await note('过盾完成：' + net.base)
 
   const articles = []
-  const gated = []
   let done = 0
   let failed = 0
 
@@ -102,7 +92,7 @@ export async function run(ctx, input) {
         items = data.items.filter(item => item && item.id && !(Number(item.sticky_scope) > 0))
       } catch (error) {
         failed++
-        await log(ctx, `列表失败 ${BOARDS[boardId] || boardId} 第 ${page} 页：${error.message}`)
+        await note(`列表失败 ${BOARDS[boardId] || boardId} 第 ${page} 页：${error.message}`)
         continue
       }
       for (const item of items) {
@@ -129,7 +119,6 @@ export async function run(ctx, input) {
           article.detail_error = error.message
           await log(ctx, `详情失败 ${article.id}：${error.message}`)
         }
-        if (article.login_required) gated.push(article)
         articles.push(article)
         boardDone.set(boardId, (boardDone.get(boardId) || 0) + 1)
         done++
@@ -140,79 +129,8 @@ export async function run(ctx, input) {
       }
     }
   }
-  await log(ctx, '各板块采集量：' + settings.boards
+  await note('各板块采集量：' + settings.boards
     .map(id => `${BOARDS[id] || id} ${boardDone.get(id) || 0}`).join('，'))
-
-  // 下载地址需要登录：有账号时用登录助手登录（真实浏览器拿 Turnstile token），
-  // 拿到登录后的 Cookie 再用普通 HTTP 重取这些条目。
-  let loggedIn = false
-  if (gated.length) {
-    if (!settings.username || !settings.password) {
-      await log(ctx, `${gated.length} 条需要登录才能看到下载地址（设置里未填账号）`)
-    } else {
-      await ctx.task.update({ stage: 'login', message: `登录以查看 ${gated.length} 条的下载地址…`, total, done, failed })
-      let serviceError = ''
-      try {
-        const session = await serviceLogin(ctx, settings)
-        applySession(net, session)
-        loggedIn = true
-        await log(ctx, '登录成功（登录助手）')
-      } catch (error) {
-        serviceError = error && error.message ? error.message : String(error)
-        await log(ctx, `登录助手失败：${serviceError}`)
-      }
-
-      if (loggedIn) {
-        for (const article of gated) {
-          let detailError = ''
-          try {
-            applyState(article, await httpJSON(ctx, net, statePath(article.id)))
-          } catch (error) {
-            detailError = error && error.message ? error.message : String(error)
-            // 通行凭据过期：重新登录一次再试
-            if (/browser_pass_required/.test(detailError)) {
-              try {
-                const again = await serviceLogin(ctx, settings)
-                applySession(net, again)
-                applyState(article, await httpJSON(ctx, net, statePath(article.id)))
-                detailError = ''
-              } catch (retryError) {
-                detailError = retryError && retryError.message ? retryError.message : String(retryError)
-              }
-            }
-            article.detail_error = detailError
-            await log(ctx, `登录后详情失败 ${article.id}：${detailError}`)
-          }
-          if (!detailError) article.detail_error = ''
-        }
-      } else {
-        // 退路：共享浏览器里登录，再在页面里重取
-        let browser = null
-        try {
-          browser = await openBrowser(ctx, net)
-          const sample = await sampleResourceId(ctx, browser.command, net.base)
-          loggedIn = await isAuthenticated(ctx, browser.command, net.base, sample)
-          if (!loggedIn) loggedIn = await browserLogin(ctx, browser.command, net, settings, sample)
-          await log(ctx, loggedIn ? '登录成功（共享浏览器）' : '登录未成功（账号密码错误、需验证或浏览器被拦截）')
-          if (loggedIn) {
-            for (const article of gated) {
-              try {
-                applyState(article, await browserFetchJSON(ctx, browser.command, net.base, statePath(article.id)))
-                article.detail_error = ''
-              } catch (error) {
-                article.detail_error = error.message
-                await log(ctx, `登录后详情失败 ${article.id}：${error.message}`)
-              }
-            }
-          }
-        } catch (error) {
-          await log(ctx, `浏览器登录失败：${error.message}`)
-        } finally {
-          if (browser) await browser.close()
-        }
-      }
-    }
-  }
 
   const seen = new Set()
   const unique = []
@@ -224,8 +142,7 @@ export async function run(ctx, input) {
   }
 
   // 新帖的下载地址只在发布后约 6 小时内可见，之后要会员才能看。
-  // 所以抓到过的磁力必须留住：本轮没取到（需登录/登录失败）时沿用上次结果，
-  // 已经翻出最新列表的旧帖子也保留在库里。
+  // 所以抓到过的磁力必须留住：本轮没取到时沿用上次结果，已经翻出最新列表的旧帖子也保留在库里。
   const storedRaw = await ctx.storage.get('avdb-articles')
   const stored = new Map()
   for (const item of Array.isArray(storedRaw) ? storedRaw : []) {
@@ -238,7 +155,6 @@ export async function run(ctx, input) {
     if (!article.magnets.length && old && Array.isArray(old.magnets) && old.magnets.length) {
       article.magnets = old.magnets
       if (!article.edk.length && Array.isArray(old.edk)) article.edk = old.edk
-      article.login_required = false
     }
     article.magnets_seen_at = article.magnets.length
       ? (old && old.magnets_seen_at ? old.magnets_seen_at : now)
@@ -255,21 +171,27 @@ export async function run(ctx, input) {
   if (unique.length > RETAIN_LIMIT) unique.length = RETAIN_LIMIT
 
   await ctx.storage.set('avdb-articles', unique)
-  const hidden = unique.filter(article => article.login_required).length
+  const hidden = unique.filter(article => article.member_required).length
   const withMagnets = unique.filter(article => article.magnets.length).length
   await ctx.storage.set('avdb-last-run', {
-    at: now, count: unique.length, done, failed, loggedIn, gated: hidden, with_magnets: withMagnets
+    at: now, count: unique.length, done, failed, gated: hidden, with_magnets: withMagnets,
+    boards: settings.boards.map(id => ({ id, name: BOARDS[id] || id, count: boardDone.get(id) || 0 }))
   })
+  diag.count = unique.length
+  diag.with_magnets = withMagnets
+  diag.gated = hidden
+  diag.failed = failed
+  await ctx.storage.set('avdb-diag', diag)
   await ctx.task.update({
     stage: 'done',
     message: `抓取完成，共 ${unique.length} 条，${withMagnets} 条有磁力` +
-      (hidden ? `，${hidden} 条需登录后才能看下载地址` : ''),
+      (hidden ? `，${hidden} 条帖子本身不公开下载地址（需会员权益）` : ''),
     total: unique.length, done: unique.length, failed
   })
-  return { count: unique.length, failed, loggedIn, gated: hidden, withMagnets }
+  return { count: unique.length, failed, gated: hidden, withMagnets }
 }
 
-// 本任务只写插件 KV；重启后重跑是幂等的。
+// 这个任务只写插件 KV；重启后重跑是幂等的。
 export async function recover(ctx, checkpoint) {
   return { action: 'resume' }
 }

@@ -2,22 +2,6 @@
 // 站点数据由后台 job 抓取并写入插件 KV；页面只读 KV、调用宿主 API。
 
 const BOARDS = {
-  '7RHPO2w4jFUYiDhDsxz0wE': '1080X-BT綜合區',
-  '3UKFoLtYJ7dVJH11Vhlhr0': '1080X-探花直播',
-  '4QObtALYl5lGgpGdZtpzSr': '1080X-直播精品',
-  '03j1fgCMP0OwIajgTgnUJP': '1080X-無碼破解',
-  '22OcW3dDpsqmxQDGUk9TM1': '1080X-GIGA / ZEN 特攝女英雄',
-  '1qkom8EvNlFV5hrXoHYgxF': '1080X-綜合資源',
-  '7cJesEOmwz37MUQcpa23tU': '1080X-訂閱精品',
-  '1TzKdT64tXQsh55bFLcP4B': '1080X-MGS素人 / DMM素人',
-  '4p9onvFrBhb4GoTJjvMEwm': '1080X-4K超清',
-  '14H7D8YbmYIK5gt84qR8mh': '1080X-VR視頻',
-  '2SeUSjSuXYiPAfTkWMNc9T': '1080X-高清有碼',
-  '0YB5HUwgTlLJnll5PR3Sxz': '1080X-外挂字幕',
-  '5Vq0rCx89xT1rMiJ6ZAw42': '1080X-亞洲SM',
-  '6Rj9of8m6shoqhAaXiXJje': '1080X-FC2視頻',
-  '1I2Kx6AghQua8kCRtGk120': '1080X-S-cute / Mywife',
-  '19jr2jN2gjuBwlIGlfoO4a': '1080X-歷史資源',
   '3zfPdYrZvRsB5MYMHwE70K': '1080X-無碼BT',
   '5PDZcHM9127Cbn21wUhl1q': '1080X-有碼BT'
 }
@@ -50,12 +34,8 @@ function normalizeSettings(raw) {
   const value = raw && typeof raw === 'object' ? raw : {}
   const selected = Array.isArray(value.boards) ? value.boards.filter(id => BOARDS[id]) : []
   const solver = String(value.flaresolverr_url || '').trim()
-  const loginService = String(value.login_service_url || '').trim()
   return {
     flaresolverr_url: /^https?:\/\//i.test(solver) ? solver.replace(/\/+$/, '') : 'http://127.0.0.1:8191',
-    login_service_url: /^https?:\/\//i.test(loginService) ? loginService.replace(/\/+$/, '') : '',
-    username: String(value.username || ''),
-    password: String(value.password || ''),
     boards: selected.length ? selected : ['3zfPdYrZvRsB5MYMHwE70K', '5PDZcHM9127Cbn21wUhl1q'],
     pages: clamp(Number(value.pages) || 1, 1, 3),
     max_items: clamp(Number(value.max_items) || 40, 1, 100),
@@ -135,7 +115,6 @@ export function mount(element, ctx) {
         </div>
         <div class="avdb-actions">
           <button type="button" data-action="toggle-settings">设置</button>
-          <button type="button" data-action="login">登录 X1080X</button>
           <button type="button" data-action="diag">复制诊断</button>
           <button type="button" class="primary" data-action="crawl">立即抓取</button>
           <button type="button" data-action="reload">刷新</button>
@@ -146,15 +125,6 @@ export function mount(element, ctx) {
         <div class="row">
           <label>FlareSolverr 地址（过 Cloudflare）
             <input data-k="flaresolverr_url" placeholder="http://127.0.0.1:8191">
-          </label>
-          <label>独立登录服务地址（可选，默认用 FlareSolverr 自带的 /login）
-            <input data-k="login_service_url" placeholder="留空＝FlareSolverr 的 /login">
-          </label>
-          <label>X1080X 用户名（可选，用于查看下载地址）
-            <input data-k="username" placeholder="不填则只能浏览">
-          </label>
-          <label>X1080X 密码
-            <input data-k="password" type="password" placeholder="X1080X 登录密码">
           </label>
         </div>
         <div>
@@ -183,7 +153,9 @@ export function mount(element, ctx) {
         </div>
         <div class="avdb-actions">
           <button type="button" class="primary" data-action="save-settings">保存设置</button>
-          <span class="avdb-muted">用户名/密码只保存在插件加密 KV；登录走宿主共享浏览器，Cloudflare 自动过。</span>
+          <button type="button" data-action="check-env">检查环境</button>
+          <span class="avdb-muted">游客身份就能拿到这两个板块的下载地址，不需要账号；过盾交给同机的 FlareSolverr 容器（Docker），详见插件介绍里的 compose。</span>
+          <div class="avdb-muted" data-env></div>
         </div>
       </section>
 
@@ -205,7 +177,8 @@ export function mount(element, ctx) {
     status: element.querySelector('[data-status]'),
     lastRun: element.querySelector('[data-lastrun]'),
     query: element.querySelector('[data-filter="query"]'),
-    board: element.querySelector('[data-filter="board"]')
+    board: element.querySelector('[data-filter="board"]'),
+    env: element.querySelector('[data-env]')
   }
 
   ui.boards.innerHTML = Object.entries(BOARDS).map(([id, name]) => `
@@ -220,9 +193,6 @@ export function mount(element, ctx) {
   function readSettingsFromForm() {
     return normalizeSettings({
       flaresolverr_url: element.querySelector('[data-k="flaresolverr_url"]').value,
-      login_service_url: element.querySelector('[data-k="login_service_url"]').value,
-      username: element.querySelector('[data-k="username"]').value,
-      password: element.querySelector('[data-k="password"]').value,
       boards: Array.from(element.querySelectorAll('[data-board]:checked')).map(input => input.dataset.board),
       pages: element.querySelector('[data-k="pages"]').value,
       max_items: element.querySelector('[data-k="max_items"]').value,
@@ -235,9 +205,6 @@ export function mount(element, ctx) {
   function fillSettingsForm() {
     const s = state.settings
     element.querySelector('[data-k="flaresolverr_url"]').value = s.flaresolverr_url
-    element.querySelector('[data-k="login_service_url"]').value = s.login_service_url
-    element.querySelector('[data-k="username"]').value = s.username
-    element.querySelector('[data-k="password"]').value = s.password
     element.querySelector('[data-k="pages"]').value = String(s.pages)
     element.querySelector('[data-k="max_items"]').value = String(s.max_items)
     element.querySelector('[data-k="save_cid"]').value = s.save_cid
@@ -350,8 +317,7 @@ export function mount(element, ctx) {
             </div>
             <button type="button" data-action="close-detail">关闭</button>
           </div>
-          ${article.login_required ? '<div style="color:#e5484d">该资源的下载地址需要登录（且账号有查看权限）才可见。可在设置里填账号后点「登录 X1080X」，再重新抓取。</div>' : ''}
-          ${article.member_required ? '<div style="color:#e5484d">已登录，但该帖的 6 小时限时免费查看已结束，下载地址需要会员权益。</div>' : ''}
+          ${article.member_required ? '<div style="color:#e5484d">该帖的 6 小时限时免费查看已结束，下载地址需要站点会员权益（插件不绕过站点的会员限制）。</div>' : ''}
           ${article.access_denied ? '<div style="color:#e5484d">该文章需要更高权限，正文/磁力可能不可见。</div>' : ''}
           ${cover ? `<div><img src="${esc(cover)}" alt="" style="max-width:220px;border-radius:10px" referrerpolicy="no-referrer"></div>` : ''}
           <div class="avdb-muted">磁力（${magnets.length}）</div>
@@ -417,6 +383,8 @@ export function mount(element, ctx) {
     state.settings = next
     fillBoardFilter()
     setStatus('设置已保存')
+    // 地址可能刚改过，顺手探一下 Docker 那边配好没有
+    checkEnvironment()
   }
 
   /** 宿主接口报错时把真正的原因捞出来（axios 默认只给状态码）。 */
@@ -431,20 +399,63 @@ export function mount(element, ctx) {
   }
 
   /**
+   * 环境自检：插件把「过盾」交给同机的 FlareSolverr 容器，
+   * 所以这里直接探一下它通不通、/login 路由在不在，
+   * 省得用户对着「提交失败 400」猜 Docker 是不是没起。
+   */
+  async function checkEnvironment() {
+    const solver = String(state.settings.flaresolverr_url || '').replace(/\/+$/, '')
+    const lines = []
+    try {
+      const res = await ctx.http.request({
+        url: solver + '/health',
+        method: 'GET',
+        headers: { Accept: 'application/json' },
+        proxy: 'direct',
+        timeout_seconds: 10
+      })
+      if (res.status === 200) {
+        lines.push('FlareSolverr 已连接（' + solver + '）')
+        // /login 是挂上去的路由：404 说明容器用的是官方原版镜像
+        const probe = await ctx.http.request({
+          url: solver + '/login',
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({}),
+          proxy: 'direct',
+          timeout_seconds: 10
+        })
+        const data = probe.data || {}
+        if (probe.status === 200 && data.error === '缺少账号或密码') {
+          lines.push('（附带的 /login 路由可用，游客模式用不到）')
+        } else if (probe.status === 404) {
+          lines.push('没有 /login 路由也没关系：游客模式用不到它')
+        }
+      } else {
+        lines.push('FlareSolverr 返回 HTTP ' + res.status)
+      }
+    } catch (error) {
+      lines.push('连不上 FlareSolverr（' + solver + '）：' + apiErrorText(error) + ' —— Docker 容器没起或端口不对')
+    }
+    ui.env.textContent = lines.join('；')
+  }
+
+  /**
    * 清掉卡住的任务。宿主重启等情况下任务会停在 attention_required，
    * 而抓取任务不允许并行运行（有未完成的同类任务时新任务直接 400），
-   * 定时调度也会一直被堵着。
+   * 定时调度也会被堵着。
    */
   async function clearStuckRuns() {
     let cleared = 0
     try {
-      const res = await ctx.api.get('/api/extensions/v3/avdb.lite/runs')
+      const pluginId = (ctx.plugin && ctx.plugin.id) || 'avdb.lite'
+      const res = await ctx.api.get('/api/extensions/v3/' + pluginId + '/runs')
       const runs = Array.isArray(res) ? res : (res && Array.isArray(res.runs) ? res.runs : [])
       for (const run of runs) {
         if (!run || run.status !== 'attention_required') continue
         if (run.job_id && run.job_id !== 'crawl-x1080x') continue
         try {
-          await ctx.api.post('/api/extensions/v3/avdb.lite/runs/' + encodeURIComponent(run.id) + '/cancel', {})
+          await ctx.api.post('/api/extensions/v3/' + pluginId + '/runs/' + encodeURIComponent(run.id) + '/cancel', {})
           cleared++
         } catch (_) {}
       }
@@ -482,28 +493,6 @@ export function mount(element, ctx) {
     pollTask(task.id)
   }
 
-  async function runLogin() {
-    try {
-      await saveSettings()
-    } catch (error) {
-      setStatus(error.message, true)
-      return
-    }
-    if (!state.settings.username || !state.settings.password) {
-      setStatus('请先填写 X1080X 用户名和密码', true)
-      ui.settingsPanel.hidden = false
-      return
-    }
-    setStatus('正在登录 X1080X…')
-    try {
-      const task = await ctx.tasks.run('login-x1080x', 'login:' + Date.now(), {})
-      setStatus('登录任务已提交：' + (task.id || ''))
-      pollTask(task.id)
-    } catch (error) {
-      setStatus('登录提交失败：' + apiErrorText(error), true)
-    }
-  }
-
   function pollTask(taskId) {
     if (!taskId) return
     if (state.polling) clearTimeout(state.polling)
@@ -538,21 +527,59 @@ export function mount(element, ctx) {
     state.polling = setTimeout(tick, 1500)
   }
 
+  /**
+   * 取 115 账号。写操作的 account.mode/id 要从 GET /api/115/accounts/options 取，
+   * 只给 mode 不给 id 宿主可能挑不出账号（表现为 400）。
+   */
+  async function resolveAccount() {
+    const s = state.settings
+    const wanted = s.account_mode === 'backup' ? 'backup' : 'main'
+    try {
+      const res = await ctx.api.get('/api/115/accounts/options')
+      const list = Array.isArray(res?.accounts) ? res.accounts : (Array.isArray(res) ? res : [])
+      const hit = list.find(item => item && item.mode === wanted &&
+        (wanted !== 'backup' || Number(item.id) === Number(s.account_id)))
+      if (!hit) {
+        const names = list.map(item => `${item.mode}/${item.name || item.id}`).join('、')
+        throw new Error(`宿主里没有可用的 115 ${wanted} 账号（现有：${names || '无'}）`)
+      }
+      return { mode: wanted, id: Number(hit.id) }
+    } catch (error) {
+      // 取不到就退回最简形式，让宿主用默认主账号
+      if (wanted === 'backup') throw error
+      return { mode: 'main' }
+    }
+  }
+
   async function send115(article, kind, index, button) {
     const list = kind === 'edk' ? article.edk : article.magnets
     const url = Array.isArray(list) ? list[index] : ''
     if (!url) throw new Error('没有可发送的链接')
-    const body = { urls: [url] }
     const s = state.settings
-    if (s.save_cid) body.save_cid = s.save_cid
-    const account = { mode: s.account_mode || 'main' }
-    if (account.mode === 'backup' && s.account_id) account.id = Number(s.account_id)
-    body.account = account
     if (button) button.disabled = true
     try {
-      const result = await ctx.api.post('/api/115/offline/add', body)
+      const account = await resolveAccount()
+      const body = { urls: [url], account }
+      if (s.save_cid) body.save_cid = s.save_cid
+      let result = null
+      let lastError = ''
+      // 主账号这几种写法宿主都可能收，逐个试，把每次的真实报错都带上
+      const bodies = [body]
+      if (account.mode === 'main' && !s.save_cid) {
+        bodies.push({ urls: [url], account: { mode: 'main', id: account.id } })
+        bodies.push({ urls: [url] })
+      }
+      for (const payload of bodies) {
+        try {
+          result = await ctx.api.post('/api/115/offline/add', payload)
+          break
+        } catch (error) {
+          lastError = apiErrorText(error)
+        }
+      }
+      if (!result) throw new Error(lastError || '宿主拒绝了这次提交')
       if (!result || result.success !== true || !(Number(result.accepted) > 0)) {
-        throw new Error('115 未接受该链接')
+        throw new Error('115 未接受该链接（' + JSON.stringify(result).slice(0, 160) + '）')
       }
       setStatus(`已提交 115，accepted=${result.accepted}`)
     } catch (error) {
@@ -625,14 +652,15 @@ export function mount(element, ctx) {
       }
       return
     }
-    if (action === 'login') {
-      await runLogin()
+    if (action === 'check-env') {
+      ui.env.textContent = '检查中…'
+      await checkEnvironment()
       return
     }
     if (action === 'diag') {
       const diag = await ctx.storage.get('avdb-diag')
       if (!diag) {
-        setStatus('还没有诊断信息（先点一次「登录 X1080X」）', true)
+        setStatus('还没有诊断信息（先点一次「立即抓取」）', true)
         return
       }
       const text = JSON.stringify(diag, null, 2)
