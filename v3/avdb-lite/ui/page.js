@@ -8,6 +8,7 @@ const BOARDS = {
 
 const KEY_SETTINGS = 'avdb-settings'
 const KEY_ARTICLES = 'avdb-articles'
+const KEY_SENT = 'avdb-sent'
 const KEY_LAST_RUN = 'avdb-last-run'
 
 const ESC = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }
@@ -49,6 +50,7 @@ export function mount(element, ctx) {
   const state = {
     settings: normalizeSettings(null),
     articles: [],
+    sent: [],
     lastRun: null,
     query: '',
     board: 'all',
@@ -174,7 +176,7 @@ export function mount(element, ctx) {
       <div class="avdb-status" data-status></div>
       <section class="avdb-panel avdb-offline" data-panel="offline" hidden>
         <div class="avdb-actions">
-          <strong>115 离线任务</strong>
+          <strong>115 离线任务（本插件送出的）</strong>
           <button type="button" data-action="offline-refresh">刷新</button>
           <button type="button" data-action="offline-close">关闭</button>
         </div>
@@ -390,6 +392,8 @@ export function mount(element, ctx) {
     state.articles = Array.isArray(articles) ? articles : []
     const lastRun = await ctx.storage.get(KEY_LAST_RUN)
     state.lastRun = lastRun && typeof lastRun === 'object' ? lastRun : null
+    const sent = await ctx.storage.get(KEY_SENT)
+    state.sent = Array.isArray(sent) ? sent : []
     fillSettingsForm()
   }
 
@@ -569,15 +573,54 @@ export function mount(element, ctx) {
   }
 
 
-  /** 115 离线任务列表：提交后在这里看下载状态/速度/报错。 */
+  /** 记下送出去的磁力，面板按这个过滤（文章被轮换掉也不影响）。 */
+  async function rememberSent(url, article) {
+    const hit = String(url || '').match(/urn:btih:([A-Za-z0-9]+)/i)
+    if (!hit) return
+    const hash = hit[1].toUpperCase()
+    let list = []
+    try { list = await ctx.storage.get(KEY_SENT) } catch (_) {}
+    list = Array.isArray(list) ? list : []
+    list = list.filter(item => item && String(item.hash).toUpperCase() !== hash)
+    list.unshift({
+      hash,
+      title: String((article && article.title) || '').slice(0, 80),
+      at: new Date().toISOString()
+    })
+    if (list.length > 100) list.length = 100
+    try { await ctx.storage.set(KEY_SENT, list) } catch (_) {}
+  }
+
+  /** 本插件送出去的磁力 hash 集合：离线任务面板只显示这些，不刷屏。 */
+  function ownHashes() {
+    const set = new Set()
+    for (const article of state.articles || []) {
+      for (const magnet of article.magnets || []) {
+        const hit = String(magnet).match(/urn:btih:([A-Za-z0-9]+)/i)
+        if (hit) set.add(hit[1].toUpperCase())
+      }
+    }
+    for (const item of state.sent || []) {
+      if (item && item.hash) set.add(String(item.hash).toUpperCase())
+    }
+    return set
+  }
+
+  /** 115 离线任务列表：只显示本插件送出去的那些任务。 */
   async function loadOfflineTasks() {
     ui.offlinePanel.hidden = false
     ui.offlineList.innerHTML = '加载中…'
     try {
-      const res = await ctx.api.get('/api/115/offline/tasks?page=1&page_size=20&status=all')
-      const items = Array.isArray(res?.items) ? res.items : (Array.isArray(res) ? res : [])
+      const res = await ctx.api.get('/api/115/offline/tasks?page=1&page_size=30&status=all')
+      const all = Array.isArray(res?.items) ? res.items : (Array.isArray(res) ? res : [])
+      const own = ownHashes()
+      const items = own.size
+        ? all.filter(item => own.has(String(item.info_hash || '').toUpperCase()))
+        : []
       if (!items.length) {
-        ui.offlineList.textContent = '没有离线任务（宿主里的 115 账号下没有任何离线记录）'
+        ui.offlineList.textContent = own.size
+          ? `没有匹配本插件送出的任务（115 账号下共 ${all.length} 个离线任务，已隐藏其它）`
+          : '没有本插件送出的离线任务'
         return
       }
       const statusText = {
@@ -642,8 +685,9 @@ export function mount(element, ctx) {
       if (!result || result.success !== true || !(Number(result.accepted) > 0)) {
         throw new Error('115 未接受该链接（' + JSON.stringify(result).slice(0, 160) + '）')
       }
+      await rememberSent(url, article)
       setStatus(`已提交 115，accepted=${result.accepted}`)
-      loadOfflineTasks()
+      if (!ui.offlinePanel.hidden) loadOfflineTasks()
     } catch (error) {
       setStatus('发送 115 失败：' + apiErrorText(error), true)
     } finally {
