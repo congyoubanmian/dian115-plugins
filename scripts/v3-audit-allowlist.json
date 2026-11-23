@@ -186,6 +186,12 @@
       "rule": "host-page-tamper",
       "file": "ui/page.js",
       "reason": "命中的是复制诊断文本的兜底实现：页面在非安全上下文（http）里临时创建一个隐藏 textarea、选中并调用 document.execCommand('copy')，随即移除；不改写宿主界面、不监听键盘/粘贴、不读取宿主页面数据。源码：v3/avdb-lite/ui/page.js 的 copyText()。"
+    },
+    {
+      "plugin": "avdb-lite",
+      "rule": "host-page-tamper",
+      "file": "lib/site.js",
+      "reason": "命中的是在插件自己的页面里注入 Cloudflare Turnstile 验证框：向 document.head 追加 challenges.cloudflare.com 的 api.js，并在页面内创建一个固定定位的容器渲染 widget，token 回调写回页面状态。不修改宿主框架、不读取宿主页面数据、不监听宿主键盘输入；渲染发生在站点自己的登录页（同源）内。"
     }
   ]
 }

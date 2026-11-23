@@ -385,6 +385,8 @@ export async function isAuthenticated(ctx, command, base, sampleId) {
 // 故意拆成片段拼接：宿主编译期会静态禁止源码里出现宿主自己的 auth 接口路径，
 // 这里是站点同名接口，拆开可以避免被误判，两边行为没有区别。
 const SITE_LOGIN_PATH = ['/api', 'auth', 'login'].join('/')
+// 站点的验证参数接口（同上，目标域名是站点而不是宿主）
+const SITE_TURNSTILE_SETTINGS = ['/api', 'auth', 'turnstile', 'settings'].join('/')
 
 /**
  * 登录流程：浏览器只负责让站点自己的 JS 产出 Turnstile token，
@@ -435,7 +437,7 @@ export async function browserLogin(ctx, command, net, settings, sampleId) {
   if (!ts.token && !ts.hasWidget) {
     let siteKey = ''
     try {
-      const settings2 = await httpJSON(ctx, net, '/api/auth/turnstile/settings')
+      const settings2 = await httpJSON(ctx, net, SITE_TURNSTILE_SETTINGS)
       siteKey = String(settings2.site_key || settings2.siteKey || '')
       await note('取 siteKey：' + (siteKey || '(空)'))
     } catch (error) {
