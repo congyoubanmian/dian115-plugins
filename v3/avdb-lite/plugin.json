@@ -2,12 +2,15 @@
   "schema_version": 3,
   "id": "avdb.lite",
   "name": "AVDB Lite",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "author": "congyoubanmian",
-  "description": "X1080X 板块采集、文章浏览与一键 115 磁力离线。",
+  "description": "X1080X 板块采集、文章浏览与一键 115 磁力离线。0.2.0 起改用宿主共享浏览器过 Cloudflare，支持浏览器内登录并持久保存登录档案，不再依赖手动粘贴 Cookie。",
   "requires": {
-    "api": "3.8"
+    "api": "3.11"
   },
+  "permissions": [
+    "browser"
+  ],
   "ui": {
     "entry": "ui/page.js"
   },
@@ -23,10 +26,18 @@
       "recover": "recover",
       "title": "抓取 X1080X",
       "timeout_seconds": 600
+    },
+    {
+      "id": "login-x1080x",
+      "entry": "jobs/login-x1080x.js",
+      "handler": "run",
+      "title": "浏览器登录 X1080X",
+      "queue": false,
+      "timeout_seconds": 120
     }
   ],
   "declared_usage": {
-    "purpose": "抓取 X1080X 板块文章，展示磁力/ED2K，并把选中的磁力提交到 115 离线下载。",
+    "purpose": "用宿主共享浏览器访问 X1080X（含 Cloudflare 挑战与登录），抓取板块文章，展示磁力/ED2K，并把选中的磁力提交到 115 离线下载。",
     "sites": [
       "x1080x.com"
     ],
@@ -35,8 +46,10 @@
       "/api/115/offline/add",
       "/api/115/offline/download-path",
       "/api/115/offline/tasks",
-      "/api/115/browse-dirs"
+      "/api/115/browse-dirs",
+      "POST /api/extensions/v3/{id}/browser"
     ],
+    "browser": "打开 X1080X 页面，等待 Cloudflare 挑战自动通过，用户可在浏览器登录页面输入账号密码，登录档案持久保存到下次抓取；从浏览器页面提取 JSON 数据与磁力链接。代理模式默认 system，可选 direct/custom。",
     "paths": "仅插件自有 data/files；不读写宿主文件。",
     "notifications": "当前版本不发送通知。"
   }

@@ -45,8 +45,10 @@ function normalizeSettings(raw) {
   const value = raw && typeof raw === 'object' ? raw : {}
   const selected = Array.isArray(value.boards) ? value.boards.filter(id => BOARDS[id]) : []
   return {
-    cookie: String(value.cookie || ''),
-    csrf: String(value.csrf || ''),
+    username: String(value.username || ''),
+    password: String(value.password || ''),
+    proxy_mode: ['system', 'direct', 'custom'].includes(value.proxy_mode) ? value.proxy_mode : 'system',
+    proxy_url: String(value.proxy_url || ''),
     boards: selected.length ? selected : ['7RHPO2w4jFUYiDhDsxz0wE'],
     pages: clamp(Number(value.pages) || 1, 1, 3),
     max_items: clamp(Number(value.max_items) || 40, 1, 100),
@@ -127,6 +129,7 @@ export function mount(element, ctx) {
         </div>
         <div class="avdb-actions">
           <button type="button" data-action="toggle-settings">设置</button>
+          <button type="button" data-action="login">登录 X1080X</button>
           <button type="button" class="primary" data-action="crawl">立即抓取</button>
           <button type="button" data-action="reload">刷新</button>
         </div>
@@ -134,11 +137,21 @@ export function mount(element, ctx) {
 
       <section class="avdb-panel avdb-settings" data-panel="settings" hidden>
         <div class="row">
-          <label>X1080X Cookie
-            <textarea data-k="cookie" placeholder="粘贴浏览器里 x1080x.com 的完整 Cookie"></textarea>
+          <label>X1080X 用户名
+            <input data-k="username" placeholder="X1080X 登录用户名">
           </label>
-          <label>X-CSRFToken（可选）
-            <input data-k="csrf" placeholder="站点要求时填写">
+          <label>X1080X 密码
+            <input data-k="password" type="password" placeholder="X1080X 登录密码">
+          </label>
+          <label>浏览器代理
+            <select data-k="proxy_mode">
+              <option value="system">系统（按域名分流）</option>
+              <option value="direct">直连</option>
+              <option value="custom">自定义代理</option>
+            </select>
+          </label>
+          <label>自定义代理地址（mode=custom 时）
+            <input data-k="proxy_url" placeholder="socks5://host:port 或 http://host:port">
           </label>
         </div>
         <div>
@@ -170,7 +183,7 @@ export function mount(element, ctx) {
         </div>
         <div class="avdb-actions">
           <button type="button" class="primary" data-action="save-settings">保存设置</button>
-          <span class="avdb-muted">Cookie/CSRF 只保存在插件加密 KV；不会写入日志。</span>
+          <span class="avdb-muted">用户名/密码只保存在插件加密 KV；登录走宿主共享浏览器，Cloudflare 自动过。</span>
         </div>
       </section>
 
@@ -206,8 +219,10 @@ export function mount(element, ctx) {
 
   function readSettingsFromForm() {
     return normalizeSettings({
-      cookie: element.querySelector('[data-k="cookie"]').value,
-      csrf: element.querySelector('[data-k="csrf"]').value,
+      username: element.querySelector('[data-k="username"]').value,
+      password: element.querySelector('[data-k="password"]').value,
+      proxy_mode: element.querySelector('[data-k="proxy_mode"]').value,
+      proxy_url: element.querySelector('[data-k="proxy_url"]').value,
       boards: Array.from(element.querySelectorAll('[data-board]:checked')).map(input => input.dataset.board),
       pages: element.querySelector('[data-k="pages"]').value,
       max_items: element.querySelector('[data-k="max_items"]').value,
@@ -220,8 +235,10 @@ export function mount(element, ctx) {
 
   function fillSettingsForm() {
     const s = state.settings
-    element.querySelector('[data-k="cookie"]').value = s.cookie
-    element.querySelector('[data-k="csrf"]').value = s.csrf
+    element.querySelector('[data-k="username"]').value = s.username
+    element.querySelector('[data-k="password"]').value = s.password
+    element.querySelector('[data-k="proxy_mode"]').value = s.proxy_mode
+    element.querySelector('[data-k="proxy_url"]').value = s.proxy_url
     element.querySelector('[data-k="pages"]').value = String(s.pages)
     element.querySelector('[data-k="max_items"]').value = String(s.max_items)
     element.querySelector('[data-k="save_cid"]').value = s.save_cid
@@ -404,18 +421,35 @@ export function mount(element, ctx) {
       setStatus(error.message, true)
       return
     }
-    if (!state.settings.cookie) {
-      setStatus('请先填写 X1080X Cookie', true)
-      ui.settingsPanel.hidden = false
-      return
-    }
-    setStatus('已提交抓取任务…')
+    setStatus('已提交抓取任务（走共享浏览器过 Cloudflare）…')
     try {
       const task = await ctx.tasks.run('crawl-x1080x', 'crawl:' + Date.now(), {})
       setStatus('抓取任务已提交：' + (task.id || ''))
       pollTask(task.id)
     } catch (error) {
       setStatus('提交失败：' + error.message, true)
+    }
+  }
+
+  async function runLogin() {
+    try {
+      await saveSettings()
+    } catch (error) {
+      setStatus(error.message, true)
+      return
+    }
+    if (!state.settings.username || !state.settings.password) {
+      setStatus('请先填写 X1080X 用户名和密码', true)
+      ui.settingsPanel.hidden = false
+      return
+    }
+    setStatus('正在通过共享浏览器登录 X1080X…')
+    try {
+      const task = await ctx.tasks.run('login-x1080x', 'login:' + Date.now(), {})
+      setStatus('登录任务已提交：' + (task.id || ''))
+      pollTask(task.id)
+    } catch (error) {
+      setStatus('登录提交失败：' + error.message, true)
     }
   }
 
@@ -500,6 +534,10 @@ export function mount(element, ctx) {
       } catch (error) {
         setStatus(error.message, true)
       }
+      return
+    }
+    if (action === 'login') {
+      await runLogin()
       return
     }
     if (action === 'crawl') {
