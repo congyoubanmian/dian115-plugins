@@ -46,6 +46,8 @@ function normalize(raw) {
 }
 
 const statePath = id => '/api/resources/' + encodeURIComponent(id) + '/state'
+/** 库里最多保留的条目数（含已抓到磁力的旧帖）。 */
+const RETAIN_LIMIT = 500
 
 function applyState(article, state) {
   const parsed = parseState(state)
@@ -167,20 +169,51 @@ export async function run(ctx, input) {
     seen.add(key)
     unique.push(article)
   }
+
+  // 新帖的下载地址只在发布后约 6 小时内可见，之后要会员才能看。
+  // 所以抓到过的磁力必须留住：本轮没取到（需登录/登录失败）时沿用上次结果，
+  // 已经翻出最新列表的旧帖子也保留在库里。
+  const storedRaw = await ctx.storage.get('avdb-articles')
+  const stored = new Map()
+  for (const item of Array.isArray(storedRaw) ? storedRaw : []) {
+    if (item && item.id) stored.set(item.website + ':' + item.id, item)
+  }
+  const now = new Date().toISOString()
+  for (const article of unique) {
+    const old = stored.get(article.website + ':' + article.id)
+    article.first_seen_at = old && old.first_seen_at ? old.first_seen_at : now
+    if (!article.magnets.length && old && Array.isArray(old.magnets) && old.magnets.length) {
+      article.magnets = old.magnets
+      if (!article.edk.length && Array.isArray(old.edk)) article.edk = old.edk
+      article.login_required = false
+    }
+    article.magnets_seen_at = article.magnets.length
+      ? (old && old.magnets_seen_at ? old.magnets_seen_at : now)
+      : ''
+  }
+  // 本轮窗口之外的旧帖子：只留已经抓到磁力的，避免库无限增长
+  for (const item of stored.values()) {
+    const key = item.website + ':' + item.id
+    if (seen.has(key) || !Array.isArray(item.magnets) || !item.magnets.length) continue
+    seen.add(key)
+    unique.push(item)
+  }
   unique.sort((a, b) => String(b.published_at || '').localeCompare(String(a.published_at || '')))
+  if (unique.length > RETAIN_LIMIT) unique.length = RETAIN_LIMIT
 
   await ctx.storage.set('avdb-articles', unique)
-  await ctx.storage.set('avdb-last-run', {
-    at: new Date().toISOString(), count: unique.length, done, failed, loggedIn,
-    gated: unique.filter(article => article.login_required).length
-  })
   const hidden = unique.filter(article => article.login_required).length
+  const withMagnets = unique.filter(article => article.magnets.length).length
+  await ctx.storage.set('avdb-last-run', {
+    at: now, count: unique.length, done, failed, loggedIn, gated: hidden, with_magnets: withMagnets
+  })
   await ctx.task.update({
     stage: 'done',
-    message: `抓取完成，共 ${unique.length} 条` + (hidden ? `，其中 ${hidden} 条需登录后才能看下载地址` : ''),
+    message: `抓取完成，共 ${unique.length} 条，${withMagnets} 条有磁力` +
+      (hidden ? `，${hidden} 条需登录后才能看下载地址` : ''),
     total: unique.length, done: unique.length, failed
   })
-  return { count: unique.length, failed, loggedIn, gated: hidden }
+  return { count: unique.length, failed, loggedIn, gated: hidden, withMagnets }
 }
 
 // 本任务只写插件 KV；重启后重跑是幂等的。

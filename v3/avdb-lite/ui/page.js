@@ -40,6 +40,11 @@ function short(text, max) {
   const value = String(text || '')
   return value.length > max ? value.slice(0, max - 1) + '…' : value
 }
+function localTime(value) {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return ''
+  return date.toLocaleString([], { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
+}
 
 function normalizeSettings(raw) {
   const value = raw && typeof raw === 'object' ? raw : {}
@@ -124,7 +129,7 @@ export function mount(element, ctx) {
       <header class="avdb-header">
         <div class="avdb-title">
           <h2>AVDB Lite</h2>
-          <span class="avdb-muted">X1080X → 115</span>
+          <span class="avdb-muted">X1080X → 115 · 新帖磁力约 6 小时内可见，每 30 分钟自动抓一次</span>
         </div>
         <div class="avdb-actions">
           <button type="button" data-action="toggle-settings">设置</button>
@@ -282,10 +287,10 @@ export function mount(element, ctx) {
               <span class="avdb-pill">${esc(article.board_name || '')}</span>
               ${article.category ? `<span class="avdb-pill">${esc(article.category)}</span>` : ''}
               ${article.size ? `<span class="avdb-pill">${esc(article.size)}</span>` : ''}
-              ${article.published_at ? `<span>${esc(short(article.published_at, 19))}</span>` : ''}
+              ${article.published_at ? `<span>${esc(localTime(article.published_at))}</span>` : ''}
             </div>
             <div class="avdb-meta">
-              <span>磁力 ${magnets}</span>
+              <span>磁力 ${magnets}${article.magnets_seen_at ? `（${esc(localTime(article.magnets_seen_at))} 抓到）` : ''}</span>
               ${edk ? `<span>ED2K ${edk}</span>` : ''}
               ${article.login_required ? '<span style="color:#e5484d">需登录/VIP 才能看下载地址</span>' : ''}
               ${article.access_denied ? '<span style="color:#e5484d">需要登录/权限</span>' : ''}
@@ -379,7 +384,7 @@ export function mount(element, ctx) {
     renderList()
     renderDetail()
     ui.lastRun.textContent = state.lastRun
-      ? `上次：${short(state.lastRun.at || '', 19)} · ${state.lastRun.count || 0} 条 · 失败 ${state.lastRun.failed || 0}`
+      ? `上次：${esc(localTime(state.lastRun.at))} · ${state.lastRun.count || 0} 条 · ${state.lastRun.with_magnets || 0} 条有磁力 · 失败 ${state.lastRun.failed || 0}`
       : '尚未抓取'
   }
 
