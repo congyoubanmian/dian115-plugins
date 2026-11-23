@@ -195,6 +195,11 @@ export async function httpJSON(ctx, net, path) {
   if (res.status !== 200) {
     const body = String(res.body || '').slice(0, 200)
     const code = (res.data && (res.data.error || res.data.code)) || ''
+    // turnstile_required 是站点自己的「游客阅读上限」，不是 Cloudflare 拦截：
+    // 过盾 Cookie 是好的，只是短时间内读太多主题被限速了。
+    if (code === 'turnstile_required' || /turnstile_required/.test(body)) {
+      throw new Error(`站点限制游客阅读（turnstile_required），不是 Cloudflare 拦截：${body.slice(0, 120)}`)
+    }
     if (res.status === 403 || isChallengeHtml(body)) {
       throw new Error(`HTTP 403${code ? ' (' + code + ')' : ''}（Cloudflare 拦截，过盾 Cookie 可能已失效）：${body.slice(0, 120)}`)
     }
@@ -293,4 +298,28 @@ export async function syncOfflineState(ctx) {
   })
   await ctx.storage.set('avdb-115', state)
   return state
+}
+
+/** 站点限制游客阅读时的退避间隔（毫秒）。 */
+const RATE_BACKOFF = [0, 20000, 45000]
+
+/**
+ * 取详情。站点对游客有阅读频率上限，超了会返回 turnstile_required；
+ * 这时等一会儿重试（退避），仍然不行就抛出去，由调用方跳过这一条。
+ */
+export async function fetchDetail(ctx, settings, net, path) {
+  let lastError = null
+  for (const wait of RATE_BACKOFF) {
+    if (wait) {
+      await log(ctx, `站点限制游客阅读，等 ${Math.round(wait / 1000)} 秒后重试：${path}`)
+      await ctx.sleep(wait)
+    }
+    try {
+      return await fetchJSON(ctx, settings, net, path)
+    } catch (error) {
+      lastError = error
+      if (!/turnstile_required/.test(String(error && error.message ? error.message : error))) throw error
+    }
+  }
+  throw lastError
 }

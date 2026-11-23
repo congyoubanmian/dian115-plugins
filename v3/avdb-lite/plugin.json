@@ -2,7 +2,7 @@
   "schema_version": 3,
   "id": "avdb.lite",
   "name": "AVDB Lite",
-  "version": "0.4.17",
+  "version": "0.4.18",
   "author": "congyoubanmian",
   "description": "X1080X 的「無碼BT」「有碼BT」板块采集、文章浏览与一键 115 磁力离线。游客身份就能拿到这两个板块的下载地址，不需要账号。站点有 Cloudflare，过盾交给同机 Docker 里的 FlareSolverr（按插件介绍里的 compose 起一个容器即可，插件页面有「检查环境」按钮一键确认）；插件只负责解析、展示和把磁力送进 115 离线。",
   "requires": {
@@ -22,7 +22,7 @@
       "handler": "run",
       "recover": "recover",
       "title": "抓取 X1080X",
-      "timeout_seconds": 900,
+      "timeout_seconds": 1800,
       "default_schedule": "*/30 * * * *",
       "allow_overlap": false
     },

@@ -8,7 +8,7 @@
 
 import {
   normalizeSettings as siteSettings,
-  log, solveChallenge, fetchJSON, parseState, httpJSON, syncOfflineState
+  log, solveChallenge, fetchJSON, fetchDetail, parseState, httpJSON, syncOfflineState
 } from '../lib/site.js'
 
 const BOARDS = {
@@ -23,6 +23,10 @@ function clamp(value, min, max) {
 // 站点每个板块每页固定 20 条（另加 3 条置顶），所以要抓多少条就翻多少页。
 const PAGE_SIZE = 20
 const MAX_PAGES = 6
+// 详情之间歇多久（毫秒）：站点对游客有阅读频率上限，太快会被 turnstile_required。
+// 撞到上限会自动放慢（最多 15 秒一条），顺利了就慢慢收回来。
+const DETAIL_DELAY = 3000
+const DETAIL_DELAY_MAX = 15000
 
 function normalize(raw) {
   const value = raw && typeof raw === 'object' ? raw : {}
@@ -85,6 +89,7 @@ export async function run(ctx, input) {
   const articles = []
   let done = 0
   let failed = 0
+  let detailDelay = DETAIL_DELAY
 
   for (let page = 1; page <= settings.pages; page++) {
     for (const boardId of settings.boards) {
@@ -123,11 +128,19 @@ export async function run(ctx, input) {
           login_required: false, member_required: false, detail_error: ''
         }
         try {
-          applyState(article, await fetchJSON(ctx, settings, net, statePath(article.id)))
+          applyState(article, await fetchDetail(ctx, settings, net, statePath(article.id)))
+          detailDelay = Math.max(DETAIL_DELAY, Math.round(detailDelay * 0.9))
         } catch (error) {
           article.detail_error = error.message
+          article.rate_limited = /turnstile_required/.test(String(error.message))
+          if (article.rate_limited) {
+            detailDelay = Math.min(DETAIL_DELAY_MAX, detailDelay * 2)
+            await log(ctx, `撞到站点游客阅读上限，之后放慢到每条 ${detailDelay / 1000} 秒`)
+          }
           await log(ctx, `详情失败 ${article.id}：${error.message}`)
         }
+        // 站点限制游客阅读频率，每条之间歇一下，别把自己撞上限
+        await ctx.sleep(detailDelay)
         articles.push(article)
         boardDone.set(boardId, (boardDone.get(boardId) || 0) + 1)
         done++
