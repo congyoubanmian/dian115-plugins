@@ -165,7 +165,7 @@ export function mount(element, ctx) {
           <label>每个板块页数
             <input data-k="pages" type="number" min="1" max="3" step="1">
           </label>
-          <label>最多文章数
+          <label>每个板块最多文章数
             <input data-k="max_items" type="number" min="1" max="100" step="1">
           </label>
           <label>115 保存目录 cid（可选）
@@ -277,7 +277,10 @@ export function mount(element, ctx) {
   function renderList() {
     const items = state.articles.filter(articleMatches)
     if (!items.length) {
-      ui.list.innerHTML = `<div class="avdb-empty">${state.articles.length ? '没有匹配的文章' : '还没有数据，填好 Cookie 后点“立即抓取”'}</div>`
+      const boardName = state.board === 'all' ? '' : (BOARDS[state.board] || state.board)
+      ui.list.innerHTML = `<div class="avdb-empty">${state.articles.length
+        ? (boardName ? `「${boardName}」本轮没有抓到内容（该板块可能没有磁力链，或抓取预算被别的板块用完）；换个板块看看` : '没有匹配的文章')
+        : '还没有数据，点“立即抓取”开始采集'}</div>`
       return
     }
     ui.list.innerHTML = items.map(article => {

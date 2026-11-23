@@ -2,7 +2,7 @@
   "schema_version": 3,
   "id": "avdb.lite",
   "name": "AVDB Lite",
-  "version": "0.4.10",
+  "version": "0.4.11",
   "author": "congyoubanmian",
   "description": "X1080X 板块采集、文章浏览与一键 115 磁力离线。0.4.x 用 FlareSolverr 过 Cloudflare（同 AVDB 路线）；站点登录强制要 Turnstile token，改由同机的登录助手（真实浏览器）完成，插件继续用普通 HTTP 取数。",
   "requires": {

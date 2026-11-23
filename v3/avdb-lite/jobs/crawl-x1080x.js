@@ -74,7 +74,14 @@ export async function run(ctx, input) {
   const settings = normalize(await ctx.storage.get('avdb-settings'))
   if (!settings.boards.length) throw new Error('请至少选择一个 X1080X 板块')
 
-  const total = settings.max_items
+  // 按页轮转各板块：先把每个板块的第 1 页都抓一遍，再抓第 2 页……
+  // 否则第一个板块就把总数用光，后面的板块一条都采不到。
+  // max_items 是「每个板块」的上限：板块多了也不会互相抢配额。
+  const perBoard = settings.max_items
+  const boardCount = settings.boards.length
+  const total = Math.min(perBoard * boardCount, RETAIN_LIMIT)
+  const boardDone = new Map()
+
   await ctx.task.update({ stage: 'cf', message: 'FlareSolverr 过 Cloudflare…', total, done: 0, failed: 0 })
   const net = await solveChallenge(ctx, settings)
 
@@ -83,10 +90,10 @@ export async function run(ctx, input) {
   let done = 0
   let failed = 0
 
-  for (const boardId of settings.boards) {
-    if (articles.length >= total) break
-    for (let page = 1; page <= settings.pages; page++) {
-      if (articles.length >= total) break
+  for (let page = 1; page <= settings.pages; page++) {
+    for (const boardId of settings.boards) {
+      const got = boardDone.get(boardId) || 0
+      if (got >= perBoard) continue
       let items = []
       try {
         const data = await fetchJSON(ctx, settings, net,
@@ -99,7 +106,7 @@ export async function run(ctx, input) {
         continue
       }
       for (const item of items) {
-        if (articles.length >= total) break
+        if ((boardDone.get(boardId) || 0) >= perBoard) break
         const article = {
           id: String(item.id),
           website: 'x1080x',
@@ -114,7 +121,7 @@ export async function run(ctx, input) {
           preview_images: [], magnets: [], edk: [], size: '',
           archive_names: [], archive_passwords: [],
           access_denied: Boolean(item.read_locked),
-          login_required: false, detail_error: ''
+          login_required: false, member_required: false, detail_error: ''
         }
         try {
           applyState(article, await fetchJSON(ctx, settings, net, statePath(article.id)))
@@ -124,6 +131,7 @@ export async function run(ctx, input) {
         }
         if (article.login_required) gated.push(article)
         articles.push(article)
+        boardDone.set(boardId, (boardDone.get(boardId) || 0) + 1)
         done++
         await ctx.task.update({
           stage: 'detail', message: `${BOARDS[boardId] || boardId} 第 ${page} 页`,
@@ -132,6 +140,8 @@ export async function run(ctx, input) {
       }
     }
   }
+  await log(ctx, '各板块采集量：' + settings.boards
+    .map(id => `${BOARDS[id] || id} ${boardDone.get(id) || 0}`).join('，'))
 
   // 下载地址需要登录：有账号时用登录助手登录（真实浏览器拿 Turnstile token），
   // 拿到登录后的 Cookie 再用普通 HTTP 重取这些条目。
