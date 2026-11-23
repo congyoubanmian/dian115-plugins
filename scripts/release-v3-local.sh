@@ -98,7 +98,10 @@ TAG="$TAG" REPO="$REPO" node scripts/update-v3-index.mjs
 cp v3-market-index.release.json v3-market-index.json
 mkdir -p plugin-market/v3
 cp v3-market-index.release.json plugin-market/v3/index.json
-git add v3-market-index.json plugin-market/v3/index.json
+# 兼容旧路径：宿主「管理仓库」里不少实例仍指向 plugin-market/index.json，
+# 那个文件在 v3 迁移时已删除，刷新会 404 并一直用旧缓存。这里同步一份 v3 索引。
+cp v3-market-index.release.json plugin-market/index.json
+git add v3-market-index.json plugin-market/v3/index.json plugin-market/index.json
 git commit -m "chore(release): 市场索引指向正式包 ${TAG}（protected-v4）"
 git tag -a "$TAG" -m "dian115 v3 插件发布 $TAG"
 git push origin "$BRANCH"
