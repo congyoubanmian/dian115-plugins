@@ -2,9 +2,9 @@
   "schema_version": 3,
   "id": "avdb.lite",
   "name": "AVDB Lite",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "author": "congyoubanmian",
-  "description": "X1080X 板块采集、文章浏览与一键 115 磁力离线。0.2.0 起改用宿主共享浏览器过 Cloudflare，支持浏览器内登录并持久保存登录档案，不再依赖手动粘贴 Cookie。",
+  "description": "X1080X 板块采集、文章浏览与一键 115 磁力离线。0.3.0 起使用真实站点 1080xin.com / 1080xin.vip（x1080x.com 仅为占位跳转页），经宿主共享浏览器过 Cloudflare 安全验证后采集。",
   "requires": {
     "api": "3.11"
   },
@@ -39,7 +39,8 @@
   "declared_usage": {
     "purpose": "用宿主共享浏览器访问 X1080X（含 Cloudflare 挑战与登录），抓取板块文章，展示磁力/ED2K，并把选中的磁力提交到 115 离线下载。",
     "sites": [
-      "x1080x.com"
+      "1080xin.com",
+      "1080xin.vip"
     ],
     "apis": [
       "/api/115/accounts/options",

@@ -1,9 +1,10 @@
-// X1080X 采集（浏览器模式）：用宿主共享 Chromium 打开页面，等 Cloudflare 自动通过，
-// 从页面里提取 JSON API 数据和磁力链接。用户可在浏览器登录 X1080X，档案持久保存。
+// X1080X 采集（浏览器模式）：真实站点在 1080xin.com / 1080xin.vip（x1080x.com 只是占位跳转页）。
+// 用宿主共享 Chromium 过 Cloudflare 安全验证，再从页面内 fetch JSON API 取数据。
 
-const BASE = 'https://x1080x.com'
-const PROFILE = 'x1080x'
-const NAV_TIMEOUT = 30_000
+const HOSTS = ['https://1080xin.com', 'https://1080xin.vip']
+const PLACEHOLDER_MARK = '請使用下面地址'
+const CF_TITLE_MARK = '安全驗證'
+const NAV_TIMEOUT = 45_000
 
 const BOARDS = {
   '7RHPO2w4jFUYiDhDsxz0wE': '1080X-BT綜合區',
@@ -36,7 +37,9 @@ function clamp(value, min, max) {
 function normalizeSettings(raw) {
   const value = raw && typeof raw === 'object' ? raw : {}
   const selected = Array.isArray(value.boards) ? value.boards.filter(id => BOARDS[id]) : []
+  const host = HOSTS.includes(value.host) ? value.host : HOSTS[0]
   return {
+    host,
     boards: selected.length ? selected : ['7RHPO2w4jFUYiDhDsxz0wE'],
     pages: clamp(Number(value.pages) || 1, 1, 3),
     max_items: clamp(Number(value.max_items) || 40, 1, 100),
@@ -52,74 +55,110 @@ async function log(ctx, text) {
   try { await ctx.task.log(String(text).slice(0, 4000)) } catch (_) {}
 }
 
-/** 打开浏览器会话。返回 {command, close}。 */
-async function openBrowser(ctx, settings) {
-  const status = await ctx.browser.status()
-  if (!status.available) {
-    throw new Error(status.error || `浏览器运行包未就绪（state=${status.state}）`)
-  }
-  const openOptions = { profile: PROFILE, timeout_seconds: 30 }
-  if (settings.proxy_mode === 'direct') {
-    openOptions.proxy_mode = 'direct'
-  } else if (settings.proxy_mode === 'custom' && settings.proxy_url) {
-    openOptions.proxy_mode = 'custom'
-    openOptions.proxy_url = settings.proxy_url
-  } else {
-    openOptions.proxy_mode = 'system'
-  }
-  const page = await ctx.browser.open(openOptions)
-  const command = (method, params = {}) =>
-    ctx.browser.command({ session: page.id, method, params, timeout_seconds: 30 })
-  const close = () => ctx.browser.close(page.id).catch(() => {})
-  return { command, close }
+/** 页面当前状态：placeholder（占位跳转页）/ challenge（CF 安全验证）/ forum */
+async function pageState(ctx, command) {
+  const r = await command('Runtime.evaluate', {
+    expression: `(() => {
+      const t = document.title || ''
+      const b = (document.body?.textContent || '').replace(/\\s+/g, ' ')
+      return {
+        title: t,
+        body: b.slice(0, 200),
+        placeholder: b.includes('${PLACEHOLDER_MARK}') || b.includes('歡迎訪問'),
+        challenge: t.includes('${CF_TITLE_MARK}') || b.includes('challenge-platform') ||
+                   b.includes('cf-challenge') || b.includes('Turnstile'),
+        hasUserField: !!document.querySelector('#auth-username'),
+        hasLoginLink: !!document.querySelector('a[href*="login"], a[href*="member"]')
+      }
+    })()`,
+    returnByValue: true
+  })
+  return r.result?.value || {}
 }
 
-/** 导航并等待 Cloudflare 挑战自动通过。 */
-async function navigate(ctx, command, url) {
-  const nav = await command('Page.navigate', { url })
-  if (nav.errorText) throw new Error(`导航失败: ${nav.errorText}`)
-
-  const deadline = Date.now() + NAV_TIMEOUT
-  let ready = false
-  while (Date.now() < deadline) {
-    const r = await command('Runtime.evaluate', {
-      expression: `(() => {
-        const t = document.title || ''
-        const h = document.documentElement?.innerHTML?.slice(0, 500) || ''
-        if (t.includes('Just a moment') || h.includes('challenge-platform') || h.includes('cf-challenge')) return 'challenge'
-        if (document.readyState === 'complete') return 'ready'
-        return 'loading'
-      })()`,
-      returnByValue: true
+/** 尝试点一下 CF Turnstile 复选框（页面级 iframe 的中心点） */
+async function clickTurnstile(ctx, command) {
+  try {
+    const doc = await command('DOM.getDocument', { depth: -1 })
+    const nodes = await command('DOM.querySelectorAll', {
+      nodeId: doc.root?.nodeId,
+      selector: 'iframe[src*="challenges.cloudflare.com"], iframe[title*="challenge"], #challenge-form'
     })
-    if (r.exceptionDetails) throw new Error('页面脚本执行失败')
-    const state = r.result?.value
-    if (state === 'ready') { ready = true; break }
-    await ctx.sleep(state === 'challenge' ? 3000 : 500)
-  }
-  if (!ready) throw new Error('页面加载超时（可能仍在 Cloudflare 挑战中）')
+    const list = nodes.nodeIds || []
+    if (!list.length) return false
+    for (const nodeId of list) {
+      const box = await command('DOM.getBoxModel', { nodeId })
+      const quad = box.model?.content
+      if (!quad || quad.length < 8) continue
+      const x = (quad[0] + quad[2]) / 2
+      const y = (quad[1] + quad[3]) / 2
+      await command('Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button: 'left', clickCount: 1 })
+      await command('Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button: 'left', clickCount: 1 })
+      return true
+    }
+  } catch (_) {}
+  return false
 }
 
-/** 从浏览器页面里 fetch X1080X JSON API（自动带上 CF Cookie 和登录态）。 */
-async function browserFetchJSON(ctx, command, path) {
-  const expression = `fetch('${BASE}${path}', {
+/** 等待进入论坛（自动过 CF，必要时点一次验证框） */
+async function waitForum(ctx, command, timeoutMs = NAV_TIMEOUT) {
+  const deadline = Date.now() + timeoutMs
+  let clicked = false
+  while (Date.now() < deadline) {
+    const state = await pageState(ctx, command)
+    if (state.placeholder) return { ok: false, reason: 'placeholder', state }
+    if (!state.challenge) return { ok: true, state }
+    if (!clicked) {
+      clicked = true
+      await log(ctx, '检测到 Cloudflare 安全验证，尝试点击验证框…')
+      await clickTurnstile(ctx, command)
+    }
+    await ctx.sleep(3000)
+  }
+  const state = await pageState(ctx, command)
+  return { ok: false, reason: state.challenge ? 'challenge' : 'timeout', state }
+}
+
+/** 挑一个能用的站点地址 */
+async function resolveHost(ctx, command) {
+  for (const host of HOSTS) {
+    await command('Page.navigate', { url: host + '/' })
+    const r = await waitForum(ctx, command, 30000)
+    if (r.ok) {
+      await log(ctx, `使用站点 ${host}`)
+      return host
+    }
+    await log(ctx, `站点 ${host} 不可用（${r.reason}）`)
+  }
+  throw new Error('候选站点都打不开论坛：' + HOSTS.join(' / '))
+}
+
+/** 在页面里 fetch X1080X JSON API（自带 CF Cookie 与登录态） */
+async function browserFetchJSON(ctx, command, base, path) {
+  const expression = `fetch('${base}${path}', {
     headers: { 'Accept': 'application/json' },
     credentials: 'include'
-  }).then(r => {
-    if (!r.ok) throw new Error('HTTP ' + r.status)
-    return r.json()
+  }).then(async r => {
+    const text = await r.text()
+    let data = null
+    try { data = JSON.parse(text) } catch (e) { data = null }
+    return { status: r.status, data, text: text.slice(0, 200) }
   })`
-  const r = await command('Runtime.evaluate', {
-    expression, returnByValue: true, awaitPromise: true
-  })
+  const r = await command('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true })
   if (r.exceptionDetails) {
     const detail = r.exceptionDetails.exception?.description || r.exceptionDetails.text || '未知异常'
     throw new Error(`API 调用失败: ${detail}`)
   }
-  return r.result?.value
+  const out = r.result?.value
+  if (!out) throw new Error('API 无返回')
+  if (out.status !== 200) {
+    const code = out.data?.error || out.data?.code || ''
+    throw new Error(`API HTTP ${out.status}${code ? ' (' + code + ')' : ''} ${out.text || ''}`)
+  }
+  return out.data
 }
 
-/** 从详情页 HTML 提取磁力、ED2K、图片。 */
+/** 从详情页 HTML 提取磁力、ED2K、图片 */
 async function extractFromPage(ctx, command, article) {
   const r = await command('Runtime.evaluate', {
     expression: `(() => {
@@ -128,12 +167,10 @@ async function extractFromPage(ctx, command, article) {
       const html = body ? body.innerHTML : ''
       const text = body ? body.textContent : ''
       const titleEl = document.querySelector('.thread-header h1') || document.querySelector('#thread_subject')
-      const title = titleEl ? titleEl.textContent.trim() : ''
       const imgs = Array.from(document.querySelectorAll('img')).map(i => i.src)
         .filter(s => s && !s.includes('/static/image/') && !s.includes('/images/smilies/'))
       const sm = text.match(/(\\d+(?:\\.\\d+)?)\\s*(TB|GB|MB|G|M)/i)
-      const size = sm ? sm[1] + sm[2].toUpperCase() : ''
-      return { html, text, title, imgs: imgs.slice(0, 8), size }
+      return { html, text, title: titleEl ? titleEl.textContent.trim() : '', imgs: imgs.slice(0, 8), size: sm ? sm[1] + sm[2].toUpperCase() : '' }
     })()`,
     returnByValue: true
   })
@@ -146,7 +183,6 @@ async function extractFromPage(ctx, command, article) {
   const raw = String(data.html || '')
   article.magnets = [...new Set((raw.match(MAGNET_RE) || []))].slice(0, 20)
   article.edk = [...new Set((raw.match(ED2K_RE) || []))].slice(0, 20)
-
   const names = (data.text || '').match(/[^\s<>"']+\.(?:zip|rar|7z|tar\.gz)/gi) || []
   article.archive_names = [...new Set(names)].slice(0, 20)
   const pwds = (data.text || '').match(/(?:解压密码|压缩密码|密码|提取码|pass(?:word)?)\s*[:：=]?\s*([A-Za-z0-9._-]{2,64})/gi) || []
@@ -154,43 +190,47 @@ async function extractFromPage(ctx, command, article) {
   return article
 }
 
-/** 抓取一个详情页。 */
-async function fetchDetail(ctx, command, article) {
-  const url = BASE + '/resources/' + encodeURIComponent(article.id)
-  await navigate(ctx, command, url)
-  await ctx.sleep(500)
-  return extractFromPage(ctx, command, article)
-}
-
 export async function run(ctx, input) {
   const settings = normalizeSettings(await ctx.storage.get('avdb-settings'))
   if (!settings.boards.length) throw new Error('请至少选择一个 X1080X 板块')
 
   await ctx.task.update({ stage: 'browser', message: '打开共享浏览器…', total: settings.max_items, done: 0, failed: 0 })
-  const browser = await openBrowser(ctx, settings)
+
+  const status = await ctx.browser.status()
+  if (!status.available) throw new Error(status.error || `浏览器运行包未就绪（state=${status.state}）`)
+
+  const openOptions = { profile: 'x1080x', timeout_seconds: 30 }
+  if (settings.proxy_mode === 'direct') openOptions.proxy_mode = 'direct'
+  else if (settings.proxy_mode === 'custom' && settings.proxy_url) {
+    openOptions.proxy_mode = 'custom'
+    openOptions.proxy_url = settings.proxy_url
+  } else openOptions.proxy_mode = 'system'
+
+  const page = await ctx.browser.open(openOptions)
+  const command = (method, params = {}) =>
+    ctx.browser.command({ session: page.id, method, params, timeout_seconds: 30 })
+
   const articles = []
   let done = 0
   let failed = 0
 
   try {
-    // 先导航到首页触发 Cloudflare 并等待通过
-    await ctx.task.update({ stage: 'cf', message: '等待 Cloudflare 挑战通过…' })
-    await navigate(ctx, browser.command, BASE + '/')
-    await log(ctx, 'Cloudflare 已通过或无挑战')
+    await ctx.task.update({ stage: 'cf', message: '等待 Cloudflare 安全验证…' })
+    const base = await resolveHost(ctx, command)
 
     for (const boardId of settings.boards) {
       if (articles.length >= settings.max_items) break
-      for (let page = 1; page <= settings.pages; page++) {
+      for (let pageNo = 1; pageNo <= settings.pages; pageNo++) {
         if (articles.length >= settings.max_items) break
         let items = []
         try {
-          const data = await browserFetchJSON(ctx, browser.command,
-            '/api/catalog/resources?board_id=' + encodeURIComponent(boardId) + '&page=' + page)
+          const data = await browserFetchJSON(ctx, command, base,
+            '/api/catalog/resources?board_id=' + encodeURIComponent(boardId) + '&page=' + pageNo)
           if (!data || !Array.isArray(data.items)) throw new Error('items 结构异常')
           items = data.items.filter(item => item && item.id && !(Number(item.sticky_scope) > 0))
         } catch (error) {
           failed++
-          await log(ctx, `列表失败 ${BOARDS[boardId] || boardId} 第 ${page} 页: ${error.message}`)
+          await log(ctx, `列表失败 ${BOARDS[boardId] || boardId} 第 ${pageNo} 页: ${error.message}`)
           continue
         }
         for (const item of items) {
@@ -203,14 +243,18 @@ export async function run(ctx, input) {
             title: String(item.title || '').trim(),
             published_at: String(item.published_at || ''),
             category: String(item.category_name || ''),
-            detail_url: BASE + '/resources/' + encodeURIComponent(String(item.id)),
+            detail_url: base + '/resources/' + encodeURIComponent(String(item.id)),
             preview_images: [], magnets: [], edk: [],
             size: '', archive_names: [], archive_passwords: [],
             cover: '', cover_remote: '', access_denied: false, detail_error: ''
           }
           if (!article.id) continue
           try {
-            await fetchDetail(ctx, browser.command, article)
+            await command('Page.navigate', { url: article.detail_url })
+            const ok = await waitForum(ctx, command, 20000)
+            if (!ok.ok) throw new Error('详情页未就绪：' + ok.reason)
+            await ctx.sleep(500)
+            await extractFromPage(ctx, command, article)
           } catch (error) {
             article.detail_error = error.message
             await log(ctx, `详情失败 ${article.id}: ${error.message}`)
@@ -218,7 +262,7 @@ export async function run(ctx, input) {
           articles.push(article)
           done++
           await ctx.task.update({
-            stage: 'detail', message: `${BOARDS[boardId] || boardId} 第 ${page} 页`,
+            stage: 'detail', message: `${BOARDS[boardId] || boardId} 第 ${pageNo} 页`,
             total: settings.max_items, done, failed
           })
           await ctx.sleep(300)
@@ -226,7 +270,7 @@ export async function run(ctx, input) {
       }
     }
   } finally {
-    await browser.close()
+    await ctx.browser.close(page.id).catch(() => {})
   }
 
   const seen = new Set()
@@ -251,7 +295,6 @@ export async function run(ctx, input) {
   return { count: unique.length, failed }
 }
 
-// 本任务只写插件 KV；重启后重跑是幂等的。
 export async function recover(ctx, checkpoint) {
   return { action: 'resume' }
 }

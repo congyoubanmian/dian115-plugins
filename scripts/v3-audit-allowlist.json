@@ -144,6 +144,18 @@
       "rule": "credential-api",
       "file": "ui/page.js",
       "reason": "命中的 /api/account/loginByPassword、registerByPassword 是**上游站点**黄果短剧的登录接口路径（edge 信封的 path 字段），不是宿主接口；插件对宿主的调用只有 ctx.http/ctx.storage。"
+    },
+    {
+      "plugin": "avdb-lite",
+      "rule": "combo-credential-exfil",
+      "file": "jobs/login-x1080x.js",
+      "reason": "「读凭据」命中插件 KV 里的 X1080X 用户名/密码（ctx.storage.get('avdb-settings')），「外部地址」命中宿主共享 Chromium 打开的 1080xin.com / 1080xin.vip。凭据只被填进该站自己的登录表单（#auth-username / #auth-password），由站点自己的 JS 提交到站点自己的 /api/auth/login；插件不读取、不转发、不外发到作者控制的地址，declared_usage.sites 已声明这两个域。可读源码：v3/avdb-lite/jobs/login-x1080x.js。"
+    },
+    {
+      "plugin": "avdb-lite",
+      "rule": "credential-api",
+      "file": "jobs/login-x1080x.js",
+      "reason": "命中的是 ctx.storage.get('avdb-settings') —— 插件自己的加密 KV 用来存用户自己填的站点账号，不是宿主凭据接口，也没有读取 CookieCloud/宿主 Token。可读源码：v3/avdb-lite/jobs/login-x1080x.js。"
     }
   ]
 }

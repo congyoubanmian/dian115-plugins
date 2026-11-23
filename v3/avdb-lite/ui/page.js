@@ -45,6 +45,7 @@ function normalizeSettings(raw) {
   const value = raw && typeof raw === 'object' ? raw : {}
   const selected = Array.isArray(value.boards) ? value.boards.filter(id => BOARDS[id]) : []
   return {
+    host: ['https://1080xin.com', 'https://1080xin.vip'].includes(value.host) ? value.host : 'https://1080xin.com',
     username: String(value.username || ''),
     password: String(value.password || ''),
     proxy_mode: ['system', 'direct', 'custom'].includes(value.proxy_mode) ? value.proxy_mode : 'system',
@@ -137,6 +138,12 @@ export function mount(element, ctx) {
 
       <section class="avdb-panel avdb-settings" data-panel="settings" hidden>
         <div class="row">
+          <label>论坛地址
+            <select data-k="host">
+              <option value="https://1080xin.com">1080xin.com</option>
+              <option value="https://1080xin.vip">1080xin.vip</option>
+            </select>
+          </label>
           <label>X1080X 用户名
             <input data-k="username" placeholder="X1080X 登录用户名">
           </label>
@@ -219,6 +226,7 @@ export function mount(element, ctx) {
 
   function readSettingsFromForm() {
     return normalizeSettings({
+      host: element.querySelector('[data-k="host"]').value,
       username: element.querySelector('[data-k="username"]').value,
       password: element.querySelector('[data-k="password"]').value,
       proxy_mode: element.querySelector('[data-k="proxy_mode"]').value,
@@ -235,6 +243,7 @@ export function mount(element, ctx) {
 
   function fillSettingsForm() {
     const s = state.settings
+    element.querySelector('[data-k="host"]').value = s.host
     element.querySelector('[data-k="username"]').value = s.username
     element.querySelector('[data-k="password"]').value = s.password
     element.querySelector('[data-k="proxy_mode"]').value = s.proxy_mode
