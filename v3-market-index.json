@@ -12,8 +12,8 @@
       "version": "0.1.18",
       "description": "小时级对齐「订阅池里的剧集订阅」与「Emby 已有集数」：只对可解析的条目做只增 PATCH total_episodes，并产出追剧日历与当天一次的日报；减方向只给建议，从不写。已核实无缺口的条目在 5 小时窗口内复用缓存，不重复探测 Emby。每次 PATCH 前后落任务检查点，中断恢复先查订阅池里该条目的真实集数，已确认写到位才记 complete、确认没写才 resume、核对不上记 attention（整点入口把 attention 收敛为 resume，靠只增守卫保证重跑不重复写）。界面按统一设计稿重绘：指标瓦片、徽标胶囊、双栏看板与移动端单栏适配。",
       "author": "镜头的蒙太奇",
-      "source_url": "https://github.com/congyoubanmian/dian115-plugins/releases/download/v3-2026.11.13d/chase.rs-a1ac7b14-64a2-473d-935b-82ec643ce0ff.dian115p",
-      "sha256": "97fc894b3840e20ea4d9a9b3de40cea9f64e03f7f85bd6b6fa98b79120ac2a4b",
+      "source_url": "https://github.com/congyoubanmian/dian115-plugins/releases/download/v3-2026.11.23b/chase.rs-55ef03e1-d35c-4db1-8241-d8c8d38d1bc1.dian115p",
+      "sha256": "16c8d182bb5fb777db75f1ffdecd232c8d8e51762a46f393564aaf52a86667c8",
       "delivery": "protected-v4",
       "declared_usage": {
         "apis": [
@@ -48,8 +48,8 @@
       "version": "1.2.4",
       "description": "豆瓣榜单抓取 + 黑名单过滤 + 观察队列 + 聚合订阅；按宿主新规约不再读取 CookieCloud；登录态由用户手动粘贴浏览器里的豆瓣 Cookie 提供，自动追订「我的想看」；TMDB 匹配失败时用豆瓣详情（原名/又名）回退重搜；支持最低评分/年份/地区订阅过滤与「已删除不重订」墓碑集。创建聚合订阅前后落任务检查点，中断恢复先查宿主订阅池里该 (tmdb_id, media_type) 的真实状态再决定 complete / resume / attention。海报抓回后落插件文件缓存 posters/<sha256>.<ext>（超 64 张按 modified 淘汰最旧，卸载即清空），页面用 downloadURL 取图，files 不可用时降级 dataURL。Telegram 机器人接收 /refresh、/wish 两条指令并回执执行结果（指令触发不需要授权，回执走 ctx.messaging.reply 需要用户授权 telegram.bot）。旧 schema 1 WASM 插件（plugins/douban-rs 0.2.4）的 v3 迁移版；页面提供榜单海报墙、观察队列/我的想看、历史日志与设置。",
       "author": "镜头的蒙太奇",
-      "source_url": "https://github.com/congyoubanmian/dian115-plugins/releases/download/v3-2026.11.13d/douban.rs-e54449ca-6bee-4c08-99bb-ecec3722a48f.dian115p",
-      "sha256": "d03616c481428e1c7b23ffb03cba48233f5043a32259830622797989dba2f2e2",
+      "source_url": "https://github.com/congyoubanmian/dian115-plugins/releases/download/v3-2026.11.23b/douban.rs-edb28c10-df80-4c31-a631-5eff4cfa2d37.dian115p",
+      "sha256": "137daa79bd9c7e4eaf0f5adb312d0db03fa6837636398d88b885c004dbbcfae8",
       "delivery": "protected-v4",
       "declared_usage": {
         "apis": [
@@ -94,8 +94,8 @@
       "version": "1.3.12",
       "description": "网易云 / QQ 音乐搜索、扫码登录（网易云 unikey 二维码；QQ 官方二维码 + graph.qq.com OAuth 授权换音乐凭据）与手动粘贴 Cookie 回退、我的歌单（网易云与 QQ 都能读我创建的与收藏的歌单；QQ 另有「每日推荐」与「我喜欢」两个入口）、按音质逐级取链；单曲与整张歌单入队后由后台任务自动推进：取链接 → API 3.9 起 save_to 优先直写目标目录（宿主不开放该能力时回落「暂存 → 定名 → move」，CD2 挂载由宿主自动分流）→ 失败通知带「重试」按钮。下载与入库前后落任务检查点，中断恢复先核对目标目录里的真实文件再决定 complete / resume / attention；入库前做同名预检，目标已有同名文件直接终态失败不进重试循环。Telegram 机器人提供只读查询命令（/music 队列|状态|帮助、/queue、/status），不触发下载与删除，回复走来源渠道、未授权 telegram.bot 时回退普通通知；每天 08:30 发一条下载日报（dedupe_key 按天，当天送达不重发，发送失败换新键）。旧 schema 1 WASM 插件（plugins/music-rs 0.3.19）的 v3 迁移版。",
       "author": "镜头的蒙太奇",
-      "source_url": "https://github.com/congyoubanmian/dian115-plugins/releases/download/v3-2026.11.13d/music.rs-cafd50ea-f664-4cdd-acac-17f4ac1049cf.dian115p",
-      "sha256": "c84170ff40a203c981be5c677587ce03d876a2fa53f7982c13335aa402a4794e",
+      "source_url": "https://github.com/congyoubanmian/dian115-plugins/releases/download/v3-2026.11.23b/music.rs-f96dd9b8-6573-45da-9330-e2e40c01b1e2.dian115p",
+      "sha256": "87238801ba238e343e2d8ee80ff2d347cc93ade1719f3b49198e11245d43dedc",
       "delivery": "protected-v4",
       "declared_usage": {
         "apis": [
@@ -142,8 +142,8 @@
       "description": "黄果短剧浏览与播放：首页发现、搜索分类、榜单吃瓜、详情选集、评论收藏与观看记录。edge 信封直连上游站点（Referer/Bearer），支持固定/国内备用/用户自定义线路；播放取址走上游新版 /playback 接口并附 CDN 校验头，WebCrypto 解密 AES-128-CBC 封面，hls.js 自定义 loader 走宿主 HTTP 规避防盗链与 CORS。",
       "homepage": "https://github.com/congyoubanmian/dian115-plugins",
       "version": "0.1.4",
-      "source_url": "https://github.com/congyoubanmian/dian115-plugins/releases/download/v3-2026.11.13d/huanggu.drama-85a88225-c47b-420b-89fc-770aa2b5db70.dian115p",
-      "sha256": "348b5b582081c13c2dd73af329f2b3f92ed575f50f9ee67c6ae9dcf1fecfb27a",
+      "source_url": "https://github.com/congyoubanmian/dian115-plugins/releases/download/v3-2026.11.23b/huanggu.drama-30e6bbd9-2744-4404-b1d7-359a86c36bb8.dian115p",
+      "sha256": "ffe551f9f5ed3216f930eb8caaa175937991811c0adf676f85445634399273ec",
       "delivery": "protected-v4",
       "author": "镜头的蒙太奇",
       "changelog": "0.1.4：线路页新增「国内备用」分组（官方发布页的 rlhjeyuvw.cc 三条可直连入口）与「自定义线路」：可添加任意 HTTPS 站点 origin、单独检测/切换/删除，自定义线路持久化在插件 KV。",
@@ -163,15 +163,15 @@
     {
       "id": "avdb.lite",
       "name": "AVDB Lite",
-      "description": "X1080X 板块采集、文章浏览与一键 115 磁力离线。0.3.0 起使用真实站点 1080xin.com / 1080xin.vip（x1080x.com 仅为占位跳转页），经宿主共享浏览器过 Cloudflare 安全验证后采集。",
+      "description": "X1080X 板块采集、文章浏览与一键 115 磁力离线。0.4.x 用 FlareSolverr 过 Cloudflare（同 AVDB 路线）；新帖下载地址约 6 小时内可见，故每 30 分钟自动抓一次，已抓到的磁力永久保留。",
       "homepage": "https://github.com/congyoubanmian/dian115-plugins",
-      "version": "0.3.2",
-      "source_url": "https://github.com/congyoubanmian/dian115-plugins/releases/download/v3-2026.11.13d/avdb.lite-204897bd-e6fd-47f3-b356-e8e3ecb46bc9.dian115p",
-      "sha256": "d480c1e28fa7aa58bc56bf0989940ab55eee64fa43b077c8b23a4f9c6ca5d541",
+      "version": "0.4.1",
+      "source_url": "https://github.com/congyoubanmian/dian115-plugins/releases/download/v3-2026.11.23b/avdb.lite-009d0a6d-4686-49f2-be78-a33a05de58ec.dian115p",
+      "sha256": "0f8b9925b756bdb4e25bfb1a7ad54412bf629b85e121711f5bbb0e1d27f8fae4",
       "delivery": "protected-v4",
       "author": "镜头的蒙太奇",
       "declared_usage": {
-        "purpose": "用宿主共享浏览器访问 X1080X（含 Cloudflare 挑战与登录），抓取板块文章，展示磁力/ED2K，并把选中的磁力提交到 115 离线下载。",
+        "purpose": "通过 FlareSolverr 过 Cloudflare 后抓取 X1080X 板块文章，展示磁力/ED2K，并把选中的磁力提交到 115 离线下载；下载地址需登录时用宿主共享浏览器完成站点登录。",
         "sites": [
           "1080xin.com",
           "1080xin.vip"
@@ -184,11 +184,11 @@
           "/api/115/browse-dirs",
           "POST /api/extensions/v3/{id}/browser"
         ],
-        "browser": "打开 X1080X 页面，等待 Cloudflare 挑战自动通过，用户可在浏览器登录页面输入账号密码，登录档案持久保存到下次抓取；从浏览器页面提取 JSON 数据与磁力链接。代理模式默认 system，可选 direct/custom。",
+        "browser": "仅用于登录：把 FlareSolverr 取得的过盾 Cookie 注入浏览器会话（同一出口 IP、同一 User-Agent），打开站点真实登录表单（#auth-username / #auth-password）由用户填写的账号登录，站点自己的 JS 完成 Turnstile 与登录请求；登录态保存在浏览器 profile。不使用浏览器抓取列表。",
         "paths": "仅插件自有 data/files；不读写宿主文件。",
         "notifications": "当前版本不发送通知。"
       },
-      "changelog": "0.3.2：修复 Cloudflare 判定——页面跳转导致执行上下文销毁时不再误判为\"验证已通过\"，改为继续等待；验证显示成功但页面不跳转时自动 reload（最多 2 次）；等待超时提高到 90 秒；失败时把浏览器截图存到插件 data/diag/ 便于排查。",
+      "changelog": "0.4.1：针对「新帖磁力仅约 6 小时内可见」加 30 分钟定时抓取（default_schedule */30 * * * *，不重叠）；抓到过的磁力不会被后续「需登录」覆盖，库里额外保留已抓到磁力的旧帖（上限 500 条）；页面显示磁力抓到时间与「有磁力」计数。",
       "permissions": [
         "browser"
       ]
