@@ -4,7 +4,7 @@
 
 import {
   PROFILE, LOGIN_PATH,
-  log, pageState, waitChallengePassed, resolveHost, waitLoginForm
+  log, pageState, waitChallengePassed, resolveHost, waitLoginForm, dumpScreenshot
 } from '../lib/site.js'
 
 export async function run(ctx, input) {
@@ -53,19 +53,25 @@ export async function run(ctx, input) {
     // 3. 登录页 + 等表单
     await ctx.task.update({ stage: 'login', message: '打开登录页…' })
     await command('Page.navigate', { url: base + LOGIN_PATH })
-    const passed = await waitChallengePassed(ctx, command, 60000)
+    const passed = await waitChallengePassed(ctx, command, 90000)
     if (!passed.ok) {
       const st = passed.state || {}
-      throw new Error(`登录页未通过安全验证（${passed.reason}）：title="${st.title}" body="${st.body}"`)
+      const shot = await dumpScreenshot(ctx, command, 'login-challenge')
+      throw new Error(
+        `登录页未通过安全验证（${passed.reason}）：title="${st.title || passed.lastTitle || ''}" body="${st.body || ''}"` +
+        (shot ? ` 截图=${shot}` : '')
+      )
     }
 
     await ctx.task.update({ stage: 'wait-form', message: '等待登录表单…' })
-    const form = await waitLoginForm(ctx, command, base, 45000)
+    const form = await waitLoginForm(ctx, command, base, 60000)
     if (!form.ok) {
       const st = form.state || {}
+      const shot = await dumpScreenshot(ctx, command, 'login-form-missing')
       throw new Error(
         `找不到登录表单（#auth-username / #auth-password）。` +
-        `title="${st.title}" url=${base + LOGIN_PATH} body="${st.body}"`
+        `title="${st.title}" url=${base + LOGIN_PATH} body="${st.body}"` +
+        (shot ? ` 截图=${shot}` : '')
       )
     }
 

@@ -3,5 +3,5 @@
   "music.rs": "1.3.12：显示名规范化。",
   "douban.rs": "1.2.4：显示名去掉「Rust 版」后缀（插件本就是纯 JS/TS，-rs 只是移植标记）。",
   "huanggu.drama": "0.1.4：线路页新增「国内备用」分组（官方发布页的 rlhjeyuvw.cc 三条可直连入口）与「自定义线路」：可添加任意 HTTPS 站点 origin、单独检测/切换/删除，自定义线路持久化在插件 KV。",
-  "avdb.lite": "0.3.1：抽出 lib/site.js 共享站点逻辑；Cloudflare 判定新增「Just a moment」「Verification successful」等特征，验证通过后不再点击验证框而是等待自动跳转（必要时 reload 一次）；登录表单等待延长到 45 秒并在被跳回首页时自动重新导航登录页。"
+  "avdb.lite": "0.3.2：修复 Cloudflare 判定——页面跳转导致执行上下文销毁时不再误判为\"验证已通过\"，改为继续等待；验证显示成功但页面不跳转时自动 reload（最多 2 次）；等待超时提高到 90 秒；失败时把浏览器截图存到插件 data/diag/ 便于排查。"
 }
