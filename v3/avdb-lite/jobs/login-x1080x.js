@@ -1,6 +1,6 @@
 // X1080X 登录：真实站点 1080xin.com / 1080xin.vip（x1080x.com 只是占位跳转页）。
 // 用共享 Chromium 过 Cloudflare 安全验证后，按站点真实表单（#auth-username / #auth-password）登录。
-// 站点自己的 JS 负责 Turnstile token 与 /api/auth/login 提交，我们只填表单、点一次提交。
+// 站点自己的 JS 负责 Turnstile token 与登录接口提交，我们只填表单、点一次提交。
 
 const HOSTS = ['https://1080xin.com', 'https://1080xin.vip']
 const PLACEHOLDER_MARK = '請使用下面地址'
@@ -163,7 +163,7 @@ export async function run(ctx, input) {
     })
     if (!fill.result?.value?.ok) throw new Error('填写凭据失败')
 
-    // 5. 提交一次（站点 JS 自己处理 Turnstile 与 /api/auth/login）
+    // 5. 提交一次（站点 JS 自己处理 Turnstile 与登录请求）
     await ctx.task.update({ stage: 'submit', message: '提交登录…' })
     await ctx.sleep(500)
     const submit = await command('Runtime.evaluate', {
