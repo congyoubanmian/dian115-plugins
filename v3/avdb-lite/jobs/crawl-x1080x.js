@@ -20,14 +20,20 @@ function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value))
 }
 
+// 站点每个板块每页固定 20 条（另加 3 条置顶），所以要抓多少条就翻多少页。
+const PAGE_SIZE = 20
+const MAX_PAGES = 6
+
 function normalize(raw) {
   const value = raw && typeof raw === 'object' ? raw : {}
   const selected = Array.isArray(value.boards) ? value.boards.filter(id => BOARDS[id]) : []
+  const maxItems = clamp(Number(value.max_items) || 40, 1, 100)
   return {
     ...siteSettings(value),
     boards: selected.length ? selected : Object.keys(BOARDS),
-    pages: clamp(Number(value.pages) || 2, 1, 3),
-    max_items: clamp(Number(value.max_items) || 40, 1, 100)
+    max_items: maxItems,
+    // 页数由条数推出来（每页 20 条）；用户单独设的页数只当上限用。
+    pages: Math.min(MAX_PAGES, Math.max(1, Math.ceil(maxItems / PAGE_SIZE)))
   }
 }
 
@@ -90,6 +96,9 @@ export async function run(ctx, input) {
           '/api/catalog/resources?board_id=' + encodeURIComponent(boardId) + '&page=' + page)
         if (!Array.isArray(data.items)) throw new Error('items 结构异常')
         items = data.items.filter(item => item && item.id && !(Number(item.sticky_scope) > 0))
+        // 站点会告诉总页数，翻到最后一页就停
+        const totalPages = Number(data.total_pages) || 0
+        if (totalPages && page >= totalPages) settings.pages = Math.min(settings.pages, page)
       } catch (error) {
         failed++
         await note(`列表失败 ${BOARDS[boardId] || boardId} 第 ${page} 页：${error.message}`)

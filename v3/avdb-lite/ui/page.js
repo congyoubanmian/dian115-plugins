@@ -39,7 +39,6 @@ function normalizeSettings(raw) {
   return {
     flaresolverr_url: /^https?:\/\//i.test(solver) ? solver.replace(/\/+$/, '') : 'http://127.0.0.1:8191',
     boards: selected.length ? selected : ['3zfPdYrZvRsB5MYMHwE70K', '5PDZcHM9127Cbn21wUhl1q'],
-    pages: clamp(Number(value.pages) || 1, 1, 3),
     max_items: clamp(Number(value.max_items) || 40, 1, 100),
     account_mode: value.account_mode === 'backup' ? 'backup' : 'main',
     account_id: value.account_id ? Number(value.account_id) : null,
@@ -142,10 +141,7 @@ export function mount(element, ctx) {
           <div class="avdb-boards" data-boards></div>
         </div>
         <div class="row">
-          <label>每个板块页数
-            <input data-k="pages" type="number" min="1" max="3" step="1">
-          </label>
-          <label>每个板块最多文章数
+          <label>每个板块最多文章数（每页 20 条，自动翻页）
             <input data-k="max_items" type="number" min="1" max="100" step="1">
           </label>
           <label>115 保存目录 cid（可选）
@@ -214,7 +210,6 @@ export function mount(element, ctx) {
     return normalizeSettings({
       flaresolverr_url: element.querySelector('[data-k="flaresolverr_url"]').value,
       boards: Array.from(element.querySelectorAll('[data-board]:checked')).map(input => input.dataset.board),
-      pages: element.querySelector('[data-k="pages"]').value,
       max_items: element.querySelector('[data-k="max_items"]').value,
       save_cid: element.querySelector('[data-k="save_cid"]').value,
       account_mode: element.querySelector('[data-k="account_mode"]').value,
@@ -225,7 +220,6 @@ export function mount(element, ctx) {
   function fillSettingsForm() {
     const s = state.settings
     element.querySelector('[data-k="flaresolverr_url"]').value = s.flaresolverr_url
-    element.querySelector('[data-k="pages"]').value = String(s.pages)
     element.querySelector('[data-k="max_items"]').value = String(s.max_items)
     element.querySelector('[data-k="save_cid"]').value = s.save_cid
     element.querySelector('[data-k="account_mode"]').value = s.account_mode
