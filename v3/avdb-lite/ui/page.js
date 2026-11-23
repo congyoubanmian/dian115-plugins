@@ -44,16 +44,14 @@ function short(text, max) {
 function normalizeSettings(raw) {
   const value = raw && typeof raw === 'object' ? raw : {}
   const selected = Array.isArray(value.boards) ? value.boards.filter(id => BOARDS[id]) : []
+  const solver = String(value.flaresolverr_url || '').trim()
   return {
-    host: ['https://1080xin.com', 'https://1080xin.vip'].includes(value.host) ? value.host : 'https://1080xin.com',
+    flaresolverr_url: /^https?:\/\//i.test(solver) ? solver.replace(/\/+$/, '') : 'http://127.0.0.1:8191',
     username: String(value.username || ''),
     password: String(value.password || ''),
-    proxy_mode: ['system', 'direct', 'custom'].includes(value.proxy_mode) ? value.proxy_mode : 'system',
-    proxy_url: String(value.proxy_url || ''),
     boards: selected.length ? selected : ['7RHPO2w4jFUYiDhDsxz0wE'],
     pages: clamp(Number(value.pages) || 1, 1, 3),
     max_items: clamp(Number(value.max_items) || 40, 1, 100),
-    cache_images: value.cache_images !== false,
     account_mode: value.account_mode === 'backup' ? 'backup' : 'main',
     account_id: value.account_id ? Number(value.account_id) : null,
     save_cid: String(value.save_cid || '')
@@ -138,27 +136,14 @@ export function mount(element, ctx) {
 
       <section class="avdb-panel avdb-settings" data-panel="settings" hidden>
         <div class="row">
-          <label>论坛地址
-            <select data-k="host">
-              <option value="https://1080xin.com">1080xin.com</option>
-              <option value="https://1080xin.vip">1080xin.vip</option>
-            </select>
+          <label>FlareSolverr 地址（过 Cloudflare）
+            <input data-k="flaresolverr_url" placeholder="http://127.0.0.1:8191">
           </label>
-          <label>X1080X 用户名
-            <input data-k="username" placeholder="X1080X 登录用户名">
+          <label>X1080X 用户名（可选，用于查看下载地址）
+            <input data-k="username" placeholder="不填则只能浏览">
           </label>
           <label>X1080X 密码
             <input data-k="password" type="password" placeholder="X1080X 登录密码">
-          </label>
-          <label>浏览器代理
-            <select data-k="proxy_mode">
-              <option value="system">系统（按域名分流）</option>
-              <option value="direct">直连</option>
-              <option value="custom">自定义代理</option>
-            </select>
-          </label>
-          <label>自定义代理地址（mode=custom 时）
-            <input data-k="proxy_url" placeholder="socks5://host:port 或 http://host:port">
           </label>
         </div>
         <div>
@@ -183,9 +168,6 @@ export function mount(element, ctx) {
           </label>
           <label>备用账号 ID（mode=backup 时）
             <input data-k="account_id" type="number" min="1" step="1" placeholder="从账号列表获取">
-          </label>
-          <label>缓存封面到插件目录
-            <span style="display:flex;align-items:center;gap:6px"><input data-k="cache_images" type="checkbox" style="width:auto"> 是</span>
           </label>
         </div>
         <div class="avdb-actions">
@@ -226,34 +208,28 @@ export function mount(element, ctx) {
 
   function readSettingsFromForm() {
     return normalizeSettings({
-      host: element.querySelector('[data-k="host"]').value,
+      flaresolverr_url: element.querySelector('[data-k="flaresolverr_url"]').value,
       username: element.querySelector('[data-k="username"]').value,
       password: element.querySelector('[data-k="password"]').value,
-      proxy_mode: element.querySelector('[data-k="proxy_mode"]').value,
-      proxy_url: element.querySelector('[data-k="proxy_url"]').value,
       boards: Array.from(element.querySelectorAll('[data-board]:checked')).map(input => input.dataset.board),
       pages: element.querySelector('[data-k="pages"]').value,
       max_items: element.querySelector('[data-k="max_items"]').value,
       save_cid: element.querySelector('[data-k="save_cid"]').value,
       account_mode: element.querySelector('[data-k="account_mode"]').value,
-      account_id: element.querySelector('[data-k="account_id"]').value,
-      cache_images: element.querySelector('[data-k="cache_images"]').checked
+      account_id: element.querySelector('[data-k="account_id"]').value
     })
   }
 
   function fillSettingsForm() {
     const s = state.settings
-    element.querySelector('[data-k="host"]').value = s.host
+    element.querySelector('[data-k="flaresolverr_url"]').value = s.flaresolverr_url
     element.querySelector('[data-k="username"]').value = s.username
     element.querySelector('[data-k="password"]').value = s.password
-    element.querySelector('[data-k="proxy_mode"]').value = s.proxy_mode
-    element.querySelector('[data-k="proxy_url"]').value = s.proxy_url
     element.querySelector('[data-k="pages"]').value = String(s.pages)
     element.querySelector('[data-k="max_items"]').value = String(s.max_items)
     element.querySelector('[data-k="save_cid"]').value = s.save_cid
     element.querySelector('[data-k="account_mode"]').value = s.account_mode
     element.querySelector('[data-k="account_id"]').value = s.account_id ? String(s.account_id) : ''
-    element.querySelector('[data-k="cache_images"]').checked = s.cache_images
     element.querySelectorAll('[data-board]').forEach(input => {
       input.checked = s.boards.includes(input.dataset.board)
     })
@@ -311,12 +287,13 @@ export function mount(element, ctx) {
             <div class="avdb-meta">
               <span>磁力 ${magnets}</span>
               ${edk ? `<span>ED2K ${edk}</span>` : ''}
+              ${article.login_required ? '<span style="color:#e5484d">需登录/VIP 才能看下载地址</span>' : ''}
               ${article.access_denied ? '<span style="color:#e5484d">需要登录/权限</span>' : ''}
               ${article.detail_error ? '<span style="color:#e5484d">详情失败</span>' : ''}
             </div>
             <div class="avdb-card-actions">
               <button type="button" data-action="detail" data-id="${esc(article.id)}">详情</button>
-              <button type="button" class="primary" data-action="send-first" data-id="${esc(article.id)}" ${magnets ? '' : 'disabled'}>发送 115</button>
+              <button type="button" class="primary" data-action="send-first" data-id="${esc(article.id)}" ${magnets ? '' : 'disabled'}>${magnets ? '发送 115' : (article.login_required ? '需登录' : '无磁力')}</button>
             </div>
           </div>
         </article>`
@@ -356,6 +333,7 @@ export function mount(element, ctx) {
             </div>
             <button type="button" data-action="close-detail">关闭</button>
           </div>
+          ${article.login_required ? '<div style="color:#e5484d">该资源的下载地址需要登录（且账号有查看权限）才可见。可在设置里填账号后点「登录 X1080X」，再重新抓取。</div>' : ''}
           ${article.access_denied ? '<div style="color:#e5484d">该文章需要更高权限，正文/磁力可能不可见。</div>' : ''}
           ${cover ? `<div><img src="${esc(cover)}" alt="" style="max-width:220px;border-radius:10px" referrerpolicy="no-referrer"></div>` : ''}
           <div class="avdb-muted">磁力（${magnets.length}）</div>

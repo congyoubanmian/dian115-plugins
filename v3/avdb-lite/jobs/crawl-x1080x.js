@@ -1,9 +1,12 @@
-// X1080X 采集（浏览器模式）：真实站点在 1080xin.com / 1080xin.vip（x1080x.com 只是占位跳转页）。
-// 用宿主共享 Chromium 过 Cloudflare 安全验证，再从页面内 fetch JSON API 取数据。
+// X1080X 采集（AVDB 路线）：
+//   1. FlareSolverr 过 Cloudflare，Cookie/UA 存入插件 HTTP session
+//   2. 普通 HTTP 拉列表 + 详情（复用 Cookie，不逐页开浏览器）
+//   3. 下载地址需登录才可见：有账号时用共享浏览器登录，再在页面里取这些条目的详情
 
 import {
-  PROFILE,
-  log, waitChallengePassed, resolveHost, browserFetchJSON
+  normalizeSettings as siteSettings,
+  log, solveChallenge, httpJSON, parseState,
+  openBrowser, isAuthenticated, browserLogin, browserFetchJSON, sampleResourceId
 } from '../lib/site.js'
 
 const BOARDS = {
@@ -27,165 +30,160 @@ const BOARDS = {
   '5PDZcHM9127Cbn21wUhl1q': '1080X-有碼BT'
 }
 
-const MAGNET_RE = /magnet:\?xt=urn:btih:[A-Za-z0-9]+[^\s"'<>]*/gi
-const ED2K_RE = /ed2k:\/\/\|file\|[^"'\s<>]+/gi
-
 function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value))
 }
 
-function normalizeSettings(raw) {
+function normalize(raw) {
   const value = raw && typeof raw === 'object' ? raw : {}
   const selected = Array.isArray(value.boards) ? value.boards.filter(id => BOARDS[id]) : []
   return {
+    ...siteSettings(value),
     boards: selected.length ? selected : ['7RHPO2w4jFUYiDhDsxz0wE'],
     pages: clamp(Number(value.pages) || 1, 1, 3),
-    max_items: clamp(Number(value.max_items) || 40, 1, 100),
-    proxy_mode: ['system', 'direct', 'custom'].includes(value.proxy_mode) ? value.proxy_mode : 'system',
-    proxy_url: String(value.proxy_url || '').trim(),
-    account_mode: value.account_mode === 'backup' ? 'backup' : 'main',
-    account_id: value.account_id ? Number(value.account_id) : null,
-    save_cid: String(value.save_cid || '').trim()
+    max_items: clamp(Number(value.max_items) || 40, 1, 100)
   }
 }
 
-/** 从详情页 HTML 提取磁力、ED2K、图片 */
-async function extractFromPage(ctx, command, article) {
-  const r = await command('Runtime.evaluate', {
-    expression: `(() => {
-      const body = document.querySelector('.post-content .post-text .protected-text.discuz-body') ||
-                   document.querySelector('[id^="postmessage_"]') || document.body
-      const html = body ? body.innerHTML : ''
-      const text = body ? body.textContent : ''
-      const titleEl = document.querySelector('.thread-header h1') || document.querySelector('#thread_subject')
-      const imgs = Array.from(document.querySelectorAll('img')).map(i => i.src)
-        .filter(s => s && !s.includes('/static/image/') && !s.includes('/images/smilies/'))
-      const sm = text.match(/(\\d+(?:\\.\\d+)?)\\s*(TB|GB|MB|G|M)/i)
-      return { html, text, title: titleEl ? titleEl.textContent.trim() : '', imgs: imgs.slice(0, 8), size: sm ? sm[1] + sm[2].toUpperCase() : '' }
-    })()`,
-    returnByValue: true
-  })
-  if (r.exceptionDetails) throw new Error('页面解析失败')
-  const data = r.result?.value || {}
-  if (data.title) article.title = data.title
-  article.preview_images = data.imgs || []
-  article.size = data.size || ''
+const statePath = id => '/api/resources/' + encodeURIComponent(id) + '/state'
 
-  const raw = String(data.html || '')
-  article.magnets = [...new Set((raw.match(MAGNET_RE) || []))].slice(0, 20)
-  article.edk = [...new Set((raw.match(ED2K_RE) || []))].slice(0, 20)
-  const names = (data.text || '').match(/[^\s<>"']+\.(?:zip|rar|7z|tar\.gz)/gi) || []
+function applyState(article, state) {
+  const parsed = parseState(state)
+  article.preview_images = parsed.images
+  article.magnets = parsed.magnets
+  article.edk = parsed.edk
+  article.size = parsed.size
+  article.access_denied = !parsed.allowed
+  article.login_required = parsed.gated
+  if (parsed.gated) article.magnets = []
+  const names = parsed.text.match(/[^\s<>"']+\.(?:zip|rar|7z|tar\.gz)/gi) || []
   article.archive_names = [...new Set(names)].slice(0, 20)
-  const pwds = (data.text || '').match(/(?:解压密码|压缩密码|密码|提取码|pass(?:word)?)\s*[:：=]?\s*([A-Za-z0-9._-]{2,64})/gi) || []
-  article.archive_passwords = [...new Set(pwds.map(p => p.replace(/^.*?[:：=]\s*/, '').trim()))].slice(0, 10)
-  return article
+  const passwords = parsed.text.match(/(?:解压密码|压缩密码|密碼|密码|提取码|pass(?:word)?)\s*[:：=]?\s*([A-Za-z0-9._-]{2,64})/gi) || []
+  article.archive_passwords = [...new Set(passwords.map(item => item.replace(/^.*?[:：=]\s*/, '').trim()))].slice(0, 10)
+  return parsed
 }
 
 export async function run(ctx, input) {
-  const settings = normalizeSettings(await ctx.storage.get('avdb-settings'))
+  const settings = normalize(await ctx.storage.get('avdb-settings'))
   if (!settings.boards.length) throw new Error('请至少选择一个 X1080X 板块')
 
-  await ctx.task.update({ stage: 'browser', message: '打开共享浏览器…', total: settings.max_items, done: 0, failed: 0 })
-
-  const status = await ctx.browser.status()
-  if (!status.available) throw new Error(status.error || `浏览器运行包未就绪（state=${status.state}）`)
-
-  const openOptions = { profile: PROFILE, timeout_seconds: 30 }
-  if (settings.proxy_mode === 'direct') openOptions.proxy_mode = 'direct'
-  else if (settings.proxy_mode === 'custom' && settings.proxy_url) {
-    openOptions.proxy_mode = 'custom'
-    openOptions.proxy_url = settings.proxy_url
-  } else openOptions.proxy_mode = 'system'
-
-  const page = await ctx.browser.open(openOptions)
-  const command = (method, params = {}) =>
-    ctx.browser.command({ session: page.id, method, params, timeout_seconds: 30 })
+  const total = settings.max_items
+  await ctx.task.update({ stage: 'cf', message: 'FlareSolverr 过 Cloudflare…', total, done: 0, failed: 0 })
+  const { base, userAgent } = await solveChallenge(ctx, settings)
 
   const articles = []
+  const gated = []
   let done = 0
   let failed = 0
 
-  try {
-    await ctx.task.update({ stage: 'cf', message: '等待 Cloudflare 安全验证…' })
-    const base = await resolveHost(ctx, command)
-
-    for (const boardId of settings.boards) {
-      if (articles.length >= settings.max_items) break
-      for (let pageNo = 1; pageNo <= settings.pages; pageNo++) {
-        if (articles.length >= settings.max_items) break
-        let items = []
+  for (const boardId of settings.boards) {
+    if (articles.length >= total) break
+    for (let page = 1; page <= settings.pages; page++) {
+      if (articles.length >= total) break
+      let items = []
+      try {
+        const data = await httpJSON(ctx, base, userAgent,
+          '/api/catalog/resources?board_id=' + encodeURIComponent(boardId) + '&page=' + page)
+        if (!Array.isArray(data.items)) throw new Error('items 结构异常')
+        items = data.items.filter(item => item && item.id && !(Number(item.sticky_scope) > 0))
+      } catch (error) {
+        failed++
+        await log(ctx, `列表失败 ${BOARDS[boardId] || boardId} 第 ${page} 页：${error.message}`)
+        continue
+      }
+      for (const item of items) {
+        if (articles.length >= total) break
+        const article = {
+          id: String(item.id),
+          website: 'x1080x',
+          board_id: boardId,
+          board_name: BOARDS[boardId] || boardId,
+          title: String(item.title || '').trim(),
+          published_at: String(item.published_at || ''),
+          category: String(item.category_name || ''),
+          detail_url: base + '/resources/' + encodeURIComponent(String(item.id)),
+          cover: '',
+          cover_remote: String(item.cover_url || ''),
+          preview_images: [], magnets: [], edk: [], size: '',
+          archive_names: [], archive_passwords: [],
+          access_denied: Boolean(item.read_locked),
+          login_required: false, detail_error: ''
+        }
         try {
-          const data = await browserFetchJSON(ctx, command, base,
-            '/api/catalog/resources?board_id=' + encodeURIComponent(boardId) + '&page=' + pageNo)
-          if (!data || !Array.isArray(data.items)) throw new Error('items 结构异常')
-          items = data.items.filter(item => item && item.id && !(Number(item.sticky_scope) > 0))
+          applyState(article, await httpJSON(ctx, base, userAgent, statePath(article.id)))
         } catch (error) {
-          failed++
-          await log(ctx, `列表失败 ${BOARDS[boardId] || boardId} 第 ${pageNo} 页: ${error.message}`)
-          continue
+          article.detail_error = error.message
+          await log(ctx, `详情失败 ${article.id}：${error.message}`)
         }
-        for (const item of items) {
-          if (articles.length >= settings.max_items) break
-          const article = {
-            id: String(item.id || '').trim(),
-            website: 'x1080x',
-            board_id: boardId,
-            board_name: BOARDS[boardId] || boardId,
-            title: String(item.title || '').trim(),
-            published_at: String(item.published_at || ''),
-            category: String(item.category_name || ''),
-            detail_url: base + '/resources/' + encodeURIComponent(String(item.id)),
-            preview_images: [], magnets: [], edk: [],
-            size: '', archive_names: [], archive_passwords: [],
-            cover: '', cover_remote: '', access_denied: false, detail_error: ''
-          }
-          if (!article.id) continue
-          try {
-            await command('Page.navigate', { url: article.detail_url })
-            const ok = await waitChallengePassed(ctx, command, 30000)
-            if (!ok.ok) throw new Error('详情页未就绪：' + ok.reason)
-            await ctx.sleep(500)
-            await extractFromPage(ctx, command, article)
-          } catch (error) {
-            article.detail_error = error.message
-            await log(ctx, `详情失败 ${article.id}: ${error.message}`)
-          }
-          articles.push(article)
-          done++
-          await ctx.task.update({
-            stage: 'detail', message: `${BOARDS[boardId] || boardId} 第 ${pageNo} 页`,
-            total: settings.max_items, done, failed
-          })
-          await ctx.sleep(300)
-        }
+        if (article.login_required) gated.push(article)
+        articles.push(article)
+        done++
+        await ctx.task.update({
+          stage: 'detail', message: `${BOARDS[boardId] || boardId} 第 ${page} 页`,
+          total, done, failed
+        })
       }
     }
-  } finally {
-    await ctx.browser.close(page.id).catch(() => {})
+  }
+
+  // 下载地址需要登录：有账号时走共享浏览器登录，再在页面里重取这些条目
+  let loggedIn = false
+  if (gated.length) {
+    if (!settings.username || !settings.password) {
+      await log(ctx, `${gated.length} 条需要登录才能看到下载地址（设置里未填账号）`)
+    } else {
+      await ctx.task.update({ stage: 'login', message: `登录以查看 ${gated.length} 条的下载地址…`, total, done, failed })
+      let browser = null
+      try {
+        browser = await openBrowser(ctx, base, userAgent)
+        const sample = await sampleResourceId(ctx, browser.command, base)
+        loggedIn = await isAuthenticated(ctx, browser.command, base, sample)
+        if (!loggedIn) loggedIn = await browserLogin(ctx, browser.command, base, settings, sample)
+        await log(ctx, loggedIn ? '登录成功' : '登录未成功（账号密码错误、需验证或浏览器被拦截）')
+        if (loggedIn) {
+          for (const article of gated) {
+            try {
+              applyState(article, await browserFetchJSON(ctx, browser.command, base, statePath(article.id)))
+              article.detail_error = ''
+            } catch (error) {
+              article.detail_error = error.message
+              await log(ctx, `登录后详情失败 ${article.id}：${error.message}`)
+            }
+          }
+        }
+      } catch (error) {
+        await log(ctx, `浏览器登录失败：${error.message}`)
+      } finally {
+        if (browser) await browser.close()
+      }
+    }
   }
 
   const seen = new Set()
   const unique = []
-  for (const a of articles) {
-    const key = a.website + ':' + a.id
+  for (const article of articles) {
+    const key = article.website + ':' + article.id
     if (seen.has(key)) continue
     seen.add(key)
-    unique.push(a)
+    unique.push(article)
   }
   unique.sort((a, b) => String(b.published_at || '').localeCompare(String(a.published_at || '')))
 
   await ctx.storage.set('avdb-articles', unique)
   await ctx.storage.set('avdb-last-run', {
-    at: new Date().toISOString(), count: unique.length, done, failed,
-    boards: settings.boards, pages: settings.pages
+    at: new Date().toISOString(), count: unique.length, done, failed, loggedIn,
+    gated: unique.filter(article => article.login_required).length
   })
+  const hidden = unique.filter(article => article.login_required).length
   await ctx.task.update({
-    stage: 'done', message: `抓取完成，共 ${unique.length} 条`,
+    stage: 'done',
+    message: `抓取完成，共 ${unique.length} 条` + (hidden ? `，其中 ${hidden} 条需登录后才能看下载地址` : ''),
     total: unique.length, done: unique.length, failed
   })
-  return { count: unique.length, failed }
+  return { count: unique.length, failed, loggedIn, gated: hidden }
 }
 
+// 本任务只写插件 KV；重启后重跑是幂等的。
 export async function recover(ctx, checkpoint) {
   return { action: 'resume' }
 }
