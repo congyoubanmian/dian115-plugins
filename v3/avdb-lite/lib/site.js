@@ -80,12 +80,17 @@ function buildCookieHeader(cookies) {
 
 /**
  * 过 Cloudflare。返回 {base, userAgent, cookies, cookieHeader}。
- * 优先自建 FlareSolverr 会话（失败重试 3 次），退路用宿主 ctx.http.render。
+ * 优先自建 FlareSolverr 会话（每站最多 2 次、整体 4 分钟上限），
+ * 退路用宿主 ctx.http.render。
  */
 export async function solveChallenge(ctx, settings, path = '/') {
   let lastError = ''
+  // 一次过盾要 1–2 分钟（CF 挑战 + 站点 JS），所以整体留 4 分钟，
+  // 免得任务被拖到十几分钟还没结果。
+  const deadline = Date.now() + 240000
   for (const host of HOSTS) {
-    for (let attempt = 1; attempt <= 3; attempt++) {
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      if (Date.now() > deadline) break
       try {
         const solved = await fsSolve(ctx, settings, host + path)
         if (isChallengeHtml(solved.html)) {
@@ -107,6 +112,7 @@ export async function solveChallenge(ctx, settings, path = '/') {
       } catch (error) {
         lastError = `${host}: ${error && error.message ? error.message : error}`
         await log(ctx, `过盾失败（第 ${attempt} 次）：${lastError}`)
+        if (Date.now() > deadline) break
         await ctx.sleep(3000)
       }
     }

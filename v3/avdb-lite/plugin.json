@@ -2,7 +2,7 @@
   "schema_version": 3,
   "id": "avdb.lite",
   "name": "AVDB Lite",
-  "version": "0.4.6",
+  "version": "0.4.7",
   "author": "congyoubanmian",
   "description": "X1080X 板块采集、文章浏览与一键 115 磁力离线。0.4.x 用 FlareSolverr 过 Cloudflare（同 AVDB 路线），插件自建 FS 会话并重试，避免宿主 render 通道偶发失败；下载地址需登录。",
   "requires": {
@@ -25,7 +25,7 @@
       "handler": "run",
       "recover": "recover",
       "title": "抓取 X1080X",
-      "timeout_seconds": 600,
+      "timeout_seconds": 900,
       "default_schedule": "*/30 * * * *",
       "allow_overlap": false
     },
@@ -35,7 +35,7 @@
       "handler": "run",
       "title": "浏览器登录 X1080X",
       "queue": false,
-      "timeout_seconds": 120
+      "timeout_seconds": 480
     }
   ],
   "declared_usage": {

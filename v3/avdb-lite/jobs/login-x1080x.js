@@ -15,6 +15,12 @@ export async function run(ctx, input) {
   }
 
   try {
+    // 每次尝试都重置诊断：失败在进入浏览器之前时，也要能看到本次的现场。
+    await ctx.storage.set('avdb-diag', {
+      at: new Date().toISOString(),
+      steps: ['开始登录：FlareSolverr 过盾 → 共享浏览器 → 提交']
+    })
+
     // 登录要用 login 这一种 pass：站点的通行凭据按用途区分，
     // 渲染首页拿到的是列表用的 pass，提交登录会被拒（browser_pass_required）。
     await ctx.task.update({ stage: 'cf', message: 'FlareSolverr 过 Cloudflare（登录页）…' })
