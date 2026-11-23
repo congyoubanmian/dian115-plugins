@@ -2,7 +2,7 @@
   "schema_version": 3,
   "id": "avdb.lite",
   "name": "AVDB Lite",
-  "version": "0.4.8",
+  "version": "0.4.9",
   "author": "congyoubanmian",
   "description": "X1080X 板块采集、文章浏览与一键 115 磁力离线。0.4.x 用 FlareSolverr 过 Cloudflare（同 AVDB 路线）；站点登录强制要 Turnstile token，改由同机的登录助手（真实浏览器）完成，插件继续用普通 HTTP 取数。",
   "requires": {
@@ -50,6 +50,8 @@
       "/api/115/offline/download-path",
       "/api/115/offline/tasks",
       "/api/115/browse-dirs",
+      "GET /api/extensions/v3/{id}/runs",
+      "POST /api/extensions/v3/{id}/runs/{run}/cancel",
       "POST /api/extensions/v3/{id}/browser"
     ],
     "browser": "登录的第一选择是同机的登录助手服务（真实浏览器完成 Turnstile 与登录，插件只拿回 Cookie）；助手不可用时才退回宿主共享浏览器：注入 FlareSolverr 取得的过盾 Cookie（同一出口 IP、同一 User-Agent），打开站点真实登录表单（#auth-username / #auth-password）由用户填写的账号登录。不使用浏览器抓取列表。",

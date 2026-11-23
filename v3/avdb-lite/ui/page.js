@@ -414,6 +414,39 @@ export function mount(element, ctx) {
     setStatus('设置已保存')
   }
 
+  /** 宿主接口报错时把真正的原因捞出来（axios 默认只给状态码）。 */
+  function apiErrorText(error) {
+    const data = error && (error.response?.data || error.data)
+    if (typeof data === 'string' && data.trim()) return data.trim().slice(0, 240)
+    if (data && typeof data === 'object') {
+      const text = data.error || data.message || data.reason || data.detail || data.error_code
+      if (text) return String(text).slice(0, 240)
+    }
+    return String((error && error.message) || error || '').slice(0, 240)
+  }
+
+  /**
+   * 清掉卡住的任务。宿主重启等情况下任务会停在 attention_required，
+   * 而抓取任务不允许并行运行（有未完成的同类任务时新任务直接 400），
+   * 定时调度也会一直被堵着。
+   */
+  async function clearStuckRuns() {
+    let cleared = 0
+    try {
+      const res = await ctx.api.get('/api/extensions/v3/avdb.lite/runs')
+      const runs = Array.isArray(res) ? res : (res && Array.isArray(res.runs) ? res.runs : [])
+      for (const run of runs) {
+        if (!run || run.status !== 'attention_required') continue
+        if (run.job_id && run.job_id !== 'crawl-x1080x') continue
+        try {
+          await ctx.api.post('/api/extensions/v3/avdb.lite/runs/' + encodeURIComponent(run.id) + '/cancel', {})
+          cleared++
+        } catch (_) {}
+      }
+    } catch (_) {}
+    return cleared
+  }
+
   async function runCrawl() {
     try {
       await saveSettings()
@@ -421,14 +454,27 @@ export function mount(element, ctx) {
       setStatus(error.message, true)
       return
     }
-    setStatus('已提交抓取任务（走共享浏览器过 Cloudflare）…')
+    setStatus('正在提交抓取任务…')
+    let task = null
     try {
-      const task = await ctx.tasks.run('crawl-x1080x', 'crawl:' + Date.now(), {})
-      setStatus('抓取任务已提交：' + (task.id || ''))
-      pollTask(task.id)
+      task = await ctx.tasks.run('crawl-x1080x', 'crawl:' + Date.now(), {})
     } catch (error) {
-      setStatus('提交失败：' + error.message, true)
+      // 有没跑完的同类任务卡着时，新任务会被宿主直接拒掉；先清掉再试一次。
+      const cleared = await clearStuckRuns()
+      if (!cleared) {
+        setStatus('提交失败：' + apiErrorText(error), true)
+        return
+      }
+      setStatus('清理了 ' + cleared + ' 个卡住的任务，重新提交…')
+      try {
+        task = await ctx.tasks.run('crawl-x1080x', 'crawl:' + Date.now(), {})
+      } catch (retryError) {
+        setStatus('提交失败：' + apiErrorText(retryError), true)
+        return
+      }
     }
+    setStatus('抓取任务已提交：' + (task.id || ''))
+    pollTask(task.id)
   }
 
   async function runLogin() {
@@ -443,13 +489,13 @@ export function mount(element, ctx) {
       ui.settingsPanel.hidden = false
       return
     }
-    setStatus('正在通过共享浏览器登录 X1080X…')
+    setStatus('正在登录 X1080X…')
     try {
       const task = await ctx.tasks.run('login-x1080x', 'login:' + Date.now(), {})
       setStatus('登录任务已提交：' + (task.id || ''))
       pollTask(task.id)
     } catch (error) {
-      setStatus('登录提交失败：' + error.message, true)
+      setStatus('登录提交失败：' + apiErrorText(error), true)
     }
   }
 
@@ -505,7 +551,7 @@ export function mount(element, ctx) {
       }
       setStatus(`已提交 115，accepted=${result.accepted}`)
     } catch (error) {
-      setStatus('发送 115 失败：' + (error.message || error), true)
+      setStatus('发送 115 失败：' + apiErrorText(error), true)
     } finally {
       if (button) button.disabled = false
     }
