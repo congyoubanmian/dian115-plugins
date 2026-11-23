@@ -45,9 +45,74 @@ export function isChallengeHtml(html) {
   return CF_BODY_MARKS.some(mark => head.includes(mark)) || head.includes(PLACEHOLDER_MARK)
 }
 
-/** 用 FlareSolverr 过 Cloudflare，Cookie 与 UA 回存到插件 HTTP session。 */
+/** 直接调 FlareSolverr（不经过宿主 session）。宿主 render 客户端会复用 FS session，
+ *  那个路径偶发 "unable to set cookie"；我们自建会话 + 重试更稳。 */
+async function fsSolve(ctx, settings, url) {
+  const endpoint = settings.flaresolverr_url.replace(/\/+$/, '')
+  const res = await ctx.http.request({
+    url: endpoint + '/v1',
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+    body: JSON.stringify({ cmd: 'request.get', url, maxTimeout: 120000 }),
+    proxy: 'direct',
+    timeout_seconds: 180,
+    response_type: 'json'
+  })
+  const data = res.data || {}
+  if (res.status !== 200 || data.status !== 'ok') {
+    throw new Error(data.message || `FlareSolverr HTTP ${res.status} ${String(res.body || '').slice(0, 120)}`)
+  }
+  const solution = data.solution || {}
+  return {
+    html: solution.response || '',
+    cookies: Array.isArray(solution.cookies) ? solution.cookies : [],
+    userAgent: solution.userAgent || ''
+  }
+}
+
+/** Cookie 头（name=value; …）。 */
+function buildCookieHeader(cookies) {
+  return cookies
+    .filter(cookie => cookie && cookie.name && cookie.value != null)
+    .map(cookie => `${cookie.name}=${cookie.value}`)
+    .join('; ')
+}
+
+/**
+ * 过 Cloudflare。返回 {base, userAgent, cookies, cookieHeader}。
+ * 优先自建 FlareSolverr 会话（失败重试 3 次），退路用宿主 ctx.http.render。
+ */
 export async function solveChallenge(ctx, settings, path = '/') {
   let lastError = ''
+  for (const host of HOSTS) {
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        const solved = await fsSolve(ctx, settings, host + path)
+        if (isChallengeHtml(solved.html)) {
+          lastError = `${host} 过盾后仍是挑战页`
+          await log(ctx, lastError)
+          break
+        }
+        if (!solved.userAgent || !solved.cookies.length) {
+          lastError = `${host} 过盾结果缺少 UA 或 Cookie`
+          break
+        }
+        await log(ctx, `Cloudflare 已通过（FlareSolverr）：${host}${path}（第 ${attempt} 次）`)
+        return {
+          base: host,
+          userAgent: solved.userAgent,
+          cookies: solved.cookies,
+          cookieHeader: buildCookieHeader(solved.cookies)
+        }
+      } catch (error) {
+        lastError = `${host}: ${error && error.message ? error.message : error}`
+        await log(ctx, `过盾失败（第 ${attempt} 次）：${lastError}`)
+        await ctx.sleep(3000)
+      }
+    }
+  }
+
+  // 退路：宿主自带的 FlareSolverr 客户端
   for (const host of HOSTS) {
     try {
       const page = await ctx.http.render({
@@ -56,17 +121,15 @@ export async function solveChallenge(ctx, settings, path = '/') {
         session: HTTP_SESSION,
         timeout_seconds: 150
       })
-      if (isChallengeHtml(page.html)) {
-        lastError = `${host} 过盾后仍是挑战页`
-        await log(ctx, lastError)
-        continue
+      if (isChallengeHtml(page.html)) continue
+      const cookies = await ctx.http.cookies({ url: host + '/', session: HTTP_SESSION })
+      await log(ctx, `改用宿主 render 过盾：${host}（Cookie ${cookies.length} 条）`)
+      return {
+        base: host,
+        userAgent: page.user_agent || '',
+        cookies,
+        cookieHeader: buildCookieHeader(cookies)
       }
-      if (!page.user_agent) {
-        lastError = `${host} 过盾结果缺少 User-Agent`
-        continue
-      }
-      await log(ctx, `Cloudflare 已通过（FlareSolverr）：${host}${path}`)
-      return { base: host, userAgent: page.user_agent }
     } catch (error) {
       lastError = `${host}: ${error && error.message ? error.message : error}`
       await log(ctx, lastError)
@@ -77,28 +140,33 @@ export async function solveChallenge(ctx, settings, path = '/') {
 
 /**
  * 取 JSON；遇到 browser_pass_required（站点按用途分 kind 的 pass 过期）就重新过盾再试一次。
- * net = {base, userAgent}，会被就地更新。
+ * net = {base, userAgent, cookies, cookieHeader}，会被就地更新。
  */
 export async function fetchJSON(ctx, settings, net, path) {
   try {
-    return await httpJSON(ctx, net.base, net.userAgent, path)
+    return await httpJSON(ctx, net, path)
   } catch (error) {
     if (!/browser_pass_required/.test(String(error && error.message))) throw error
     await log(ctx, '站点通行凭据已失效（browser_pass_required），重新过盾…')
     const renewed = await solveChallenge(ctx, settings, '/')
     net.base = renewed.base
     net.userAgent = renewed.userAgent
-    return await httpJSON(ctx, net.base, net.userAgent, path)
+    net.cookies = renewed.cookies
+    net.cookieHeader = renewed.cookieHeader
+    return await httpJSON(ctx, net, path)
   }
 }
 
-/** 复用 session 里的 Cookie 调站点 JSON API。proxy 固定 direct，与 FlareSolverr 同一出口 IP。 */
-export async function httpJSON(ctx, base, userAgent, path) {
+/** 带过盾 Cookie 调站点 JSON API。proxy 固定 direct，与 FlareSolverr 同一出口 IP。 */
+export async function httpJSON(ctx, net, path) {
   const res = await ctx.http.request({
-    url: base + path,
+    url: net.base + path,
     method: 'GET',
-    session: HTTP_SESSION,
-    headers: { Accept: 'application/json', 'User-Agent': userAgent },
+    headers: {
+      Accept: 'application/json',
+      'User-Agent': net.userAgent,
+      Cookie: net.cookieHeader
+    },
     proxy: 'direct',
     timeout_seconds: 45,
     response_type: 'json'
@@ -223,8 +291,8 @@ async function waitReady(ctx, command, timeoutMs = 45000) {
 const SAME_SITE = { lax: 'Lax', strict: 'Strict', none: 'None' }
 
 /** 把过盾 Cookie 注入浏览器会话，并把 UA 对齐成过盾时用的那个（cf_clearance 绑定 IP + UA）。 */
-async function injectClearance(ctx, command, base) {
-  const cookies = await ctx.http.cookies({ url: base + '/', session: HTTP_SESSION })
+async function injectClearance(ctx, command, net) {
+  const cookies = net.cookies || []
   const cdpCookies = cookies
     .filter(cookie => cookie && cookie.name && cookie.value != null)
     .map(cookie => {
@@ -233,18 +301,21 @@ async function injectClearance(ctx, command, base) {
         value: String(cookie.value),
         path: cookie.path || '/',
         secure: Boolean(cookie.secure),
-        httpOnly: Boolean(cookie.http_only)
+        httpOnly: Boolean(cookie.httpOnly)
       }
       // __Host- 前缀要求 host-only：host-only Cookie 用 url 设置，不带 domain
-      if (cookie.host_only || cookie.name.startsWith('__Host-')) item.url = base + '/'
+      const hostOnly = cookie.hostOnly ?? cookie.host_only ?? cookie.name.startsWith('__Host-')
+      if (hostOnly) item.url = net.base + '/'
       else item.domain = String(cookie.domain || '').replace(/^\./, '')
-      if (cookie.same_site && SAME_SITE[cookie.same_site]) item.sameSite = SAME_SITE[cookie.same_site]
-      if (cookie.expires_at) item.expires = Number(cookie.expires_at)
+      const sameSite = cookie.sameSite || cookie.same_site
+      if (sameSite && SAME_SITE[sameSite]) item.sameSite = SAME_SITE[sameSite]
+      const expires = cookie.expiry ?? cookie.expires
+      if (expires) item.expires = Number(expires)
       return item
     })
-  if (!cdpCookies.length) throw new Error('过盾 session 里没有可注入的 Cookie')
+  if (!cdpCookies.length) throw new Error('过盾结果里没有可注入的 Cookie')
   await command('Network.setCookies', { cookies: cdpCookies })
-  const check = await command('Network.getCookies', { urls: [base + '/'] })
+  const check = await command('Network.getCookies', { urls: [net.base + '/'] })
   const names = new Set((check.cookies || []).map(cookie => cookie.name))
   const missing = cookies.map(cookie => cookie.name).filter(name => !names.has(name))
   return { injected: cdpCookies.length, missing }
@@ -254,17 +325,17 @@ async function injectClearance(ctx, command, base) {
  * 打开共享浏览器并带上过盾 Cookie。
  * 浏览器固定 direct，和 FlareSolverr 同一个出口 IP，否则 cf_clearance 无效。
  */
-export async function openBrowser(ctx, base, userAgent) {
+export async function openBrowser(ctx, net) {
   const status = await ctx.browser.status()
   if (!status.available) throw new Error(status.error || `浏览器运行包未就绪（state=${status.state}）`)
   const page = await ctx.browser.open({ profile: PROFILE, proxy_mode: 'direct', timeout_seconds: 30 })
   const command = (method, params = {}) =>
     ctx.browser.command({ session: page.id, method, params, timeout_seconds: 30 })
   try {
-    await command('Network.setUserAgentOverride', { userAgent })
-    const injected = await injectClearance(ctx, command, base)
+    if (net.userAgent) await command('Network.setUserAgentOverride', { userAgent: net.userAgent })
+    const injected = await injectClearance(ctx, command, net)
     await log(ctx, `已注入过盾 Cookie ${injected.injected} 条` + (injected.missing.length ? `，未生效：${injected.missing.join(',')}` : ''))
-    await command('Page.navigate', { url: base + '/' })
+    await command('Page.navigate', { url: net.base + '/' })
     const ready = await waitReady(ctx, command)
     if (!ready.ok) {
       const state = ready.state || {}
@@ -321,7 +392,8 @@ const SITE_LOGIN_PATH = ['/api', 'auth', 'login'].join('/')
  * 头 X-CSRFToken + X-Turnstile-Token，体 {username, login_type, password}）。
  * 浏览器拿不到 token 时，退回「在页面里填表单点提交」由站点自己提交。
  */
-export async function browserLogin(ctx, command, base, settings, sampleId) {
+export async function browserLogin(ctx, command, net, settings, sampleId) {
+  const base = net.base
   await command('Page.navigate', { url: base + LOGIN_PATH })
   const ready = await waitReady(ctx, command, 60000)
   if (!ready.ok) {
@@ -347,7 +419,7 @@ export async function browserLogin(ctx, command, base, settings, sampleId) {
   await log(ctx, tokenSeen ? '已从页面取得 Turnstile token' : '页面未出现 Turnstile token，改用页面内提交')
 
   if (tokenSeen) {
-    const result = await httpLogin(ctx, base, settings, tokenSeen)
+    const result = await httpLogin(ctx, net, settings, tokenSeen)
     if (result.ok) {
       await log(ctx, 'HTTP 登录成功')
       return true
@@ -420,17 +492,17 @@ async function readTurnstileToken(ctx, command) {
   return value.token || ''
 }
 
-/** 用过盾 session 直接提交登录。 */
-async function httpLogin(ctx, base, settings, turnstileToken) {
-  const cookies = await ctx.http.cookies({ url: base + '/', session: HTTP_SESSION })
-  const csrf = cookies.find(cookie => cookie.name === '__Host-x1080x_csrf')
+/** 用过盾 Cookie 直接提交登录。 */
+async function httpLogin(ctx, net, settings, turnstileToken) {
+  const csrf = (net.cookies || []).find(cookie => cookie.name === '__Host-x1080x_csrf')
   const res = await ctx.http.request({
-    url: base + SITE_LOGIN_PATH,
+    url: net.base + SITE_LOGIN_PATH,
     method: 'POST',
-    session: HTTP_SESSION,
     headers: {
       'Content-Type': 'application/json',
       Accept: 'application/json',
+      'User-Agent': net.userAgent,
+      Cookie: net.cookieHeader,
       'X-CSRFToken': csrf ? decodeURIComponent(String(csrf.value)) : '',
       'X-Turnstile-Token': turnstileToken
     },

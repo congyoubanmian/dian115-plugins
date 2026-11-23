@@ -72,8 +72,6 @@ export async function run(ctx, input) {
   const total = settings.max_items
   await ctx.task.update({ stage: 'cf', message: 'FlareSolverr 过 Cloudflare…', total, done: 0, failed: 0 })
   const net = await solveChallenge(ctx, settings)
-  const base = net.base
-  const userAgent = net.userAgent
 
   const articles = []
   const gated = []
@@ -105,7 +103,7 @@ export async function run(ctx, input) {
           title: String(item.title || '').trim(),
           published_at: String(item.published_at || ''),
           category: String(item.category_name || ''),
-          detail_url: base + '/resources/' + encodeURIComponent(String(item.id)),
+          detail_url: net.base + '/resources/' + encodeURIComponent(String(item.id)),
           cover: '',
           cover_remote: String(item.cover_url || ''),
           preview_images: [], magnets: [], edk: [], size: '',
@@ -139,15 +137,15 @@ export async function run(ctx, input) {
       await ctx.task.update({ stage: 'login', message: `登录以查看 ${gated.length} 条的下载地址…`, total, done, failed })
       let browser = null
       try {
-        browser = await openBrowser(ctx, base, userAgent)
-        const sample = await sampleResourceId(ctx, browser.command, base)
-        loggedIn = await isAuthenticated(ctx, browser.command, base, sample)
-        if (!loggedIn) loggedIn = await browserLogin(ctx, browser.command, base, settings, sample)
+        browser = await openBrowser(ctx, net)
+        const sample = await sampleResourceId(ctx, browser.command, net.base)
+        loggedIn = await isAuthenticated(ctx, browser.command, net.base, sample)
+        if (!loggedIn) loggedIn = await browserLogin(ctx, browser.command, net, settings, sample)
         await log(ctx, loggedIn ? '登录成功' : '登录未成功（账号密码错误、需验证或浏览器被拦截）')
         if (loggedIn) {
           for (const article of gated) {
             try {
-              applyState(article, await browserFetchJSON(ctx, browser.command, base, statePath(article.id)))
+              applyState(article, await browserFetchJSON(ctx, browser.command, net.base, statePath(article.id)))
               article.detail_error = ''
             } catch (error) {
               article.detail_error = error.message
