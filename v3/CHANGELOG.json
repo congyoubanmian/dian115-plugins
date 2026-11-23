@@ -3,5 +3,5 @@
   "music.rs": "1.3.12：显示名规范化。",
   "douban.rs": "1.2.4：显示名去掉「Rust 版」后缀（插件本就是纯 JS/TS，-rs 只是移植标记）。",
   "huanggu.drama": "0.1.4：线路页新增「国内备用」分组（官方发布页的 rlhjeyuvw.cc 三条可直连入口）与「自定义线路」：可添加任意 HTTPS 站点 origin、单独检测/切换/删除，自定义线路持久化在插件 KV。",
-  "avdb.lite": "0.4.3：不再走宿主 ctx.http.render 通道（它复用 FlareSolverr session，偶发 \"unable to set cookie\"），改为插件直接调 FlareSolverr /v1 并对每个站点重试 3 次；Cookie 与 UA 由插件自己持有，请求显式带 Cookie 头，不再依赖宿主 session 注入；宿主 render 作为退路保留。"
+  "avdb.lite": "0.4.4：登录每一步写入 avdb-diag（页面新增「复制诊断」一键取走）；HTTP 登录按账号自动尝试 login_type username/email（站点表单默认 username，邮箱注册账号会被直接判错）；提交后抓取页面上的可见错误提示（密碼錯誤/需要驗證/鎖定等）。"
 }

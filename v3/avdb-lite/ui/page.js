@@ -134,6 +134,7 @@ export function mount(element, ctx) {
         <div class="avdb-actions">
           <button type="button" data-action="toggle-settings">设置</button>
           <button type="button" data-action="login">登录 X1080X</button>
+          <button type="button" data-action="diag">复制诊断</button>
           <button type="button" class="primary" data-action="crawl">立即抓取</button>
           <button type="button" data-action="reload">刷新</button>
         </div>
@@ -530,6 +531,16 @@ export function mount(element, ctx) {
     }
     if (action === 'login') {
       await runLogin()
+      return
+    }
+    if (action === 'diag') {
+      const diag = await ctx.storage.get('avdb-diag')
+      if (!diag) {
+        setStatus('还没有诊断信息（先点一次「登录 X1080X」）', true)
+        return
+      }
+      await copyText(JSON.stringify(diag, null, 2))
+      setStatus('诊断已复制到剪贴板')
       return
     }
     if (action === 'crawl') {

@@ -394,12 +394,22 @@ const SITE_LOGIN_PATH = ['/api', 'auth', 'login'].join('/')
  */
 export async function browserLogin(ctx, command, net, settings, sampleId) {
   const base = net.base
+  const diag = { at: new Date().toISOString(), steps: [] }
+  const note = async text => {
+    diag.steps.push(String(text))
+    await log(ctx, text)
+  }
+  await note(`打开登录页 ${base + LOGIN_PATH}（UA=${net.userAgent.slice(0, 60)}…）`)
+
   await command('Page.navigate', { url: base + LOGIN_PATH })
   const ready = await waitReady(ctx, command, 60000)
   if (!ready.ok) {
     const state = ready.state || {}
-    throw new Error(`登录页被 Cloudflare 拦截：title="${state.title || ''}" body="${state.body || ''}"`)
+    diag.error = `登录页被 Cloudflare 拦截：title="${state.title || ''}" body="${state.body || ''}"`
+    await ctx.storage.set('avdb-diag', diag)
+    throw new Error(diag.error)
   }
+  await note(`登录页就绪：title="${ready.state?.title || ''}"`)
 
   // 等登录表单 + Turnstile 组件就绪
   const formDeadline = Date.now() + 30000
@@ -414,17 +424,22 @@ export async function browserLogin(ctx, command, net, settings, sampleId) {
   }
   if (!hasForm) {
     const state = await pageState(ctx, command)
-    throw new Error(`找不到登录表单（#auth-username / #auth-password）：title="${state.title || ''}" body="${state.body || ''}"`)
+    diag.error = `找不到登录表单：title="${state.title || ''}" body="${state.body || ''}"`
+    await ctx.storage.set('avdb-diag', diag)
+    throw new Error(diag.error)
   }
-  await log(ctx, tokenSeen ? '已从页面取得 Turnstile token' : '页面未出现 Turnstile token，改用页面内提交')
+  await note(tokenSeen ? '已从页面取得 Turnstile token' : '页面未出现 Turnstile token，改用页面内提交')
 
   if (tokenSeen) {
-    const result = await httpLogin(ctx, net, settings, tokenSeen)
-    if (result.ok) {
-      await log(ctx, 'HTTP 登录成功')
-      return true
+    for (const loginType of loginTypes(settings.username)) {
+      const result = await httpLogin(ctx, net, settings, tokenSeen, loginType)
+      await note(`HTTP 登录（login_type=${loginType}）：${result.ok ? '成功' : '失败 ' + result.error}`)
+      if (result.ok) {
+        diag.ok = true
+        await ctx.storage.set('avdb-diag', diag)
+        return true
+      }
     }
-    await log(ctx, `HTTP 登录失败：${result.error}`)
   }
 
   // 退回：页面里填表单 + 点提交，由站点自己的 JS 处理 token 与登录请求
@@ -444,7 +459,12 @@ export async function browserLogin(ctx, command, net, settings, sampleId) {
     })()`,
     returnByValue: true
   })
-  if (fill.result?.value !== true) throw new Error('填写登录表单失败')
+  if (fill.result?.value !== true) {
+    diag.error = '填写登录表单失败'
+    await ctx.storage.set('avdb-diag', diag)
+    throw new Error(diag.error)
+  }
+  await note('已填写表单')
 
   const submit = () => command('Runtime.evaluate', {
     expression: `(() => {
@@ -455,6 +475,7 @@ export async function browserLogin(ctx, command, net, settings, sampleId) {
     returnByValue: true
   })
   await submit()
+  await note('已点击提交（由站点 JS 处理 Turnstile 与登录请求）')
 
   let loggedIn = false
   let secondSubmit = false
@@ -464,17 +485,47 @@ export async function browserLogin(ctx, command, net, settings, sampleId) {
     const state = await pageState(ctx, command)
     if (!state.error && state.hasUser && !secondSubmit) {
       secondSubmit = true
-      await log(ctx, '登录页仍在表单，等待验证后重试提交一次…')
+      await note('登录页仍在表单，等待验证后重试提交一次…')
       await ctx.sleep(6000)
       await submit()
       continue
     }
+    const visible = await pageErrorText(ctx, command)
+    if (visible) await note('页面提示：' + visible)
     try {
       loggedIn = await isAuthenticated(ctx, command, base, sampleId)
     } catch (_) {}
     if (loggedIn) break
   }
+  const finalState = await pageState(ctx, command)
+  diag.final = { title: finalState.title, path: finalState.path, body: finalState.body, loggedIn }
+  if (!loggedIn) diag.error = '提交后仍未登录'
+  await ctx.storage.set('avdb-diag', diag)
   return loggedIn
+}
+
+/** 站点可能用邮箱登录；表单默认 login_type=username，邮箱账号要显式用 email。 */
+function loginTypes(username) {
+  const list = String(username || '').includes('@') ? ['email', 'username'] : ['username', 'email']
+  return list
+}
+
+/** 读页面上的可见错误提示。 */
+async function pageErrorText(ctx, command) {
+  const r = await command('Runtime.evaluate', {
+    expression: `(() => {
+      const t = (document.body?.textContent || '').replace(/\\s+/g, ' ')
+      const marks = ['密碼錯誤', '密码错误', '登入失敗', '登录失败', '需要驗證', '需要验证',
+                    '請輸入驗證', '请输入验证', '帳號不存在', '账号不存在', '已鎖定', '已锁定', '嘗試次數過多', '尝试次数过多']
+      for (const mark of marks) {
+        const i = t.indexOf(mark)
+        if (i >= 0) return t.slice(Math.max(0, i - 40), i + 60)
+      }
+      return ''
+    })()`,
+    returnByValue: true
+  })
+  return r.result?.value || ''
 }
 
 /** 读页面里的 Turnstile token（隐藏输入），顺带点一次验证框。 */
@@ -493,7 +544,7 @@ async function readTurnstileToken(ctx, command) {
 }
 
 /** 用过盾 Cookie 直接提交登录。 */
-async function httpLogin(ctx, net, settings, turnstileToken) {
+async function httpLogin(ctx, net, settings, turnstileToken, loginType) {
   const csrf = (net.cookies || []).find(cookie => cookie.name === '__Host-x1080x_csrf')
   const res = await ctx.http.request({
     url: net.base + SITE_LOGIN_PATH,
@@ -506,7 +557,7 @@ async function httpLogin(ctx, net, settings, turnstileToken) {
       'X-CSRFToken': csrf ? decodeURIComponent(String(csrf.value)) : '',
       'X-Turnstile-Token': turnstileToken
     },
-    json: { username: settings.username, login_type: 'username', password: settings.password },
+    json: { username: settings.username, login_type: loginType || 'username', password: settings.password },
     proxy: 'direct',
     timeout_seconds: 45,
     response_type: 'json'
