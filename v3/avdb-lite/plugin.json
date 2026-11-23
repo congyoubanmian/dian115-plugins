@@ -2,7 +2,7 @@
   "schema_version": 3,
   "id": "avdb.lite",
   "name": "AVDB Lite",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "author": "congyoubanmian",
   "description": "X1080X 板块采集、文章浏览与一键 115 磁力离线。0.2.0 起改用宿主共享浏览器过 Cloudflare，支持浏览器内登录并持久保存登录档案，不再依赖手动粘贴 Cookie。",
   "requires": {
