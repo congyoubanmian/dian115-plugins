@@ -13,8 +13,10 @@ export async function run(ctx, input) {
     throw new Error('请先在设置里填写 X1080X 用户名和密码')
   }
 
-  await ctx.task.update({ stage: 'cf', message: 'FlareSolverr 过 Cloudflare…' })
-  const { base, userAgent } = await solveChallenge(ctx, settings)
+  // 登录要用 login 这一种 pass：站点的通行凭据按用途区分，
+  // 渲染首页拿到的是列表用的 pass，提交登录会被拒（browser_pass_required）。
+  await ctx.task.update({ stage: 'cf', message: 'FlareSolverr 过 Cloudflare（登录页）…' })
+  const { base, userAgent } = await solveChallenge(ctx, settings, '/login?return=%2Fmember')
 
   await ctx.task.update({ stage: 'login', message: '打开共享浏览器并登录…' })
   const browser = await openBrowser(ctx, base, userAgent)

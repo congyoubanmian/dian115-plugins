@@ -2,9 +2,9 @@
   "schema_version": 3,
   "id": "avdb.lite",
   "name": "AVDB Lite",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "author": "congyoubanmian",
-  "description": "X1080X 板块采集、文章浏览与一键 115 磁力离线。0.4.x 用 FlareSolverr 过 Cloudflare（同 AVDB 路线）；新帖下载地址约 6 小时内可见，故每 30 分钟自动抓一次，已抓到的磁力永久保留。",
+  "description": "X1080X 板块采集、文章浏览与一键 115 磁力离线。0.4.x 用 FlareSolverr 过 Cloudflare（同 AVDB 路线）；站点按用途区分通行凭据，失效会自动重新过盾；下载地址需登录，登录改为「浏览器解 Turnstile + HTTP 提交」。",
   "requires": {
     "api": "3.11"
   },

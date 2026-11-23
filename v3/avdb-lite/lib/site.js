@@ -46,13 +46,13 @@ export function isChallengeHtml(html) {
 }
 
 /** 用 FlareSolverr 过 Cloudflare，Cookie 与 UA 回存到插件 HTTP session。 */
-export async function solveChallenge(ctx, settings) {
+export async function solveChallenge(ctx, settings, path = '/') {
   let lastError = ''
   for (const host of HOSTS) {
     try {
       const page = await ctx.http.render({
         endpoint: settings.flaresolverr_url,
-        url: host + '/',
+        url: host + path,
         session: HTTP_SESSION,
         timeout_seconds: 150
       })
@@ -65,7 +65,7 @@ export async function solveChallenge(ctx, settings) {
         lastError = `${host} 过盾结果缺少 User-Agent`
         continue
       }
-      await log(ctx, `Cloudflare 已通过（FlareSolverr）：${host}`)
+      await log(ctx, `Cloudflare 已通过（FlareSolverr）：${host}${path}`)
       return { base: host, userAgent: page.user_agent }
     } catch (error) {
       lastError = `${host}: ${error && error.message ? error.message : error}`
@@ -73,6 +73,23 @@ export async function solveChallenge(ctx, settings) {
     }
   }
   throw new Error(`FlareSolverr 未能通过 Cloudflare（${settings.flaresolverr_url}）：${lastError}`)
+}
+
+/**
+ * 取 JSON；遇到 browser_pass_required（站点按用途分 kind 的 pass 过期）就重新过盾再试一次。
+ * net = {base, userAgent}，会被就地更新。
+ */
+export async function fetchJSON(ctx, settings, net, path) {
+  try {
+    return await httpJSON(ctx, net.base, net.userAgent, path)
+  } catch (error) {
+    if (!/browser_pass_required/.test(String(error && error.message))) throw error
+    await log(ctx, '站点通行凭据已失效（browser_pass_required），重新过盾…')
+    const renewed = await solveChallenge(ctx, settings, '/')
+    net.base = renewed.base
+    net.userAgent = renewed.userAgent
+    return await httpJSON(ctx, net.base, net.userAgent, path)
+  }
 }
 
 /** 复用 session 里的 Cookie 调站点 JSON API。proxy 固定 direct，与 FlareSolverr 同一出口 IP。 */
@@ -88,10 +105,11 @@ export async function httpJSON(ctx, base, userAgent, path) {
   })
   if (res.status !== 200) {
     const body = String(res.body || '').slice(0, 200)
+    const code = (res.data && (res.data.error || res.data.code)) || ''
     if (res.status === 403 || isChallengeHtml(body)) {
-      throw new Error(`HTTP 403（Cloudflare 拦截，过盾 Cookie 可能已失效）：${body.slice(0, 80)}`)
+      throw new Error(`HTTP 403${code ? ' (' + code + ')' : ''}（Cloudflare 拦截，过盾 Cookie 可能已失效）：${body.slice(0, 120)}`)
     }
-    throw new Error(`HTTP ${res.status} ${body}`)
+    throw new Error(`HTTP ${res.status}${code ? ' (' + code + ')' : ''} ${body}`)
   }
   let data = res.data
   if (!data && res.body) {
@@ -154,7 +172,9 @@ async function pageState(ctx, command) {
           challenge: ${JSON.stringify(CF_TITLES)}.some(x => t.includes(x)) ||
                      ${JSON.stringify(CF_BODY_MARKS.slice(0, 6))}.some(x => b.includes(x)),
           hasUser: !!document.querySelector('#auth-username'),
-          hasPass: !!document.querySelector('#auth-password')
+          hasPass: !!document.querySelector('#auth-password'),
+          noWidget: !document.querySelector('iframe[src*="challenges.cloudflare.com"]') &&
+                   !document.querySelector('#challenge-form')
         }
       })()`,
       returnByValue: true
@@ -290,26 +310,47 @@ export async function isAuthenticated(ctx, command, base, sampleId) {
   return state && state.authenticated === true
 }
 
-/** 走站点真实登录表单。Turnstile 与登录请求由站点自己的 JS 完成，这里只填表单、点一次提交。 */
+/**
+ * 登录流程：浏览器只负责让站点自己的 JS 产出 Turnstile token，
+ * 登录请求由我们用 HTTP 直接提交（站点契约：POST /api/auth/login，
+ * 头 X-CSRFToken + X-Turnstile-Token，体 {username, login_type, password}）。
+ * 浏览器拿不到 token 时，退回「在页面里填表单点提交」由站点自己提交。
+ */
 export async function browserLogin(ctx, command, base, settings, sampleId) {
   await command('Page.navigate', { url: base + LOGIN_PATH })
-  const ready = await waitReady(ctx, command)
+  const ready = await waitReady(ctx, command, 60000)
   if (!ready.ok) {
     const state = ready.state || {}
     throw new Error(`登录页被 Cloudflare 拦截：title="${state.title || ''}" body="${state.body || ''}"`)
   }
+
+  // 等登录表单 + Turnstile 组件就绪
+  const formDeadline = Date.now() + 30000
   let hasForm = false
-  const formDeadline = Date.now() + 20000
+  let tokenSeen = ''
   while (Date.now() < formDeadline) {
     const state = await pageState(ctx, command)
-    if (!state.error && state.hasUser && state.hasPass) { hasForm = true; break }
-    await ctx.sleep(1000)
+    if (!state.error && state.hasUser && state.hasPass) hasForm = true
+    tokenSeen = await readTurnstileToken(ctx, command)
+    if (hasForm && (tokenSeen || state.noWidget)) break
+    await ctx.sleep(1500)
   }
   if (!hasForm) {
     const state = await pageState(ctx, command)
     throw new Error(`找不到登录表单（#auth-username / #auth-password）：title="${state.title || ''}" body="${state.body || ''}"`)
   }
+  await log(ctx, tokenSeen ? '已从页面取得 Turnstile token' : '页面未出现 Turnstile token，改用页面内提交')
 
+  if (tokenSeen) {
+    const result = await httpLogin(ctx, base, settings, tokenSeen)
+    if (result.ok) {
+      await log(ctx, 'HTTP 登录成功')
+      return true
+    }
+    await log(ctx, `HTTP 登录失败：${result.error}`)
+  }
+
+  // 退回：页面里填表单 + 点提交，由站点自己的 JS 处理 token 与登录请求
   const fill = await command('Runtime.evaluate', {
     expression: `(() => {
       const user = document.querySelector('#auth-username')
@@ -345,7 +386,6 @@ export async function browserLogin(ctx, command, base, settings, sampleId) {
     await ctx.sleep(3000)
     const state = await pageState(ctx, command)
     if (!state.error && state.hasUser && !secondSubmit) {
-      // 站点动态模式：首次普通提交被要求验证时，等它的组件拿到 token 后再提交一次
       secondSubmit = true
       await log(ctx, '登录页仍在表单，等待验证后重试提交一次…')
       await ctx.sleep(6000)
@@ -358,4 +398,43 @@ export async function browserLogin(ctx, command, base, settings, sampleId) {
     if (loggedIn) break
   }
   return loggedIn
+}
+
+/** 读页面里的 Turnstile token（隐藏输入），顺带点一次验证框。 */
+async function readTurnstileToken(ctx, command) {
+  const r = await command('Runtime.evaluate', {
+    expression: `(() => {
+      const el = document.querySelector('input[name="cf-turnstile-response"], textarea[name="cf-turnstile-response"]')
+      const iframe = document.querySelector('iframe[src*="challenges.cloudflare.com"]')
+      return { token: el && el.value ? el.value : '', hasWidget: !!iframe }
+    })()`,
+    returnByValue: true
+  })
+  const value = r.result?.value || {}
+  if (!value.token && value.hasWidget) await clickTurnstile(ctx, command)
+  return value.token || ''
+}
+
+/** 用过盾 session 直接提交登录。 */
+async function httpLogin(ctx, base, settings, turnstileToken) {
+  const cookies = await ctx.http.cookies({ url: base + '/', session: HTTP_SESSION })
+  const csrf = cookies.find(cookie => cookie.name === '__Host-x1080x_csrf')
+  const res = await ctx.http.request({
+    url: base + '/api/auth/login',
+    method: 'POST',
+    session: HTTP_SESSION,
+    headers: {
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+      'X-CSRFToken': csrf ? decodeURIComponent(String(csrf.value)) : '',
+      'X-Turnstile-Token': turnstileToken
+    },
+    json: { username: settings.username, login_type: 'username', password: settings.password },
+    proxy: 'direct',
+    timeout_seconds: 45,
+    response_type: 'json'
+  })
+  const data = res.data || {}
+  if (res.status === 200 && data && !data.error) return { ok: true, data }
+  return { ok: false, error: `${res.status} ${data.error || String(res.body || '').slice(0, 160)}` }
 }

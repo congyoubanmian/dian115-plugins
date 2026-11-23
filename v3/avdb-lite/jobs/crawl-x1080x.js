@@ -5,7 +5,7 @@
 
 import {
   normalizeSettings as siteSettings,
-  log, solveChallenge, httpJSON, parseState,
+  log, solveChallenge, fetchJSON, parseState,
   openBrowser, isAuthenticated, browserLogin, browserFetchJSON, sampleResourceId
 } from '../lib/site.js'
 
@@ -71,7 +71,9 @@ export async function run(ctx, input) {
 
   const total = settings.max_items
   await ctx.task.update({ stage: 'cf', message: 'FlareSolverr 过 Cloudflare…', total, done: 0, failed: 0 })
-  const { base, userAgent } = await solveChallenge(ctx, settings)
+  const net = await solveChallenge(ctx, settings)
+  const base = net.base
+  const userAgent = net.userAgent
 
   const articles = []
   const gated = []
@@ -84,7 +86,7 @@ export async function run(ctx, input) {
       if (articles.length >= total) break
       let items = []
       try {
-        const data = await httpJSON(ctx, base, userAgent,
+        const data = await fetchJSON(ctx, settings, net,
           '/api/catalog/resources?board_id=' + encodeURIComponent(boardId) + '&page=' + page)
         if (!Array.isArray(data.items)) throw new Error('items 结构异常')
         items = data.items.filter(item => item && item.id && !(Number(item.sticky_scope) > 0))
@@ -112,7 +114,7 @@ export async function run(ctx, input) {
           login_required: false, detail_error: ''
         }
         try {
-          applyState(article, await httpJSON(ctx, base, userAgent, statePath(article.id)))
+          applyState(article, await fetchJSON(ctx, settings, net, statePath(article.id)))
         } catch (error) {
           article.detail_error = error.message
           await log(ctx, `详情失败 ${article.id}：${error.message}`)

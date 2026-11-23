@@ -162,6 +162,24 @@
       "rule": "combo-cookie-network",
       "file": "lib/site.js",
       "reason": "「读 Cookie」命中 ctx.http.cookies({url, session})——读的是插件自己 HTTP session 里、由 FlareSolverr 过盾后回存的 1080xin.com Cookie（cf_clearance 等）；「外部地址」是已声明的 1080xin.com / 1080xin.vip。这些 Cookie 只被注入共享浏览器的同一站点会话（Network.setCookies），用于让登录页不再被 Cloudflare 拦截，不外发到任何其它地址。可读源码：v3/avdb-lite/lib/site.js。"
+    },
+    {
+      "plugin": "avdb-lite",
+      "rule": "combo-credential-exfil",
+      "file": "lib/site.js",
+      "reason": "「读凭据」命中 ctx.storage.get('avdb-settings') 里的 X1080X 用户名/密码，「外部地址」是已声明的 1080xin.com / 1080xin.vip。凭据只 POST 到站点自己的 /api/auth/login（由站点校验），不外发到任何其它地址。"
+    },
+    {
+      "plugin": "avdb-lite",
+      "rule": "combo-credential-network",
+      "file": "lib/site.js",
+      "reason": "同上：读到的账号密码只用于向站点自身的登录接口提交，不发往第三方。"
+    },
+    {
+      "plugin": "avdb-lite",
+      "rule": "credential-api",
+      "file": "lib/site.js",
+      "reason": "命中的是 ctx.http.cookies({url, session})——读插件自己 HTTP session 里、由 FlareSolverr 过盾后回存的 1080xin.com Cookie（cf_clearance、__Host-x1080x_csrf 等），用于同站点的登录请求；不读 CookieCloud、不取宿主 Token。"
     }
   ]
 }
