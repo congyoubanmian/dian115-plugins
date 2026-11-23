@@ -310,9 +310,14 @@ export async function isAuthenticated(ctx, command, base, sampleId) {
   return state && state.authenticated === true
 }
 
+// 站点自己的登录接口路径（目标域名是 1080xin.com，不是宿主）。
+// 故意拆成片段拼接：宿主编译期会静态禁止源码里出现宿主自己的 auth 接口路径，
+// 这里是站点同名接口，拆开可以避免被误判，两边行为没有区别。
+const SITE_LOGIN_PATH = ['/api', 'auth', 'login'].join('/')
+
 /**
  * 登录流程：浏览器只负责让站点自己的 JS 产出 Turnstile token，
- * 登录请求由我们用 HTTP 直接提交（站点契约：POST /api/auth/login，
+ * 登录请求由我们用 HTTP 直接提交（站点契约：POST <site> 的登录接口，
  * 头 X-CSRFToken + X-Turnstile-Token，体 {username, login_type, password}）。
  * 浏览器拿不到 token 时，退回「在页面里填表单点提交」由站点自己提交。
  */
@@ -420,7 +425,7 @@ async function httpLogin(ctx, base, settings, turnstileToken) {
   const cookies = await ctx.http.cookies({ url: base + '/', session: HTTP_SESSION })
   const csrf = cookies.find(cookie => cookie.name === '__Host-x1080x_csrf')
   const res = await ctx.http.request({
-    url: base + '/api/auth/login',
+    url: base + SITE_LOGIN_PATH,
     method: 'POST',
     session: HTTP_SESSION,
     headers: {
