@@ -505,12 +505,50 @@ export function mount(element, ctx) {
   }
 
   async function copyText(text) {
+    // 剪贴板 API 只在安全上下文可用；DIAN115 多半是 http，这里做多级兜底。
     try {
-      await navigator.clipboard.writeText(text)
-      setStatus('已复制')
-    } catch (_) {
-      setStatus('复制失败，请手动选择', true)
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(text)
+        setStatus('已复制到剪贴板')
+        return true
+      }
+    } catch (_) {}
+    try {
+      const area = document.createElement('textarea')
+      area.value = text
+      area.setAttribute('readonly', 'readonly')
+      area.style.position = 'fixed'
+      area.style.top = '0'
+      area.style.left = '0'
+      area.style.width = '1px'
+      area.style.height = '1px'
+      area.style.opacity = '0'
+      document.body.appendChild(area)
+      area.focus()
+      area.select()
+      area.setSelectionRange(0, text.length)
+      const ok = document.execCommand('copy')
+      document.body.removeChild(area)
+      if (ok) {
+        setStatus('已复制到剪贴板')
+        return true
+      }
+    } catch (_) {}
+    setStatus('浏览器不允许自动复制，请手动选中下面的内容复制', true)
+    showDiag(text)
+    return false
+  }
+
+  function showDiag(text) {
+    let box = element.querySelector('[data-diag]')
+    if (!box) {
+      box = document.createElement('pre')
+      box.setAttribute('data-diag', '')
+      box.style.cssText = 'white-space:pre-wrap;word-break:break-all;font-size:12px;max-height:320px;overflow:auto;border:1px solid var(--app-border);border-radius:8px;padding:10px;background:var(--app-surface);color:var(--app-text)'
+      ui.status.after(box)
     }
+    box.textContent = text
+    box.hidden = false
   }
 
   const onClick = async event => {
@@ -539,8 +577,26 @@ export function mount(element, ctx) {
         setStatus('还没有诊断信息（先点一次「登录 X1080X」）', true)
         return
       }
-      await copyText(JSON.stringify(diag, null, 2))
-      setStatus('诊断已复制到剪贴板')
+      const text = JSON.stringify(diag, null, 2)
+      showDiag(text)
+      // 同时落一份文件，页面里给下载链接（http 环境下这是最可靠的取法）
+      try {
+        await ctx.files.call({ operation: 'write', path: 'diag/last.json', content: text })
+        const url = ctx.files.downloadURL('diag/last.json')
+        const link = element.querySelector('[data-diaglink]') || (() => {
+          const a = document.createElement('a')
+          a.setAttribute('data-diaglink', '')
+          a.style.cssText = 'font-size:12px;color:var(--app-accent)'
+          ui.status.after(a)
+          return a
+        })()
+        link.href = url
+        link.textContent = '下载诊断文件 diag/last.json'
+        link.hidden = false
+      } catch (error) {
+        setStatus('诊断文件写入失败：' + error.message, true)
+      }
+      await copyText(text)
       return
     }
     if (action === 'crawl') {
