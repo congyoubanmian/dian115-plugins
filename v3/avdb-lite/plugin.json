@@ -2,9 +2,9 @@
   "schema_version": 3,
   "id": "avdb.lite",
   "name": "AVDB Lite",
-  "version": "0.4.7",
+  "version": "0.4.8",
   "author": "congyoubanmian",
-  "description": "X1080X 板块采集、文章浏览与一键 115 磁力离线。0.4.x 用 FlareSolverr 过 Cloudflare（同 AVDB 路线），插件自建 FS 会话并重试，避免宿主 render 通道偶发失败；下载地址需登录。",
+  "description": "X1080X 板块采集、文章浏览与一键 115 磁力离线。0.4.x 用 FlareSolverr 过 Cloudflare（同 AVDB 路线）；站点登录强制要 Turnstile token，改由同机的登录助手（真实浏览器）完成，插件继续用普通 HTTP 取数。",
   "requires": {
     "api": "3.11"
   },
@@ -33,13 +33,13 @@
       "id": "login-x1080x",
       "entry": "jobs/login-x1080x.js",
       "handler": "run",
-      "title": "浏览器登录 X1080X",
+      "title": "登录 X1080X",
       "queue": false,
-      "timeout_seconds": 480
+      "timeout_seconds": 600
     }
   ],
   "declared_usage": {
-    "purpose": "通过 FlareSolverr 过 Cloudflare 后抓取 X1080X 板块文章，展示磁力/ED2K，并把选中的磁力提交到 115 离线下载；下载地址需登录时用宿主共享浏览器完成站点登录。",
+    "purpose": "通过 FlareSolverr 过 Cloudflare 后抓取 X1080X 板块文章，展示磁力/ED2K，并把选中的磁力提交到 115 离线下载；下载地址需登录时，改由同机的登录助手服务（真实浏览器）完成站点登录，插件用登录后的 Cookie 继续取数。",
     "sites": [
       "1080xin.com",
       "1080xin.vip"
@@ -52,7 +52,7 @@
       "/api/115/browse-dirs",
       "POST /api/extensions/v3/{id}/browser"
     ],
-    "browser": "仅用于登录：把 FlareSolverr 取得的过盾 Cookie 注入浏览器会话（同一出口 IP、同一 User-Agent），打开站点真实登录表单（#auth-username / #auth-password）由用户填写的账号登录，站点自己的 JS 完成 Turnstile 与登录请求；登录态保存在浏览器 profile。不使用浏览器抓取列表。",
+    "browser": "登录的第一选择是同机的登录助手服务（真实浏览器完成 Turnstile 与登录，插件只拿回 Cookie）；助手不可用时才退回宿主共享浏览器：注入 FlareSolverr 取得的过盾 Cookie（同一出口 IP、同一 User-Agent），打开站点真实登录表单（#auth-username / #auth-password）由用户填写的账号登录。不使用浏览器抓取列表。",
     "paths": "仅插件自有 data/files；不读写宿主文件。",
     "notifications": "当前版本不发送通知。"
   }

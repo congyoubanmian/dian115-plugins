@@ -50,8 +50,10 @@ function normalizeSettings(raw) {
   const value = raw && typeof raw === 'object' ? raw : {}
   const selected = Array.isArray(value.boards) ? value.boards.filter(id => BOARDS[id]) : []
   const solver = String(value.flaresolverr_url || '').trim()
+  const loginService = String(value.login_service_url || '').trim()
   return {
     flaresolverr_url: /^https?:\/\//i.test(solver) ? solver.replace(/\/+$/, '') : 'http://127.0.0.1:8191',
+    login_service_url: /^https?:\/\//i.test(loginService) ? loginService.replace(/\/+$/, '') : '',
     username: String(value.username || ''),
     password: String(value.password || ''),
     boards: selected.length ? selected : ['7RHPO2w4jFUYiDhDsxz0wE'],
@@ -145,6 +147,9 @@ export function mount(element, ctx) {
           <label>FlareSolverr 地址（过 Cloudflare）
             <input data-k="flaresolverr_url" placeholder="http://127.0.0.1:8191">
           </label>
+          <label>独立登录服务地址（可选，默认用 FlareSolverr 自带的 /login）
+            <input data-k="login_service_url" placeholder="留空＝FlareSolverr 的 /login">
+          </label>
           <label>X1080X 用户名（可选，用于查看下载地址）
             <input data-k="username" placeholder="不填则只能浏览">
           </label>
@@ -215,6 +220,7 @@ export function mount(element, ctx) {
   function readSettingsFromForm() {
     return normalizeSettings({
       flaresolverr_url: element.querySelector('[data-k="flaresolverr_url"]').value,
+      login_service_url: element.querySelector('[data-k="login_service_url"]').value,
       username: element.querySelector('[data-k="username"]').value,
       password: element.querySelector('[data-k="password"]').value,
       boards: Array.from(element.querySelectorAll('[data-board]:checked')).map(input => input.dataset.board),
@@ -229,6 +235,7 @@ export function mount(element, ctx) {
   function fillSettingsForm() {
     const s = state.settings
     element.querySelector('[data-k="flaresolverr_url"]').value = s.flaresolverr_url
+    element.querySelector('[data-k="login_service_url"]').value = s.login_service_url
     element.querySelector('[data-k="username"]').value = s.username
     element.querySelector('[data-k="password"]').value = s.password
     element.querySelector('[data-k="pages"]').value = String(s.pages)

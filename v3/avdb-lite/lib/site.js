@@ -12,6 +12,11 @@ export const PROFILE = 'x1080x'
 export const HTTP_SESSION = 'x1080x'
 export const LOGIN_PATH = '/login?return=%2Fmember'
 export const DEFAULT_FLARESOLVERR = 'http://127.0.0.1:8191'
+// 登录服务：默认就挂在 FlareSolverr 上（POST /login 路由）。
+// 留空＝用 FlareSolverr 自带的；填了则额外多试这一家（独立部署的登录助手）。
+export const DEFAULT_LOGIN_SERVICE = ''
+// FlareSolverr 会话名：固定一个，过盾 Cookie 留在同一个浏览器里复用。
+export const FS_SESSION = 'avdb-lite'
 export const SAMPLE_BOARD = '7RHPO2w4jFUYiDhDsxz0wE'
 
 const PLACEHOLDER_MARK = '請使用下面地址'
@@ -26,8 +31,10 @@ const ED2K_RE = /ed2k:\/\/\|file\|[^"'\s<>\\]+/gi
 export function normalizeSettings(raw) {
   const value = raw && typeof raw === 'object' ? raw : {}
   const solver = String(value.flaresolverr_url || '').trim()
+  const loginService = String(value.login_service_url || '').trim()
   return {
     flaresolverr_url: /^https?:\/\//i.test(solver) ? solver.replace(/\/+$/, '') : DEFAULT_FLARESOLVERR,
+    login_service_url: /^https?:\/\//i.test(loginService) ? loginService.replace(/\/+$/, '') : DEFAULT_LOGIN_SERVICE,
     username: String(value.username || '').trim(),
     password: String(value.password || '')
   }
@@ -46,28 +53,45 @@ export function isChallengeHtml(html) {
 }
 
 /** 直接调 FlareSolverr（不经过宿主 session）。宿主 render 客户端会复用 FS session，
- *  那个路径偶发 "unable to set cookie"；我们自建会话 + 重试更稳。 */
+ *  那个路径偶发 "unable to set cookie"；我们自建会话 + 重试更稳。
+ *
+ *  复用同一个 FS session 名，可以让过盾 Cookie 留在同一个浏览器里，
+ *  之后几轮抓取不用每次都重新过 Cloudflare（挑战越多越容易被拦）。
+ *  session 一旦状态不对（超时/仍是挑战页），就退回全新会话重试。 */
 async function fsSolve(ctx, settings, url) {
   const endpoint = settings.flaresolverr_url.replace(/\/+$/, '')
-  const res = await ctx.http.request({
-    url: endpoint + '/v1',
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-    body: JSON.stringify({ cmd: 'request.get', url, maxTimeout: 120000 }),
-    proxy: 'direct',
-    timeout_seconds: 180,
-    response_type: 'json'
-  })
-  const data = res.data || {}
-  if (res.status !== 200 || data.status !== 'ok') {
-    throw new Error(data.message || `FlareSolverr HTTP ${res.status} ${String(res.body || '').slice(0, 120)}`)
+  const attempts = [
+    { cmd: 'request.get', url, maxTimeout: 180000, session: FS_SESSION, session_ttl_minutes: 30 },
+    { cmd: 'request.get', url, maxTimeout: 180000 }
+  ]
+  let lastError = ''
+  for (let index = 0; index < attempts.length; index++) {
+    try {
+      const res = await ctx.http.request({
+        url: endpoint + '/v1',
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        body: JSON.stringify(attempts[index]),
+        proxy: 'direct',
+        timeout_seconds: 240,
+        response_type: 'json'
+      })
+      const data = res.data || {}
+      if (res.status !== 200 || data.status !== 'ok') {
+        throw new Error(data.message || `FlareSolverr HTTP ${res.status} ${String(res.body || '').slice(0, 120)}`)
+      }
+      const solution = data.solution || {}
+      return {
+        html: solution.response || '',
+        cookies: Array.isArray(solution.cookies) ? solution.cookies : [],
+        userAgent: solution.userAgent || ''
+      }
+    } catch (error) {
+      lastError = error && error.message ? error.message : String(error)
+      await log(ctx, `FlareSolverr 第 ${index + 1} 次失败：${lastError}`)
+    }
   }
-  const solution = data.solution || {}
-  return {
-    html: solution.response || '',
-    cookies: Array.isArray(solution.cookies) ? solution.cookies : [],
-    userAgent: solution.userAgent || ''
-  }
+  throw new Error(lastError)
 }
 
 /** Cookie 头（name=value; …）。 */
@@ -163,9 +187,80 @@ export async function fetchJSON(ctx, settings, net, path) {
   }
 }
 
+/**
+ * 通过外部的「登录服务」完成站点登录。
+ *
+ * 站点登录接口强制要 Turnstile token（缺了就是 turnstile_required），token 只有在
+ * 登录表单被填写之后才渲染，还必须由能过 Cloudflare 的真实浏览器签发——插件运行时
+ * 能用的那个共享无头浏览器签不出来。所以这一步交给机器上跑着的真实浏览器服务：
+ * FlareSolverr 里挂了 POST /login 路由，在同一个会话浏览器里把登录做完，
+ * 把登录后的 Cookie 与 User-Agent 交回来，插件这边继续用普通 HTTP 取数。
+ *
+ * 返回 {cookieHeader, userAgent, cookies, steps}，失败抛异常。
+ */
+export async function serviceLogin(ctx, settings) {
+  const candidates = []
+  const solver = String(settings.flaresolverr_url || '').replace(/\/+$/, '')
+  if (solver) candidates.push(solver + '/login')
+  const service = String(settings.login_service_url || '').replace(/\/+$/, '')
+  if (service && !candidates.includes(service + '/login')) candidates.push(service + '/login')
+
+  let lastError = ''
+  for (const url of candidates) {
+    try {
+      const res = await ctx.http.request({
+        url,
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        body: JSON.stringify({
+          username: settings.username,
+          password: settings.password,
+          base: HOSTS[0],
+          session: FS_SESSION
+        }),
+        proxy: 'direct',
+        timeout_seconds: 420,
+        response_type: 'json'
+      })
+      let data = res.data
+      if (!data && res.body) {
+        try { data = JSON.parse(res.body) } catch (_) { data = null }
+      }
+      if (!data || typeof data !== 'object') {
+        throw new Error(`没有返回结果：HTTP ${res.status} ${String(res.body || '').slice(0, 160)}`)
+      }
+      if (!data.ok) {
+        const steps = Array.isArray(data.steps) ? data.steps.join(' / ') : ''
+        throw new Error(`登录失败：${String(data.error || '未知原因')}${steps ? '（' + steps + '）' : ''}`)
+      }
+      const cookies = Array.isArray(data.cookies) ? data.cookies : []
+      if (!cookies.length) throw new Error('没有返回 Cookie')
+      await log(ctx, `登录服务（${url}）返回 ${cookies.length} 条 Cookie`)
+      return {
+        cookieHeader: buildCookieHeader(cookies),
+        userAgent: String(data.userAgent || ''),
+        cookies,
+        steps: Array.isArray(data.steps) ? data.steps : []
+      }
+    } catch (error) {
+      lastError = error && error.message ? error.message : String(error)
+      await log(ctx, `登录服务 ${url} 不可用：${lastError}`)
+    }
+  }
+  throw new Error(lastError || '没有可用的登录服务')
+}
+
+/** 把登录会话套到 net 上（Cookie 头与 User-Agent 都要换成登录那套）。 */
+export function applySession(net, session) {
+  if (!session) return net
+  if (session.cookieHeader) net.cookieHeader = session.cookieHeader
+  if (session.userAgent) net.userAgent = session.userAgent
+  net.loggedIn = true
+  return net
+}
+
 /** 带过盾 Cookie 调站点 JSON API。proxy 固定 direct，与 FlareSolverr 同一出口 IP。 */
-export async function httpJSON(ctx, net, path) {
-  const res = await ctx.http.request({
+export async function httpJSON(ctx, net, path) {  const res = await ctx.http.request({
     url: net.base + path,
     method: 'GET',
     headers: {

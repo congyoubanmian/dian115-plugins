@@ -6,7 +6,8 @@
 import {
   normalizeSettings as siteSettings,
   log, solveChallenge, fetchJSON, parseState,
-  openBrowser, isAuthenticated, browserLogin, browserFetchJSON, sampleResourceId
+  openBrowser, isAuthenticated, browserLogin, browserFetchJSON, sampleResourceId,
+  serviceLogin, applySession, httpJSON
 } from '../lib/site.js'
 
 const BOARDS = {
@@ -128,35 +129,73 @@ export async function run(ctx, input) {
     }
   }
 
-  // 下载地址需要登录：有账号时走共享浏览器登录，再在页面里重取这些条目
+  // 下载地址需要登录：有账号时用登录助手登录（真实浏览器拿 Turnstile token），
+  // 拿到登录后的 Cookie 再用普通 HTTP 重取这些条目。
   let loggedIn = false
   if (gated.length) {
     if (!settings.username || !settings.password) {
       await log(ctx, `${gated.length} 条需要登录才能看到下载地址（设置里未填账号）`)
     } else {
       await ctx.task.update({ stage: 'login', message: `登录以查看 ${gated.length} 条的下载地址…`, total, done, failed })
-      let browser = null
+      let serviceError = ''
       try {
-        browser = await openBrowser(ctx, net)
-        const sample = await sampleResourceId(ctx, browser.command, net.base)
-        loggedIn = await isAuthenticated(ctx, browser.command, net.base, sample)
-        if (!loggedIn) loggedIn = await browserLogin(ctx, browser.command, net, settings, sample)
-        await log(ctx, loggedIn ? '登录成功' : '登录未成功（账号密码错误、需验证或浏览器被拦截）')
-        if (loggedIn) {
-          for (const article of gated) {
-            try {
-              applyState(article, await browserFetchJSON(ctx, browser.command, net.base, statePath(article.id)))
-              article.detail_error = ''
-            } catch (error) {
-              article.detail_error = error.message
-              await log(ctx, `登录后详情失败 ${article.id}：${error.message}`)
+        const session = await serviceLogin(ctx, settings)
+        applySession(net, session)
+        loggedIn = true
+        await log(ctx, '登录成功（登录助手）')
+      } catch (error) {
+        serviceError = error && error.message ? error.message : String(error)
+        await log(ctx, `登录助手失败：${serviceError}`)
+      }
+
+      if (loggedIn) {
+        for (const article of gated) {
+          let detailError = ''
+          try {
+            applyState(article, await httpJSON(ctx, net, statePath(article.id)))
+          } catch (error) {
+            detailError = error && error.message ? error.message : String(error)
+            // 通行凭据过期：重新登录一次再试
+            if (/browser_pass_required/.test(detailError)) {
+              try {
+                const again = await serviceLogin(ctx, settings)
+                applySession(net, again)
+                applyState(article, await httpJSON(ctx, net, statePath(article.id)))
+                detailError = ''
+              } catch (retryError) {
+                detailError = retryError && retryError.message ? retryError.message : String(retryError)
+              }
+            }
+            article.detail_error = detailError
+            await log(ctx, `登录后详情失败 ${article.id}：${detailError}`)
+          }
+          if (!detailError) article.detail_error = ''
+        }
+      } else {
+        // 退路：共享浏览器里登录，再在页面里重取
+        let browser = null
+        try {
+          browser = await openBrowser(ctx, net)
+          const sample = await sampleResourceId(ctx, browser.command, net.base)
+          loggedIn = await isAuthenticated(ctx, browser.command, net.base, sample)
+          if (!loggedIn) loggedIn = await browserLogin(ctx, browser.command, net, settings, sample)
+          await log(ctx, loggedIn ? '登录成功（共享浏览器）' : '登录未成功（账号密码错误、需验证或浏览器被拦截）')
+          if (loggedIn) {
+            for (const article of gated) {
+              try {
+                applyState(article, await browserFetchJSON(ctx, browser.command, net.base, statePath(article.id)))
+                article.detail_error = ''
+              } catch (error) {
+                article.detail_error = error.message
+                await log(ctx, `登录后详情失败 ${article.id}：${error.message}`)
+              }
             }
           }
+        } catch (error) {
+          await log(ctx, `浏览器登录失败：${error.message}`)
+        } finally {
+          if (browser) await browser.close()
         }
-      } catch (error) {
-        await log(ctx, `浏览器登录失败：${error.message}`)
-      } finally {
-        if (browser) await browser.close()
       }
     }
   }
