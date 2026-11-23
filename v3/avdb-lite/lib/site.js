@@ -412,14 +412,15 @@ export async function browserLogin(ctx, command, net, settings, sampleId) {
   await note(`登录页就绪：title="${ready.state?.title || ''}"`)
 
   // 等登录表单 + Turnstile 组件就绪
-  const formDeadline = Date.now() + 30000
+  const formDeadline = Date.now() + 45000
   let hasForm = false
-  let tokenSeen = ''
+  let ts = { token: '', hasWidget: false, apiReady: false }
   while (Date.now() < formDeadline) {
     const state = await pageState(ctx, command)
     if (!state.error && state.hasUser && state.hasPass) hasForm = true
-    tokenSeen = await readTurnstileToken(ctx, command)
-    if (hasForm && (tokenSeen || state.noWidget)) break
+    ts = await readTurnstileState(ctx, command)
+    if (hasForm && (ts.token || ts.hasWidget)) break
+    if (hasForm && ts.apiReady && ts.hasWidget) break
     await ctx.sleep(1500)
   }
   if (!hasForm) {
@@ -428,8 +429,33 @@ export async function browserLogin(ctx, command, net, settings, sampleId) {
     await ctx.storage.set('avdb-diag', diag)
     throw new Error(diag.error)
   }
-  await note(tokenSeen ? '已从页面取得 Turnstile token' : '页面未出现 Turnstile token，改用页面内提交')
+  await note(`表单就绪；Turnstile api=${ts.apiReady ? 'ready' : 'missing'} widget=${ts.hasWidget ? 'yes' : 'no'} token=${ts.token ? 'yes' : 'no'} scripts=${JSON.stringify(ts.scripts || [])}`)
 
+  // 站点自己的验证框没出现 → 自己挂一个
+  if (!ts.token && !ts.hasWidget) {
+    let siteKey = ''
+    try {
+      const settings2 = await httpJSON(ctx, net, '/api/auth/turnstile/settings')
+      siteKey = String(settings2.site_key || settings2.siteKey || '')
+      await note('取 siteKey：' + (siteKey || '(空)'))
+    } catch (error) {
+      await note('取 siteKey 失败：' + error.message)
+    }
+    if (siteKey) {
+      const injected = await injectTurnstile(ctx, command, siteKey)
+      await note('自挂 Turnstile：' + JSON.stringify(injected))
+      const deadline = Date.now() + 60000
+      while (Date.now() < deadline) {
+        await ctx.sleep(2000)
+        ts = await readTurnstileState(ctx, command)
+        if (ts.token) break
+        if (ts.hasWidget) await clickTurnstile(ctx, command)
+      }
+      await note(`等待 token 结果：token=${ts.token ? 'yes' : 'no'} widget=${ts.hasWidget ? 'yes' : 'no'}`)
+    }
+  }
+
+  const tokenSeen = ts.token || ''
   if (tokenSeen) {
     for (const loginType of loginTypes(settings.username)) {
       const result = await httpLogin(ctx, net, settings, tokenSeen, loginType)
@@ -440,6 +466,8 @@ export async function browserLogin(ctx, command, net, settings, sampleId) {
         return true
       }
     }
+  } else {
+    await note('没有 Turnstile token，只能退回页面内提交')
   }
 
   // 退回：页面里填表单 + 点提交，由站点自己的 JS 处理 token 与登录请求
@@ -528,19 +556,79 @@ async function pageErrorText(ctx, command) {
   return r.result?.value || ''
 }
 
-/** 读页面里的 Turnstile token（隐藏输入），顺带点一次验证框。 */
-async function readTurnstileToken(ctx, command) {
+/** 读页面里的 Turnstile 状态：token、是否有验证框、api.js 是否就绪。 */
+async function readTurnstileState(ctx, command) {
   const r = await command('Runtime.evaluate', {
     expression: `(() => {
       const el = document.querySelector('input[name="cf-turnstile-response"], textarea[name="cf-turnstile-response"]')
-      const iframe = document.querySelector('iframe[src*="challenges.cloudflare.com"]')
-      return { token: el && el.value ? el.value : '', hasWidget: !!iframe }
+      const iframe = document.querySelector('iframe[src*="challenges.cloudflare.com"], iframe[title*="challenge"]')
+      return {
+        token: el && el.value ? el.value : (window.__avdbTsToken || ''),
+        hasWidget: !!iframe,
+        apiReady: typeof window.turnstile !== 'undefined',
+        scripts: Array.from(document.querySelectorAll('script[src*="turnstile"]')).map(s => s.src).slice(0, 3)
+      }
     })()`,
     returnByValue: true
   })
-  const value = r.result?.value || {}
-  if (!value.token && value.hasWidget) await clickTurnstile(ctx, command)
-  return value.token || ''
+  return r.result?.value || { token: '', hasWidget: false, apiReady: false, scripts: [] }
+}
+
+/**
+ * 站点自带的验证框没出来时，由我们自己挂一个 Turnstile。
+ * siteKey 来自站点接口；action 用站点的 login，token 由站点自己校验。
+ */
+async function injectTurnstile(ctx, command, siteKey) {
+  const r = await command('Runtime.evaluate', {
+    expression: `(async () => {
+      const siteKey = ${JSON.stringify(siteKey)}
+      if (!siteKey) return { ok: false, msg: '没有 siteKey' }
+      window.__avdbTsToken = ''
+      if (typeof window.turnstile === 'undefined') {
+        try {
+          await new Promise((resolve, reject) => {
+            const s = document.createElement('script')
+            s.src = 'https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit'
+            s.async = true
+            s.onload = resolve
+            s.onerror = () => reject(new Error('turnstile api.js 加载失败'))
+            document.head.appendChild(s)
+            setTimeout(() => reject(new Error('turnstile api.js 加载超时')), 30000)
+          })
+        } catch (e) {
+          return { ok: false, msg: String((e && e.message) || e) }
+        }
+      }
+      if (typeof window.turnstile === 'undefined') return { ok: false, msg: 'turnstile 未就绪' }
+      let box = document.getElementById('__avdb_ts')
+      if (!box) {
+        box = document.createElement('div')
+        box.id = '__avdb_ts'
+        box.style.cssText = 'position:fixed;left:8px;top:8px;z-index:99999;background:#fff;padding:4px;border-radius:6px'
+        document.body.appendChild(box)
+      }
+      try { window.turnstile.remove && window.turnstile.remove(window.__avdbTsWidget) } catch (e) {}
+      try {
+        window.__avdbTsWidget = window.turnstile.render(box, {
+          sitekey: siteKey,
+          action: 'login',
+          size: 'flexible',
+          appearance: 'always',
+          language: 'zh-tw',
+          callback: token => { window.__avdbTsToken = token }
+        })
+        return { ok: true }
+      } catch (e) {
+        return { ok: false, msg: 'render 失败: ' + String((e && e.message) || e) }
+      }
+    })()`,
+    returnByValue: true,
+    awaitPromise: true
+  })
+  if (r.exceptionDetails) {
+    return { ok: false, msg: r.exceptionDetails.exception?.description || r.exceptionDetails.text || '注入异常' }
+  }
+  return r.result?.value || { ok: false, msg: '注入无返回' }
 }
 
 /** 用过盾 Cookie 直接提交登录。 */

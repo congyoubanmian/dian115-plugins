@@ -3,5 +3,5 @@
   "music.rs": "1.3.12：显示名规范化。",
   "douban.rs": "1.2.4：显示名去掉「Rust 版」后缀（插件本就是纯 JS/TS，-rs 只是移植标记）。",
   "huanggu.drama": "0.1.4：线路页新增「国内备用」分组（官方发布页的 rlhjeyuvw.cc 三条可直连入口）与「自定义线路」：可添加任意 HTTPS 站点 origin、单独检测/切换/删除，自定义线路持久化在插件 KV。",
-  "avdb.lite": "0.4.5：修复「复制诊断」在 http 页面无效的问题——剪贴板 API 在非安全上下文被禁用，改为 execCommand 兜底 + 页面直接展示诊断文本 + 生成 diag/last.json 下载链接。"
+  "avdb.lite": "0.4.6：站点自带 Turnstile 验证框在共享浏览器里没挂上时，插件按站点 /api/auth/turnstile/settings 的 siteKey 自行挂一个（action=login）再取 token 提交；诊断补充 Turnstile 状态（api.js 是否就绪/有无验证框/脚本 URL）与自挂结果。"
 }
