@@ -180,6 +180,12 @@
       "rule": "credential-api",
       "file": "lib/site.js",
       "reason": "命中的是 ctx.http.cookies({url, session})——读插件自己 HTTP session 里、由 FlareSolverr 过盾后回存的 1080xin.com Cookie（cf_clearance、__Host-x1080x_csrf 等），用于同站点的登录请求；不读 CookieCloud、不取宿主 Token。"
+    },
+    {
+      "plugin": "avdb-lite",
+      "rule": "host-page-tamper",
+      "file": "ui/page.js",
+      "reason": "命中的是复制诊断文本的兜底实现：页面在非安全上下文（http）里临时创建一个隐藏 textarea、选中并调用 document.execCommand('copy')，随即移除；不改写宿主界面、不监听键盘/粘贴、不读取宿主页面数据。源码：v3/avdb-lite/ui/page.js 的 copyText()。"
     }
   ]
 }
