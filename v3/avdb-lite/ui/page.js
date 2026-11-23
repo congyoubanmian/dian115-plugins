@@ -9,6 +9,7 @@ const BOARDS = {
 const KEY_SETTINGS = 'avdb-settings'
 const KEY_ARTICLES = 'avdb-articles'
 const KEY_SENT = 'avdb-sent'
+const KEY_115 = 'avdb-115'
 const KEY_LAST_RUN = 'avdb-last-run'
 
 const ESC = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }
@@ -177,7 +178,7 @@ export function mount(element, ctx) {
       <section class="avdb-panel avdb-offline" data-panel="offline" hidden>
         <div class="avdb-actions">
           <strong>115 离线任务（本插件送出的）</strong>
-          <button type="button" data-action="offline-refresh">刷新</button>
+          <button type="button" data-action="offline-refresh">同步状态</button>
           <button type="button" data-action="offline-close">关闭</button>
         </div>
         <div data-offlinelist class="avdb-muted">加载中…</div>
@@ -514,6 +515,26 @@ export function mount(element, ctx) {
     pollTask(task.id)
   }
 
+  /** 轮询后台同步任务，完成后刷新面板。 */
+  function pollSync(taskId) {
+    if (!taskId) return
+    let ticks = 0
+    const tick = async () => {
+      try {
+        const task = await ctx.tasks.get(taskId)
+        const status = task && task.status
+        if (status === 'succeeded' || status === 'failed' || status === 'cancelled') {
+          await loadOfflineTasks()
+          if (status === 'succeeded') setStatus('115 状态已同步')
+          else setStatus('同步任务未成功：' + (status || ''), true)
+          return
+        }
+      } catch (_) {}
+      if (++ticks < 60) setTimeout(tick, 1500)
+    }
+    setTimeout(tick, 1200)
+  }
+
   function pollTask(taskId) {
     if (!taskId) return
     if (state.polling) clearTimeout(state.polling)
@@ -591,45 +612,29 @@ export function mount(element, ctx) {
     try { await ctx.storage.set(KEY_SENT, list) } catch (_) {}
   }
 
-  /** 本插件送出去的磁力 hash 集合：离线任务面板只显示这些，不刷屏。 */
-  function ownHashes() {
-    const set = new Set()
-    for (const article of state.articles || []) {
-      for (const magnet of article.magnets || []) {
-        const hit = String(magnet).match(/urn:btih:([A-Za-z0-9]+)/i)
-        if (hit) set.add(hit[1].toUpperCase())
-      }
-    }
-    for (const item of state.sent || []) {
-      if (item && item.hash) set.add(String(item.hash).toUpperCase())
-    }
-    return set
-  }
-
-  /** 115 离线任务列表：只显示本插件送出去的那些任务。 */
+  /**
+   * 115 离线任务面板：直接读插件 KV（后台同步好的），打开就显示，不去拉 115。
+   * 要最新状态点「同步状态」，由后台任务去查一次 115。
+   */
   async function loadOfflineTasks() {
     ui.offlinePanel.hidden = false
     ui.offlineList.innerHTML = '加载中…'
     try {
-      const res = await ctx.api.get('/api/115/offline/tasks?page=1&page_size=30&status=all')
-      const all = Array.isArray(res?.items) ? res.items : (Array.isArray(res) ? res : [])
-      const own = ownHashes()
-      const items = own.size
-        ? all.filter(item => own.has(String(item.info_hash || '').toUpperCase()))
-        : []
+      const saved = await ctx.storage.get(KEY_115)
+      const items = Array.isArray(saved) ? saved : []
       if (!items.length) {
-        ui.offlineList.textContent = own.size
-          ? `没有匹配本插件送出的任务（115 账号下共 ${all.length} 个离线任务，已隐藏其它）`
-          : '没有本插件送出的离线任务'
+        ui.offlineList.textContent = '还没有本插件送出的离线任务记录（送过一次磁力后点「同步状态」）'
         return
       }
       const statusText = {
         downloading: '下载中', completed: '已完成', failed: '失败',
-        pending: '排队中', paused: '已暂停', running: '进行中'
+        pending: '排队中', paused: '已暂停', running: '进行中',
+        unknown: '115 列表里没有（可能已完成或被拒）'
       }
+      const latest = items.map(item => item.updated_at).filter(Boolean).sort().pop() || ''
       ui.offlineList.innerHTML = items.map(item => {
         const progress = Math.max(0, Math.min(1, Number(item.progress) || 0))
-        const rate = Number(item.download_rate) || 0
+        const rate = Number(item.rate) || 0
         const meta = [
           statusText[item.status] || item.status || '',
           item.size ? (item.size / 1024 ** 3).toFixed(2) + ' GB' : '',
@@ -637,12 +642,12 @@ export function mount(element, ctx) {
           item.error ? '报错：' + item.error : ''
         ].filter(Boolean).join(' · ')
         return `<div class="avdb-offline-item">
-          <div class="avdb-offline-name" title="${esc(item.name || item.info_hash || '')}">${esc(item.name || item.info_hash || '(未命名)')}</div>
-          <div>${esc(item.info_hash || '').slice(0, 12)}</div>
+          <div class="avdb-offline-name" title="${esc(item.title || item.hash || '')}">${esc(item.title || item.hash || '(未命名)')}</div>
+          <div>${esc(item.hash || '').slice(0, 12)}</div>
           <div class="avdb-offline-meta">${esc(meta)}</div>
           <div class="avdb-offline-bar"><i style="width:${Math.round(progress * 100)}%"></i></div>
         </div>`
-      }).join('')
+      }).join('') + (latest ? `<div class="avdb-muted">状态快照：${esc(latest)}</div>` : '')
     } catch (error) {
       ui.offlineList.textContent = '读不到离线任务：' + apiErrorText(error)
     }
@@ -686,8 +691,7 @@ export function mount(element, ctx) {
         throw new Error('115 未接受该链接（' + JSON.stringify(result).slice(0, 160) + '）')
       }
       await rememberSent(url, article)
-      setStatus(`已提交 115，accepted=${result.accepted}`)
-      if (!ui.offlinePanel.hidden) loadOfflineTasks()
+      setStatus(`已提交 115，accepted=${result.accepted}（要看下载状态，点面板里的「同步状态」）`)
     } catch (error) {
       setStatus('发送 115 失败：' + apiErrorText(error), true)
     } finally {
@@ -763,7 +767,14 @@ export function mount(element, ctx) {
       return
     }
     if (action === 'offline-refresh') {
-      await loadOfflineTasks()
+      ui.offlineList.textContent = '正在后台同步 115 状态…'
+      try {
+        const task = await ctx.tasks.run('sync-115', 'sync115:' + Date.now(), {})
+        setStatus('已提交 115 状态同步任务：' + (task.id || ''))
+        pollSync(task.id)
+      } catch (error) {
+        setStatus('提交同步失败：' + apiErrorText(error), true)
+      }
       return
     }
     if (action === 'offline-close') {

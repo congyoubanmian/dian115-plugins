@@ -248,3 +248,49 @@ export function parseState(state) {
   return out
 }
 
+/**
+ * 刷新本插件送出去的磁力在 115 上的状态，结果写进插件 KV（avdb-115）。
+ *
+ * 宿主「查离线任务」接口会把账号下所有离线任务都拉一遍（115 的列表是加密的，
+ * 一次调用要好几秒），所以这件事放到后台做，页面只读 KV。
+ */
+export async function syncOfflineState(ctx) {
+  const sent = await ctx.storage.get('avdb-sent')
+  const list = Array.isArray(sent) ? sent : []
+  if (!list.length) {
+    await ctx.storage.set('avdb-115', [])
+    return []
+  }
+  const own = new Set(list.map(item => String(item.hash || '').toUpperCase()).filter(Boolean))
+  let tasks = []
+  try {
+    const res = await ctx.api.get('/api/115/offline/tasks?page=1&page_size=50&status=all')
+    tasks = Array.isArray(res?.items) ? res.items : (Array.isArray(res) ? res : [])
+  } catch (error) {
+    await log(ctx, '读 115 离线任务失败：' + (error && error.message ? error.message : error))
+    tasks = []
+  }
+  const byHash = new Map()
+  for (const task of tasks) {
+    const hash = String(task.info_hash || '').toUpperCase()
+    if (own.has(hash)) byHash.set(hash, task)
+  }
+  const now = new Date().toISOString()
+  const state = list.slice(0, 100).map(item => {
+    const task = byHash.get(String(item.hash || '').toUpperCase())
+    return {
+      hash: item.hash,
+      title: item.title || (task && task.name) || '',
+      sent_at: item.at || '',
+      updated_at: now,
+      found: Boolean(task),
+      status: task ? String(task.status || '') : 'unknown',
+      progress: task ? Number(task.progress || 0) : 0,
+      rate: task ? Number(task.download_rate || 0) : 0,
+      size: task ? Number(task.size || 0) : 0,
+      error: task ? String(task.error || '') : ''
+    }
+  })
+  await ctx.storage.set('avdb-115', state)
+  return state
+}

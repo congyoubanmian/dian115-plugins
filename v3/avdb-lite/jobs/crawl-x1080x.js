@@ -8,7 +8,7 @@
 
 import {
   normalizeSettings as siteSettings,
-  log, solveChallenge, fetchJSON, parseState, httpJSON
+  log, solveChallenge, fetchJSON, parseState, httpJSON, syncOfflineState
 } from '../lib/site.js'
 
 const BOARDS = {
@@ -182,6 +182,10 @@ export async function run(ctx, input) {
   diag.gated = hidden
   diag.failed = failed
   await ctx.storage.set('avdb-diag', diag)
+  // 顺带把送出去的磁力在 115 上的状态刷新一次（写进 KV，页面直接读，不用现拉）
+  try { await syncOfflineState(ctx) } catch (error) {
+    await log(ctx, '115 状态同步失败：' + (error && error.message ? error.message : error))
+  }
   await ctx.task.update({
     stage: 'done',
     message: `抓取完成，共 ${unique.length} 条，${withMagnets} 条有磁力` +
