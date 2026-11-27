@@ -12,8 +12,8 @@
       "version": "0.1.18",
       "description": "小时级对齐「订阅池里的剧集订阅」与「Emby 已有集数」：只对可解析的条目做只增 PATCH total_episodes，并产出追剧日历与当天一次的日报；减方向只给建议，从不写。已核实无缺口的条目在 5 小时窗口内复用缓存，不重复探测 Emby。每次 PATCH 前后落任务检查点，中断恢复先查订阅池里该条目的真实集数，已确认写到位才记 complete、确认没写才 resume、核对不上记 attention（整点入口把 attention 收敛为 resume，靠只增守卫保证重跑不重复写）。界面按统一设计稿重绘：指标瓦片、徽标胶囊、双栏看板与移动端单栏适配。",
       "author": "镜头的蒙太奇",
-      "source_url": "https://github.com/congyoubanmian/dian115-plugins/releases/download/v3-2026.11.27e/chase.rs-ee5d51bc-8d6d-4bdb-a368-a9ae8e1ef135.dian115p",
-      "sha256": "84188ce35a0fe72ffe4b6ca8cbf6501a0d8d79a2ce72e07bbcf37599c6dde509",
+      "source_url": "https://github.com/congyoubanmian/dian115-plugins/releases/download/v3-2026.11.27f/chase.rs-3467bff2-a98a-4815-b983-71ccfdfe7f97.dian115p",
+      "sha256": "16ff9d28bbe74fc702bdd1a8bd99ada6b2d2387c6a6447033bb804b79976c8e2",
       "delivery": "protected-v4",
       "declared_usage": {
         "apis": [
@@ -48,8 +48,8 @@
       "version": "1.2.4",
       "description": "豆瓣榜单抓取 + 黑名单过滤 + 观察队列 + 聚合订阅；按宿主新规约不再读取 CookieCloud；登录态由用户手动粘贴浏览器里的豆瓣 Cookie 提供，自动追订「我的想看」；TMDB 匹配失败时用豆瓣详情（原名/又名）回退重搜；支持最低评分/年份/地区订阅过滤与「已删除不重订」墓碑集。创建聚合订阅前后落任务检查点，中断恢复先查宿主订阅池里该 (tmdb_id, media_type) 的真实状态再决定 complete / resume / attention。海报抓回后落插件文件缓存 posters/<sha256>.<ext>（超 64 张按 modified 淘汰最旧，卸载即清空），页面用 downloadURL 取图，files 不可用时降级 dataURL。Telegram 机器人接收 /refresh、/wish 两条指令并回执执行结果（指令触发不需要授权，回执走 ctx.messaging.reply 需要用户授权 telegram.bot）。旧 schema 1 WASM 插件（plugins/douban-rs 0.2.4）的 v3 迁移版；页面提供榜单海报墙、观察队列/我的想看、历史日志与设置。",
       "author": "镜头的蒙太奇",
-      "source_url": "https://github.com/congyoubanmian/dian115-plugins/releases/download/v3-2026.11.27e/douban.rs-6555ef60-f66b-4934-948c-dc39b70570f4.dian115p",
-      "sha256": "cbc85a38de106a2be4b5b6742174c835097ee8eef90dafe286a821533b4c777b",
+      "source_url": "https://github.com/congyoubanmian/dian115-plugins/releases/download/v3-2026.11.27f/douban.rs-e40f66bb-2a6f-48af-a8c9-faae9bd8b37e.dian115p",
+      "sha256": "3e728584e0a73e2faa0c7659719ce53e6fb8bfe786b5807cfd9e00996cbc92cc",
       "delivery": "protected-v4",
       "declared_usage": {
         "apis": [
@@ -94,8 +94,8 @@
       "version": "1.3.12",
       "description": "网易云 / QQ 音乐搜索、扫码登录（网易云 unikey 二维码；QQ 官方二维码 + graph.qq.com OAuth 授权换音乐凭据）与手动粘贴 Cookie 回退、我的歌单（网易云与 QQ 都能读我创建的与收藏的歌单；QQ 另有「每日推荐」与「我喜欢」两个入口）、按音质逐级取链；单曲与整张歌单入队后由后台任务自动推进：取链接 → API 3.9 起 save_to 优先直写目标目录（宿主不开放该能力时回落「暂存 → 定名 → move」，CD2 挂载由宿主自动分流）→ 失败通知带「重试」按钮。下载与入库前后落任务检查点，中断恢复先核对目标目录里的真实文件再决定 complete / resume / attention；入库前做同名预检，目标已有同名文件直接终态失败不进重试循环。Telegram 机器人提供只读查询命令（/music 队列|状态|帮助、/queue、/status），不触发下载与删除，回复走来源渠道、未授权 telegram.bot 时回退普通通知；每天 08:30 发一条下载日报（dedupe_key 按天，当天送达不重发，发送失败换新键）。旧 schema 1 WASM 插件（plugins/music-rs 0.3.19）的 v3 迁移版。",
       "author": "镜头的蒙太奇",
-      "source_url": "https://github.com/congyoubanmian/dian115-plugins/releases/download/v3-2026.11.27e/music.rs-d7f6c504-7c5a-446c-afe1-84b489f7bb7a.dian115p",
-      "sha256": "b526c127b61757bd3ceb42a4bdee732fbc6a9d8647d0596d56a71fd1486a1788",
+      "source_url": "https://github.com/congyoubanmian/dian115-plugins/releases/download/v3-2026.11.27f/music.rs-5081e555-4059-4a7e-b9a0-6aa555a9292f.dian115p",
+      "sha256": "212b3d1041eace8a80a5324d97f2c5e995ae03b24eb9e958dd76cb58a98705ba",
       "delivery": "protected-v4",
       "declared_usage": {
         "apis": [
@@ -142,8 +142,8 @@
       "description": "黄果短剧浏览与播放：首页发现、搜索分类、榜单吃瓜、详情选集、评论收藏与观看记录。edge 信封直连上游站点（Referer/Bearer），支持固定/国内备用/用户自定义线路；播放取址走上游新版 /playback 接口并附 CDN 校验头，WebCrypto 解密 AES-128-CBC 封面，hls.js 自定义 loader 走宿主 HTTP 规避防盗链与 CORS。",
       "homepage": "https://github.com/congyoubanmian/dian115-plugins",
       "version": "0.1.4",
-      "source_url": "https://github.com/congyoubanmian/dian115-plugins/releases/download/v3-2026.11.27e/huanggu.drama-09baa3c6-64eb-4d16-ab48-020acfbaa513.dian115p",
-      "sha256": "d628ed696d5dec3a2d7ac7f5f15641ee4439d03d570629c4db5e6c6124507a81",
+      "source_url": "https://github.com/congyoubanmian/dian115-plugins/releases/download/v3-2026.11.27f/huanggu.drama-1938e8b2-af9a-4267-8bf3-a0d0cab40937.dian115p",
+      "sha256": "1ea9c57a52ff81e00a3ae0ae818716a61150727741c1c8da004bbdc2b530a064",
       "delivery": "protected-v4",
       "author": "镜头的蒙太奇",
       "changelog": "0.1.4：线路页新增「国内备用」分组（官方发布页的 rlhjeyuvw.cc 三条可直连入口）与「自定义线路」：可添加任意 HTTPS 站点 origin、单独检测/切换/删除，自定义线路持久化在插件 KV。",
@@ -168,8 +168,8 @@
       "description": "X1080X 的「無碼BT」「有碼BT」板块采集、文章浏览与一键 115 磁力离线。游客身份就能拿到这两个板块的下载地址，不需要账号。站点有 Cloudflare，过盾交给同机 Docker 里的 FlareSolverr（按插件介绍里的 compose 起一个容器即可，插件页面有「检查环境」按钮一键确认）；插件只负责解析、展示和把磁力送进 115 离线。",
       "homepage": "https://github.com/congyoubanmian/dian115-plugins",
       "version": "0.4.20",
-      "source_url": "https://github.com/congyoubanmian/dian115-plugins/releases/download/v3-2026.11.27e/avdb.lite-691b512b-9f7a-45be-beaf-bba6a371bbbf.dian115p",
-      "sha256": "aedc659f01e416dda1c578302e806a6afce73b87b372642ba4b75b868aa92a23",
+      "source_url": "https://github.com/congyoubanmian/dian115-plugins/releases/download/v3-2026.11.27f/avdb.lite-54bc6ec3-7963-4e7d-9470-5a06b315ef2d.dian115p",
+      "sha256": "688f3f049b51f7f4910e29ad97787c77634b5936cf5ecfe0c3a52d57fc8429b6",
       "delivery": "protected-v4",
       "author": "镜头的蒙太奇",
       "declared_usage": {
@@ -198,9 +198,9 @@
       "name": "辅种助手",
       "description": "扫描 BT 下载器种子，按 pieces 指纹跨站比对 PT 站点，可视化展示每个种子对应的 BT 软件与可辅种站点，支持自定义站点与多下载器一键辅种。",
       "homepage": "https://github.com/congyoubanmian/dian115-plugins",
-      "version": "0.6.4",
-      "source_url": "https://github.com/congyoubanmian/dian115-plugins/releases/download/v3-2026.11.27e/reseed.puppy-45582d2e-df1f-4015-875f-e345c63be302.dian115p",
-      "sha256": "fe52a8aea0f28d32d439dd6725223c3737bef73d6e0550af2403e79fcd43a5cd",
+      "version": "0.6.5",
+      "source_url": "https://github.com/congyoubanmian/dian115-plugins/releases/download/v3-2026.11.27f/reseed.puppy-025d1f67-c314-4da1-900e-5a4b95858537.dian115p",
+      "sha256": "13c414daf6209840b71a1fe0d5f467db7798fc79ede3df6793949b67e5abf155",
       "delivery": "protected-v4",
       "author": "镜头的蒙太奇",
       "declared_usage": {
@@ -230,6 +230,7 @@
           "www.3wmg.com",
           "pt.btschool.club",
           "hdfans.org",
+          "www.hdkyl.in",
           "www.hdkylin.top",
           "www.agsvpt.com",
           "agsvpt.trackers.work",
@@ -266,7 +267,7 @@
       },
       "icon": "https://raw.githubusercontent.com/congyoubanmian/dian115-plugins/main/v3/reseed-puppy/icon.svg",
       "repository_url": "https://github.com/congyoubanmian/dian115-plugins",
-      "changelog": "0.6.4：修复 qBittorrent 辅种推送报 400 Bad Request 的底层协议坑——改用固定 Content-Length 的 multipart/form-data 字节流（body_base64）替代流式 chunked 上传，彻底兼容 qB 4.x/5.x Qt HTTP 解析器；同时增强点击「一键辅种」时的即时进度与错误横幅提示。0.6.3：修复 sha1 二次 hex 编码问题。0.6.2：修复 files.call 裸数组返回。"
+      "changelog": "0.6.5：修复 AGSVPT / 麒麟 被误判为 FluxTorrent 方言的问题（AGSVPT 实测为标准 NexusPHP /api/pieces-hash，现在仅 fxo_ 令牌或手动选择 Flux 时才走 Flux 协议）；更新麒麟默认域名为 www.hdkyl.in。0.6.4：修复 qBittorrent 辅种推送报 400（固定 Content-Length multipart）。"
     }
   ]
 }
