@@ -12,7 +12,9 @@
 
 const FLUX_TOKEN_PREFIX = 'fxo_'
 
-const FLUX_SITE_NAMES = new Set(['青蛙', 'AGSVPT', 'agsvpt', '麒麟', 'hdkylin', 'UBits', 'ubits', '聆音'])
+// 仅当凭据是 fxo_ 开头或显式选 FluxTorrent 方言时才走 Flux；
+// AGSVPT / 麒麟 / 聆音 等站实测为标准 NexusPHP (/api/pieces-hash + passkey)，不能按名字强判 Flux。
+const FLUX_SITE_NAMES = new Set(['青蛙', 'QingWa'])
 const NEXUS_API_NAMES = new Set(['憨憨', 'hhanclub'])
 
 // 内置常见 PT 站点预设（用户可自由增删改、添加任意自定义站点）
@@ -40,8 +42,8 @@ export const BUILTIN_SITES = [
   { id: '3wmg', name: '3WMG 明教', url: 'https://www.3wmg.com', api: '', dialect: 'auto', trackerDomains: ['3wmg.com'] },
   { id: 'btschool', name: '学校 BTSchool', url: 'https://pt.btschool.club', api: '', dialect: 'auto', trackerDomains: ['btschool.club'] },
   { id: 'hdfans', name: 'HDFans', url: 'https://hdfans.org', api: '', dialect: 'auto', trackerDomains: ['hdfans.org'] },
-  { id: 'hdkylin', name: '麒麟 HDKylin', url: 'https://www.hdkylin.top', api: '', dialect: 'auto', trackerDomains: ['hdkylin.top'] },
-  { id: 'agsvpt', name: 'AGSVPT', url: 'https://www.agsvpt.com', api: '', dialect: 'auto', trackerDomains: ['agsvpt.com', 'agsvpt.trackers.work'] },
+  { id: 'hdkylin', name: '麒麟 HDKylin', url: 'https://www.hdkyl.in', api: '', dialect: 'auto', trackerDomains: ['hdkyl.in', 'hdkylin.top'] },
+  { id: 'agsvpt', name: 'AGSVPT', url: 'https://www.agsvpt.com', api: 'https://www.agsvpt.com/api/pieces-hash', dialect: 'nexusphp', trackerDomains: ['agsvpt.com', 'agsvpt.trackers.work'] },
   { id: 'carpt', name: '车站 CarPT', url: 'https://carpt.net', api: '', dialect: 'auto', trackerDomains: ['carpt.net'] }
 ]
 
@@ -97,6 +99,8 @@ export function isFluxSite(name, token, apiUrl = '', dialect = 'auto') {
   const api = String(apiUrl || '').trim()
   if (tk.startsWith(FLUX_TOKEN_PREFIX)) return true
   if (/\/crossseed\//i.test(api)) return true
+  // 若用户已填标准 32 位 passkey（非 fxo_），一律不按站点名强判 Flux
+  if (tk && !tk.startsWith(FLUX_TOKEN_PREFIX)) return false
   if (n && FLUX_SITE_NAMES.has(n)) return true
   return false
 }

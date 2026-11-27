@@ -25,12 +25,12 @@ const BUILTIN_SITES = [
   { id: '3wmg', name: '3WMG 明教', url: 'https://www.3wmg.com', api: '', dialect: 'auto', trackerDomains: ['3wmg.com'] },
   { id: 'btschool', name: '学校 BTSchool', url: 'https://pt.btschool.club', api: '', dialect: 'auto', trackerDomains: ['btschool.club'] },
   { id: 'hdfans', name: 'HDFans', url: 'https://hdfans.org', api: '', dialect: 'auto', trackerDomains: ['hdfans.org'] },
-  { id: 'hdkylin', name: '麒麟 HDKylin', url: 'https://www.hdkylin.top', api: '', dialect: 'auto', trackerDomains: ['hdkylin.top'] },
-  { id: 'agsvpt', name: 'AGSVPT', url: 'https://www.agsvpt.com', api: '', dialect: 'auto', trackerDomains: ['agsvpt.com', 'agsvpt.trackers.work'] },
+  { id: 'hdkylin', name: '麒麟 HDKylin', url: 'https://www.hdkyl.in', api: '', dialect: 'auto', trackerDomains: ['hdkyl.in', 'hdkylin.top'] },
+  { id: 'agsvpt', name: 'AGSVPT', url: 'https://www.agsvpt.com', api: 'https://www.agsvpt.com/api/pieces-hash', dialect: 'nexusphp', trackerDomains: ['agsvpt.com', 'agsvpt.trackers.work'] },
   { id: 'carpt', name: '车站 CarPT', url: 'https://carpt.net', api: '', dialect: 'auto', trackerDomains: ['carpt.net'] }
 ]
 
-const FLUX_NAMES = new Set(['青蛙', 'AGSVPT', 'agsvpt', '麒麟', 'hdkylin', 'UBits', 'ubits', '聆音'])
+const FLUX_NAMES = new Set(['青蛙', 'QingWa'])
 
 const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }
 function esc(v) {
@@ -66,7 +66,8 @@ function resolveDialect(s) {
   const name = String(s.name || '').trim()
   const pk = String(s.passkey || '').trim()
   const api = String(s.api || '').trim()
-  if (pk.startsWith('fxo_') || /\/crossseed\//i.test(api) || FLUX_NAMES.has(name)) return 'flux'
+  if (pk.startsWith('fxo_') || /\/crossseed\//i.test(api)) return 'flux'
+  if (!pk && FLUX_NAMES.has(name)) return 'flux'
   if (/\/nexusapi\//i.test(api) || name === '憨憨' || name === 'hhanclub') return 'nexusapi'
   return 'nexusphp'
 }
