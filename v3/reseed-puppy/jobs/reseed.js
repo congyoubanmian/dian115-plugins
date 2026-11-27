@@ -59,7 +59,15 @@ function sha1Hex(ctx, bytes) {
 }
 
 function itemsOf(res) {
-  return res?.items || res?.result || []
+  if (Array.isArray(res)) return res
+  if (Array.isArray(res?.items)) return res.items
+  if (Array.isArray(res?.result)) return res.result
+  if (Array.isArray(res?.result?.items)) return res.result.items
+  if (Array.isArray(res?.entries)) return res.entries
+  if (Array.isArray(res?.files)) return res.files
+  if (Array.isArray(res?.data)) return res.data
+  if (Array.isArray(res?.data?.items)) return res.data.items
+  return []
 }
 
 function splitLines(raw) {
@@ -115,7 +123,9 @@ async function listTorrents(ctx, dirs, addLog) {
 
 async function readTorrentFile(ctx, path) {
   const res = await ctx.files.call({ operation: 'read', path, encoding: 'base64', length: 16 * 1024 * 1024 })
-  const b64 = res?.content ?? res?.data ?? res?.result
+  const b64 = typeof res === 'string'
+    ? res
+    : (res?.content ?? res?.data ?? res?.result?.content ?? res?.result ?? '')
   if (!b64) return null
   const buf = typeof b64 === 'string' ? decodeBase64(ctx, b64) : toBytes(b64)
   const meta = parseTorrentMeta(buf)

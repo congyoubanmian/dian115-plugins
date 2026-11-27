@@ -789,6 +789,18 @@ export function mount(element, ctx) {
     render()
   }
 
+  function extractFileItems(res) {
+    if (Array.isArray(res)) return res
+    if (Array.isArray(res?.items)) return res.items
+    if (Array.isArray(res?.result)) return res.result
+    if (Array.isArray(res?.result?.items)) return res.result.items
+    if (Array.isArray(res?.entries)) return res.entries
+    if (Array.isArray(res?.files)) return res.files
+    if (Array.isArray(res?.data)) return res.data
+    if (Array.isArray(res?.data?.items)) return res.data.items
+    return []
+  }
+
   // 探测种子目录可读性与 .torrent 文件数
   async function probeTorrentDirs() {
     const dirs = String(state.settings.torrentDirs || '').split('\n').map((s) => s.trim()).filter(Boolean)
@@ -802,9 +814,10 @@ export function mount(element, ctx) {
     for (const dir of dirs) {
       try {
         const res = await ctx.files.call({ operation: 'list', path: dir, limit: 100000 })
-        const items = res?.items || res?.result || []
-        const cnt = items.filter((it) => !it.is_dir && /\.torrent$/i.test(it.name || it.path || '')).length
-        results.push({ dir, ok: true, count: cnt })
+        const items = extractFileItems(res)
+        const cnt = items.filter((it) => it && !it.is_dir && /\.torrent$/i.test(it.name || it.path || '')).length
+        const diag = !items.length && res && typeof res === 'object' ? (' [keys:' + Object.keys(res).join(',') + ']') : ''
+        results.push({ dir, ok: true, count: cnt, total: items.length, diag })
       } catch (err) {
         results.push({ dir, ok: false, error: err?.message || String(err) })
       }
@@ -1499,7 +1512,7 @@ export function mount(element, ctx) {
             ${state.dirProbes.map((p) => p.loading
               ? `<span class="rs-pill rs-pill-muted">${esc(p.dir)} 探测中…</span>`
               : (p.ok
-                ? `<span class="rs-pill rs-pill-ok">${esc(p.dir)}：可读（${p.count} 个 .torrent）</span>`
+                ? `<span class="rs-pill rs-pill-ok">${esc(p.dir)}：可读（${p.count} 个 .torrent / 共 ${p.total ?? p.count} 项${esc(p.diag || '')}）</span>`
                 : `<span class="rs-pill rs-pill-err">${esc(p.dir)}：${esc(p.error)}</span>`)).join('')}
           </div>
         ` : ''}
