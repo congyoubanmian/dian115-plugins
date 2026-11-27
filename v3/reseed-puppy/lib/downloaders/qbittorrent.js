@@ -27,6 +27,67 @@ function getHeaderCaseInsensitive(headers, name) {
   return undefined
 }
 
+function concatBytes(parts) {
+  let total = 0
+  for (const p of parts) total += p.length
+  const out = new Uint8Array(total)
+  let off = 0
+  for (const p of parts) {
+    out.set(p, off)
+    off += p.length
+  }
+  return out
+}
+
+function encodeUtf8(ctx, str) {
+  if (ctx?.codec && typeof ctx.codec.utf8Encode === 'function') return ctx.codec.utf8Encode(str)
+  return new TextEncoder().encode(str)
+}
+
+function decodeB64(ctx, b64) {
+  if (ctx?.codec && typeof ctx.codec.base64Decode === 'function') {
+    const v = ctx.codec.base64Decode(b64)
+    return v instanceof Uint8Array ? v : new Uint8Array(v)
+  }
+  throw new Error('缺少 ctx.codec.base64Decode')
+}
+
+function encodeB64(ctx, bytes) {
+  if (ctx?.codec && typeof ctx.codec.base64Encode === 'function') {
+    return ctx.codec.base64Encode(bytes)
+  }
+  let bin = ''
+  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i])
+  return btoa(bin)
+}
+
+// 构造固定长度的 multipart/form-data 字节流（带精确 Content-Length）。
+// 原因：宿主 ctx.http.request({ multipart }) 采用流式管道发送 Transfer-Encoding: chunked，
+// 而 qBittorrent 的 Qt HTTP 解析器不支持 chunked POST（会把块长度行如 "72" 当成新请求行报 400）。
+function buildMultipartPayload(ctx, fields, file) {
+  const boundary = '----Dian115ReseedBoundary' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8)
+  const parts = []
+  for (const [k, v] of Object.entries(fields)) {
+    parts.push(encodeUtf8(ctx,
+      '--' + boundary + '\r\n' +
+      'Content-Disposition: form-data; name="' + k + '"\r\n\r\n' +
+      String(v ?? '') + '\r\n'
+    ))
+  }
+  const fileBytes = decodeB64(ctx, file.base64)
+  parts.push(encodeUtf8(ctx,
+    '--' + boundary + '\r\n' +
+    'Content-Disposition: form-data; name="' + file.field + '"; filename="' + file.filename + '"\r\n' +
+    'Content-Type: ' + (file.content_type || 'application/x-bittorrent') + '\r\n\r\n'
+  ))
+  parts.push(fileBytes)
+  parts.push(encodeUtf8(ctx, '\r\n--' + boundary + '--\r\n'))
+  return {
+    contentType: 'multipart/form-data; boundary=' + boundary,
+    bodyBase64: encodeB64(ctx, concatBytes(parts))
+  }
+}
+
 export class Qbittorrent {
   constructor({ id = 'qb', name = 'qBittorrent', url, username, password, timeout = 30, directProxy = true, tags = ['辅种'], paused = true, skipChecking = true }) {
     this.id = String(id || 'qb')
@@ -187,18 +248,18 @@ export class Qbittorrent {
     if (tagList.length) fields.tags = tagList.join(',')
     if (category) fields.category = String(category)
 
+    const mp = buildMultipartPayload(ctx, fields, {
+      field: 'torrents',
+      filename: 'reseed.torrent',
+      base64: contentBase64,
+      content_type: 'application/x-bittorrent'
+    })
+
     const res = await this.authedRequest(ctx, {
       url: this.url + '/api/v2/torrents/add',
       method: 'POST',
-      multipart: {
-        fields,
-        files: [{
-          field: 'torrents',
-          filename: 'reseed.torrent',
-          base64: contentBase64,
-          content_type: 'application/x-bittorrent'
-        }]
-      }
+      headers: { 'Content-Type': mp.contentType },
+      body_base64: mp.bodyBase64
     })
     const body = String(res.body || '').trim()
     if (res.status === 409) return { alreadyExists: true }

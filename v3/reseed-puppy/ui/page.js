@@ -554,7 +554,8 @@ export function mount(element, ctx) {
     selectedKeys: new Set(), // 'fp::siteId::dlId'
     // drawers
     drawer: null,           // null | { kind: 'settings' } | { kind: 'site', index, draft } | { kind: 'downloader', index, draft }
-    toasts: []
+    toasts: [],
+    lastNotice: null        // { kind: 'ok'|'err'|'warn', text }
   }
 
   let unsubTheme = null
@@ -568,6 +569,7 @@ export function mount(element, ctx) {
   }
 
   function toast(kind, text) {
+    state.lastNotice = { kind, text }
     const id = uid('t')
     state.toasts.push({ id, kind, text })
     if (state.toasts.length > 4) state.toasts.shift()
@@ -575,7 +577,7 @@ export function mount(element, ctx) {
     setTimeout(() => {
       state.toasts = state.toasts.filter((t) => t.id !== id)
       renderToasts()
-    }, 4200)
+    }, 5200)
   }
 
   function renderToasts() {
@@ -910,6 +912,15 @@ export function mount(element, ctx) {
       toast('warn', '已有任务在运行，请稍候')
       return
     }
+    state.busyTask = {
+      id: '',
+      job: 'reseed',
+      status: 'submitting',
+      stage: mode === 'scan' ? '扫描预览' : '一键辅种',
+      progress: 1,
+      message: '正在保存配置并提交任务…'
+    }
+    render()
     try {
       await Promise.all([saveSettings(), saveSites(), saveDownloaders()])
       const task = await ctx.tasks.run('reseed', 'reseed:' + mode + ':' + Date.now(), { mode })
@@ -917,14 +928,16 @@ export function mount(element, ctx) {
         id: task.id,
         job: 'reseed',
         status: 'running',
-        stage: mode === 'scan' ? '扫描预览' : '扫描并辅种',
-        progress: 2,
+        stage: mode === 'scan' ? '扫描预览' : '一键辅种',
+        progress: 5,
         message: '任务已提交，等待执行…'
       }
       render()
       pollTask(task.id, 'reseed')
     } catch (err) {
-      toast('err', '启动任务失败：' + (err?.message || err))
+      state.busyTask = null
+      toast('err', '启动任务失败：' + (err?.data?.error || err?.message || err))
+      render()
     }
   }
 
@@ -1052,22 +1065,32 @@ export function mount(element, ctx) {
   }
 
   function renderBusyBanner() {
-    if (!state.busyTask) return ''
-    const pct = Math.max(0, Math.min(100, Number(state.busyTask.progress) || 0))
-    return `
-      <div class="rs-banner" role="status">
-        <div class="rs-banner-left">
-          <span class="rs-spinner"></span>
-          <strong>${esc(state.busyTask.stage || '执行中')}</strong>
-          <span>${esc(state.busyTask.message || '')}</span>
+    if (state.busyTask) {
+      const pct = Math.max(0, Math.min(100, Number(state.busyTask.progress) || 0))
+      return `
+        <div class="rs-banner" role="status">
+          <div class="rs-banner-left">
+            <span class="rs-spinner"></span>
+            <strong>${esc(state.busyTask.stage || '执行中')}</strong>
+            <span>${esc(state.busyTask.message || '')}</span>
+          </div>
+          <div class="rs-actions">
+            <div class="rs-prog-track"><div class="rs-prog-fill" style="width:${pct}%"></div></div>
+            <span class="rs-muted">${pct}%</span>
+            ${state.busyTask.id ? '<button type="button" class="rs-btn rs-btn-sm rs-btn-danger" data-act="cancel-task">取消</button>' : ''}
+          </div>
         </div>
-        <div class="rs-actions">
-          <div class="rs-prog-track"><div class="rs-prog-fill" style="width:${pct}%"></div></div>
-          <span class="rs-muted">${pct}%</span>
-          <button type="button" class="rs-btn rs-btn-sm rs-btn-danger" data-act="cancel-task">取消</button>
+      `
+    }
+    if (state.lastNotice && state.lastNotice.kind === 'err') {
+      return `
+        <div class="rs-banner" style="border-color:color-mix(in srgb,var(--rs-err) 45%,var(--rs-border));background:color-mix(in srgb,var(--rs-err) 8%,var(--rs-surface));color:var(--rs-err)" role="alert">
+          <div class="rs-banner-left"><strong>操作异常：</strong><span>${esc(state.lastNotice.text)}</span></div>
+          <button type="button" class="rs-btn rs-btn-xs" data-act="dismiss-notice">知道了</button>
         </div>
-      </div>
-    `
+      `
+    }
+    return ''
   }
 
   function renderKpis() {
@@ -1870,6 +1893,7 @@ export function mount(element, ctx) {
     if (act === 'scan') { await startJob('scan'); return }
     if (act === 'reseed') { await startJob('reseed'); return }
     if (act === 'cancel-task') { await cancelBusyTask(); return }
+    if (act === 'dismiss-notice') { state.lastNotice = null; render(); return }
     if (act === 'open-settings') { state.drawer = { kind: 'settings' }; render(); return }
 
     if (act === 'save-settings') {

@@ -2,7 +2,7 @@
   "schema_version": 3,
   "id": "reseed.puppy",
   "name": "辅种助手",
-  "version": "0.6.3",
+  "version": "0.6.4",
   "author": "momo",
   "description": "扫描 BT 下载器种子，按 pieces 指纹跨站比对 PT 站点，可视化展示每个种子对应的 BT 软件与可辅种站点，支持自定义站点与多下载器一键辅种。",
   "icon": "icon.svg",
