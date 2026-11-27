@@ -21,7 +21,7 @@ const NEXUS_API_NAMES = new Set(['憨憨', '憨憨 HHanClub', 'hhanclub'])
 export const BUILTIN_SITES = [
   { id: 'soulvoice', name: '聆音 SoulVoice', url: 'https://pt.soulvoice.club', api: 'https://pt.soulvoice.club/api/pieces-hash', dialect: 'nexusphp', trackerDomains: ['pt.soulvoice.club', 'soulvoice.club'] },
   { id: 'hhanclub', name: '憨憨 HHanClub', url: 'https://hhanclub.net', api: 'https://hhanclub.net/nexusapi/pieces-hash', dialect: 'nexusapi', trackerDomains: ['hhanclub.net', 'hhan.club', 'tracker.hhan.club', 'hhanclub.top'] },
-  { id: 'agsvpt', name: 'AGSVPT', url: 'https://www.agsvpt.com', api: 'https://www.agsvpt.com/api/pieces-hash', dialect: 'nexusphp', trackerDomains: ['agsvpt.com', 'www.agsvpt.com', 'agsvpt.trackers.work', 'agsvpt.work'] },
+  { id: 'agsvpt', name: 'AGSVPT', url: 'https://www.agsvpt.com', api: 'https://www.agsvpt.com/api/pieces-hash', dialect: 'nexusphp', trackerDomains: ['agsvpt.com', 'www.agsvpt.com', 'agsvpt.trackers.work', 'agsvpt.work', 'agsvpt.cn', 'tracker.agsvpt.cn'] },
   { id: 'carpt', name: '车站 CarPT', url: 'https://carpt.net', api: 'https://carpt.net/api/pieces-hash', dialect: 'nexusphp', trackerDomains: ['carpt.net', 'tracker.carpt.net'] },
   { id: 'hdkylin', name: '麒麟 HDKylin', url: 'https://www.hdkyl.in', api: 'https://www.hdkyl.in/api/pieces-hash', dialect: 'nexusphp', trackerDomains: ['hdkyl.in', 'www.hdkyl.in', 'tracker.hdkyl.in', 'hdkylin.top', 'www.hdkylin.top'] },
   { id: 'zmpt', name: '织梦 ZMPT', url: 'https://zmpt.cc', api: 'https://zmpt.cc/api/pieces-hash', dialect: 'nexusphp', trackerDomains: ['zmpt.cc'] },

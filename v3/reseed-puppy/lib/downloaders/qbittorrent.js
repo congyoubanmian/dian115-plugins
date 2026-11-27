@@ -89,7 +89,7 @@ function buildMultipartPayload(ctx, fields, file) {
 }
 
 export class Qbittorrent {
-  constructor({ id = 'qb', name = 'qBittorrent', url, username, password, timeout = 30, directProxy = true, tags = ['辅种'], paused = true, skipChecking = true }) {
+  constructor({ id = 'qb', name = 'qBittorrent', url, username, password, timeout = 30, directProxy = true, tags = ['辅种'], paused = false, skipChecking = true }) {
     this.id = String(id || 'qb')
     this.name = String(name || 'qBittorrent')
     this.type = 'qbittorrent'
@@ -99,7 +99,7 @@ export class Qbittorrent {
     this.timeout = Number(timeout) || 30
     this.directProxy = directProxy !== false
     this.defaultTags = Array.isArray(tags) ? tags : ['辅种']
-    this.defaultPaused = paused !== false
+    this.defaultPaused = paused === true
     this.defaultSkipChecking = skipChecking !== false
     this.session = 'reseed-qb-' + this.id.replace(/[^a-z0-9_-]/gi, '')
     this.cookie = ''

@@ -367,7 +367,7 @@ async function loadRuntimeConfig(ctx) {
     batchSize: Math.max(1, Math.min(500, Number(settings.batchSize) || 100)),
     rateLimitMs: Math.max(0, Math.min(10000, Number(settings.rateLimitMs) || 300)),
     defaultTags: String(settings.defaultTags || '辅种').split(/[,，\s]+/).map((s) => s.trim()).filter(Boolean),
-    defaultPaused: settings.defaultPaused !== false,
+    defaultPaused: settings.defaultPaused === true,
     defaultSkipChecking: settings.defaultSkipChecking !== false
   }
 }

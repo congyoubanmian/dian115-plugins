@@ -55,7 +55,7 @@ const TR_STATE_MAP = {
 }
 
 export class Transmission {
-  constructor({ id = 'tr', name = 'Transmission', url, username, password, timeout = 30, directProxy = true, tags = ['辅种'], paused = true }) {
+  constructor({ id = 'tr', name = 'Transmission', url, username, password, timeout = 30, directProxy = true, tags = ['辅种'], paused = false }) {
     this.id = String(id || 'tr')
     this.name = String(name || 'Transmission')
     this.type = 'transmission'
@@ -70,7 +70,7 @@ export class Transmission {
     this.timeout = Number(timeout) || 30
     this.directProxy = directProxy !== false
     this.defaultTags = Array.isArray(tags) ? tags : ['辅种']
-    this.defaultPaused = paused !== false
+    this.defaultPaused = paused === true
     this.session = 'reseed-tr-' + this.id.replace(/[^a-z0-9_-]/gi, '')
     this.sessionId = ''
   }

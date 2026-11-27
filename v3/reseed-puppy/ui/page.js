@@ -4,7 +4,7 @@
 const BUILTIN_SITES = [
   { id: 'soulvoice', name: '聆音 SoulVoice', url: 'https://pt.soulvoice.club', api: 'https://pt.soulvoice.club/api/pieces-hash', dialect: 'nexusphp', trackerDomains: ['pt.soulvoice.club', 'soulvoice.club'] },
   { id: 'hhanclub', name: '憨憨 HHanClub', url: 'https://hhanclub.net', api: 'https://hhanclub.net/nexusapi/pieces-hash', dialect: 'nexusapi', trackerDomains: ['hhanclub.net', 'hhan.club', 'tracker.hhan.club', 'hhanclub.top'] },
-  { id: 'agsvpt', name: 'AGSVPT', url: 'https://www.agsvpt.com', api: 'https://www.agsvpt.com/api/pieces-hash', dialect: 'nexusphp', trackerDomains: ['agsvpt.com', 'www.agsvpt.com', 'agsvpt.trackers.work', 'agsvpt.work'] },
+  { id: 'agsvpt', name: 'AGSVPT', url: 'https://www.agsvpt.com', api: 'https://www.agsvpt.com/api/pieces-hash', dialect: 'nexusphp', trackerDomains: ['agsvpt.com', 'www.agsvpt.com', 'agsvpt.trackers.work', 'agsvpt.work', 'agsvpt.cn', 'tracker.agsvpt.cn'] },
   { id: 'carpt', name: '车站 CarPT', url: 'https://carpt.net', api: 'https://carpt.net/api/pieces-hash', dialect: 'nexusphp', trackerDomains: ['carpt.net', 'tracker.carpt.net'] },
   { id: 'hdkylin', name: '麒麟 HDKylin', url: 'https://www.hdkyl.in', api: 'https://www.hdkyl.in/api/pieces-hash', dialect: 'nexusphp', trackerDomains: ['hdkyl.in', 'www.hdkyl.in', 'tracker.hdkyl.in', 'hdkylin.top', 'www.hdkylin.top'] },
   { id: 'zmpt', name: '织梦 ZMPT', url: 'https://zmpt.cc', api: 'https://zmpt.cc/api/pieces-hash', dialect: 'nexusphp', trackerDomains: ['zmpt.cc'] },
@@ -539,7 +539,7 @@ export function mount(element, ctx) {
       batchSize: 100,
       rateLimitMs: 300,
       defaultTags: '辅种',
-      defaultPaused: true,
+      defaultPaused: false,
       defaultSkipChecking: true
     },
     sites: [],
@@ -628,7 +628,7 @@ export function mount(element, ctx) {
       username: String(raw.username || ''),
       password: String(raw.password || ''),
       enabled: raw.enabled !== false,
-      paused: raw.paused !== false,
+      paused: raw.paused === true,
       skipChecking: raw.skipChecking !== false,
       tags: Array.isArray(raw.tags) ? raw.tags.join(',') : String(raw.tags ?? '辅种'),
       torrentDirs: tDirs,
@@ -654,7 +654,7 @@ export function mount(element, ctx) {
         batchSize: Number(savedSettings?.batchSize) || 100,
         rateLimitMs: Number(savedSettings?.rateLimitMs) || 300,
         defaultTags: String(savedSettings?.defaultTags ?? '辅种'),
-        defaultPaused: savedSettings?.defaultPaused !== false,
+        defaultPaused: savedSettings?.defaultPaused === true,
         defaultSkipChecking: savedSettings?.defaultSkipChecking !== false
       }
 
@@ -2044,7 +2044,7 @@ export function mount(element, ctx) {
         index: -1,
         draft: {
           id: uid('dl'), name: 'qBittorrent', type: 'qbittorrent', url: '',
-          username: '', password: '', enabled: true, paused: true, skipChecking: true,
+          username: '', password: '', enabled: true, paused: false, skipChecking: true,
           tags: state.settings.defaultTags || '辅种', torrentDirs: [], pathMaps: []
         }
       }

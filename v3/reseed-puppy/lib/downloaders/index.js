@@ -57,7 +57,7 @@ export function normalizeDownloaderConfig(raw, idx = 0) {
     username: String(raw.username || ''),
     password: String(raw.password || ''),
     enabled: raw.enabled !== false,
-    paused: raw.paused !== false,
+    paused: raw.paused === true,
     skipChecking: raw.skipChecking !== false,
     tags,
     torrentDirs,
