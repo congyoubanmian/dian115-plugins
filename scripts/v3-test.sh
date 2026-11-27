@@ -8,7 +8,7 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PLUGINS=("$@")
 if [ ${#PLUGINS[@]} -eq 0 ]; then
-  PLUGINS=(chase-rs music-rs douban-rs huanggu-drama)
+  PLUGINS=(chase-rs music-rs douban-rs huanggu-drama reseed-puppy)
 fi
 
 status=0

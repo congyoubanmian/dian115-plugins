@@ -131,6 +131,10 @@ for (const id of ids) {
     entry.description = manifest.description
   }
   if (typeof manifest.name === 'string' && manifest.name !== '') entry.name = manifest.name
+  if (typeof manifest.icon === 'string' && manifest.icon !== '' && !entry.icon) {
+    entry.icon = `https://raw.githubusercontent.com/${repo}/main/v3/${String(id).replace(/\./g, '-')}/${manifest.icon}`
+  }
+  if (!entry.repository_url) entry.repository_url = `https://github.com/${repo}`
 
   // changelog 按条目 version 当期写；CHANGELOG 环境变量按 id 覆盖。
   if (typeof changelogs[id] === 'string' && changelogs[id] !== '') {

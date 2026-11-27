@@ -180,6 +180,18 @@
       "rule": "host-page-tamper",
       "file": "lib/site.js",
       "reason": "命中的是在插件自己的页面里注入 Cloudflare Turnstile 验证框：向 document.head 追加 challenges.cloudflare.com 的 api.js，并在页面内创建一个固定定位的容器渲染 widget，token 回调写回页面状态。不修改宿主框架、不读取宿主页面数据、不监听宿主键盘输入；渲染发生在站点自己的登录页（同源）内。"
+    },
+    {
+      "plugin": "reseed-puppy",
+      "rule": "credential-api",
+      "file": "lib/downloaders/qbittorrent.js",
+      "reason": "命中的 /api/v2/auth/login 是用户自填的 qBittorrent WebUI 登录接口，不是 DIAN115 宿主凭据接口；请求只发往用户自己配置的下载器地址，凭据保存在插件加密 KV，不经过任何第三方。可读源码：v3/reseed-puppy/lib/downloaders/qbittorrent.js。"
+    },
+    {
+      "plugin": "reseed-puppy",
+      "rule": "combo-credential-network",
+      "file": "lib/downloaders/qbittorrent.js",
+      "reason": "同上：登录用户自填的 qBittorrent WebUI 必然携带账号密码并联网，属于下载器认证必需流程，凭据仅发往用户自填下载器地址。"
     }
   ]
 }

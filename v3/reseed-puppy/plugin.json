@@ -1,0 +1,169 @@
+{
+  "schema_version": 3,
+  "id": "reseed.puppy",
+  "name": "辅种助手",
+  "version": "0.6.0",
+  "author": "momo",
+  "description": "扫描 BT 下载器种子，按 pieces 指纹跨站比对 PT 站点，可视化展示每个种子对应的 BT 软件与可辅种站点，支持自定义站点与多下载器一键辅种。",
+  "icon": "icon.svg",
+  "requires": {
+    "api": "3.9"
+  },
+  "ui": {
+    "entry": "ui/page.js"
+  },
+  "menu": {
+    "title": "辅种助手",
+    "order": 90
+  },
+  "jobs": [
+    {
+      "id": "reseed",
+      "entry": "jobs/reseed.js",
+      "handler": "run",
+      "recover": "recover",
+      "title": "扫描并辅种",
+      "timeout_seconds": 3600,
+      "allow_overlap": false,
+      "queue": true
+    },
+    {
+      "id": "reseed-apply",
+      "entry": "jobs/reseed.js",
+      "handler": "apply",
+      "recover": "recover",
+      "title": "推送选定辅种",
+      "timeout_seconds": 600,
+      "allow_overlap": false,
+      "queue": false
+    },
+    {
+      "id": "reseed-probe",
+      "entry": "jobs/reseed.js",
+      "handler": "probe",
+      "title": "测试连接与接口",
+      "timeout_seconds": 60,
+      "allow_overlap": true,
+      "queue": false
+    }
+  ],
+  "settings": [
+    {
+      "key": "torrentDirs",
+      "label": "全局种子目录",
+      "type": "textarea",
+      "help": "每行一个容器内可读的 .torrent 目录（如 /qb-torrents）。也可在插件页面的下载器卡片中分别配置。",
+      "placeholder": "/qb-torrents"
+    },
+    {
+      "key": "dryRun",
+      "label": "默认演练模式",
+      "type": "boolean",
+      "default": true,
+      "help": "开启时仅扫描并生成可辅种矩阵，不自动推送到下载器。"
+    },
+    {
+      "key": "skipIncomplete",
+      "label": "跳过数据不全的种子",
+      "type": "boolean",
+      "default": true,
+      "help": "开启时先按路径映射核对磁盘文件大小，未配映射时按下载器 100% 进度判定，避免做空种。"
+    },
+    {
+      "key": "batchSize",
+      "label": "每批查询指纹数",
+      "type": "number",
+      "default": 100,
+      "help": "单次请求提交的 pieces 指纹数量，常规站点支持 100。"
+    },
+    {
+      "key": "rateLimitMs",
+      "label": "批次间隔（毫秒）",
+      "type": "number",
+      "default": 300,
+      "help": "同一站点多批次查询之间的等待间隔，避免触发限流。"
+    },
+    {
+      "key": "defaultTags",
+      "label": "默认辅种标签",
+      "type": "text",
+      "default": "辅种",
+      "help": "推送到 qBittorrent / Transmission 时附加的标签，逗号分隔。"
+    },
+    {
+      "key": "defaultPaused",
+      "label": "添加后默认暂停",
+      "type": "boolean",
+      "default": true,
+      "help": "推荐开启，确认无误后再开始做种。"
+    },
+    {
+      "key": "defaultSkipChecking",
+      "label": "默认跳过校验（qB）",
+      "type": "boolean",
+      "default": true,
+      "help": "qBittorrent 辅种时启用 skip_checking 秒辅。"
+    }
+  ],
+  "declared_usage": {
+    "purpose": "读取用户配置的种子目录与 BT 下载器列表，计算 pieces 指纹后向用户启用的 PT 站点查询同款资源，并在用户确认或自动模式下推送至对应 BT 下载器原保存目录做辅种。",
+    "sites": [
+      "pt.soulvoice.club",
+      "leaves.red",
+      "piggo.me",
+      "api.piggo.me",
+      "ultrahd.net",
+      "zmpt.cc",
+      "hdtime.org",
+      "pt.keepfrds.com",
+      "www.ptlsp.com",
+      "hhanclub.top",
+      "cyanbug.net",
+      "www.icc2022.com",
+      "1ptba.com",
+      "ptcafe.club",
+      "kufei.org",
+      "rousi.zip",
+      "wintersakura.net",
+      "www.oshen.win",
+      "hdpt.xyz",
+      "pt.2xfree.org",
+      "hdatmos.club",
+      "www.3wmg.com",
+      "pt.btschool.club",
+      "hdfans.org",
+      "www.hdkylin.top",
+      "www.agsvpt.com",
+      "agsvpt.trackers.work",
+      "carpt.net",
+      "m-team.cc",
+      "m-team.io",
+      "haidan.video",
+      "leaguehd.com",
+      "lemonhd.org",
+      "crabpt.vip",
+      "audiences.me",
+      "chdbits.co",
+      "ptchdbits.co",
+      "hdsky.me",
+      "hdhome.org",
+      "pterclub.com",
+      "springsunday.net",
+      "hdchina.org",
+      "keepfrds.com",
+      "totheglory.im",
+      "byr.pt",
+      "qingwapt.com",
+      "newqingwa.com",
+      "ubits.club",
+      "127.0.0.1"
+    ],
+    "apis": [
+      "/api/pt/sites"
+    ],
+    "paths": "用户在配置中填写的 .torrent 目录及可选的只读路径映射目录",
+    "notifications": "扫描或辅种任务结束后发送一条汇总通知",
+    "desc": "站点与下载器列表均由用户在插件页面自由增删改，内置站点表仅作初始推荐，凭据保存在插件加密 KV。",
+    "risk": "插件会使用用户自行填写的下载器地址、账号密码直连 qBittorrent / Transmission API（包含 qBittorrent 自身的 /api/v2/auth/login），凭据仅存于插件加密 KV，仅发往用户自填下载器地址，不经过任何第三方。"
+  }
+}
