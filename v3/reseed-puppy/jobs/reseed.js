@@ -54,8 +54,15 @@ function decodeBase64(ctx, b64) {
   throw new Error('运行时缺少 ctx.codec.base64Decode 能力')
 }
 
-function sha1Hex(ctx, bytes) {
-  return toHex(ctx.crypto.sha1(bytes)).toLowerCase()
+async function sha1Hex(ctx, bytes) {
+  // DIAN115 v3 SDK 的 ctx.crypto.sha1(data, 'hex') 直接返回 40 位十六进制字符串；
+  // 若测试/旧环境返回 20 字节 Uint8Array 则转 hex，避免把 40 位 hex 再次二次编码成 80 位！
+  const out = await ctx.crypto.sha1(bytes, 'hex')
+  if (typeof out === 'string') {
+    const trimmed = out.trim().toLowerCase()
+    if (/^[0-9a-f]{40}$/.test(trimmed)) return trimmed
+  }
+  return toHex(out).toLowerCase()
 }
 
 function itemsOf(res) {
@@ -130,8 +137,8 @@ async function readTorrentFile(ctx, path) {
   const buf = typeof b64 === 'string' ? decodeBase64(ctx, b64) : toBytes(b64)
   const meta = parseTorrentMeta(buf)
   if (!meta) return null
-  const fingerprint = sha1Hex(ctx, meta.pieces)
-  const infoHash = sha1Hex(ctx, buf.subarray(meta.infoRange[0], meta.infoRange[1]))
+  const fingerprint = await sha1Hex(ctx, meta.pieces)
+  const infoHash = await sha1Hex(ctx, buf.subarray(meta.infoRange[0], meta.infoRange[1]))
   return {
     path,
     fingerprint,
@@ -317,7 +324,7 @@ async function fetchAndVerifyTargetTorrent(ctx, site, torrentId, expectedFingerp
   if (expectedFingerprint) {
     const p = readTorrentPieces(bytes)
     if (p && p.pieces.length) {
-      const gotFp = sha1Hex(ctx, p.pieces)
+      const gotFp = await sha1Hex(ctx, p.pieces)
       if (gotFp !== expectedFingerprint.toLowerCase()) {
         throw new Error('下载种子 pieces 指纹不匹配，已拦截以防做空种')
       }
