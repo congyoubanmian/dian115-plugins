@@ -13,59 +13,66 @@
 const FLUX_TOKEN_PREFIX = 'fxo_'
 
 // 仅当凭据是 fxo_ 开头或显式选 FluxTorrent 方言时才走 Flux；
-// AGSVPT / 麒麟 / 聆音 等站实测为标准 NexusPHP (/api/pieces-hash + passkey)，不能按名字强判 Flux。
-const FLUX_SITE_NAMES = new Set(['青蛙', 'QingWa'])
-const NEXUS_API_NAMES = new Set(['憨憨', 'hhanclub'])
+// AGSVPT / 麒麟 / 聆音 / UBits / 青蛙 等站实测支持标准 /api/pieces-hash，不能按名字强判 Flux。
+const FLUX_SITE_NAMES = new Set([])
+const NEXUS_API_NAMES = new Set(['憨憨', '憨憨 HHanClub', 'hhanclub'])
 
-// 内置常见 PT 站点预设（用户可自由增删改、添加任意自定义站点）
+// 内置常见 PT 站点预设（2026-11 实测校准，用户可自由增删改、添加任意自定义站点）
 export const BUILTIN_SITES = [
   { id: 'soulvoice', name: '聆音 SoulVoice', url: 'https://pt.soulvoice.club', api: 'https://pt.soulvoice.club/api/pieces-hash', dialect: 'nexusphp', trackerDomains: ['pt.soulvoice.club', 'soulvoice.club'] },
+  { id: 'hhanclub', name: '憨憨 HHanClub', url: 'https://hhanclub.net', api: 'https://hhanclub.net/nexusapi/pieces-hash', dialect: 'nexusapi', trackerDomains: ['hhanclub.net', 'hhan.club', 'tracker.hhan.club', 'hhanclub.top'] },
+  { id: 'agsvpt', name: 'AGSVPT', url: 'https://www.agsvpt.com', api: 'https://www.agsvpt.com/api/pieces-hash', dialect: 'nexusphp', trackerDomains: ['agsvpt.com', 'www.agsvpt.com', 'agsvpt.trackers.work', 'agsvpt.work'] },
+  { id: 'carpt', name: '车站 CarPT', url: 'https://carpt.net', api: 'https://carpt.net/api/pieces-hash', dialect: 'nexusphp', trackerDomains: ['carpt.net', 'tracker.carpt.net'] },
+  { id: 'hdkylin', name: '麒麟 HDKylin', url: 'https://www.hdkyl.in', api: 'https://www.hdkyl.in/api/pieces-hash', dialect: 'nexusphp', trackerDomains: ['hdkyl.in', 'www.hdkyl.in', 'tracker.hdkyl.in', 'hdkylin.top', 'www.hdkylin.top'] },
+  { id: 'zmpt', name: '织梦 ZMPT', url: 'https://zmpt.cc', api: 'https://zmpt.cc/api/pieces-hash', dialect: 'nexusphp', trackerDomains: ['zmpt.cc'] },
+  { id: 'hdfans', name: 'HDFans', url: 'https://hdfans.org', api: 'https://hdfans.org/api/pieces-hash', dialect: 'nexusphp', trackerDomains: ['hdfans.org'] },
+  { id: 'wintersakura', name: '冬樱 WinterSakura', url: 'https://wintersakura.net', api: 'https://wintersakura.net/api/pieces-hash', dialect: 'nexusphp', trackerDomains: ['wintersakura.net', 'tracker.wintersakura.net'] },
+  { id: 'crabpt', name: '蟹黄堡 CrabPT', url: 'https://crabpt.vip', api: 'https://crabpt.vip/api/pieces-hash', dialect: 'nexusphp', trackerDomains: ['crabpt.vip'] },
+  { id: 'gamegamept', name: 'GGPT 游戏', url: 'https://www.gamegamept.com', api: 'https://www.gamegamept.com/api/pieces-hash', dialect: 'nexusphp', trackerDomains: ['gamegamept.com', 'www.gamegamept.com'] },
+  { id: 'qingwa', name: '青蛙 QingWa', url: 'https://www.qingwapt.org', api: 'https://www.qingwapt.org/api/pieces-hash', dialect: 'auto', trackerDomains: ['qingwapt.org', 'www.qingwapt.org', 'qingwapt.com', 'newqingwa.com'] },
+  { id: 'ubits', name: 'UBits', url: 'https://ubits.club', api: 'https://ubits.club/api/pieces-hash', dialect: 'nexusphp', trackerDomains: ['ubits.club'] },
+  { id: 'hdhome', name: '家园 HDHome', url: 'https://hdhome.org', api: 'https://hdhome.org/api/pieces-hash', dialect: 'nexusphp', trackerDomains: ['hdhome.org'] },
+  { id: 'hdtime', name: 'HDTime', url: 'https://hdtime.org', api: 'https://hdtime.org/api/pieces-hash', dialect: 'nexusphp', trackerDomains: ['hdtime.org'] },
+  { id: 'cyanbug', name: '大青虫 CyanBug', url: 'https://cyanbug.net', api: 'https://cyanbug.net/api/pieces-hash', dialect: 'nexusphp', trackerDomains: ['cyanbug.net'] },
+  { id: 'ptcafe', name: 'PTCafe 咖啡', url: 'https://ptcafe.club', api: 'https://ptcafe.club/api/pieces-hash', dialect: 'nexusphp', trackerDomains: ['ptcafe.club'] },
+  { id: 'kufei', name: '库非 KuFei', url: 'https://kufei.org', api: 'https://kufei.org/api/pieces-hash', dialect: 'nexusphp', trackerDomains: ['kufei.org'] },
+  { id: 'oshen', name: '奥申 Oshen', url: 'https://www.oshen.win', api: 'https://www.oshen.win/api/pieces-hash', dialect: 'nexusphp', trackerDomains: ['oshen.win', 'www.oshen.win'] },
+  { id: 'ultrahd', name: 'UltraHD', url: 'https://ultrahd.net', api: 'https://ultrahd.net/api/pieces-hash', dialect: 'nexusphp', trackerDomains: ['ultrahd.net'] },
   { id: 'leaves', name: '红叶 Leaves', url: 'https://leaves.red', api: '', dialect: 'auto', trackerDomains: ['leaves.red'] },
   { id: 'piggo', name: '猪猪 PigGo', url: 'https://piggo.me', api: 'https://api.piggo.me/api/pieces-hash', dialect: 'nexusphp', trackerDomains: ['piggo.me', 'api.piggo.me'] },
-  { id: 'ultrahd', name: 'UltraHD', url: 'https://ultrahd.net', api: '', dialect: 'auto', trackerDomains: ['ultrahd.net'] },
-  { id: 'zmpt', name: '织梦 ZMPT', url: 'https://zmpt.cc', api: '', dialect: 'auto', trackerDomains: ['zmpt.cc'] },
-  { id: 'hdtime', name: 'HDTime', url: 'https://hdtime.org', api: '', dialect: 'auto', trackerDomains: ['hdtime.org'] },
   { id: 'keepfrds', name: '月月 KeepFRDS', url: 'https://pt.keepfrds.com', api: 'https://pt.keepfrds.com/api/torrents/pieces-hash', dialect: 'nexusphp', trackerDomains: ['pt.keepfrds.com', 'keepfrds.com'] },
-  { id: 'ptlsp', name: 'PTLSP', url: 'https://www.ptlsp.com', api: '', dialect: 'auto', trackerDomains: ['ptlsp.com'] },
-  { id: 'hhanclub', name: '憨憨 HHanClub', url: 'https://hhanclub.top', api: 'https://hhanclub.top/nexusapi/pieces-hash', dialect: 'nexusapi', trackerDomains: ['hhanclub.top'] },
-  { id: 'cyanbug', name: '大青虫 CyanBug', url: 'https://cyanbug.net', api: '', dialect: 'auto', trackerDomains: ['cyanbug.net'] },
-  { id: 'icc2022', name: 'ICC2022', url: 'https://www.icc2022.com', api: '', dialect: 'auto', trackerDomains: ['icc2022.com', 'icc2022.xyz'] },
+  { id: 'ptlsp', name: 'PTLSP', url: 'https://www.ptlsp.com', api: '', dialect: 'auto', trackerDomains: ['ptlsp.com', 'www.ptlsp.com', 'tracker.ptlsp.com', 'x.ptlsp.com'] },
   { id: '1ptba', name: '1PTBA', url: 'https://1ptba.com', api: '', dialect: 'auto', trackerDomains: ['1ptba.com'] },
-  { id: 'ptcafe', name: 'PTCafe', url: 'https://ptcafe.club', api: '', dialect: 'auto', trackerDomains: ['ptcafe.club'] },
-  { id: 'kufei', name: '库非 KuFei', url: 'https://kufei.org', api: '', dialect: 'auto', trackerDomains: ['kufei.org'] },
-  { id: 'rousi', name: '肉丝 RouSi', url: 'https://rousi.zip', api: '', dialect: 'auto', trackerDomains: ['rousi.zip'] },
-  { id: 'wintersakura', name: '冬樱 WinterSakura', url: 'https://wintersakura.net', api: '', dialect: 'auto', trackerDomains: ['wintersakura.net'] },
-  { id: 'oshen', name: '奥申 Oshen', url: 'https://www.oshen.win', api: '', dialect: 'auto', trackerDomains: ['oshen.win'] },
+  { id: 'rousi', name: '肉丝 RouSi', url: 'https://rousi.pro', api: '', dialect: 'auto', trackerDomains: ['rousi.pro', 'rousi.zip'] },
   { id: 'hdpt', name: '明教 HDPT', url: 'https://hdpt.xyz', api: '', dialect: 'auto', trackerDomains: ['hdpt.xyz'] },
-  { id: '2xfree', name: '2xFree', url: 'https://pt.2xfree.org', api: '', dialect: 'auto', trackerDomains: ['2xfree.org'] },
-  { id: 'hdatmos', name: '阿童木 HDAtmos', url: 'https://hdatmos.club', api: '', dialect: 'auto', trackerDomains: ['hdatmos.club'] },
-  { id: '3wmg', name: '3WMG 明教', url: 'https://www.3wmg.com', api: '', dialect: 'auto', trackerDomains: ['3wmg.com'] },
-  { id: 'btschool', name: '学校 BTSchool', url: 'https://pt.btschool.club', api: '', dialect: 'auto', trackerDomains: ['btschool.club'] },
-  { id: 'hdfans', name: 'HDFans', url: 'https://hdfans.org', api: '', dialect: 'auto', trackerDomains: ['hdfans.org'] },
-  { id: 'hdkylin', name: '麒麟 HDKylin', url: 'https://www.hdkyl.in', api: '', dialect: 'auto', trackerDomains: ['hdkyl.in', 'hdkylin.top'] },
-  { id: 'agsvpt', name: 'AGSVPT', url: 'https://www.agsvpt.com', api: 'https://www.agsvpt.com/api/pieces-hash', dialect: 'nexusphp', trackerDomains: ['agsvpt.com', 'agsvpt.trackers.work'] },
-  { id: 'carpt', name: '车站 CarPT', url: 'https://carpt.net', api: '', dialect: 'auto', trackerDomains: ['carpt.net'] }
+  { id: '2xfree', name: '2xFree', url: 'https://pt.2xfree.org', api: '', dialect: 'auto', trackerDomains: ['2xfree.org', 'pt.2xfree.org'] },
+  { id: '3wmg', name: '3WMG 芒果', url: 'https://3wmg.com', api: '', dialect: 'auto', trackerDomains: ['3wmg.com', 'www.3wmg.com'] }
 ]
 
-// 仅用于识别本地种子的来源站点（即使该站未在辅种列表里，也能在界面友好展示来源站名）
+// 仅用于识别本地种子的来源站点（含未开放 pieces-hash 或已关站站点，便于友好展示来源站名与同站排重）
 export const TRACKER_ALIASES = [
-  { name: '馒头 M-Team', domains: ['m-team.cc', 'm-team.io'] },
-  { name: '海胆 HaiDan', domains: ['haidan.video'] },
-  { name: '柠檬 LeagueHD', domains: ['leaguehd.com', 'lemonhd.org'] },
-  { name: '蟹黄堡 CrabPT', domains: ['crabpt.vip'] },
+  { name: '馒头 M-Team', domains: ['m-team.cc', 'm-team.io', 'tra1.m-team.cc', 'tra1.m-team.io', 'tracker.m-team.cc'] },
+  { name: '学校 BTSchool', domains: ['btschool.club', 'pt.btschool.club'] },
+  { name: '海胆 HaiDan', domains: ['haidan.video', 'announce.haidan.video'] },
+  { name: '柠檬 LemonHD', domains: ['leaguehd.com', 'announce.leaguehd.com', 'lemonhd.org', 'ilovelemonhd.me'] },
+  { name: '飞丝猫 FSM', domains: ['fsm.name', 'connects.icu', 'fsm-us.eu.org'] },
   { name: '观众 Audiences', domains: ['audiences.me'] },
   { name: '彩虹岛 CHDBits', domains: ['chdbits.co', 'ptchdbits.co'] },
   { name: '天空 HDSky', domains: ['hdsky.me'] },
-  { name: '家园 HDHome', domains: ['hdhome.org'] },
-  { name: '猫站 PterClub', domains: ['pterclub.com'] },
+  { name: '猫站 PterClub', domains: ['pterclub.com', 'pterclub.net'] },
   { name: '春天 SSD', domains: ['springsunday.net'] },
   { name: '瓷器 HDChina', domains: ['hdchina.org'] },
-  { name: '朋友 FRDS', domains: ['keepfrds.com'] },
+  { name: '高清杜比 HDdolby', domains: ['uhddolby.com', 'hddolby.com'] },
+  { name: '我堡 OurBits', domains: ['ourbits.club'] },
   { name: '吐司 TTG', domains: ['totheglory.im'] },
   { name: '北邮人 BYR', domains: ['byr.pt'] },
-  { name: '青蛙 QingWa', domains: ['qingwapt.com', 'newqingwa.com'] },
-  { name: 'UBits', domains: ['ubits.club'] }
+  { name: '鲨鱼 SharkPT', domains: ['sharkpt.net', 'tracker.sharkpt.net'] },
+  { name: 'NextPT', domains: ['nextpt.net'] },
+  { name: '冰淇淋 ICC2022', domains: ['icc2022.com', 'icc2022.xyz', 'icc2022.de', 'czhch.com'] },
+  { name: '阿童木 HDAtmos', domains: ['hdatmos.club'] }
 ]
+
+const BUILTIN_BY_ID = new Map(BUILTIN_SITES.map((s) => [s.id, s]))
 
 export function extractHostname(urlOrHost) {
   const s = String(urlOrHost || '').trim()
@@ -163,6 +170,14 @@ export function normalizeSite(raw, idx = 0) {
   if (apiHost) trackerSet.add(apiHost)
   const id = String(raw.id || '').trim() ||
     (host ? host.replace(/[^a-z0-9.-]/g, '') : 'site-' + idx)
+  // 自动合并同 id 内置站点的最新 trackerDomains（确保旧配置也能准确识别独立 tracker 域名）
+  const builtin = BUILTIN_BY_ID.get(id)
+  if (builtin && Array.isArray(builtin.trackerDomains)) {
+    for (const t of builtin.trackerDomains) {
+      const h = extractHostname(t)
+      if (h) trackerSet.add(h)
+    }
+  }
   const site = {
     id,
     name,

@@ -760,6 +760,7 @@ export async function run(ctx, input = {}) {
           })
         } catch (err) {
           st.failed++
+          const reason = err?.message || String(err)
           group.matches.push({
             siteId: site.id,
             siteName: site.name,
@@ -770,9 +771,10 @@ export async function run(ctx, input = {}) {
             downloaderName: dlClient.name,
             downloaderType: dlClient.type,
             savePath: primaryClient.savePath,
-            reason: err?.message || String(err),
+            reason,
             updatedAt: new Date().toISOString()
           })
+          await addLog('error', '辅种失败：' + group.name + ' → ' + site.name + '：' + reason)
         }
       }
 

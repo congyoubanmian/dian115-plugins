@@ -3,34 +3,37 @@
 
 const BUILTIN_SITES = [
   { id: 'soulvoice', name: '聆音 SoulVoice', url: 'https://pt.soulvoice.club', api: 'https://pt.soulvoice.club/api/pieces-hash', dialect: 'nexusphp', trackerDomains: ['pt.soulvoice.club', 'soulvoice.club'] },
+  { id: 'hhanclub', name: '憨憨 HHanClub', url: 'https://hhanclub.net', api: 'https://hhanclub.net/nexusapi/pieces-hash', dialect: 'nexusapi', trackerDomains: ['hhanclub.net', 'hhan.club', 'tracker.hhan.club', 'hhanclub.top'] },
+  { id: 'agsvpt', name: 'AGSVPT', url: 'https://www.agsvpt.com', api: 'https://www.agsvpt.com/api/pieces-hash', dialect: 'nexusphp', trackerDomains: ['agsvpt.com', 'www.agsvpt.com', 'agsvpt.trackers.work', 'agsvpt.work'] },
+  { id: 'carpt', name: '车站 CarPT', url: 'https://carpt.net', api: 'https://carpt.net/api/pieces-hash', dialect: 'nexusphp', trackerDomains: ['carpt.net', 'tracker.carpt.net'] },
+  { id: 'hdkylin', name: '麒麟 HDKylin', url: 'https://www.hdkyl.in', api: 'https://www.hdkyl.in/api/pieces-hash', dialect: 'nexusphp', trackerDomains: ['hdkyl.in', 'www.hdkyl.in', 'tracker.hdkyl.in', 'hdkylin.top', 'www.hdkylin.top'] },
+  { id: 'zmpt', name: '织梦 ZMPT', url: 'https://zmpt.cc', api: 'https://zmpt.cc/api/pieces-hash', dialect: 'nexusphp', trackerDomains: ['zmpt.cc'] },
+  { id: 'hdfans', name: 'HDFans', url: 'https://hdfans.org', api: 'https://hdfans.org/api/pieces-hash', dialect: 'nexusphp', trackerDomains: ['hdfans.org'] },
+  { id: 'wintersakura', name: '冬樱 WinterSakura', url: 'https://wintersakura.net', api: 'https://wintersakura.net/api/pieces-hash', dialect: 'nexusphp', trackerDomains: ['wintersakura.net', 'tracker.wintersakura.net'] },
+  { id: 'crabpt', name: '蟹黄堡 CrabPT', url: 'https://crabpt.vip', api: 'https://crabpt.vip/api/pieces-hash', dialect: 'nexusphp', trackerDomains: ['crabpt.vip'] },
+  { id: 'gamegamept', name: 'GGPT 游戏', url: 'https://www.gamegamept.com', api: 'https://www.gamegamept.com/api/pieces-hash', dialect: 'nexusphp', trackerDomains: ['gamegamept.com', 'www.gamegamept.com'] },
+  { id: 'qingwa', name: '青蛙 QingWa', url: 'https://www.qingwapt.org', api: 'https://www.qingwapt.org/api/pieces-hash', dialect: 'auto', trackerDomains: ['qingwapt.org', 'www.qingwapt.org', 'qingwapt.com', 'newqingwa.com'] },
+  { id: 'ubits', name: 'UBits', url: 'https://ubits.club', api: 'https://ubits.club/api/pieces-hash', dialect: 'nexusphp', trackerDomains: ['ubits.club'] },
+  { id: 'hdhome', name: '家园 HDHome', url: 'https://hdhome.org', api: 'https://hdhome.org/api/pieces-hash', dialect: 'nexusphp', trackerDomains: ['hdhome.org'] },
+  { id: 'hdtime', name: 'HDTime', url: 'https://hdtime.org', api: 'https://hdtime.org/api/pieces-hash', dialect: 'nexusphp', trackerDomains: ['hdtime.org'] },
+  { id: 'cyanbug', name: '大青虫 CyanBug', url: 'https://cyanbug.net', api: 'https://cyanbug.net/api/pieces-hash', dialect: 'nexusphp', trackerDomains: ['cyanbug.net'] },
+  { id: 'ptcafe', name: 'PTCafe 咖啡', url: 'https://ptcafe.club', api: 'https://ptcafe.club/api/pieces-hash', dialect: 'nexusphp', trackerDomains: ['ptcafe.club'] },
+  { id: 'kufei', name: '库非 KuFei', url: 'https://kufei.org', api: 'https://kufei.org/api/pieces-hash', dialect: 'nexusphp', trackerDomains: ['kufei.org'] },
+  { id: 'oshen', name: '奥申 Oshen', url: 'https://www.oshen.win', api: 'https://www.oshen.win/api/pieces-hash', dialect: 'nexusphp', trackerDomains: ['oshen.win', 'www.oshen.win'] },
+  { id: 'ultrahd', name: 'UltraHD', url: 'https://ultrahd.net', api: 'https://ultrahd.net/api/pieces-hash', dialect: 'nexusphp', trackerDomains: ['ultrahd.net'] },
   { id: 'leaves', name: '红叶 Leaves', url: 'https://leaves.red', api: '', dialect: 'auto', trackerDomains: ['leaves.red'] },
   { id: 'piggo', name: '猪猪 PigGo', url: 'https://piggo.me', api: 'https://api.piggo.me/api/pieces-hash', dialect: 'nexusphp', trackerDomains: ['piggo.me', 'api.piggo.me'] },
-  { id: 'ultrahd', name: 'UltraHD', url: 'https://ultrahd.net', api: '', dialect: 'auto', trackerDomains: ['ultrahd.net'] },
-  { id: 'zmpt', name: '织梦 ZMPT', url: 'https://zmpt.cc', api: '', dialect: 'auto', trackerDomains: ['zmpt.cc'] },
-  { id: 'hdtime', name: 'HDTime', url: 'https://hdtime.org', api: '', dialect: 'auto', trackerDomains: ['hdtime.org'] },
   { id: 'keepfrds', name: '月月 KeepFRDS', url: 'https://pt.keepfrds.com', api: 'https://pt.keepfrds.com/api/torrents/pieces-hash', dialect: 'nexusphp', trackerDomains: ['pt.keepfrds.com', 'keepfrds.com'] },
-  { id: 'ptlsp', name: 'PTLSP', url: 'https://www.ptlsp.com', api: '', dialect: 'auto', trackerDomains: ['ptlsp.com'] },
-  { id: 'hhanclub', name: '憨憨 HHanClub', url: 'https://hhanclub.top', api: 'https://hhanclub.top/nexusapi/pieces-hash', dialect: 'nexusapi', trackerDomains: ['hhanclub.top'] },
-  { id: 'cyanbug', name: '大青虫 CyanBug', url: 'https://cyanbug.net', api: '', dialect: 'auto', trackerDomains: ['cyanbug.net'] },
-  { id: 'icc2022', name: 'ICC2022', url: 'https://www.icc2022.com', api: '', dialect: 'auto', trackerDomains: ['icc2022.com', 'icc2022.xyz'] },
+  { id: 'ptlsp', name: 'PTLSP', url: 'https://www.ptlsp.com', api: '', dialect: 'auto', trackerDomains: ['ptlsp.com', 'www.ptlsp.com', 'tracker.ptlsp.com', 'x.ptlsp.com'] },
   { id: '1ptba', name: '1PTBA', url: 'https://1ptba.com', api: '', dialect: 'auto', trackerDomains: ['1ptba.com'] },
-  { id: 'ptcafe', name: 'PTCafe', url: 'https://ptcafe.club', api: '', dialect: 'auto', trackerDomains: ['ptcafe.club'] },
-  { id: 'kufei', name: '库非 KuFei', url: 'https://kufei.org', api: '', dialect: 'auto', trackerDomains: ['kufei.org'] },
-  { id: 'rousi', name: '肉丝 RouSi', url: 'https://rousi.zip', api: '', dialect: 'auto', trackerDomains: ['rousi.zip'] },
-  { id: 'wintersakura', name: '冬樱 WinterSakura', url: 'https://wintersakura.net', api: '', dialect: 'auto', trackerDomains: ['wintersakura.net'] },
-  { id: 'oshen', name: '奥申 Oshen', url: 'https://www.oshen.win', api: '', dialect: 'auto', trackerDomains: ['oshen.win'] },
+  { id: 'rousi', name: '肉丝 RouSi', url: 'https://rousi.pro', api: '', dialect: 'auto', trackerDomains: ['rousi.pro', 'rousi.zip'] },
   { id: 'hdpt', name: '明教 HDPT', url: 'https://hdpt.xyz', api: '', dialect: 'auto', trackerDomains: ['hdpt.xyz'] },
-  { id: '2xfree', name: '2xFree', url: 'https://pt.2xfree.org', api: '', dialect: 'auto', trackerDomains: ['2xfree.org'] },
-  { id: 'hdatmos', name: '阿童木 HDAtmos', url: 'https://hdatmos.club', api: '', dialect: 'auto', trackerDomains: ['hdatmos.club'] },
-  { id: '3wmg', name: '3WMG 明教', url: 'https://www.3wmg.com', api: '', dialect: 'auto', trackerDomains: ['3wmg.com'] },
-  { id: 'btschool', name: '学校 BTSchool', url: 'https://pt.btschool.club', api: '', dialect: 'auto', trackerDomains: ['btschool.club'] },
-  { id: 'hdfans', name: 'HDFans', url: 'https://hdfans.org', api: '', dialect: 'auto', trackerDomains: ['hdfans.org'] },
-  { id: 'hdkylin', name: '麒麟 HDKylin', url: 'https://www.hdkyl.in', api: '', dialect: 'auto', trackerDomains: ['hdkyl.in', 'hdkylin.top'] },
-  { id: 'agsvpt', name: 'AGSVPT', url: 'https://www.agsvpt.com', api: 'https://www.agsvpt.com/api/pieces-hash', dialect: 'nexusphp', trackerDomains: ['agsvpt.com', 'agsvpt.trackers.work'] },
-  { id: 'carpt', name: '车站 CarPT', url: 'https://carpt.net', api: '', dialect: 'auto', trackerDomains: ['carpt.net'] }
+  { id: '2xfree', name: '2xFree', url: 'https://pt.2xfree.org', api: '', dialect: 'auto', trackerDomains: ['2xfree.org', 'pt.2xfree.org'] },
+  { id: '3wmg', name: '3WMG 芒果', url: 'https://3wmg.com', api: '', dialect: 'auto', trackerDomains: ['3wmg.com', 'www.3wmg.com'] }
 ]
 
-const FLUX_NAMES = new Set(['青蛙', 'QingWa'])
+const DEPRECATED_HOSTS = new Set(['hhanclub.top', 'www.hdkylin.top', 'hdkylin.top', 'rousi.zip', 'www.3wmg.com', 'www.qingwapt.com', 'qingwapt.com'])
+const FLUX_NAMES = new Set([])
 
 const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }
 function esc(v) {
@@ -1398,7 +1401,7 @@ export function mount(element, ctx) {
           <h2 class="rs-card-title">PT 站点配置 <span class="rs-muted">（支持任意自定义站点与方言）</span></h2>
           <div class="rs-actions">
             <button type="button" class="rs-btn rs-btn-sm" data-act="import-host-sites">从宿主导入</button>
-            <button type="button" class="rs-btn rs-btn-sm" data-act="restore-builtins">补充内置站</button>
+            <button type="button" class="rs-btn rs-btn-sm" data-act="restore-builtins">同步站点库</button>
             <button type="button" class="rs-btn rs-btn-sm rs-btn-primary" data-act="add-site">+ 添加自定义站点</button>
           </div>
         </div>
@@ -1992,16 +1995,45 @@ export function mount(element, ctx) {
     }
     if (act === 'import-host-sites') { await importHostSites(); return }
     if (act === 'restore-builtins') {
-      const existing = new Set(state.sites.map((s) => String(s.url || '').replace(/\/+$/, '').toLowerCase()))
+      const hostOf = (u) => { try { return new URL(String(u || '')).hostname.toLowerCase() } catch { return '' } }
       let added = 0
+      let updated = 0
       for (const b of BUILTIN_SITES) {
-        if (existing.has(b.url.toLowerCase())) continue
-        state.sites.push(normalizeSiteLocal({ ...b, passkey: '', enabled: false }, state.sites.length))
-        added++
+        const bHost = hostOf(b.url)
+        const bTrackers = new Set((b.trackerDomains || []).map((t) => t.toLowerCase()))
+        const match = state.sites.find((s) => {
+          if (s.id === b.id) return true
+          const sh = hostOf(s.url)
+          if (sh && (sh === bHost || bTrackers.has(sh))) return true
+          return false
+        })
+        if (match) {
+          let changed = false
+          const curHost = hostOf(match.url)
+          if (curHost && DEPRECATED_HOSTS.has(curHost) && b.url) {
+            match.url = b.url
+            if (b.api) match.api = b.api
+            if (b.dialect && b.dialect !== 'auto') match.dialect = b.dialect
+            changed = true
+          }
+          const mergedTrackers = new Set([...(match.trackerDomains || []), ...(b.trackerDomains || [])])
+          if (mergedTrackers.size > (match.trackerDomains || []).length) {
+            match.trackerDomains = [...mergedTrackers]
+            changed = true
+          }
+          if (changed) updated++
+        } else {
+          state.sites.push(normalizeSiteLocal({ ...b, passkey: '', enabled: false }, state.sites.length))
+          added++
+        }
       }
       await saveSites()
       render()
-      toast('ok', added ? ('已补充 ' + added + ' 个内置站点') : '所有内置站点均已存在')
+      if (added || updated) {
+        toast('ok', '站点库已同步：新增 ' + added + ' 个，更新域名/Tracker ' + updated + ' 个')
+      } else {
+        toast('ok', '站点库已是最新，无需更新')
+      }
       return
     }
 
