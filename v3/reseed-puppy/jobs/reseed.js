@@ -344,6 +344,8 @@ async function loadRuntimeConfig(ctx) {
     downloaders,
     torrentDirs: [...dirSet],
     dryRun: settings.dryRun !== false,
+    autoEnabled: settings.autoEnabled === true,
+    autoMode: settings.autoMode === 'reseed' ? 'reseed' : 'scan',
     skipIncomplete: settings.skipIncomplete !== false,
     batchSize: Math.max(1, Math.min(500, Number(settings.batchSize) || 100)),
     rateLimitMs: Math.max(0, Math.min(10000, Number(settings.rateLimitMs) || 300)),
@@ -413,7 +415,17 @@ function sortItemsForDisplay(items) {
 export async function run(ctx, input = {}) {
   const startedAt = Date.now()
   const cfg = await loadRuntimeConfig(ctx)
-  const mode = input?.mode === 'scan' ? 'scan' : (input?.mode === 'reseed' ? 'reseed' : (cfg.dryRun ? 'scan' : 'reseed'))
+  const isManual = input?.mode === 'scan' || input?.mode === 'reseed'
+  // 定时触发（未显式传 mode）受 autoEnabled 开关控制；手动点击「扫描预览 / 一键辅种」随时可执行
+  if (!isManual && !cfg.autoEnabled) {
+    const msg = '定时自动扫描/辅种未开启，已跳过本次计划任务（可在插件「策略设置」中开启）'
+    try { await ctx.task.log('[INFO] ' + msg) } catch { /* ignore */ }
+    await ctx.task.update({ stage: '跳过', progress: 100, message: msg })
+    return { skipped: true, reason: 'auto_disabled' }
+  }
+  const mode = isManual
+    ? input.mode
+    : (cfg.autoMode === 'reseed' && !cfg.dryRun ? 'reseed' : (cfg.autoMode === 'reseed' ? 'reseed' : 'scan'))
   const dryRun = mode === 'scan'
 
   if (!cfg.torrentDirs.length) {

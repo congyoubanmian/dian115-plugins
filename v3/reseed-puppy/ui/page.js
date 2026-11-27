@@ -529,6 +529,8 @@ export function mount(element, ctx) {
     settings: {
       torrentDirs: '',
       dryRun: true,
+      autoEnabled: false,
+      autoMode: 'scan',
       skipIncomplete: true,
       batchSize: 100,
       rateLimitMs: 300,
@@ -640,6 +642,8 @@ export function mount(element, ctx) {
       state.settings = {
         torrentDirs: String(savedSettings?.torrentDirs || ''),
         dryRun: savedSettings?.dryRun !== false,
+        autoEnabled: savedSettings?.autoEnabled === true,
+        autoMode: savedSettings?.autoMode === 'reseed' ? 'reseed' : 'scan',
         skipIncomplete: savedSettings?.skipIncomplete !== false,
         batchSize: Number(savedSettings?.batchSize) || 100,
         rateLimitMs: Number(savedSettings?.rateLimitMs) || 300,
@@ -722,6 +726,8 @@ export function mount(element, ctx) {
     await ctx.settings.set({
       torrentDirs: state.settings.torrentDirs,
       dryRun: !!state.settings.dryRun,
+      autoEnabled: !!state.settings.autoEnabled,
+      autoMode: state.settings.autoMode === 'reseed' ? 'reseed' : 'scan',
       skipIncomplete: !!state.settings.skipIncomplete,
       batchSize: Math.max(1, Math.min(500, Number(state.settings.batchSize) || 100)),
       rateLimitMs: Math.max(0, Math.min(10000, Number(state.settings.rateLimitMs) || 300)),
@@ -1024,7 +1030,7 @@ export function mount(element, ctx) {
         <div class="rs-capsules">
           <span class="rs-cap ${enabledDls ? 'rs-cap-ok' : 'rs-cap-warn'}"><i class="rs-dot"></i>BT 下载器 ${enabledDls}/${state.downloaders.length}</span>
           <span class="rs-cap ${enabledSites ? 'rs-cap-accent' : 'rs-cap-warn'}"><i class="rs-dot"></i>启用站点 ${enabledSites}/${state.sites.length}</span>
-          <span class="rs-cap">${state.settings.dryRun ? '默认演练' : '默认实盘'}</span>
+          <span class="rs-cap ${state.settings.autoEnabled ? 'rs-cap-ok' : ''}">${state.settings.autoEnabled ? ('定时自动：' + (state.settings.autoMode === 'reseed' ? '自动辅种' : '仅扫描')) : '模式：手动触发'}</span>
           <span class="rs-cap">上次：${esc(lastAt)}</span>
         </div>
         ${state.busyTask ? '<span class="rs-hero-bar" aria-hidden="true"></span>' : ''}
@@ -1572,9 +1578,17 @@ export function mount(element, ctx) {
             </div>
             <div class="rs-drawer-body">
               <label class="rs-switch">
-                <input type="checkbox" data-set="dryRun" ${s.dryRun ? 'checked' : ''} />
-                <span><strong>默认演练模式</strong>（定时或默认任务只生成预览矩阵，不推送下载器）</span>
+                <input type="checkbox" data-set="autoEnabled" ${s.autoEnabled ? 'checked' : ''} />
+                <span><strong>开启定时自动扫描/辅种</strong>（默认每 6 小时运行，可在插件中心修改 cron）</span>
               </label>
+              <div class="rs-field">
+                <label>定时自动运行模式</label>
+                <select class="rs-select" data-set="autoMode">
+                  <option value="scan" ${s.autoMode !== 'reseed' ? 'selected' : ''}>仅自动扫描预览（更新矩阵，不推送下载器）</option>
+                  <option value="reseed" ${s.autoMode === 'reseed' ? 'selected' : ''}>自动扫描并推送辅种（命中即推送到对应 BT 软件）</option>
+                </select>
+                <span class="rs-help">页面的「扫描预览」和「一键辅种」按钮随时可手动触发，不受定时开关限制。</span>
+              </div>
               <label class="rs-switch">
                 <input type="checkbox" data-set="skipIncomplete" ${s.skipIncomplete ? 'checked' : ''} />
                 <span><strong>跳过数据不全的种子</strong>（有路径映射则校验磁盘大小，否则按下载器 100% 进度）</span>
@@ -2134,6 +2148,11 @@ export function mount(element, ctx) {
 
   const onChange = async (e) => {
     const el = e.target
+    if (el.dataset.set) {
+      const k = el.dataset.set
+      state.settings[k] = el.type === 'checkbox' ? el.checked : (el.type === 'number' ? Number(el.value) : el.value)
+      return
+    }
     if (el.dataset.filter === 'status') { state.statusFilter = el.value; render(); return }
     if (el.dataset.filter === 'dl') { state.dlFilter = el.value; render(); return }
     if (el.dataset.filter === 'site') { state.siteFilter = el.value; render(); return }

@@ -2,7 +2,7 @@
   "schema_version": 3,
   "id": "reseed.puppy",
   "name": "辅种助手",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "author": "momo",
   "description": "扫描 BT 下载器种子，按 pieces 指纹跨站比对 PT 站点，可视化展示每个种子对应的 BT 软件与可辅种站点，支持自定义站点与多下载器一键辅种。",
   "icon": "icon.svg",
@@ -23,6 +23,7 @@
       "handler": "run",
       "recover": "recover",
       "title": "扫描并辅种",
+      "default_schedule": "0 */6 * * *",
       "timeout_seconds": 3600,
       "allow_overlap": false,
       "queue": true
@@ -61,6 +62,24 @@
       "type": "boolean",
       "default": true,
       "help": "开启时仅扫描并生成可辅种矩阵，不自动推送到下载器。"
+    },
+    {
+      "key": "autoEnabled",
+      "label": "开启定时自动扫描/辅种",
+      "type": "boolean",
+      "default": false,
+      "help": "开启后按定时计划（默认每 6 小时，可在插件管理里修改）自动运行；关闭时仅响应页面手动触发。"
+    },
+    {
+      "key": "autoMode",
+      "label": "定时任务运行模式",
+      "type": "select",
+      "default": "scan",
+      "options": [
+        { "label": "仅自动扫描预览", "value": "scan" },
+        { "label": "自动扫描并推送辅种", "value": "reseed" }
+      ],
+      "help": "开启定时自动运行后，决定到点时只扫描更新矩阵还是自动推送可辅种目标。"
     },
     {
       "key": "skipIncomplete",
